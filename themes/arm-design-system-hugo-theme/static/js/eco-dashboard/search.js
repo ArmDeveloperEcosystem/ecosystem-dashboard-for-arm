@@ -30,6 +30,9 @@ function hideElements(all_path_cards,results_to_hide) {
         if (results_to_hide.includes(card)) { 
             // Hide card and subrow!
             card.setAttribute('hidden',true);
+            // Remove 'clicked' attribute
+            card.classList.remove("main-sw-row--clicked");
+
             if (card.nextElementSibling){   // temp to enable card view too
                 card.nextElementSibling.setAttribute('hidden',true);
             }
