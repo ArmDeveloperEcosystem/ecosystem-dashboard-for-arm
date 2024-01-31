@@ -15,7 +15,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/mongodb/
-        partner_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/mongodb-performance-on-aws-with-the-arm-graviton2    
+        partner_content:  https://amperecomputing.com/tuning-guides/mongoDB-tuning-guide
         official_docs: https://github.com/mongodb/mongo
     arm_recommended_minimum_version:
         version_number: 6.0.0
