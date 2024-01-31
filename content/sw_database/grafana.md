@@ -8,10 +8,6 @@ supported_minimum_version:
     version_number: 5.2.0
     release_date: 27/06/2018
 
-version:
-    supported_minimum: 5.2.0
-    supported_minimum_date: 27/06/2018
-
 
 optional_info:
     homepage_url: https://grafana.com/
@@ -26,7 +22,7 @@ optional_info:
         release_date:
 
 optional_hidden_info:
-    release_notes__supported_minimum: https://github.com/grafana/grafana/releases/tag/v5.2.0
+    release_notes__supported_minimum: https://grafana.com/grafana/download/5.2.0?platform=arm
     release_notes__recommended_minimum: 
     other_info: 
 
