@@ -11,7 +11,7 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://github.com/envoyproxy/envoy
-    support_caveats:
+    support_caveats: Istio support for aarch64 was added in [v1.15](https://istio.io/latest/news/releases/1.15.x/announcing-1.15/change-notes/) (Aug-31-2022). Istio and Envoy are often used together.
     alternative_options:
     getting_started_resources:
         arm_content: https://github.com/ArmDeveloperEcosystem/arm-learning-paths/tree/main/content/learning-paths/servers-and-cloud-computing/envoy
