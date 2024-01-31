@@ -5,8 +5,8 @@ description: The GNU C Library, provides the core libraries for the GNU system a
 download_url: https://www.gnu.org/software/libc/
 works_on_arm: true
 supported_minimum_version:
-    version_number: 2.27
-    release_date: 1/2/2018 
+    version_number: 2.19
+    release_date: 7/2/2014
 
 
 optional_info:
@@ -18,12 +18,11 @@ optional_info:
         partner_content:
         official_docs: https://sourceware.org/glibc/started.html
     arm_recommended_minimum_version:
-        version_number: 
+        version_number:
         release_date:
 
 optional_hidden_info:
-    release_notes__supported_minimum: https://sourceware.org/legacy-ml/libc-announce/2018/msg00000.html
-    release_notes__recommended_minimum: https://sourceware.org/pipermail/libc-alpha/2023-July/150524.html
-    other_info: 
-
+    release_notes__supported_minimum: https://sourceware.org/glibc/wiki/Release/2.19
+    release_notes__recommended_minimum:
+    other_info: No ARM64 specific release notes and binaries are available but some builds have been performed for AArch64. Glibc minimum supported version depends on the distros. For example, ubuntu:14.04 has GLIBC v2.19 and ubuntu:16.04 has GLIBC v2.23.
 ---
