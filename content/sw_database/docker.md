@@ -15,16 +15,16 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: https://learn.arm.com/install-guides/docker/
-        partner_content: https://www.lifeintech.com/2021/11/03/docker-performance-on-m1/
-        official_docs: https://www.docker.com/get-started/
+        partner_content: https://www.alibabacloud.com/blog/arm-container-applications-accelerating-development-and-testing_595802
+        official_docs: https://www.docker.com/blog/getting-started-with-docker-for-arm-on-linux/
     arm_recommended_minimum_version:
         version_number: 23.0
         release_date: 01/02/2023
 
-
 optional_hidden_info:
-    release_notes__supported_minimum: 
+    release_notes__supported_minimum: https://docs.docker.com/engine/release-notes/prior-releases/#misc
     release_notes__recommended_minimum:
-    other_info: 
+    other_info: Minimum Recommended Docker Version depends on the distros. For example, Jammy-20.10.13, Focal-19.03.10, Bionic-18.09.00
 
 ---
+
