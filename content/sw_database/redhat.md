@@ -23,7 +23,7 @@ optional_info:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/7/html/7.5_release_notes/chap-red_hat_enterprise_linux-7.5_release_notes-rhel_for_arm#doc-wrapper
-    release_notes__recommended_minimum: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/9.3_release_notes/new-features#new-features-installer-and-image-creation
+    release_notes__recommended_minimum:
     other_info: 
 
 ---
