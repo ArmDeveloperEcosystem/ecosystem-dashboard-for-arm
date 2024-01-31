@@ -5,8 +5,8 @@ description: Python is a high-level, interpreted programming language known for 
 download_url: https://www.python.org/downloads/source/
 works_on_arm: true
 supported_minimum_version:
-    version_number: 3.8
-    release_date: 14/10/19
+    version_number: 2.7
+    release_date: 3/7/2010
 
 
 optional_info:
@@ -15,8 +15,8 @@ optional_info:
     alternative_options: 
     getting_started_resources:
         arm_content:
-        partner_content: https://speed.python.org/comparison/
-        official_docs: https://wiki.python.org/moin/BeginnersGuide/Download
+        partner_content:
+        official_docs: https://speed.python.org/comparison/
     arm_recommended_minimum_version:
         version_number: 
         release_date:
@@ -24,6 +24,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum: https://pythondev.readthedocs.io/platforms.html
     release_notes__recommended_minimum: 
-    other_info: 
+    other_info: The minimum supported version(2.7) is deprecated.
 
 ---
