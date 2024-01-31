@@ -5,8 +5,8 @@ description: Golang, also known as Go, is a statically typed, compiled programmi
 download_url: https://go.dev/
 works_on_arm: true
 supported_minimum_version:
-    version_number: 1.9
-    release_date: 24/08/2017
+    version_number: 1.5
+    release_date: 19/08/2015
 
 
 optional_info:
