@@ -1,0 +1,30 @@
+---
+name: XGBoost
+category: Databases - Big-data
+description: XGBoost is an optimized distributed gradient boosting library designed to be highly efficient, flexible and portable.
+download_url: https://pypi.org/project/xgboost/#files
+works_on_arm: true
+supported_minimum_version:
+    version_number: 1.2.1
+    release_date: 14/10/2020
+
+
+optional_info:
+    homepage_url: https://xgboost.ai/
+    support_caveats:
+    alternative_options:
+    getting_started_resources:
+        arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/xgboost-lightgbm-aws-graviton3
+        partner_content:
+        official_docs: https://xgboost.readthedocs.io/en/stable/
+    arm_recommended_minimum_version:
+        version_number:
+        release_date:
+
+optional_hidden_info:
+    release_notes__supported_minimum: https://pypi.org/project/xgboost/1.2.1/#files
+    release_notes__recommended_minimum:
+    other_info: PR to build wheels for ARM64 can be found [here](https://github.com/dmlc/xgboost/pull/6253)
+
+---
+
