@@ -5,8 +5,8 @@ description: SUSE Linux Enterprise Server (SLES) is a Linux-based server operati
 download_url: https://www.suse.com/download/sles/
 works_on_arm: true
 supported_minimum_version:
-    version_number: 12 SP4
-    release_date: 12/12/2018
+    version_number: 12 SP2
+    release_date: 8/11/2016
 
 
 optional_info:
@@ -22,7 +22,7 @@ optional_info:
         release_date: 9/12/2019
 
 optional_hidden_info:
-    release_notes__supported_minimum: https://www.suse.com/releasenotes/x86_64/SUSE-SLES/12-SP4/index.html#InfraPackArch.AArch64
+    release_notes__supported_minimum:  https://www.suse.com/releasenotes/x86_64/SUSE-SLES/12-SP2/index.html
     release_notes__recommended_minimum: https://www.suse.com/releasenotes/x86_64/SUSE-SLES/12-SP5/index.html#aarch64
     other_info: 
 
