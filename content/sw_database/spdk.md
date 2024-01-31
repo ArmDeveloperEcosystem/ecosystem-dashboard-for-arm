@@ -18,13 +18,11 @@ optional_info:
         partner_content:
         official_docs: https://spdk.io/doc/getting_started.html
     arm_recommended_minimum_version:
-        version_number: 
+        version_number:
         release_date:
 
-
 optional_hidden_info:
-    release_notes__supported_minimum: https://github.com/spdk/spdk/releases/tag/v22.09
-    release_notes__recommended_minimum: https://github.com/spdk/spdk/releases/tag/v23.09
-    other_info: 
-
+    release_notes__supported_minimum:
+    release_notes__recommended_minimum:
+    other_info: No ARM64 specific release notes and binaries are available. Need to build and install it from source from git repository.
 ---
