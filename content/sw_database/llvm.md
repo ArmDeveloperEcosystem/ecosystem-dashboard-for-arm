@@ -15,15 +15,15 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: https://learn.arm.com/install-guides/llvm-embedded/
-        partner_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/accelerating-open-source-llvm-development
-        official_docs: https://llvm.org/docs/GettingStarted.html
+        partner_content: https://linaro.atlassian.net/wiki/spaces/LLVM/overview
+        official_docs: https://llvm.org/docs/HowToBuildOnARM.html
     arm_recommended_minimum_version:
         version_number: 
         release_date:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/llvm/llvm-project/releases/tag/llvmorg-7.1.0
-    release_notes__recommended_minimum: https://github.com/llvm/llvm-project/releases/tag/llvmorg-15.0.0
+    release_notes__recommended_minimum:
     other_info: 
 
 ---
