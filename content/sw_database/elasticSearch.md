@@ -5,8 +5,8 @@ description: Elasticsearch is a distributed, RESTful search engine optimized for
 download_url: https://www.elastic.co/downloads/elasticsearch
 works_on_arm: true
 supported_minimum_version:
-    version_number: 7.8.0
-    release_date: 18/06/2020
+    version_number: 7.7.0
+    release_date: 13/03/2020
 
 
 optional_info:
@@ -23,7 +23,7 @@ optional_info:
 
 
 optional_hidden_info:
-    release_notes__supported_minimum: https://www.elastic.co/guide/en/elasticsearch/reference/7.8/release-notes-7.8.0.html 
+    release_notes__supported_minimum: https://www.elastic.co/guide/en/elasticsearch/reference/7.7/release-notes-7.7.0.html 
     release_notes__recommended_minimum:
     other_info: 
 
