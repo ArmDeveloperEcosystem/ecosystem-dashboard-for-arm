@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content: https://learn.arm.com/install-guides/gcc/native/
         partner_content: 
-        official_docs:
+        official_docs: https://gcc.gnu.org/onlinedocs/gcc/AArch64-Options.html
     arm_recommended_minimum_version:
         version_number: 12.3.0
         release_date: 8/5/2023
