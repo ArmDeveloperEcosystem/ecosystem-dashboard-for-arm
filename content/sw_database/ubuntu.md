@@ -15,8 +15,8 @@ optional_info:
     alternative_options: 
     getting_started_resources: 
         arm_content: https://community.arm.com/oss-platforms/w/docs/457/n1sdp-getting-started-guide
-        partner_content: https://community.arm.com/oss-platforms/w/docs/458/neoverse-n1-sdp
-        official_docs: https://ubuntu.com/download/server/arm
+        partner_content: https://aws.amazon.com/marketplace/pp/prodview-i5afwwktxiu6u
+        official_docs: https://ubuntu.com/server/docs/installation
     arm_recommended_minimum_version:
         version_number: 
         release_date:
