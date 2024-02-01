@@ -23,7 +23,7 @@ optional_info:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/VectorCamp/vectorscan/releases/tag/vectorscan%2F5.4.6
-    release_notes__recommended_minimum: https://github.com/VectorCamp/vectorscan/releases/tag/vectorscan%2F5.4.8
+    release_notes__recommended_minimum:
     other_info: 
 
 ---

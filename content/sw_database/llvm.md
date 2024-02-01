@@ -2,7 +2,7 @@
 name: Clang/LLVM
 category: Compilers/Tools
 description: LLVM is a set of compiler and toolchain technologies that can be used to develop a frontend for any programming language and a backend for any instruction set architecture
-download_url: https://apt.llvm.org/
+download_url: https://releases.llvm.org/download.html
 works_on_arm: true
 supported_minimum_version:
     version_number: 7.1.0

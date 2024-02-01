@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content: https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/apache-optimization-on-arm
         partner_content: 
-        official_docs: https://github.com/apache/arrow/tree/main/python#readme
+        official_docs: https://arrow.apache.org/install/
     arm_recommended_minimum_version:
         version_number:
         release_date:

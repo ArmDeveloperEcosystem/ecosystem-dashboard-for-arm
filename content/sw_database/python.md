@@ -5,8 +5,8 @@ description: Python is a high-level, interpreted programming language known for 
 download_url: https://www.python.org/downloads/source/
 works_on_arm: true
 supported_minimum_version:
-    version_number: 2.7
-    release_date: 3/7/2010
+    version_number: 2.7.3
+    release_date: 09/04/2012
 
 
 optional_info:
@@ -24,6 +24,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum: https://pythondev.readthedocs.io/platforms.html
     release_notes__recommended_minimum: 
-    other_info: The minimum supported version(2.7) is deprecated.
+    other_info: The minimum supported version(2.7.3) is deprecated.
 
 ---

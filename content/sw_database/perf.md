@@ -2,11 +2,11 @@
 name: perf
 category: Compilers/Tools
 description: Perf can instrument CPU performance counters, tracepoints, kprobes, and uprobes (dynamic tracing).
-download_url: https://packages.debian.org/bullseye/linux-perf
+download_url: http://ftp.am.debian.org/debian/pool/main/l/linux/
 works_on_arm: true
-version:
-    supported_minimum: 4.18
-    supported_minimum_date: 12/08/2018
+supported_minimum_version:
+    version_number: 4.18
+    release_date: 12/08/2018
 
 
 optional_info:

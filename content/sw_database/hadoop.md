@@ -2,7 +2,7 @@
 name: Hadoop
 category: Databases - Big-data
 description: The Apache Hadoop software library is a framework that allows for the distributed processing of large data sets across clusters of computers using simple programming models.
-download_url: https://hadoop.apache.org/
+download_url: https://hadoop.apache.org/releases.html
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.3.0

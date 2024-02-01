@@ -2,7 +2,7 @@
 name: SPDK
 category: Storage
 description: The Storage Performance Development Kit (SPDK) provides a set of tools and libraries for writing high performance, scalable, user-mode storage applications.
-download_url: https://spdk.io/
+download_url: https://github.com/spdk/spdk/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 22.09

@@ -2,7 +2,7 @@
 name: Terraform
 category: DevOps
 description: IaaC
-download_url: https://developer.hashicorp.com/terraform
+download_url: https://developer.hashicorp.com/terraform/install
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.14.0
