@@ -1,7 +1,7 @@
 ---
 name: perf
 category: Compilers/Tools
-description: Perf can instrument CPU performance counters, tracepoints, kprobes, and uprobes (dynamic tracing).
+description: Perf is a performance analyzing tool in linux. It can instrument CPU performance counters, tracepoints, kprobes, and uprobes (dynamic tracing).
 download_url: http://ftp.am.debian.org/debian/pool/main/l/linux/
 works_on_arm: true
 supported_minimum_version:

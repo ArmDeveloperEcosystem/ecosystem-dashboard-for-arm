@@ -1,7 +1,7 @@
 ---
 name: Tensorflow
-category: ML
-description: TensorFlow is an end-to-end open source platform for machine learning.
+category: AI/ML
+description: TensorFlow is an end-to-end open-source platform for machine learning.
 download_url: https://pypi.org/project/tensorflow/2.15.0/#files
 works_on_arm: true
 supported_minimum_version:

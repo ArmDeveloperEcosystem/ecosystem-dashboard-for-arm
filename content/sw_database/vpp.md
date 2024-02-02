@@ -1,7 +1,7 @@
 ---
 name: VPP
 category: Networking
-description: Vector Packet Processor (VPP) is a fast, scalable layer 2-4 multi-platform network stack. It runs in Linux Userspace on multiple architectures including x86, ARM, and Power architectures.
+description: Vector Packet Processor (VPP) is a fast, scalable layer 2-4 multi-platform network stack. It runs in linux userspace on multiple architectures including x86, Arm, and Power architectures.
 download_url: https://github.com/contiv/vpp/releases
 works_on_arm: true
 supported_minimum_version:

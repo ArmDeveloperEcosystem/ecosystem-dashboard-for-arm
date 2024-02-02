@@ -1,7 +1,7 @@
 ---
 name: libx265
 category: Video
-description: The libx265 is an encoder for creating digital video streams in the High Efficiency Video Coding (HEVC/H. 265) video compression format.
+description: libx265 is an encoder for creating digital video streams in the High Efficiency Video Coding (HEVC/H. 265) video compression format.
 download_url: https://bitbucket.org/multicoreware/x265_git/downloads/?tab=tags
 works_on_arm: true
 supported_minimum_version:

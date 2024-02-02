@@ -1,7 +1,7 @@
 --- 
 name: Apache httpd 
 category: Web 
-description: The Apache HTTP Server, colloquially called Apache, is a Web server application notable for playing a key role in the initial growth of the World Wide Web. 
+description: The Apache HTTP Server, commonly called Apache, is a web server application known for playing a key role in the initial growth of the World Wide Web. 
 download_url: https://archive.apache.org/dist/httpd/ 
 works_on_arm: true
 supported_minimum_version: 

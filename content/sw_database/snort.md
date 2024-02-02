@@ -14,7 +14,7 @@ optional_info:
     support_caveats:
     alternative_options: 
     getting_started_resources:
-        arm_content: https://github.com/ArmDeveloperEcosystem/arm-learning-paths/blob/main/content/learning-paths/servers-and-cloud-computing/vectorscan/snort.md
+        arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/vectorscan/snort/
         partner_content:
         official_docs: https://docs.snort.org/start/
     arm_recommended_minimum_version:

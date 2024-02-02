@@ -1,7 +1,7 @@
 ---
 name: Terraform
-category: DevOps
-description: IaaC
+category: CI/CD
+description: Terraform is an infrastructure as code tool. It is used to automate cloud infrastructure.
 download_url: https://developer.hashicorp.com/terraform/install
 works_on_arm: true
 supported_minimum_version:
