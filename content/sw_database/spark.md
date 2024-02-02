@@ -15,7 +15,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/spark/
-        partner_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/spark-on-aws-graviton2-real-time-analysis-using-spark-streaming
+        partner_content: https://aws.amazon.com/blogs/big-data/achieve-up-to-27-better-price-performance-for-spark-workloads-with-aws-graviton2-on-amazon-emr-serverless/
         official_docs: https://spark.apache.org/docs/latest/
     arm_recommended_minimum_version:
         version_number: 

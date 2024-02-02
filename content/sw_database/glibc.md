@@ -2,7 +2,7 @@
 name: glibc
 category: Compilers/Tools
 description: The GNU C Library, provides the core libraries for the GNU system and GNU/Linux systems, as well as many other systems that use Linux as the kernel.
-download_url: https://www.gnu.org/software/libc/
+download_url: https://ftp.gnu.org/gnu/glibc/
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.19

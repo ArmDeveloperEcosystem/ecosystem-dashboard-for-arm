@@ -15,7 +15,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/wordpress/wordpress/
-        partner_content: https://aws.amazon.com/marketplace/pp/prodview-uv2pu45ik4dyw
+        partner_content: https://amperecomputing.com/tutorials/deploy-wordpress-and-mysql
         official_docs: https://developer.wordpress.org/advanced-administration/before-install/howto-install/
     arm_recommended_minimum_version:
         version_number:

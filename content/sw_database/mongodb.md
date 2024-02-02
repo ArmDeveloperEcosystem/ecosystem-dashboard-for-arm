@@ -16,15 +16,15 @@ optional_info:
     getting_started_resources:
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/mongodb/
         partner_content:  https://amperecomputing.com/tuning-guides/mongoDB-tuning-guide
-        official_docs: https://github.com/mongodb/mongo
+        official_docs: https://www.mongodb.com/docs/manual/tutorial/install-mongodb-enterprise-on-ubuntu/
     arm_recommended_minimum_version:
-        version_number: 6.0.0
-        release_date: 19/07/2022
+        version_number: 
+        release_date: 
 
 
 optional_hidden_info:
     release_notes__supported_minimum: https://www.mongodb.com/docs/upcoming/release-notes/3.4/
-    release_notes__recommended_minimum: https://www.mongodb.com/docs/upcoming/release-notes/6.0/
+    release_notes__recommended_minimum: 
     other_info: 
 
 ---

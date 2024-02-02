@@ -5,8 +5,8 @@ description: OpenSSL is a robust, commercial-grade, full-featured Open Source To
 download_url: https://www.openssl.org/source/
 works_on_arm: true
 supported_minimum_version:
-    version_number: 1.0.0l
-    release_date: 10/09/2019
+    version_number: 1.0.2
+    release_date: 22/01/2015
 
 
 optional_info:

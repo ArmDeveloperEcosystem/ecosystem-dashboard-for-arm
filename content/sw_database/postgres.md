@@ -2,11 +2,11 @@
 name: Postgres
 category: Database
 description: PostgreSQL is an advanced, enterprise class open source relational database that supports both SQL (relational) and JSON (non-relational) querying.
-download_url: https://www.postgresql.org/download/
+download_url: https://www.postgresql.org/ftp/source/
 works_on_arm: true
 supported_minimum_version:
-    version_number: 9.2.0
-    release_date: 09/10/2012
+    version_number: 9.6.9
+    release_date: 07/05/2018
 
 
 optional_info:
@@ -25,6 +25,5 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: The first ARMv4-supported version is [7.0](https://www.postgresql.org/docs/release/7.0.0/). From the manual installation, version 9.2.0 is the supported_minimum_version for ARM64.
-
+    other_info: No arm64 specific release notes are present. Installation and testing was done through tar file. Version 10.0 fails to build, whereas version >=11 builds successfully. We can also build the previous versions by using the --disable-spinlock flag(not recommended) while configuring.
 ---

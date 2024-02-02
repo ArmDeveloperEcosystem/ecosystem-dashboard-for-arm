@@ -18,8 +18,8 @@ optional_info:
         partner_content: https://aws.amazon.com/about-aws/whats-new/2021/05/amazon-elasticsearch-service-offers-aws-graviton2-m6g-c6g-r6g-r6gd-instances/
         official_docs: https://www.elastic.co/blog/elasticsearch-on-arm
     arm_recommended_minimum_version:
-        version_number: 8.11.3
-        release_date: 12/12/2023
+        version_number:
+        release_date:
 
 
 optional_hidden_info:

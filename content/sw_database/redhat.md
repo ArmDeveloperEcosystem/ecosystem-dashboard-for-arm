@@ -14,8 +14,8 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content:
-        partner_content:
+        arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/software-innovations-with-red-hat-and-arm
+        partner_content: https://aws.amazon.com/marketplace/pp/prodview-fvgsywc5jqlkw
         official_docs: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/performing_a_standard_rhel_9_installation/assembly_installing-on-amd64-intel-64-and-64-bit-arm_installing-rhel
     arm_recommended_minimum_version:
         version_number: 

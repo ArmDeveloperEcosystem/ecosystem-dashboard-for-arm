@@ -2,7 +2,7 @@
 name: Cassandra
 category: Databases - noSQL
 description: Apache Cassandra is an open-source, distributed NoSQL database designed to handle massive volumes of data on a highly scalable and highly available platform.
-download_url: https://cassandra.apache.org/_/index.html
+download_url: https://cassandra.apache.org/_/download.html
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.0.14

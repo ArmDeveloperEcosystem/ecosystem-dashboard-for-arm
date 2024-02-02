@@ -18,8 +18,8 @@ optional_info:
         partner_content: https://www.alibabacloud.com/blog/arm-container-applications-accelerating-development-and-testing_595802
         official_docs: https://www.docker.com/blog/getting-started-with-docker-for-arm-on-linux/
     arm_recommended_minimum_version:
-        version_number: 23.0
-        release_date: 01/02/2023
+        version_number:
+        release_date:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://docs.docker.com/engine/release-notes/prior-releases/#misc

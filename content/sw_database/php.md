@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content: 
         partner_content: https://aws.amazon.com/blogs/compute/improving-performance-of-php-for-arm64-and-impact-on-amazon-ec2-m6g-instances/
-        official_docs:
+        official_docs: https://docs.newrelic.com/docs/apm/agents/php-agent/installation/php-agent-installation-arm64/
     arm_recommended_minimum_version:
         version_number: 
         release_date: 

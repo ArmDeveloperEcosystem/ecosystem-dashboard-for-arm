@@ -18,13 +18,13 @@ optional_info:
         partner_content: 
         official_docs: https://gcc.gnu.org/onlinedocs/gcc/AArch64-Options.html
     arm_recommended_minimum_version:
-        version_number: 12.3.0
-        release_date: 8/5/2023
+        version_number:
+        release_date:
 
 
 optional_hidden_info:
     release_notes__supported_minimum: https://gcc.gnu.org/gcc-6/changes.html
-    release_notes__recommended_minimum: https://gcc.gnu.org/gcc-12/changes.html
+    release_notes__recommended_minimum:
     other_info: 
 
 ---

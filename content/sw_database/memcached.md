@@ -5,8 +5,8 @@ description: Memcached is a high performance multithreaded event-based key/value
 download_url: https://memcached.org/downloads
 works_on_arm: true
 supported_minimum_version:
-    version_number: 1.4.5
-    release_date: 03/04/2010
+    version_number: 1.5.16
+    release_date: 25/05/2019
 
 
 optional_info:
@@ -18,12 +18,12 @@ optional_info:
         partner_content: https://amperecomputing.com/tuning-guides/memcached-tuning-guide
         official_docs: https://github.com/memcached/memcached/wiki
     arm_recommended_minimum_version:
-        version_number: 1.6.7
-        release_date: 04/09/2020
+        version_number:
+        release_date:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/memcached/memcached/wiki/ReleaseNotes145#fixes
-    release_notes__recommended_minimum: https://github.com/memcached/memcached/pull/691
+    release_notes__recommended_minimum:
     other_info:
 
 ---

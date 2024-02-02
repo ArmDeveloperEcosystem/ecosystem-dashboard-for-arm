@@ -16,14 +16,14 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://documentation.suse.com/sles/12-SP5/
+        official_docs: https://documentation.suse.com/sles/15-SP5/
     arm_recommended_minimum_version:
-        version_number: 12 SP5
-        release_date: 9/12/2019
+        version_number:
+        release_date:
 
 optional_hidden_info:
     release_notes__supported_minimum:  https://www.suse.com/releasenotes/x86_64/SUSE-SLES/12-SP2/index.html
-    release_notes__recommended_minimum: https://www.suse.com/releasenotes/x86_64/SUSE-SLES/12-SP5/index.html#aarch64
+    release_notes__recommended_minimum:
     other_info: 
 
 ---

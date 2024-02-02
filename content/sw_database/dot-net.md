@@ -18,12 +18,12 @@ optional_info:
         partner_content: https://aws.amazon.com/blogs/dotnet/powering-net-8-with-aws-graviton3-benchmarks/
         official_docs: https://learn.microsoft.com/en-us/dotnet/core/install/linux-ubuntu
     arm_recommended_minimum_version:
-        version_number: 7.0
-        release_date: 11/8/2022
+        version_number:
+        release_date:
 
 
 optional_hidden_info:
     release_notes__supported_minimum: https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-5
-    release_notes__recommended_minimum: https://devblogs.microsoft.com/dotnet/arm64-performance-improvements-in-dotnet-7/
+    release_notes__recommended_minimum:
     other_info: 
 ---
