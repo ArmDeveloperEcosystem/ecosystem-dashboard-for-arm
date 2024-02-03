@@ -1,7 +1,7 @@
 ---
 name: RedHat
 category: Distros
-description: Red Hat is the world's leading provider of enterprise open source solutions, including high-performing Linux, cloud, container, and Kubernetes technologies.
+description: Red Hat is the world's leading provider of enterprise open-source solutions, including high-performing linux, cloud, container, and Kubernetes technologies.
 download_url: https://developers.redhat.com/products/rhel/download
 works_on_arm: true
 supported_minimum_version:

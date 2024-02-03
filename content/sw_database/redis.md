@@ -1,7 +1,7 @@
 ---
 name: Redis
 category: Databases - noSQL
-description: Redis is an open source (BSD licensed), in-memory data structure store used as a database, cache, message broker, and streaming engine.
+description: Redis is an open-source, in-memory data structure store used as a database, cache, message broker, and streaming engine.
 download_url: https://redis.io/download/
 works_on_arm: true
 supported_minimum_version:

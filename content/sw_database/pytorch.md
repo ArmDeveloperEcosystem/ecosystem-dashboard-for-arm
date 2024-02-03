@@ -1,6 +1,6 @@
 ---
 name: PyTorch
-category: ML
+category: AI/ML
 description: PyTorch is a Python package that provides two high-level features, first is Tensor computation (like NumPy) with strong GPU acceleration and the second is Deep neural networks built on a tape-based autograd system. 
 download_url: https://pypi.org/project/torch/#files
 works_on_arm: true

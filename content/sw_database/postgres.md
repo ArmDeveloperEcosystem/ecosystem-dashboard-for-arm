@@ -1,7 +1,7 @@
 ---
 name: Postgres
 category: Database
-description: PostgreSQL is an advanced, enterprise class open source relational database that supports both SQL (relational) and JSON (non-relational) querying.
+description: PostgreSQL is an advanced, enterprise class open-source relational database that supports both SQL (relational) and JSON (non-relational) querying.
 download_url: https://www.postgresql.org/ftp/source/
 works_on_arm: true
 supported_minimum_version:

@@ -1,7 +1,7 @@
 ---
 name: libx264
 category: Video
-description: x264 is a free software library and application for encoding video streams into the H.264/MPEG-4 AVC compression format.
+description: libx264 is a free software library and application for encoding video streams into the H.264/MPEG-4 AVC compression format.
 download_url: https://artifacts.videolan.org/x264/
 works_on_arm: true
 supported_minimum_version:

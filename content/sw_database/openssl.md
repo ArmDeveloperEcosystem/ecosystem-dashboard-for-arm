@@ -1,7 +1,7 @@
 ---
 name: OpenSSL
 category: Crypto
-description: OpenSSL is a robust, commercial-grade, full-featured Open Source Toolkit for the TLS (formerly SSL), DTLS and QUIC (currently client side only) protocols.
+description: OpenSSL is a robust, full-featured open-source toolkit for TLS (formerly SSL), DTLS and QUIC (currently client side only) protocols.
 download_url: https://www.openssl.org/source/
 works_on_arm: true
 supported_minimum_version:

@@ -1,7 +1,7 @@
 ---
 name: Envoy
 category: Orchestration
-description: Service Proxy.
+description: Envoy is an open-source, high-performance proxy service. It is designed to be a scalable, flexible, and low-latency service proxy, particularly well-suited for microservice architectures and containerized applications.
 download_url: https://github.com/envoyproxy/envoy/releases
 works_on_arm: true
 supported_minimum_version:
@@ -14,7 +14,7 @@ optional_info:
     support_caveats: Istio support for aarch64 was added in [v1.15](https://istio.io/latest/news/releases/1.15.x/announcing-1.15/change-notes/) (Aug-31-2022). Istio and Envoy are often used together.
     alternative_options:
     getting_started_resources:
-        arm_content: https://github.com/ArmDeveloperEcosystem/arm-learning-paths/tree/main/content/learning-paths/servers-and-cloud-computing/envoy
+        arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/envoy/
         partner_content:
         official_docs: https://www.envoyproxy.io/docs/envoy/latest/start/install#install-envoy-on-ubuntu
     arm_recommended_minimum_version:
