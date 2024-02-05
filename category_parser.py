@@ -13,11 +13,17 @@ for content_file in os.listdir(content_dir):
         # OBTAIN CATEGORY FROM FILE
         cat = None
         with open(os.path.join(content_dir, content_file), 'r') as f:
-            content_all = f.read()
-            start = content_all.find('---')
-            end = content_all.find('---', start + 3)
-            content_metadata = content_all[start+3:end].strip()
-            cat = yaml.safe_load(content_metadata).get('category')
+            for line in f:
+                if 'category:' in line:
+                    print(line.replace('category:','').strip())
+                    cat = line.replace('category:','').strip()
+                    break
+            
+            #content_all = f.read()
+            #start = content_all.find('---')
+            #end = content_all.find('---', start + 3)
+            #content_metadata = content_all[start+3:end].strip()
+            #cat = yaml.safe_load(content_metadata).get('category')
         # ADD TO ACTIVE_CATS LIST IF NOT ALREADY PRESENT
         if cat in all_cats:
             if cat not in active_cats:
