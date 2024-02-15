@@ -2,11 +2,11 @@
 name: Magento
 category: E-commerce platforms
 description: Magento is a powerful open source e-commerce platform.
-download_url:
-works_on_arm: false
+download_url: https://github.com/magento/magento2/releases
+works_on_arm: true
 supported_minimum_version:
-    version_number:
-    release_date:
+    version_number: 2.4.4
+    release_date: 12/04/2022
 
 
 optional_info:
@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://github.com/magento/magento2
+        official_docs: https://experienceleague.adobe.com/docs/commerce-operations/installation-guide/composer.html
     arm_recommended_minimum_version:
         version_number:
         release_date:
@@ -25,6 +25,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: The project does not support installation and testing on the Linux/ARM64 platform. Refer- https://experienceleague.adobe.com/docs/commerce-operations/installation-guide/system-requirements.html?lang=en. Also, The Project has 2 source, Magento Open Source and Adobe Commerce. Magento Open Source software delivers basic eCommerce capabilities and Adobe Commerce have full-featured eCommerce solution.
+    other_info: All versions before 2.4.4 are now deprecated.
 
 ---
