@@ -26,7 +26,9 @@ def get_all_package_metadata(package_path):
         content = f.read()
         # Get the metadata between '---' by splitting the content by '---' and grabbing the middle part
         metadata = content.split('---')[1]
-        return yaml.safe_load(metadata)
+        metadata_dic = yaml.safe_load(metadata)
+        metadata_mirror_hugo_page = {"Params": metadata_dic}
+        return metadata_mirror_hugo_page
 
 
 
@@ -78,7 +80,7 @@ for content in recent_content:
 print()
 print('Adding these packages in order to data/recently_added_packages.yaml:')
 for c in recent_content_with_all_metadata:
-    print('   '+c['name'])
+    print(c)
 print()
 
 # Write to YAML
