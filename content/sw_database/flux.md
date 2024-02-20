@@ -25,5 +25,5 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/fluxcd/flux2/releases/tag/v0.0.21
     release_notes__recommended_minimum:
-    other_info: 
+    other_info:
 ---
