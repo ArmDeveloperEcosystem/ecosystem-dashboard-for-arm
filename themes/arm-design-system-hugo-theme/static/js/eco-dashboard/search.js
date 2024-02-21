@@ -1,3 +1,23 @@
+function setToBrowse() {
+    /*
+        1) Hide dashboard information
+        2) Show all package table
+      
+    */
+   console.log('in browse function');
+    // Hide dashboard information
+    document.getElementById('initial-dashboard-display').classList.add('hidden');
+
+    // Show all package table
+    document.getElementById('all-packages-div').classList.remove('hidden');
+
+    // Update shown number of packages
+    updateShownNumber();
+}
+
+
+
+
 function sanitizeInput(potentially_unsafe_str) {
     // Sanitize the input by only allowing the following characters through, replacing all others with nothing:
         // a-z
@@ -313,6 +333,8 @@ function searchHandler(search_string) {
         search_string = search_string.value;
     }
 
+    // Set page state to Browse, if not already
+    setToBrowse();
     
     
     // Sanitize the input
@@ -339,6 +361,10 @@ function filterHandler(element) {
     */
         const all_path_cards = document.querySelectorAll('.search-div');
        
+
+        // Set page state to Browse, if not already
+        setToBrowse();
+
 
     
         // get status of checkbox (true for checked, false for unchecked)
