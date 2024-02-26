@@ -1,18 +1,21 @@
 function setToBrowse() {
-    /*
-        1) Hide dashboard information
-        2) Show all package table
-      
-    */
-   console.log('in browse function');
+    var main_table_div = document.getElementById('all-packages-div');
+
+    // quickly return if browse already activated
+    if (main_table_div.getAttribute('browse'))
+        { return }
+   
     // Hide dashboard information
     document.getElementById('initial-dashboard-display').classList.add('hidden');
 
     // Show all package table
-    document.getElementById('all-packages-div').classList.remove('hidden');
+    main_table_div.classList.remove('hidden');
 
     // Update shown number of packages
     updateShownNumber();
+
+    // Set browse 'True' attribute to 
+    main_table_div.setAttribute('browse',true);
 }
 
 
@@ -106,65 +109,66 @@ function filter_card(card) {
     const active_tags = document.getElementsByClassName('filter-facet');
     if (active_tags.length==0) { return false }        // Return already if no tags...no filtering neccecary 
 
-    // create dictionary, grouping together tags by group
-    // gropued_active_tags = {'group-subjects': [tag1,tag2], 'group-skill-level': [tag3]}
-    // group_status        = {'group-subjects': true, 'group-skill-level': true}
-    let grouped_active_tags = {};
-    let group_status = {};
-
     for (let tag of active_tags) {
-        let all_tag_classes = tag.classList;
-        for (let c of all_tag_classes) {
-            if (c.includes('group-')) {
-                let group_name = c;
-                if (group_name in grouped_active_tags) {
-                    // add tag to existing dict list
-                    grouped_active_tags[group_name].push(tag);
-                }
-                else {
-                    // create new dict list (and initalize group_status)
-                    grouped_active_tags[group_name] = [tag];
-                    group_status[group_name] = true;
-                }
-            }
+        let filter_facet_html = tag.textContent.trim();
+        // Category: AI/ML -->  tag-category-ai-ml  let pass all cards that have 'tag-category-ai-ml' as part of className.
+        // License: All    -->  tag-license         let pass all cards that have 'tag-license-' as part of className.
+        let filter_facet_sanitized = filter_facet_html.replace('/','__').toLowerCase()      // license: open source         category: ai__ml
+        let filter_facet_organized = filter_facet_sanitized.replace(': ','-');              // license-open source          category-ai__ml
+        //let active_tag_name = 'tag-'+filter_facet_organized.replaceAll(' ','-');               // tag-license-open-source      tag-category-ai__ml
+        
+        // Very complex regex expression to simply always replace ' ' with dashes, EXCEPT when preceeding or following dashes (such as in a category like 'Databases - big-data'
+        let active_tag_name = 'tag-' + filter_facet_organized.replace(/(\s+)(?=-)|(?<=-)(\s+)/g, '').replaceAll(/\s/g, '-');
+
+        if ((active_tag_name.endsWith('-all')) || (card.classList.contains(active_tag_name))) {
+            // Card is not proven to be hidden; continue through the other filter groups.
+            continue
+        }
+        else {
+            // Card should be hidden, so just return true now.
+            return true 
         }
     }
-    for (let group_name in grouped_active_tags) {
-        // iterate over tags in this group
-        for (let tag of grouped_active_tags[group_name]){
-            // If card's classList contains any tag in this group (OR behavior), then don't hide
-            let active_tag_name   = tag.id.replace('filter-',''); // tag.id = filter-tag-databases   strip off 'filter-'
-            if (card.classList.contains(active_tag_name)) {
-                // Don't hide, it matches a tag in this category (and we can break as we already know we're set in this group)
-                group_status[group_name] = false;
-                break
-            }
-        }
-      }
-    
-    // If there are any trues, that means that this path should be hidden. If all falses, then it should be shown (to_hide = false)
-    if(!Object.values(group_status).includes(true)){ to_hide = false; }
+        // If Card was never proven to be hidden through all filter groups, then it is shown. Return to_hide = False
+        return false
 
-    /* OLD implementation of ANDS only
-    for (tag of active_tags) {
-        let active_tag_name   = tag.id.replace('filter-',''); // tag.id = filter-tag-databases   strip off 'filter-'
-        if (card.classList.contains(active_tag_name)) {
-            // DO NOT hide this card as it matches an active tag!
-            to_hide = false;
-        }        
-        else { // If here, this tag isn't in the card's classlist (not a match)
-            // If the same group is present, OR behavior applies, so don't hide it.
-                // CARD:   tag-ci-cd   tag-web        tag-linux
-                // TAG:    tag-ci-cd   group-subjects
-            
-            //Return true, meaning hide it
-            return true
-        }
-    }
-    */
-
-    return to_hide
 }
+
+
+
+function updateFacet(filter_group, item_name) {
+    const all_path_cards = document.querySelectorAll('.search-div');
+    
+
+    // Replace the filter group's tag with the currently selected item name
+                                                                                // license
+    var filter_facet = document.getElementById('filter-facet-display-name-group-'+filter_group.toLowerCase());
+    filter_facet.textContent = filter_group+": "+item_name;
+
+    let ads_filter_component = filter_facet.closest('ads-tag');
+    // Update tag's class
+    if ((item_name == "All") || (item_name == "all")) {
+        console.log(item_name,'in removing')
+        ads_filter_component.classList.remove('not-all')
+    }
+    else {
+        console.log(item_name,'in adding')
+        ads_filter_component.classList.add('not-all')
+    }
+
+    // Apply search and filters to current parameters
+            // deal with ads search promise
+    document.getElementById('search-box').value().then((value) => { 
+        let results_to_hide = applySearchAndFilters(all_path_cards, value); // apply active search & filter terms to the specified divs
+        hideElements(all_path_cards,results_to_hide);
+        updateShownNumber();                  // Update UI telling how many are displayed
+    });
+}
+
+
+
+
+
 function removeFacet(tag) {
     const all_path_cards = document.querySelectorAll('.search-div');
      //////// Remove Facet
@@ -257,6 +261,7 @@ function addFacet(element) {
         });
 }
 
+
 function clearAllFilters() {
     // call removeFacet on each tag
     let active_facets = document.querySelectorAll('ads-tag.filter-facet');
@@ -326,7 +331,6 @@ function applySearchAndFilters(all_path_cards, search_string) {
 
 
 
-
 function searchHandler(search_string) {
     // HANDLE if coming from ads search box (event.value) or URL (string)
     if (! (typeof search_string === 'string')) {
@@ -359,36 +363,52 @@ function filterHandler(element) {
                 Update facets to appear
                 Apply only updated filter to search results (show what isn't that matches & vice versa)
     */
-        const all_path_cards = document.querySelectorAll('.search-div');
-       
-
-        // Set page state to Browse, if not already
-        setToBrowse();
-
-
+    const all_path_cards = document.querySelectorAll('.search-div');
     
-        // get status of checkbox (true for checked, false for unchecked)
-        element.value().then((value) => {
-            if (value === true) {
-                // add 'checked' value to html
-               addFacet(element,all_path_cards);
-            }
-            else {
-                //?????????????????????????????????????????????????????????????????????????
-                // This is being called when there is no facet. Strange behaivor with checkbox value being set strangely
-                // ADS team to fix this problem.
-                let tag = null;
-                const tags = element.classList.values();
-                for (let t of tags) {
-                    if (t.includes('tag')) {
-                        tag = t;
-                        break;
-                    }
-                };
-               removeFacet(tag);
-            }
-        });
+    // Set page state to Browse, if not already
+    setToBrowse();
+
+    // get status of checkbox (true for checked, false for unchecked)
+    element.value().then((value) => {
+        if (value === true) {
+            // add 'checked' value to html
+            addFacet(element,all_path_cards);
+        }
+        else {
+            //?????????????????????????????????????????????????????????????????????????
+            // This is being called when there is no facet. Strange behaivor with checkbox value being set strangely
+            // ADS team to fix this problem.
+            let tag = null;
+            const tags = element.classList.values();
+            for (let t of tags) {
+                if (t.includes('tag')) {
+                    tag = t;
+                    break;
+                }
+            };
+            removeFacet(tag);
+        }
+    });
 }
+
+
+function filterHandler_radio(element) {
+    /*      Called from 'input' components themselves, triggered from a user press on radio
+                Add Facet for correct one
+                Remove all other facets
+    */
+    const all_path_cards = document.querySelectorAll('div.search-div');
+    
+    // Set page state to Browse, if not already
+    setToBrowse();
+
+    // Update the facet
+    var item_name  = element.getAttribute('data-display-name');
+    var group_name  = element.getAttribute('data-group-display-name');
+    updateFacet(group_name,item_name);
+
+}
+
 
 
 
