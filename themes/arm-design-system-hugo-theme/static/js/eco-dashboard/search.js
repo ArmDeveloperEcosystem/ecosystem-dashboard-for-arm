@@ -1,4 +1,8 @@
+
+
+/* Used to replace the default loaded screen (just a few most recent packages displayed) with the larger packages table. */
 function setToBrowse() {
+
     var main_table_div = document.getElementById('all-packages-div');
 
     // quickly return if browse already activated
@@ -18,9 +22,7 @@ function setToBrowse() {
     main_table_div.setAttribute('browse',true);
 }
 
-
-
-
+/* Sanatizes html browser (and a few other) inputs to avoid injection and html errors */
 function sanitizeInput(potentially_unsafe_str) {
     // Sanitize the input by only allowing the following characters through, replacing all others with nothing:
         // a-z
@@ -33,21 +35,29 @@ function sanitizeInput(potentially_unsafe_str) {
     return sanitized_str
 }
 
-function parseParamsFromURL(url_str) {
+
+function URLsearchAndfiltering(url_str) {
     // Prep params using built in JS functions
     const params = new URLSearchParams(url_str);
 
-    // obtain search string and pin list.
+    // get Search string
     const search_string = sanitizeInput(params.get('search') || '');
-    const pin_list = params.get('pin') ? params.get('pin').split(',') : [];
 
-    return { search_string, pin_list };
+    // get filters to activate
+        // TO DO
+    
+    // Activate searching & filtering.
+        // Call search handler to execute search
+        if (search_string) {
+            search_box.setAttribute('search-value',search_string);
+            searchHandler(search_string);
+        }
+        // TO DO ADD FILTER HANDELER!
 
 }
 
-
+/* Hides (and shows) table elements by modifying the row's hidden attribute */
 function hideElements(all_path_cards,results_to_hide) {
-
     // Hide elements in array (and actively show all OTHER elements)
     for (let card of all_path_cards) {
         if (results_to_hide.includes(card)) { 
@@ -69,7 +79,7 @@ function hideElements(all_path_cards,results_to_hide) {
     }
 }
 
-
+/* Updates the UI to indicate the correct # of packages currently displayed */
 function updateShownNumber() {
 
     // Update UI telling how many are displayed
@@ -83,6 +93,7 @@ function updateShownNumber() {
     document.getElementById('currently-shown-number').innerHTML = parseInt(total_num) - paths_hidden;
 }
 
+/* Only for pins....could delete */
 function searchKeepPinnedrow(card) {
     // if card is pinned, return false to show it. Else, return true to hide it.
 
@@ -97,11 +108,7 @@ function searchKeepPinnedrow(card) {
 }
 
 
-
-
-
-
-
+/* Logic to determine if a row should be hidden based on active filters */
 function filter_card(card) {
     let to_hide = true;             // set as true by default; change to false if conditions apply
 
@@ -135,7 +142,7 @@ function filter_card(card) {
 }
 
 
-
+/* Updates UI to display the active filters via the ADS-tags, aka 'facets', under the search bar.  */
 function updateFacet(filter_group, item_name) {
     const all_path_cards = document.querySelectorAll('.search-div');
     
@@ -166,9 +173,7 @@ function updateFacet(filter_group, item_name) {
 }
 
 
-
-
-
+/* Not used anymore, constant facets.....could remove */
 function removeFacet(tag) {
     const all_path_cards = document.querySelectorAll('.search-div');
      //////// Remove Facet
@@ -205,6 +210,8 @@ function removeFacet(tag) {
         );
 
 }
+
+/* Not used anymore, constant facets.....could remove */
 function addFacet(element) {
     const all_path_cards = document.querySelectorAll('.search-div');
 
@@ -261,7 +268,7 @@ function addFacet(element) {
         });
 }
 
-
+/* Not used anymore, constant facets.....could remove */
 function clearAllFilters() {
     // call removeFacet on each tag
     let active_facets = document.querySelectorAll('ads-tag.filter-facet');
@@ -272,16 +279,7 @@ function clearAllFilters() {
 }
 
 
-
-
-
-
-
-
-
-
-
-
+/* Search logic */
 function searchByTitle(card,search_word_array) {   
     // Title of learning path --> title must include ALL search terms (any order or case)
     let card_title = card.querySelector('.search-title').innerHTML.toLowerCase();
@@ -294,7 +292,7 @@ function searchByTitle(card,search_word_array) {
     }
 }
 
-
+/* Calls both search & filter logic, and returns all rows that should be hidden as list */
 function applySearchAndFilters(all_path_cards, search_string) {    
     // Skip search bits if no search string
     let skip_search = false;
@@ -330,7 +328,7 @@ function applySearchAndFilters(all_path_cards, search_string) {
 }
 
 
-
+/* Called from search bar. Sanatizes input, applies logic, hides rows, updates UI */
 function searchHandler(search_string) {
     // HANDLE if coming from ads search box (event.value) or URL (string)
     if (! (typeof search_string === 'string')) {
@@ -357,7 +355,7 @@ function searchHandler(search_string) {
 }
 
 
-
+/* Not called anymore......could remove */
 function filterHandler(element) {
     /*      Called from ads-checkbox components themselves, triggered from a user press on checkbox        
                 Update facets to appear
@@ -391,7 +389,7 @@ function filterHandler(element) {
     });
 }
 
-
+/* Called from radio filters. Updates facets, which then applies logic, hides rows, updates UI  */
 function filterHandler_radio(element) {
     /*      Called from 'input' components themselves, triggered from a user press on radio
                 Add Facet for correct one
@@ -411,33 +409,58 @@ function filterHandler_radio(element) {
 
 
 
+function ifNeededMoveFiltersToMobileOrDesktop(state_is_below_breakpoint) {
+    let just_moved_below_breakpoint = window.innerWidth < 768;
+    let filters_to_move = document.getElementById('filters-movable');
+    const filter_destination = just_moved_below_breakpoint ? document.getElementById('mobile-filters') : document.getElementById('desktop-filters');
 
+    // If breakpoint crossed, move filters to their correct location
+    if (just_moved_below_breakpoint !== state_is_below_breakpoint) {
+        filter_destination.appendChild(filters_to_move);
+        return just_moved_below_breakpoint;
+    }
+    return state_is_below_breakpoint; // return true/false state to check if breakpoint crossed in future
+}
+
+
+
+/* Does three things at DOMContentLoad:
+        1. Assigns inputChangeHandler to searchbox
+        2. Moves filters to/from desktop/mobile
+        3. Activates URL search/filters
+*/
 document.addEventListener("DOMContentLoaded", function () {
-    
+
+    // 1
     // Assign inputChangeHandler to search box
     const search_box = document.getElementById('search-box');
     search_box.inputChangeHandler = searchHandler;    
 
+    // 2
+    // Move filters to match users current viewport size (desktop or mobile)     
+    let state_is_below_breakpoint = window.innerWidth < 768;
+    state_is_below_breakpoint = ifNeededMoveFiltersToMobileOrDesktop(state_is_below_breakpoint); // Check at page load if they should be moved to mobile (default in desktop)
+    
+    // Listen for window resizes and move the filters if breakpoint is crossed
+    let t_out;
+    window.addEventListener('resize', function() {
+        clearTimeout(t_out);
+        t_out = setTimeout(function() {
+            state_is_below_breakpoint = ifNeededMoveFiltersToMobileOrDesktop(state_is_below_breakpoint); // update current breakpoint value
+        }, 200);
+    });
 
+
+    // 3
     // Handle search term from URL
-        /* Support 3 situations; search, pinning, and both:
+        /* Support 3 situations; search, filtering, and both:
             page.html?search=mySearchTerm
-            page.html?pin=row1,row2,row3
-            page.html?search=mySearchTerm&pin=row1,row2,row3
+            page.html?filter=row1,row2,row3  // TO DO like learning paths
+            page.html?search=mySearchTerm&pin=row1,row2,row3 // TO DO like learning paths
         */
     let url_str = window.location.search;
-    if (url_str.includes('?')) {
-        let {search_string, pin_list} = parseParamsFromURL(url_str);
+    if (url_str.includes('?')) {    URLsearchAndfiltering(url_str);    }
 
-        // Call url pin handler to execute pinning (should be before search)
-        if (pin_list) {
-            pinTheseRows(pin_list);
-        }
 
-        // Call search handler to execute search
-        if (search_string) {
-            search_box.setAttribute('search-value',search_string);
-            searchHandler(search_string);
-        }
-    }
+
 });
