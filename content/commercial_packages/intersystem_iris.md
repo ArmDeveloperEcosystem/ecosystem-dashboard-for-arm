@@ -14,12 +14,11 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: 
-        partner_content: https://community.intersystems.com/post/intersystems-iris-now-available-aws-graviton2-based-amazon-ec2-instances
+        vendor_announcement: https://community.intersystems.com/post/intersystems-iris-now-available-aws-graviton2-based-amazon-ec2-instances
         official_docs: https://irisdocs.intersystems.com/irislatest/csp/docbook/DocBook.UI.Page.cls?KEY=ISP_technologies
 
 
 optional_hidden_info:
-    release_notes__arm_supported: https://community.intersystems.com/post/intersystems-iris-now-available-aws-graviton2-based-amazon-ec2-instances
     other_info: 
 
 ---

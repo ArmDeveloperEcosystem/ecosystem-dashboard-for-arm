@@ -80,7 +80,10 @@ for content in recent_content:
 print()
 print('Adding these packages in order to data/recently_added_packages.yaml:')
 for c in recent_content_with_all_metadata:
-    print(c)
+    if 'release_date_on_arm' in c['Params'].keys():
+        print("    ", "{:<30} {:<10}".format(c['Params']['name'], c['Params']['release_date_on_arm']))
+    else:
+        print("    ", "{:<30} {:<10}".format(c['Params']['name'], c['Params']['supported_minimum_version']['release_date']))
 print()
 
 # Write to YAML
