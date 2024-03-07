@@ -53,7 +53,7 @@ if __name__ == "__main__":
     script_dir = Path(__file__).parent.absolute()
 
     # Relative path to content from script, then tet absolute path to content by combining, and use Resolve to handle backwards".."
-    input_yaml_relative_path = Path('../data/categories.yml')
+    input_yaml_relative_path = Path('../package_category_list.yml')
     input_yaml_absolute_path = (script_dir / input_yaml_relative_path).resolve()
 
     # Same process for the output YAML data file:
