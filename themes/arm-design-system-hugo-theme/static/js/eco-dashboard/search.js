@@ -120,9 +120,8 @@ function filter_card(card) {
         let filter_facet_html = tag.textContent.trim();
         // Category: AI/ML -->  tag-category-ai-ml  let pass all cards that have 'tag-category-ai-ml' as part of className.
         // License: All    -->  tag-license         let pass all cards that have 'tag-license-' as part of className.
-        let filter_facet_sanitized = filter_facet_html.replace('/','__').toLowerCase()      // license: open source         category: ai__ml
-        let filter_facet_organized = filter_facet_sanitized.replace(': ','-');              // license-open source          category-ai__ml
-        //let active_tag_name = 'tag-'+filter_facet_organized.replaceAll(' ','-');               // tag-license-open-source      tag-category-ai__ml
+        let filter_facet_sanitized = filter_facet_html.replaceAll('/','__').replaceAll('&','and').toLowerCase()   // license: open source         category: ai__ml    
+        let filter_facet_organized = filter_facet_sanitized.replace(': ','-');                              // license-open source          category-ai__ml
         
         // Very complex regex expression to simply always replace ' ' with dashes, EXCEPT when preceeding or following dashes (such as in a category like 'Databases - big-data'
         let active_tag_name = 'tag-' + filter_facet_organized.replace(/(\s+)(?=-)|(?<=-)(\s+)/g, '').replaceAll(/\s/g, '-');
@@ -141,6 +140,22 @@ function filter_card(card) {
 
 }
 
+/* Shows/hides the 'clear filters' text when needed */
+function updateClearFilterOption() {
+
+    // If any filters contain 'not-all' in their classList, display this. Else, hide it.
+    let all_filter_facets = document.getElementsByClassName('filter-facet');
+    for (let facet of all_filter_facets) {
+        if (facet.classList.contains('not-all')) {
+            // There is an active filter in at least one filter group; thus, show clear all text
+            document.getElementById('tag-clear-btn').hidden = false;
+            return
+        }
+    }
+
+    // No active filters; hide clear all text
+    document.getElementById('tag-clear-btn').hidden = true;
+}
 
 /* Updates UI to display the active filters via the ADS-tags, aka 'facets', under the search bar.  */
 function updateFacet(filter_group, item_name) {
@@ -155,13 +170,13 @@ function updateFacet(filter_group, item_name) {
     let ads_filter_component = filter_facet.closest('ads-tag');
     // Update tag's class
     if ((item_name == "All") || (item_name == "all")) {
-        console.log(item_name,'in removing')
         ads_filter_component.classList.remove('not-all')
     }
     else {
-        console.log(item_name,'in adding')
         ads_filter_component.classList.add('not-all')
     }
+    // Show/hide the clear filter option now
+    updateClearFilterOption()
 
     // Apply search and filters to current parameters
             // deal with ads search promise
@@ -268,13 +283,23 @@ function addFacet(element) {
         });
 }
 
-/* Not used anymore, constant facets.....could remove */
+/* Hard-coded clearing of license and category filters */
 function clearAllFilters() {
-    // call removeFacet on each tag
-    let active_facets = document.querySelectorAll('ads-tag.filter-facet');
-    for (let facet of active_facets) {
-        let tag  = facet.id.replace('filter-',''); // tag.id = filter-tag-databases   strip off 'filter-'
-        removeFacet(tag);
+    // Reset Facets to 'All'
+    updateFacet('License','All');
+    updateFacet('Category','All');
+
+    // Reset ADS-checkboxes to select 'All'
+    let checkable_inputs = document.querySelectorAll('input.checkable-input');
+    console.log(checkable_inputs)
+    for (let input of checkable_inputs) {
+        // if has class 'tag-all' should be checked. else, uncheck.
+        if (input.classList.contains('tag-all')) {
+            input.checked = true;
+        }
+        else {
+            input.checked = false;
+        }
     }
 }
 
@@ -427,7 +452,8 @@ function ifNeededMoveFiltersToMobileOrDesktop(state_is_below_breakpoint) {
 /* Does three things at DOMContentLoad:
         1. Assigns inputChangeHandler to searchbox
         2. Moves filters to/from desktop/mobile
-        3. Activates URL search/filters
+        3. Sets default checked filters to 'all'
+        4. Activates URL search/filters
 */
 document.addEventListener("DOMContentLoaded", function () {
 
@@ -450,8 +476,20 @@ document.addEventListener("DOMContentLoaded", function () {
         }, 200);
     });
 
-
     // 3
+    // Set all radio buttons to 'All' on page load
+    let checkable_inputs = document.querySelectorAll('input.checkable-input');
+    for (let input of checkable_inputs) {
+        // if has class 'tag-all' should be checked. else, uncheck.
+        if (input.classList.contains('tag-all')) {
+            input.checked = true;
+        }
+        else {
+            input.checked = false;
+        }
+    }
+
+    // 4
     // Handle search term from URL
         /* Support 3 situations; search, filtering, and both:
             page.html?search=mySearchTerm
