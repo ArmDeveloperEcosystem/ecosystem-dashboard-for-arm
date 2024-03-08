@@ -33,9 +33,29 @@ def group_list_simple(data):
     for category_entry in data.get('category_list', []):
         group_name = category_entry.get('group')
         group_list.append(group_name)
-    
-    group_dict = {"groups": group_list}
+
+    # order alphabetically, but keep Miscallaneous at the end!    
+    sorted_group_list = sorted([group for group in group_list if group != '_Miscellaneous']) + ['_Miscellaneous' if '_Miscellaneous' in group_list else '']
+    group_dict = {"groups": sorted_group_list}
     return group_dict
+
+
+def group_description_list_simple(data):
+    """
+    Creates a dictionary simply listing out the main groups.
+    """
+    group_list = []
+    for category_entry in data.get('category_list', []):
+        group_name = category_entry.get('group')
+        group_desc = category_entry.get('description')
+        group_list.append({"name": group_name, "description":group_desc})
+
+    
+    # Sorting list of dictionaries by the 'name' key
+    sorted_group_list = sorted(group_list, key=lambda x: x['name'])   
+    group_dict = {"groups_and_descriptions": sorted_group_list}
+    return group_dict
+
 
 def write_mapping_to_yaml(mapping, output_file):
     """
@@ -65,9 +85,10 @@ if __name__ == "__main__":
     
     subcategory_mapping_dict = subcategory_to_group_mapping(category_raw_data)
     group_dict = group_list_simple(category_raw_data)
+    group_desc_dict = group_description_list_simple(category_raw_data)
 
     # Merge the dictionaries
-    final_category_dict = {**subcategory_mapping_dict, **group_dict}
+    final_category_dict = {**subcategory_mapping_dict, **group_dict, **group_desc_dict}
 
     write_mapping_to_yaml(final_category_dict, output_yaml_absolute_path)
     print("   Category mapping success. Updated file: ", output_yaml_absolute_path)

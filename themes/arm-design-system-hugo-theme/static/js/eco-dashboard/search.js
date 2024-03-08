@@ -301,6 +301,10 @@ function clearAllFilters() {
             input.checked = false;
         }
     }
+
+    // Update category description to all
+    let paragraph_dom = document.getElementById('category-description');
+    paragraph_dom.innerText = "Filter by category and view the category description here.";
 }
 
 
