@@ -1,6 +1,6 @@
 ---
 name: Fluentd
-category: Logging
+category: Monitoring/Observability
 description: Fluentd collects events from various data sources and writes them to files, RDBMS, NoSQL, IaaS, SaaS, Hadoop and so on. Fluentd helps to unify the logging infrastructure.
 download_url: https://github.com/fluent/fluentd/releases
 works_on_arm: true

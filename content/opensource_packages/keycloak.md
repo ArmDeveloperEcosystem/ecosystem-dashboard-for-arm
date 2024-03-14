@@ -1,6 +1,6 @@
 ---
 name: Keycloak
-category: Security & Compliance
+category: Security applications
 description: Keycloak is an open-source identity and access management solution for modern applications and services, built on top of industry security standard protocols.
 download_url: https://github.com/keycloak/keycloak/releases/
 works_on_arm: true

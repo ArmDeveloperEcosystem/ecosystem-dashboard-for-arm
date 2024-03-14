@@ -1,6 +1,6 @@
 ---
 name: Volcano
-category: Scheduling & Orchestration
+category: Containers and Orchestration
 description: Volcano is a Cloud Native Batch System. It provides a suite of mechanisms that are commonly required by many classes of batch & elastic workload including machine learning/deep learning, bioinformatics/genomics and other "big data" applications.
 download_url: https://hub.docker.com/u/volcanosh
 works_on_arm: true

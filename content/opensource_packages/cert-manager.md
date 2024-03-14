@@ -1,6 +1,6 @@
 ---
 name: Cert-manager
-category: Security & Compliance
+category: Security applications
 description: Cert-manager adds certificates and certificate issuers as resource types in Kubernetes clusters, and simplifies the process of obtaining, renewing and using those certificates.
 download_url: https://github.com/cert-manager/cert-manager/releases
 works_on_arm: true

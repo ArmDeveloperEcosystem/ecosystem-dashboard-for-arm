@@ -1,6 +1,6 @@
 ---
 name: Keptn
-category: Continuous Integration & Delivery
+category: DevOps
 description: Keptn is an event-based control plane for continuous delivery and automated operations for cloud-native applications.
 download_url: https://github.com/keptn/keptn/releases
 works_on_arm: true

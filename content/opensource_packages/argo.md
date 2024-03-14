@@ -1,6 +1,6 @@
 ---
 name: Argo
-category: Continuous Integration & Delivery
+category: DevOps
 description: Open source tools for Kubernetes to run workflows, manage clusters, and do GitOps right.
 download_url: https://github.com/argoproj/argo-cd/releases
 works_on_arm: true

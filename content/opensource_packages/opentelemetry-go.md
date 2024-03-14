@@ -1,6 +1,6 @@
 ---
 name: opentelemetry-go
-category: Tracing
+category: Monitoring/Observability
 description: Go API and SDK for observability framework & toolkit designed to create, manage telemetry data such as traces, metrics, and log.
 download_url: https://github.com/open-telemetry/opentelemetry-go/releases
 works_on_arm: true

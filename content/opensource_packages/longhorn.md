@@ -1,6 +1,6 @@
 ---
 name: Longhorn
-category: Cloud Native Storage
+category: Storage
 description: Longhorn is a distributed block storage system for Kubernetes. Longhorn is cloud-native storage built using Kubernetes and container primitives.
 download_url: https://github.com/longhorn/longhorn/releases
 works_on_arm: true
