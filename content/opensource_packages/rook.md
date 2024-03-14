@@ -1,6 +1,6 @@
 ---
 name: Rook
-category: Cloud Native Storage
+category: Containers and Orchestration
 description: Rook is an open source cloud-native storage orchestrator, providing the platform and framework.
 download_url: https://github.com/rook/rook/releases
 works_on_arm: true

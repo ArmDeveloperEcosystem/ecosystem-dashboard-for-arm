@@ -1,6 +1,6 @@
 ---
 name: Dapr
-category: Framework
+category: Languages and Frameworks
 description: Dapr is a portable, event-driven, runtime for building distributed applications across cloud and edge.
 download_url: https://github.com/dapr/dapr/releases
 works_on_arm: true

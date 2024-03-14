@@ -1,6 +1,6 @@
 ---
 name: Containerd
-category: Container Runtime
+category: Runtimes
 description: Containerd is an industry-standard container runtime with an emphasis on simplicity, robustness, and portability.
 download_url: https://containerd.io/downloads/
 works_on_arm: true

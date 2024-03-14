@@ -1,6 +1,6 @@
 ---
 name: The Update Framework (TUF)
-category: Security & Compliance
+category: Security applications
 description: TUF provides a flexible framework and specification that developers can adopt into any software update system.
 download_url: https://github.com/theupdateframework/python-tuf/releases
 works_on_arm: true
