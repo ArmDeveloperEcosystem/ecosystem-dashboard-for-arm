@@ -1,7 +1,7 @@
 ---
 name: Enterprise Universal Forwarder
 vendor: Splunk
-category: Observability
+category: Monitoring/Observability
 description: The universal forwarder is a dedicated, streamlined version of Splunk Enterprise that contains only the essential components needed to forward data.
 product_url: https://www.splunk.com/
 works_on_arm: true

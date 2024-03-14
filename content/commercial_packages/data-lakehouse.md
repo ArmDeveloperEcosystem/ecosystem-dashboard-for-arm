@@ -1,7 +1,7 @@
 ---
 name: Data-Lakehouse
 vendor: Databricks
-category: Databases
+category: Database
 description: Data lakehouse is a new, open data management architecture that combines the flexibility, cost-efficiency, and scale of data lakes with the data management and ACID transactions of data warehouses, enabling business intelligence (BI) and machine learning (ML) on all data.
 product_url: https://www.databricks.com/product/data-lakehouse
 works_on_arm: true
@@ -21,5 +21,4 @@ optional_info:
 optional_hidden_info:
     other_info: 
 
----
-    
+---    

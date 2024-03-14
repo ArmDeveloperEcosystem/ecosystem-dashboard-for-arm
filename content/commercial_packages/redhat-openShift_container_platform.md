@@ -1,7 +1,7 @@
 ---
 name: OpenShift Container Platform
 vendor: Red Hat
-category: Containers
+category: Containers and Orchestration
 description: OpenShift Container Platform is a consistent hybrid cloud foundation for building and scaling containerized applications.
 product_url: https://www.redhat.com/en/technologies/cloud-computing/openshift/container-platform
 works_on_arm: true
