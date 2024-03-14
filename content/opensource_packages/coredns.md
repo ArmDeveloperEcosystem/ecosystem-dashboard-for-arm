@@ -1,6 +1,6 @@
 ---
 name: CoreDNS
-category: Coordination & Service Discovery
+category: Networking
 description: CoreDNS is a DNS server that chain plugins to achieve various functionalities.
 download_url: https://github.com/coredns/coredns/releases
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: KubeEdge
-category: Automation & Configuration
+category: Containers and Orchestration
 description: KubeEdge is built upon Kubernetes and extends native containerized application orchestration and device management to hosts at the Edge.
 download_url: https://github.com/kubeedge/kubeedge/releases
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: Cloud Custodian
-category: Automation & Configuration
+category: Security applications
 description: Rules engine for cloud security, cost optimization, and governance, DSL in yaml for policies to query, filter, and take actions on resources.
 download_url: https://github.com/cloud-custodian/cloud-custodian/releases
 works_on_arm: true

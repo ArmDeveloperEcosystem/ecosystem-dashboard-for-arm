@@ -1,7 +1,7 @@
 ---
 name: Kyverno
 category: Security & Compliance
-description: Kubernetes Native Policy Management
+description: Security applications
 download_url: https://github.com/kyverno/kyverno/releases
 works_on_arm: true
 supported_minimum_version:

@@ -1,6 +1,6 @@
 ---
 name: SPIRE
-category: Key Management
+category: Security applications
 description: SPIRE is a toolchain of APIs for establishing trust between software systems across a wide variety of hosting platforms.
 download_url: https://github.com/spiffe/spire/releases
 works_on_arm: true

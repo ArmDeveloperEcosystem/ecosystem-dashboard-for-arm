@@ -1,6 +1,6 @@
 ---
 name: Helm
-category: Application Definition & Image Build
+category: Containers and Orchestration
 description: Helm is a package manager for Kubernetes that automates the creation, packaging, configuration, and deployment of Kubernetes applications.
 download_url: https://github.com/helm/helm/releases
 works_on_arm: true
