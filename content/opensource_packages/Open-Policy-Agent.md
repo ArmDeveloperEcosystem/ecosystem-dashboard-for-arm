@@ -1,6 +1,6 @@
 --- 
 name: Open Policy Agent
-category: Security & Compliance
+category: Security applications
 description: The Open Policy Agent is an open-source, general-purpose policy engine that unifies policy enforcement across the stack.
 download_url: https://github.com/open-policy-agent/opa/releases
 works_on_arm: true

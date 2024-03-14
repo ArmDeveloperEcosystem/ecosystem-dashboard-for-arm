@@ -1,6 +1,6 @@
 ---
 name: PHP
-category: Web Server
+category: Languages and Frameworks
 description: PHP is a general-purpose scripting language widely used as a server-side language for creating dynamic web pages.
 download_url: https://www.php.net/downloads.php
 works_on_arm: true

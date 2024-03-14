@@ -1,6 +1,6 @@
 ---
 name: Istio
-category: Service Mesh
+category: Containers and Orchestration
 description: Istio is an open-source service mesh that layers transparently onto existing distributed applications.
 download_url: https://github.com/istio/istio/releases
 works_on_arm: true

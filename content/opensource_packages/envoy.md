@@ -1,6 +1,6 @@
 ---
 name: Envoy
-category: Orchestration
+category: Containers and Orchestration
 description: Envoy is an open-source, high-performance proxy service. It is designed to be a scalable, flexible, and low-latency service proxy, particularly well-suited for microservice architectures and containerized applications.
 download_url: https://github.com/envoyproxy/envoy/releases
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: KubeVela
-category: Application Definition & Image Build
+category: Containers and Orchestration
 description: KubeVela is a modern application delivery platform that makes deploying and operating applications across today's hybrid, multi-cloud environments easier, faster and more reliable.
 download_url: https://github.com/kubevela/kubevela/releases
 works_on_arm: true

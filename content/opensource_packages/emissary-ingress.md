@@ -1,6 +1,6 @@
 ---
 name: Emissary-Ingress
-category: API Gateway
+category: Monitoring/Observability
 description: Emissary-Ingress is an open-source Kubernetes-native API gateway for microservices built on the Envoy Proxy.
 download_url:
 works_on_arm: false

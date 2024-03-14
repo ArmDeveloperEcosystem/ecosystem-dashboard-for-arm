@@ -1,6 +1,6 @@
 --- 
 name: Keda 
-category: Installable Platform
+category: _Miscellaneous
 description: KEDA is a Kubernetes-based Event Driven Autoscaling component. It provides event driven scale for any container running in Kubernetes.
 download_url: https://github.com/kedacore/keda/pkgs/container/keda
 works_on_arm: true
