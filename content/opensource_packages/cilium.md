@@ -1,6 +1,6 @@
 ---
 name: cilium
-category: Cloud Native Network
+category: Containers and Orchestration
 description: Cilium is a networking, observability, and security solution with an eBPF-based dataplane.
 download_url: https://github.com/cilium/cilium/releases
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: NATS
-category: Streaming & Messaging
+category: Messaging/Comms
 description: NATS is a simple, secure and performant communications system for digital systems, services and devices.
 download_url: https://nats.io/download/
 works_on_arm: true

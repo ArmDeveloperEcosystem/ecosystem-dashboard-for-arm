@@ -1,6 +1,6 @@
 ---
 name: Dragonfly
-category: Container Registry
+category: Containers and Orchestration
 description: Dragonfly is an open source P2P-based file distribution and image acceleration system.
 download_url: https://github.com/dragonflyoss/Dragonfly2/releases
 works_on_arm: true

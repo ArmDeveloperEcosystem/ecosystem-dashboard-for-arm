@@ -1,6 +1,6 @@
 ---
 name: OpenFeature Go-SDK
-category: Observability
+category: Monitoring/Observability
 description: Go implementation of the OpenFeature SDK provides a vendor-agnostic, community-driven API for feature flagging.
 download_url: https://github.com/open-feature/go-sdk/releases
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: Crossplane
-category: Scheduling & Orchestration
+category: Containers and Orchestration
 description: Crossplane is a framework for building cloud native control planes without needing to write code.
 download_url: https://releases.crossplane.io/stable/
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: Thanos
-category: Monitoring
+category: Monitoring/Observability
 description: Thanos is a set of components that can be composed into a highly available metric system with unlimited storage capacity, which can be added seamlessly on top of existing Prometheus deployments.
 download_url: https://github.com/thanos-io/thanos/releases
 works_on_arm: true

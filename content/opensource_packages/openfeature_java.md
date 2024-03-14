@@ -1,6 +1,6 @@
 ---
 name: OpenFeature Java-SDK
-category: Observability
+category: Monitoring/Observability
 description: Java implementation of the OpenFeature SDK provides a vendor-agnostic, community-driven API for feature flagging.
 download_url: https://github.com/open-feature/java-sdk/releases
 works_on_arm: true

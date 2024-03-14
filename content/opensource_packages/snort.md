@@ -1,6 +1,6 @@
 ---
 name: Snort
-category: Networking
+category: Security applications
 description: Snort is an open-source and lightweight network intrusion detection system (NIDS) software for Linux and Windows to detect emerging threats.
 download_url: https://www.snort.org/downloads#
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: OpenFeature Python-SDK
-category: Observability
+category: Monitoring/Observability
 description: Python implementation of the OpenFeature SDK provides a vendor-agnostic, community-driven API for feature flagging.
 download_url: https://pypi.org/project/openfeature-sdk/#files
 works_on_arm: true

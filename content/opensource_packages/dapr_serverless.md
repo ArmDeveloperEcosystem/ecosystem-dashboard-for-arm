@@ -1,6 +1,6 @@
 ---
 name: Dapr (Serverless)
-category: Framework
+category: Languages and Frameworks
 description: Dapr is a portable, event-driven, runtime for building distributed applications across cloud and edge.
 download_url: https://hub.docker.com/u/dapriosamples
 works_on_arm: true
