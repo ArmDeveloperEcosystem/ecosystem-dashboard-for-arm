@@ -1,6 +1,6 @@
 ---
 name: Jaeger
-category: Tracing
+category: Monitoring/Observability
 description: Jaeger is a distributed tracing platform created by Uber Technologies and donated to Cloud Native Computing Foundation.
 download_url: https://github.com/jaegertracing/jaeger/releases
 works_on_arm: true

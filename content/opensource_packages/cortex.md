@@ -1,6 +1,6 @@
 ---
 name: cortex
-category: Monitoring
+category: Monitoring/Observability
 description: Cortex is horizontally scalable, highly available, multi-tenant, long term storage for Prometheus.
 download_url: https://github.com/cortexproject/cortex/releases
 works_on_arm: true

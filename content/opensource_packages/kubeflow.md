@@ -1,6 +1,6 @@
 ---
 name: Kubeflow
-category: Scheduling & Orchestration
+category: Containers and Orchestration
 description: Kubeflow the cloud-native platform for machine learning operations - pipelines, training and deployment.
 download_url: https://github.com/kubeflow/kubeflow/releases
 works_on_arm: true

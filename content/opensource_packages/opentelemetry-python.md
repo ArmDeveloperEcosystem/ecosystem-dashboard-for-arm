@@ -1,6 +1,6 @@
 ---
 name: opentelemetry-python
-category: Tracing
+category: Monitoring/Observability
 description: Python sdk and api for observability framework and toolkit designed to create and manage telemetry data such as traces, metrics, and logs.
 download_url: https://github.com/open-telemetry/opentelemetry-python/releases
 works_on_arm: true

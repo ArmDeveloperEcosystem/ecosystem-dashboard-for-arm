@@ -1,6 +1,6 @@
 ---
 name: operator-framework
-category: Application Definition & Image Build
+category: _Miscellaneous
 description: operator-framework is a SDK for building Kubernetes applications.
 download_url: https://github.com/operator-framework/operator-sdk/releases
 works_on_arm: true
