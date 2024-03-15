@@ -172,11 +172,31 @@ document.addEventListener("DOMContentLoaded", function() {
         }
     
 
-        // GitHub issue
-        
+        // GitHub issue tracking
+        let github_issue_links = document.querySelectorAll('a.github-issue-update-link');
+        for (let gh_link of github_issue_links) {
+            gh_link.addEventListener("click", () => {
+                let package_name = gh_link.closest('table').closest('tr').previousElementSibling.getAttribute('data-title');
+                trackGeneralContentInteraction('github_edit_package_click',package_name);
+            });
+        }
 
+        // Getting started links
+        let getting_started_links = document.querySelectorAll('a.getting-started-resource');
+        for (let link of getting_started_links) {
+            let link_type = link.getAttribute('data-source-type');
+            link.addEventListener("click", () => {
+                let package_name = link.closest('tr').previousElementSibling.getAttribute('data-title');
+                trackGeneralContentInteraction('quick_start_guide_click__'+link_type,package_name);
+            });
+        }
 
-    
+        // Contribute CTA
+        let contribute_cta = document.getElementById('contribute-link-to-readme');
+        contribute_cta.addEventListener("click", () => {
+            trackGeneralContentInteraction('guidelink_link_click','CONTRIBUTE NEW PACKAGE');
+        });
+     
 
 });
 
