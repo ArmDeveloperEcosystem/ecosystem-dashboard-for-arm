@@ -27,7 +27,14 @@ def get_all_package_metadata(package_path):
         # Get the metadata between '---' by splitting the content by '---' and grabbing the middle part
         metadata = content.split('---')[1]
         metadata_dic = yaml.safe_load(metadata)
-        metadata_mirror_hugo_page = {"Params": metadata_dic}
+        # Add another dictionary key in addition to Params that is the File path to support GitHub editing functionality
+        unused, file_name = os.path.split(package_path)
+        last_directory_name = os.path.basename(os.path.dirname(package_path))
+        file_path = os.path.join(last_directory_name,file_name).replace("\\", "/")
+        metadata_mirror_hugo_page = {
+            "Params": metadata_dic,
+            "File": {"Path": file_path}
+        }
         return metadata_mirror_hugo_page
 
 
