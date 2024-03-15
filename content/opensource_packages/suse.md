@@ -1,6 +1,6 @@
 ---
 name: SUSE
-category: Distros
+category: Operating System
 description: SUSE Linux Enterprise Server (SLES) is a Linux-based server operating system designed for mainframes, servers, workstations and desktop computers.
 download_url: https://www.suse.com/download/sles/
 works_on_arm: true
