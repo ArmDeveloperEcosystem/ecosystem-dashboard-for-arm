@@ -1,6 +1,6 @@
 --- 
 name: Container Network Interface
-category: Cloud Native Network
+category: Networking
 description: Container Network Interface is a specification to configure network interfaces in Linux containers.
 download_url: https://github.com/containernetworking/cni/releases
 works_on_arm: true 

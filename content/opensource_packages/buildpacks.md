@@ -1,6 +1,6 @@
 --- 
 name: Buildpacks
-category: Application Definition & Image Build
+category: Containers and Orchestration
 description: CLI for building apps using Cloud Native Buildpacks
 download_url: https://github.com/buildpacks/pack/releases/
 works_on_arm: true 

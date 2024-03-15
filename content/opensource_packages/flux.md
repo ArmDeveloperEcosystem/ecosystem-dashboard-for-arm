@@ -1,6 +1,6 @@
 ---
 name: Flux
-category: Continuous Integration & Delivery
+category: DevOps
 description: Flux is an open and extensible continuous delivery solution for Kubernetes.
 download_url: https://github.com/fluxcd/flux2/releases
 works_on_arm: true
