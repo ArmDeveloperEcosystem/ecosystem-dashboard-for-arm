@@ -1,6 +1,6 @@
 ---
 name: in-toto
-category: Security & Compliance
+category: Security applications
 description: in-toto is a framework to protect supply chain integrity.
 download_url: https://github.com/in-toto/in-toto/releases
 works_on_arm: true

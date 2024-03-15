@@ -1,6 +1,6 @@
 ---
 name: CubeFS
-category: Cloud Native Storage
+category: Containers and Orchestration
 description: CubeFS is a new generation cloud-native storage that supports access protocols such as S3, HDFS, and POSIX.
 download_url: https://cubefs.io/download
 works_on_arm: true

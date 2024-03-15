@@ -1,6 +1,6 @@
 ---
 name: Litmus
-category: Chaos Engineering
+category: Monitoring/Observability
 description: Litmus is a toolset to do cloud-native chaos engineering, and provides tools to orchestrate chaos on Kubernetes to help SREs find weaknesses in their deployments.
 download_url: https://hub.docker.com/r/litmuschaos/chaos-operator/tags
 works_on_arm: true

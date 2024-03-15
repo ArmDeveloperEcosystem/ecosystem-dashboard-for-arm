@@ -1,6 +1,6 @@
 ---
 name: Chaos Mesh
-category: Chaos Engineering
+category: Monitoring/Observability
 description: Chaos Mesh is an open source cloud-native Chaos Engineering platform. It offers various types of fault simulation.
 download_url: https://github.com/chaos-mesh/chaos-mesh/releases
 works_on_arm: true
