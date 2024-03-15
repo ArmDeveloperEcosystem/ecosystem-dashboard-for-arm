@@ -1,7 +1,7 @@
 ---
 name: Flatcar Container Linux
 vendor: Kinvolk
-category: Containers
+category: Containers and Orchestration
 description: Flatcar Container Linux is a community Linux distribution designed for container workloads, with high security and low maintenance.
 product_url: https://www.flatcar.org/
 works_on_arm: true

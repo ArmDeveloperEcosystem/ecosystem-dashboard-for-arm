@@ -1,7 +1,7 @@
 ---
 name: Genymotion Cloud
 vendor: Genymobile
-category: Android
+category: _Miscellaneous
 description: Genymotion is a simple, fast developer’s first choice Android emulator. It has evolved into a full-fledged "Android as a service" platform, available across multiple channels in the cloud and on the desktop.
 product_url: https://www.genymotion.com/
 works_on_arm: true

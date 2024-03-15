@@ -1,7 +1,7 @@
 ---
 name: Consul
 vendor: HashiCorp
-category: Containers
+category: Containers and Orchestration
 description: Consul is a multi-networking tool that offers a fully-featured service mesh solution.
 product_url: https://www.hashicorp.com/products/consul
 works_on_arm: true
