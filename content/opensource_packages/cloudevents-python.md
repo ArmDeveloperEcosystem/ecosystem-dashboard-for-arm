@@ -25,3 +25,5 @@ optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
     other_info: There are no release notes or binaries for ARM64. Cloudevents-python can be installed from the version 0.0.1. Cloudevents-python aarch64 wheels are released on [pypi](https://pypi.org/project/cloudevents/#history).
+
+---
