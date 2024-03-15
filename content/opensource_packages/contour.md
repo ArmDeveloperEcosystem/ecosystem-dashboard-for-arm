@@ -1,6 +1,6 @@
 ---
 name: Contour
-category: Service Proxy
+category: Service Mesh
 description: Contour is a Kubernetes ingress controller using Envoy proxy.
 download_url: https://github.com/projectcontour/contour/releases
 works_on_arm: true

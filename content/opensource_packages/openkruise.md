@@ -1,6 +1,6 @@
 ---
 name: OpenKruise
-category: Continuous Integration & Delivery
+category: DevOps
 description: OpenKruise is an extended component suite for Kubernetes, which mainly focuses on application automations, such as deployment, upgrade, ops and availability protection.
 download_url: https://github.com/openkruise/kruise/releases
 works_on_arm: true

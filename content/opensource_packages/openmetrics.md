@@ -1,6 +1,6 @@
 --- 
 name: Openmetrics
-category: Monitoring
+category: Monitoring/Observability
 description: OpenMetrics specifies the de-facto standard for transmitting cloud-native metrics at scale.
 download_url: https://github.com/OpenObservability/OpenMetrics/tags
 works_on_arm: true 

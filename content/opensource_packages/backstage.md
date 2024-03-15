@@ -1,6 +1,6 @@
 ---
 name: Backstage
-category: Application Definition & Image Build
+category: DevOps
 description: Backstage is an open platform for building developer portals.
 download_url: https://github.com/backstage/backstage/releases
 works_on_arm: true

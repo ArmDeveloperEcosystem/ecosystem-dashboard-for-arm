@@ -1,6 +1,6 @@
 ---
 name: Notary
-category: Security & Compliance
+category: Security applications
 description: Notary is a project that allows anyone to have trust over arbitrary collections of data.
 download_url: https://github.com/notaryproject/notary/releases
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: CRI-O
-category: Container Runtime
+category: Containers and Orchestration
 description: Open Container Initiative-based implementation of Kubernetes Container Runtime Interface.
 download_url: https://github.com/cri-o/cri-o/releases
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: Karmada
-category: Scheduling & Orchestration
+category: Containers and Orchestration
 description: Karmada (Kubernetes Armada) is a Open, Multi-Cloud, Multi-Cluster Kubernetes Orchestration.
 download_url: https://github.com/karmada-io/karmada/releases
 works_on_arm: true
