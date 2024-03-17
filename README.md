@@ -1,6 +1,5 @@
 # ecosystem-dashboard-for-arm
-The Arm Software Ecosystem Dashboard is available at https://www.arm.com/developer-hub/ecosystem-dashboard/servers-and-cl
-oud-computing/
+The Arm Software Ecosystem Dashboard is available at https://www.arm.com/developer-hub/ecosystem-dashboard/servers-and-cloud-computing/
 
 This repository is maintained by Arm and contains the source files for the Arm Software Ecosystem Dashboard, providing in
 formation on software packages that work on Arm. 
@@ -8,7 +7,8 @@ formation on software packages that work on Arm.
 This data is sourced from Arm and our wide software ecosystem. While we make our best efforts to keep this dashboard accu
 rate, there are no guarantees of data correctness due to the ever-evolving software landscape.  
 
-# How To Contribute
+# How To Contribute:
+
 * To contribute new package data (or improve existing package data):
     * Fork this repo and submit pull requests; follow the step by step instructions in [Contribution guidelines](/contrib.md).
 * Log an issue with package data(or other general issues)
