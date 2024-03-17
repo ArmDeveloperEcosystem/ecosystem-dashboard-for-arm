@@ -19,8 +19,7 @@ Source repository for arm ecosystem dashboard that lists packages that work on A
 
 # Directory Structure
 
-This site is built on the [Hugo](https://gohugo.io/) web framework, ideal for generating static websites. Below is a brie
-f description of the key files and directories:
+This site is built on the [Hugo](https://gohugo.io/) web framework, ideal for generating static websites. Below is a brief description of the key files and directories:
 
   * /content
     * contains all package source data
