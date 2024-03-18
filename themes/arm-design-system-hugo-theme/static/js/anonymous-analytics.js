@@ -118,7 +118,7 @@ document.addEventListener("DOMContentLoaded", function() {
         if (timer) clearTimeout(timer);         // Clear timer if input detected
 
         timer = setTimeout(function() {         
-            trackSearchInteraction('2_second_delay_after_search_change');
+            trackSearchInteraction('delay_after_search_change');
         }, input_delay);
     });
 
