@@ -1,6 +1,6 @@
 ---
 name: Vitess
-category: Database - SQL
+category: Database
 description: Vitess is a database clustering system for horizontal scaling of MySQL through generalized sharding.
 download_url: https://github.com/vitessio/vitess/releases
 works_on_arm: true

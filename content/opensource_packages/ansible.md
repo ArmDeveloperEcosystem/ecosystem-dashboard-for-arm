@@ -1,6 +1,6 @@
 ---
 name: Ansible
-category: CI/CD
+category: DevOps
 description: Ansible is a simple IT automation platform that makes your applications and systems easier to deploy and maintain.
 download_url: https://developers.redhat.com/products/ansible/download 
 works_on_arm: true

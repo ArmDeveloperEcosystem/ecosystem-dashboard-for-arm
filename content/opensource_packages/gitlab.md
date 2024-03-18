@@ -1,6 +1,6 @@
 ---
 name: Gitlab
-category: CI/CD
+category: DevOps
 description: Gitlab is a complete DevOps platform that enables developers to perform all the tasks in a project, from project planning and source code management to monitoring and security.
 download_url: https://packages.gitlab.com/gitlab/gitlab-ee
 works_on_arm: true
