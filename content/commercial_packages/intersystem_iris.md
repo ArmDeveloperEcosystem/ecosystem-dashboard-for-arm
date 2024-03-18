@@ -1,7 +1,7 @@
 ---
 name: IRIS
 vendor: InterSystems
-category: Databases
+category: Database
 description: InterSystems IRIS® makes it easier to build high-performance, machine learning-enabled applications that connect data and application silos.
 product_url: https://www.intersystems.com/data-platform/
 works_on_arm: true

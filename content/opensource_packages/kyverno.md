@@ -1,6 +1,6 @@
 ---
 name: Kyverno
-category: Security & Compliance
+category: Security applications
 description: Security applications
 download_url: https://github.com/kyverno/kyverno/releases
 works_on_arm: true

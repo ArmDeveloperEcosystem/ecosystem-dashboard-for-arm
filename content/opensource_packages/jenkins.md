@@ -1,6 +1,6 @@
 --- 
 name: Jenkins 
-category: CI/CD 
+category: DevOps
 description: Jenkins is an open-source continuous integration/continuous delivery and deployment (CI/CD) automation software DevOps tool written in the Java programming language. It is used to implement CI/CD workflows, called pipelines. 
 download_url: https://get.jenkins.io/war-stable/ 
 works_on_arm: true 

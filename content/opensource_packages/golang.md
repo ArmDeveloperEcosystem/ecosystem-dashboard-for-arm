@@ -1,6 +1,6 @@
 ---
 name: Golang
-category: Languages
+category: Languages and Frameworks
 description: Golang, also known as Go, is a statically typed, compiled programming language designed by Google for efficiency, simplicity, and reliability. It has robust support for concurrent programming.
 download_url: https://go.dev/dl/
 works_on_arm: true
