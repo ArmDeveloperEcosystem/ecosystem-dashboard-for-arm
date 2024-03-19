@@ -2,7 +2,7 @@
 name: OneAgent
 vendor: Dynatrace
 category: Monitoring/Observability
-description: OneAgent is responsible for collecting all monitoring data within your monitored environment.
+description: OneAgent is responsible for collecting all monitoring data within the monitored environment.
 product_url: https://www.dynatrace.com/platform/oneagent/
 works_on_arm: true
 release_date_on_arm: 29/04/2020
