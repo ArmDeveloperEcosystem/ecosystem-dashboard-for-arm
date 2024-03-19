@@ -152,7 +152,7 @@ document.addEventListener("DOMContentLoaded", function() {
                 _satellite.track('eco-sw-result-click', {
                     'facet-active-names'   : getActiveFacets(),
                     'search-query' : current_search,
-                    'search_result_name clicked' : row.getAttribute('data-title'), // MongoDB
+                    'search_result_name_clicked' : row.getAttribute('data-title'), // MongoDB
                     });
             });
         });
