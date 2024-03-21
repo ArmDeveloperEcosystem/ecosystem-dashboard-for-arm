@@ -23,6 +23,12 @@ function getActiveFacets() {
         facet_tracking_string = facet_tracking_string+filter_types[i]+': '+active_filters[i]+', ';
     }
 
+    // remove trailing ',' for analytics processing
+    facet_tracking_string = facet_tracking_string.trim();
+    if (facet_tracking_string.endsWith(',')) {
+        facet_tracking_string = facet_tracking_string.slice(0, -1);
+    }
+
     return facet_tracking_string
 }
 

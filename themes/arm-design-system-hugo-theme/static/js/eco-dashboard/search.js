@@ -439,15 +439,18 @@ function filterHandler_radio(element) {
 
 
 function ifNeededMoveFiltersToMobileOrDesktop(state_is_below_breakpoint) {
-    let just_moved_below_breakpoint = window.innerWidth < 768;
+    let just_moved_below_breakpoint = window.innerWidth < 992;
     let filters_to_move = document.getElementById('filters-movable');
     const filter_destination = just_moved_below_breakpoint ? document.getElementById('mobile-filters') : document.getElementById('desktop-filters');
 
+    console.log('FILTERS MOVING: ', just_moved_below_breakpoint, state_is_below_breakpoint );
     // If breakpoint crossed, move filters to their correct location
     if (just_moved_below_breakpoint !== state_is_below_breakpoint) {
         filter_destination.appendChild(filters_to_move);
         return just_moved_below_breakpoint;
     }
+
+
     return state_is_below_breakpoint; // return true/false state to check if breakpoint crossed in future
 }
 
@@ -456,8 +459,9 @@ function ifNeededMoveFiltersToMobileOrDesktop(state_is_below_breakpoint) {
 /* Does three things at DOMContentLoad:
         1. Assigns inputChangeHandler to searchbox
         2. Moves filters to/from desktop/mobile
-        3. Sets default checked filters to 'all'
-        4. Activates URL search/filters
+        3. Adds clickable mobile filter background to exit modal
+        4. Sets default checked filters to 'all'
+        5. Activates URL search/filters
 */
 document.addEventListener("DOMContentLoaded", function () {
 
@@ -468,8 +472,13 @@ document.addEventListener("DOMContentLoaded", function () {
 
     // 2
     // Move filters to match users current viewport size (desktop or mobile)     
-    let state_is_below_breakpoint = window.innerWidth < 768;
-    state_is_below_breakpoint = ifNeededMoveFiltersToMobileOrDesktop(state_is_below_breakpoint); // Check at page load if they should be moved to mobile (default in desktop)
+    let state_is_below_breakpoint = window.innerWidth < 992;
+
+    // Check at page load if they should be moved to mobile (default in desktop)
+    if (state_is_below_breakpoint) {
+        console.log("Mobile detected, placing filters in mobile bucket.");
+        state_is_below_breakpoint = ifNeededMoveFiltersToMobileOrDesktop(false);
+    }
     
     // Listen for window resizes and move the filters if breakpoint is crossed
     let t_out;
@@ -480,7 +489,20 @@ document.addEventListener("DOMContentLoaded", function () {
         }, 200);
     });
 
+
     // 3
+    // Adds clickable mobile filter background to exit modal
+    var overlay = document.getElementById('filters-overlay');
+
+    // Add an event listener for clicks
+    overlay.addEventListener('click', function() {
+        var filter_button_mobile = document.getElementById('filter-button');
+        mobileFilterClickedSearch(filter_button_mobile);
+    });
+
+
+
+    // 4
     // Set all radio buttons to 'All' on page load
     let checkable_inputs = document.querySelectorAll('input.checkable-input');
     for (let input of checkable_inputs) {
@@ -493,7 +515,7 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
-    // 4
+    // 5
     // Handle search term from URL
         /* Support 3 situations; search, filtering, and both:
             page.html?search=mySearchTerm
