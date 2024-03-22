@@ -35,7 +35,7 @@ def group_list_simple(data):
         group_list.append(group_name)
 
     # order alphabetically, but keep Miscallaneous at the end!    
-    sorted_group_list = sorted([group for group in group_list if group != '_Miscellaneous']) + ['_Miscellaneous' if '_Miscellaneous' in group_list else '']
+    sorted_group_list = sorted([group for group in group_list if group != 'Miscellaneous']) + ['Miscellaneous' if 'Miscellaneous' in group_list else '']
     group_dict = {"groups": sorted_group_list}
     return group_dict
 

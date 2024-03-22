@@ -1,6 +1,6 @@
 ---
 name: Etcd
-category: _Miscellaneous
+category: Miscellaneous
 description: Etcd is a distributed reliable key-value store for the most critical data of a distributed system.
 download_url: https://github.com/etcd-io/etcd/releases
 works_on_arm: true

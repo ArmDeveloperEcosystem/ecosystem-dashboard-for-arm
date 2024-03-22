@@ -2,6 +2,9 @@
 
 /* Used to replace the default loaded screen (just a few most recent packages displayed) with the larger packages table. */
 function setToBrowse() {
+    // IGNORE for now, as browse is the default state (no recently added packages)
+    return
+
 
     var main_table_div = document.getElementById('all-packages-div');
 
@@ -55,6 +58,31 @@ function URLsearchAndfiltering(url_str) {
         // TO DO ADD FILTER HANDELER!
 
 }
+
+function smoothScrollForStickyFilters() {
+    // 
+    let search_box = document.getElementById('search-box');
+    let search_box_position = search_box.getBoundingClientRect();
+
+    // Check if the search box is in the viewport; if so, just ignore.
+    const is_visible = (
+        search_box_position.top >= 0 &&
+        search_box_position.left >= 0 &&
+        search_box_position.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
+        search_box_position.right <= (window.innerWidth || document.documentElement.clientWidth)
+    );
+  
+    if (!is_visible) {
+        var scrollPosition = window.pageYOffset + search_box_position.top - 100; // scrolls 100px above element
+        window.scrollTo({
+            top: scrollPosition,
+            behavior: 'smooth'
+        });
+    }
+
+
+}
+
 
 /* Hides (and shows) table elements by modifying the row's hidden attribute */
 function hideElements(all_path_cards,results_to_hide) {
@@ -428,6 +456,9 @@ function filterHandler_radio(element) {
     
     // Set page state to Browse, if not already
     setToBrowse();
+
+    // scroll to top of page if needed to prevent jumps
+    smoothScrollForStickyFilters();
 
     // Update the facet
     var item_name  = element.getAttribute('data-display-name');
