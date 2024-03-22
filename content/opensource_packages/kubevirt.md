@@ -1,6 +1,6 @@
 ---
 name: kubevirt
-category: _Miscellaneous
+category: Miscellaneous
 description: Kubernetes Virtualization API and runtime in order to define and manage virtual machines.
 download_url: https://github.com/kubevirt/kubevirt/releases
 works_on_arm: true
