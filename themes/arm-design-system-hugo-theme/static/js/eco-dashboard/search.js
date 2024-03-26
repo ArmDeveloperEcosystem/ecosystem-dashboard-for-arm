@@ -319,7 +319,6 @@ function clearAllFilters() {
 
     // Reset ADS-checkboxes to select 'All'
     let checkable_inputs = document.querySelectorAll('input.checkable-input');
-    console.log(checkable_inputs)
     for (let input of checkable_inputs) {
         // if has class 'tag-all' should be checked. else, uncheck.
         if (input.classList.contains('tag-all')) {
@@ -474,7 +473,6 @@ function ifNeededMoveFiltersToMobileOrDesktop(state_is_below_breakpoint) {
     let filters_to_move = document.getElementById('filters-movable');
     const filter_destination = just_moved_below_breakpoint ? document.getElementById('mobile-filters') : document.getElementById('desktop-filters');
 
-    console.log('FILTERS MOVING: ', just_moved_below_breakpoint, state_is_below_breakpoint );
     // If breakpoint crossed, move filters to their correct location
     if (just_moved_below_breakpoint !== state_is_below_breakpoint) {
         filter_destination.appendChild(filters_to_move);
@@ -507,7 +505,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
     // Check at page load if they should be moved to mobile (default in desktop)
     if (state_is_below_breakpoint) {
-        console.log("Mobile detected, placing filters in mobile bucket.");
+        //console.log("Mobile detected, placing filters in mobile bucket.");
         state_is_below_breakpoint = ifNeededMoveFiltersToMobileOrDesktop(false);
     }
     

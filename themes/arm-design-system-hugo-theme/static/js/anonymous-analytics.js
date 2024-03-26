@@ -38,11 +38,6 @@ function trackSearchInteraction(reason) {
     document.getElementById('search-box').value().then((value) => { 
         let current_search = value || 'none';
 
-        console.log('Search')
-        console.log('Tracking search:',current_search);               
-        console.log('Facets: ',getActiveFacets())
-        console.log('reason: ',reason)
-
         _satellite.track('ecosystem-search', {
             'facet-active-names'   : getActiveFacets(),
             'search-current-query' : current_search,
@@ -59,10 +54,6 @@ function trackFacetInteraction(){
     document.getElementById('search-box').value().then((value) => { 
         let current_search = value || 'none';
         
-        console.log('FACETS')
-        console.log('Tracking search:',current_search);               
-        console.log('Facets: ',getActiveFacets())
-
         // Send tracking data  
         _satellite.track('facet-interaction', {
             'facet-active-names'   : getActiveFacets(),
@@ -74,14 +65,6 @@ function trackFacetInteraction(){
 function trackGeneralContentInteraction(content_tracking_name,package_name) {
     document.getElementById('search-box').value().then((value) => { 
         let current_search = value || 'none';
-        
-
-        console.log('CONTENT');
-        console.log('datatrack ',content_tracking_name);
-        console.log('package-name ',package_name)
-        console.log('facets ',getActiveFacets());
-        console.log('search ',current_search);
-        
 
         _satellite.track('content-interaction', {   
             'data-track-name'       : content_tracking_name,
@@ -146,13 +129,6 @@ document.addEventListener("DOMContentLoaded", function() {
 
             document.getElementById('search-box').value().then((value) => { 
                 let current_search = value || 'none';
-
-
-
-                console.log('ROW CLICKED')
-                console.log('search_result_name clicked',row.getAttribute('data-title'))
-                console.log('Tracking search:',current_search);               
-                console.log('Facets: ',getActiveFacets())
         
                 // Send tracking data  
                 _satellite.track('eco-sw-result-click', {
