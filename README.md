@@ -10,6 +10,8 @@ This data is sourced from Arm and third parties. While Arm uses reasonable effor
     * Fork this repo and submit pull requests; follow the step by step instructions in [Contribution guidelines](/contrib.md).
 * Log an issue with package data(or other general issues)
     * Log a [issue on GitHub](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/issues)
+* Request for packages to be added to the dashboard
+     * Submit the [request for package on GitHub](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/blob/main/.github/ISSUE_TEMPLATE/package-request.md)
 
 Note that all site content, including new contributions, is licensed under a [Creative Commons Attribution 4.0 International license](https://creativecommons.org/licenses/by/4.0/).
 Source repository for arm ecosystem dashboard that lists packages that work on Arm
