@@ -1,6 +1,6 @@
 ---
-Package Name: "Enter Package Name"
-Package Information: "Metadata for packages to be added to the Arm Software Ecosystem Dashboard"
+name: "Enter Package Name"
+about: "Metadata for packages to be added to the Arm Software Ecosystem Dashboard"
 
 ---
 
