@@ -1,5 +1,5 @@
 ---
-name: kube-bench
+name: Kube-bench
 category: Security applications
 description: kube-bench is a tool that checks whether Kubernetes is deployed according to security best practices as defined in the CIS Kubernetes Benchmark.
 download_url: https://github.com/aquasecurity/kube-bench/releases
