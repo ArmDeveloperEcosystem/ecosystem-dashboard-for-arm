@@ -1,7 +1,7 @@
 ---
 name: Chef Infra Client
 vendor: Progress (Chef)
-category: Devops
+category: DevOps
 description: Chef Infra Client requests all the cookbook files (including recipes, templates, resources, providers, attributes, and libraries) that it needs for every action identified in the run-list from the Chef Infra Server.
 product_url: https://docs.chef.io/ctl_chef_client/
 works_on_arm: true
