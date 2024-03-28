@@ -392,7 +392,7 @@ function searchHandler(search_string) {
     }
 
     // Set page state to Browse, if not already
-    setToBrowse();
+    //setToBrowse();
     
     
     // Sanitize the input
@@ -420,7 +420,7 @@ function filterHandler(element) {
     const all_path_cards = document.querySelectorAll('.search-div');
     
     // Set page state to Browse, if not already
-    setToBrowse();
+    //setToBrowse();
 
     // get status of checkbox (true for checked, false for unchecked)
     element.value().then((value) => {
@@ -454,7 +454,7 @@ function filterHandler_radio(element) {
     const all_path_cards = document.querySelectorAll('div.search-div');
     
     // Set page state to Browse, if not already
-    setToBrowse();
+    //setToBrowse();
 
     // scroll to top of page if needed to prevent jumps
     smoothScrollForStickyFilters();
