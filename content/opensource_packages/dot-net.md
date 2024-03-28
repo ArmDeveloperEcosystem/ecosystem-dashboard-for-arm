@@ -1,5 +1,5 @@
 ---
-name: .Net
+name: .NET
 category: Runtimes
 description: .NET, developed by Microsoft, is a versatile, cross-platform framework used for building a wide range of applications. It features a large class library named Framework Class Library (FCL) and provides language interoperability across several programming languages.
 download_url: https://dotnet.microsoft.com/en-us/download/dotnet
