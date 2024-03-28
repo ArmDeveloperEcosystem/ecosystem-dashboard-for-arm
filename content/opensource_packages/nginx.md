@@ -1,5 +1,5 @@
 ---
-name: Nginx
+name: NGINX
 category: Web Server
 description: NGINX is open-source software for web serving, reverse proxying, caching, load balancing, media streaming etc.
 download_url: https://nginx.org/en/download.html
