@@ -5,7 +5,7 @@ category:  # The category this package belongs in. Must select a category (not t
 description: # One complete sentence description of what this package is, ending in a period. If it has an open source equivalent, include what makes this commercial package different.
 product_url: # The URL that acts as the homepage for this product. Must start with 'https://'.
 works_on_arm: # Boolean. It is 'true' if this package works on arm, and 'false' if not.
-release_date_on_arm: # The date, in MM/DD/YYYY format, when this package first worked on Arm. Example: '04/21/2024'.
+release_date_on_arm: # The date, in DD/MM/YYYY format, when this package first worked on Arm. Example: '21/04/2024'.
 
 
 optional_info:
