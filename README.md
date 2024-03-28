@@ -4,7 +4,7 @@ The Software Ecosystem Dashboard for Arm is available at https://www.arm.com/dev
 This repository is maintained by Arm and contains the source files for the Arm Software Ecosystem Dashboard, providing information on software packages that work on Arm. 
 This data is sourced from Arm and third parties. While Arm uses reasonable efforts to keep this dashboard accurate, Arm does not warrant (express or implied) or provide any guarantee of data correctness due to the ever-evolving software landscape.  
 
-# How To Contribute:
+# How To Contribute and Request:
 
 * To contribute new package data (or improve existing package data):
     * Fork this repo and submit pull requests; follow the step by step instructions in [Contribution guidelines](/contrib.md).
