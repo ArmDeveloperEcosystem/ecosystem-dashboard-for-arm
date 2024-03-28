@@ -1,6 +1,6 @@
 ---
 name: Harbor
-category: Container Registry
+category: Containers and Orchestration
 description: An open source trusted cloud native registry project that stores, signs, and scans content.
 download_url: https://github.com/goharbor/harbor/releases
 works_on_arm: true
