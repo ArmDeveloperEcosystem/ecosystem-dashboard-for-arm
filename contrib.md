@@ -34,7 +34,7 @@ Either 'true' or 'false'. If 'false', please fill out the 'alternative_options' 
 `works_on_arm: true`
 
 ## version
-This field specifies both the supported_minimum and recommended_minimum versions for this package to run on Arm. You should also include the dates that each version was released; this gives helpful context to the reader to assist their analysis. If a version just says the month and year it was released, you can fill in the first of the month to use the MM/DD/YYYY format. Here is a description of what both version fields mean:
+This field specifies both the supported_minimum and recommended_minimum versions for this package to run on Arm. You should also include the dates that each version was released; this gives helpful context to the reader to assist their analysis. If a version just says the month and year it was released, you can fill in the first of the month to use the DD/MM/YYYY format. Here is a description of what both version fields mean:
 supported_minimum   = The first version that enabled support for Arm hardware. This is an objective measurement, often found in package release notes or news.
 recommended_minimum = The first version that enabled good/great performance on Arm hardware. This is a subjective measurement, and information can be found around release notes, news, and developer first-hand experience. 
 
@@ -42,7 +42,7 @@ recommended_minimum = The first version that enabled good/great performance on A
 - supported_minimum: 20.00.0
 - supported_minimum_date: 05/11/2020
 - recommended_minimum: 22.04.3
-- recommended_minimum_date: 04/21/2022`
+- recommended_minimum_date: 21/04/2022`
 
 # Optional Data
 These fields are an optional addition, adding more context to the package. Fill these out if appropriate.
