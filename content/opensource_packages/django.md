@@ -1,8 +1,8 @@
 ---
-name: django
-category: Web
+name: Django
+category: Languages and Web Framework
 description: Django is a high-level Python web framework that encourages rapid development and clean, pragmatic design.
-download_url: https://github.com/django/django/tags?after=1.5a1
+download_url: https://github.com/django/django/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.2.6
@@ -12,11 +12,11 @@ supported_minimum_version:
 optional_info:
     homepage_url: https://www.djangoproject.com/
     support_caveats:
-    alternative_options: https://github.com/django/django/blob/1.2.6/INSTALL
+    alternative_options:
     getting_started_resources:
-        arm_content: 
+        arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/django/ 
         partner_content: 
-        official_docs: https://docs.djangoproject.com/en/5.0/releases/1.2.6/
+        official_docs: https://docs.djangoproject.com/en/5.0/intro/install/
     arm_recommended_minimum_version:
         version_number:
         release_date:
@@ -24,6 +24,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info:
+    other_info: There are no release notes or binaries present for arm64. 1.2.6 version was built and tested successfully using released tar file.
 
 ---
