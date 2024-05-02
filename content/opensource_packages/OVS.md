@@ -1,5 +1,5 @@
 ---
-name: OVS
+name: Open vSwitch (OVS)
 category: Networking
 description: Open vSwitch (OVS) is an open-source, software-based virtual switch used for network automation and management in virtualized and cloud environments.
 download_url: https://www.openvswitch.org/download/
