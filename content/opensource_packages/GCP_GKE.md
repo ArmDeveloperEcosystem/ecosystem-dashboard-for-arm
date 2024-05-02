@@ -1,5 +1,5 @@
 ---
-name: GCP GKE
+name: Google Kubernetes Engine (GKE)
 category: Containers and Orchestration
 description: Google Kubernetes Engine (GKE) is a managed Kubernetes service that allows users to run containerized applications at scale using Google's infrastructure.
 download_url: https://console.cloud.google.com/storage/browser/cloud-sdk-release;tab=objects?_ga=2.118271305.1562148867.1713173610-257887511.1712659499&prefix=&forceOnObjectsSortingFiltering=true
