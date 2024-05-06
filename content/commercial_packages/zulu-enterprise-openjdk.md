@@ -2,7 +2,7 @@
 name: Azul Zulu Builds of OpenJDK
 vendor: Azul
 category: Runtimes
-description: Azul Zulu Builds of OpenJDK (Zulu) are the key component provided by Azul Platform Core. Zing builds are free to use and a drop-in replacement for any other OpenJDK distribution. Azul Platform Core is designed for enterprise, distribution (ISV), and embedded (OEM) use cases. It provides certified OpenJDK builds with tight security and the cost efficiencies you need to run today’s business–critical, Java-based services. 
+description: Azul Zulu Builds of OpenJDK are no-cost, production-ready open-source, TCK-tested, and certified OpenJDK distributions. They are available for a wide range of hardware platforms and operating systems and are compatible with special requirements, such as stripped-down JREs and builds, including OpenJFX and Coordinated Restore at Checkpoint (CRaC). They are supported as part of Azul Platform Core, which provides stabilized security updates for rapid, assured deployment into production and solution-oriented engineering assistance. 
 product_url: https://www.azul.com/products/core/
 works_on_arm: true
 release_date_on_arm: 08/04/2014
