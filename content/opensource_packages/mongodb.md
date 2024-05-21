@@ -23,7 +23,7 @@ optional_info:
 
 
 optional_hidden_info:
-    release_notes__supported_minimum: https://www.mongodb.com/docs/upcoming/release-notes/3.4/
+    release_notes__supported_minimum: 
     release_notes__recommended_minimum: 
     other_info: 
 
