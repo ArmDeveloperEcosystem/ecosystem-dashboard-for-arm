@@ -1,8 +1,8 @@
 ---
-name: Azul Platform Prime (with Azul Zing OpenJDK)
+name: Zing OpenJDK (in Azul Platform Prime)
 vendor: Azul
 category: Runtimes
-description: Azul Platform Prime contains Azul Zing, a commercial optimized build of OpenJDK. Suitable for applications needing low latency and low cost at scale. Key additions include the C4 Pauseless Garbage Collector and the Falcon JIT Compiler.   
+description: Azul Zing is a high-performance build of OpenJDK, part of the Azul Platform Prime enterprise product. Zing replaces several OpenJDK components with optimized versions, including the C4 Pauseless Garbage Collector and the Falcon JIT Compiler. Suitable for low-latency applications at scale.
 product_url: https://www.azul.com/products/prime/
 works_on_arm: true
 release_date_on_arm: 07/02/2023
