@@ -1,7 +1,7 @@
 ---
 name: Bitnami Containers
 vendor: Bitnami
-category: Devops
+category: DevOps
 description: Bitnami Containers provide ready-to-use, pre-configured container images for popular open-source applications and development stacks.
 product_url: https://bitnami.com/stacks/containers
 works_on_arm: true
