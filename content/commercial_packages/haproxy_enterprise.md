@@ -1,7 +1,7 @@
 ---
 name: HAProxy Enterprise
 vendor: HAProxy
-category: Cloud Native
+category: Monitoring/Observability
 description: HAProxy Enterprise is the industry’s leading software load balancer. It powers modern application delivery at any scale and in any environment, providing the utmost performance, observability and security.
 product_url: https://www.haproxy.com/products/haproxy-enterprise
 works_on_arm: true
