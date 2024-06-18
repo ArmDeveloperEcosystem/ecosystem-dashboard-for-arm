@@ -1,7 +1,7 @@
 ---
 name: Strongswan
 category: Networking
-description: StrongSwan is an OpenSource IPsec-based VPN solution.
+description: StrongSwan is an OpenSource IPsec-based VPN solution. It is used to ensure secure communications with remote networks.
 download_url: https://www.strongswan.org/download.html   
 works_on_arm: true
 supported_minimum_version:
