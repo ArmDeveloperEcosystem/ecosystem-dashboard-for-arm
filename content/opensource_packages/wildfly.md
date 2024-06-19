@@ -24,6 +24,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum: 
     release_notes__recommended_minimum: 
-    other_info: There are no release notes or binaries present for Linux/ARM64. Wildfly 18.0.1 is successfully installed and tested on the Neoverse N1, following the steps mentioned in README.md[https://github.com/wildfly/wildfly/blob/18.0.0.Final/README.md].
+    other_info: There are no release notes or binaries present for Linux/ARM64. Wildfly 18.0.1 is successfully installed and tested on the Neoverse N1, following the steps mentioned in [README.md](https://github.com/wildfly/wildfly/blob/18.0.0.Final/README.md).
 
 ---
