@@ -1,6 +1,6 @@
 ---
 name: Zookeeper
-category: Databases - Big-Data
+category: Databases - Big-data 
 description: ZooKeeper is a centralized service for maintaining configuration information, naming, providing distributed synchronization, and providing group services.
 download_url: https://github.com/apache/zookeeper/tags
 works_on_arm: true
