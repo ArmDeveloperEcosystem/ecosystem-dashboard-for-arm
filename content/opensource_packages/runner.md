@@ -1,6 +1,6 @@
 ---
 name: Github Runner
-category: Devops
+category: DevOps
 description: GitHub Actions makes it easy to automate all your software workflows, now with world-class CI/CD.
 download_url: https://github.com/actions/runner/releases
 works_on_arm: true
