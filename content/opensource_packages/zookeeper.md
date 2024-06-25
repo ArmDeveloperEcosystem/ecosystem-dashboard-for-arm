@@ -11,7 +11,7 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://zookeeper.apache.org/
-    support_caveats:
+    support_caveats: As a Java-based platform, this package will run on top of an Arm compatible JVM.
     alternative_options:
     getting_started_resources:
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/kafka/zookeeper_cluster/
