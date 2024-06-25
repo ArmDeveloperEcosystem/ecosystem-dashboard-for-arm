@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/machine-learning-inference-on-aws-graviton3
         partner_content: https://aws.amazon.com/blogs/machine-learning/run-machine-learning-inference-workloads-on-aws-graviton-based-instances-with-amazon-sagemaker/
-        official_docs: https://spec.oneapi.io/versions/latest/elements/oneDNN/source/index.html
+        official_docs: https://oneapi-src.github.io/oneDNN/v2.5/page_getting_started_cpp.html#doxid-getting-started-cpp
     arm_recommended_minimum_version:
         version_number:
         release_date:
