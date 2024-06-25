@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content: https://ecosystemdashboard.linaro.org/OpenEBS/
-        official_docs: https://openebs.io/docs/user-guides/quickstart
+        official_docs: https://openebs.io/docs/quickstart-guide/installation
     arm_recommended_minimum_version:
         version_number:
         release_date:
