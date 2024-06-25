@@ -11,7 +11,7 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://www.wildfly.org/
-    support_caveats:
+    support_caveats: WildFly is a Java-based platform, and will run on top of an Arm compatible JVM.
     alternative_options:
     getting_started_resources:
         arm_content:  
