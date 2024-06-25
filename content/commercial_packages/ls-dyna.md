@@ -1,5 +1,5 @@
 ---
-name: LS-DYNA
+name: Ansys LS-DYNA
 vendor: Ansys
 category: HPC
 description: Ansys LS-DYNA is the industry-leading explicit simulation software used for applications like drop tests, impact and penetration, smashes and crashes, occupant safety and more.
@@ -14,7 +14,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content:
-        vendor_announcement: https://www.ansys.com/content/dam/amp/2023/june/quick-request/arm-64-processor-support-announcement-june-2023.pdf
+        vendor_announcement: https://www.ansys.com/content/dam/it-solutions/platform-support/2024-r1/arm-processor-support-announcement-february-2024.pdf
         official_docs: https://lsdyna.ansys.com/download-install-overview/
 
 
