@@ -1,6 +1,6 @@
 ---
-name: Sentieon Inc
-vendor: Sentieon
+name: Sentieon
+vendor: Sentieon Inc
 category: HPC
 description: Sentieon® provides complete solutions for DNA/RNA data with software that is deployable on any generic CPU-based computing system. The software improves upon the BWA, STAR and Minimap2 aligners with accelerated alignment speeds while producing identical output. 
 product_url: https:/www.sentieon.com
