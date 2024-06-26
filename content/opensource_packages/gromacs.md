@@ -1,7 +1,7 @@
 ---
 name: Gromacs
 category: HPC
-description: Gromacs
+description: Free and open-source software suite for high-performance molecular dynamics and output analysis
 download_url: https://www.gromacs.org/
 works_on_arm: true
 supported_minimum_version:
