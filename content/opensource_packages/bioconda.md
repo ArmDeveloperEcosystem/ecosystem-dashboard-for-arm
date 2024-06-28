@@ -6,7 +6,7 @@ download_url: https://bioconda.github.io/
 works_on_arm: true
 supported_minimum_version:
     version_number: 
-    release_date: 2024/03/04
+    release_date: 03/04/2024
 
 
 optional_info:
