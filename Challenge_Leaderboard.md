@@ -1,7 +1,6 @@
-# Leaderboard
-## Arm Server Software Contribution Challenge
+# Leaderboard for the Arm Server Software Contribution Challenge
 
-Congratulations and thank you from Arm to all contributors recognized in the [Arm Server Software Contribution Challenge](google.com) leaderboard!
+Congratulations and thank you from Arm to all contributors recognized in the [Arm Server Software Contribution Challenge](google.com) leaderboard! This board is updated when contributions are reviewed and accepted every few days.
 
 <img src="https://i.countdownmail.com/3do1jx.gif" border="0"/> 
 
