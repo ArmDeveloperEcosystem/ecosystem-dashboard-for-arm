@@ -1,0 +1,29 @@
+---
+name: Linaro - LLVM builder
+category: Compilers/Tools
+description: The LLVM Project is a set of compiler and toolchain technologies.
+download_url: https://github.com/llvm/llvm-project/releases/
+works_on_arm: true
+supported_minimum_version:
+    version_number: 7.1.0
+    release_date: 2019/05/11
+
+
+optional_info:
+    homepage_url: https://www.linaro.org/downloads/
+    support_caveats:
+    alternative_options:
+    getting_started_resources:
+        arm_content: https://developer.arm.com/Tools%20and%20Software/LLVM%20Toolchain#Technical-Specifications
+        partner_content:
+        official_docs:
+    arm_recommended_minimum_version:
+        version_number:
+        release_date:
+
+optional_hidden_info:
+    release_notes__supported_minimum:
+    release_notes__recommended_minimum:
+    other_info: The official community releases of the pre-built LLVM native toolchain for AArch64 are built and tested by Linaro and are now available on [LLVM’s GitHub](https://github.com/llvm/llvm-project/releases). The minimum version available at GitHub is v7.1.0, which has AArch64 release. Kindly refer [here](https://www.linaro.org/downloads/) for more information.
+
+---
