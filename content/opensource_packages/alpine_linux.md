@@ -1,7 +1,7 @@
 ---
 name: Alpine Linux
 category: Operating System
-description: Alpine Linux is an independent, non-commercial, general purpose Linux distribution designed for power users who appreciate security, simplicity and resource efficiency.
+description: Alpine Linux is a general purpose Linux distribution designed for power users. It focuses on simplicity, security, and resource efficiency.
 download_url: https://www.alpinelinux.org/downloads/
 works_on_arm: true
 supported_minimum_version:
