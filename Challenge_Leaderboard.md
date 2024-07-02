@@ -2,9 +2,7 @@
 
 Congratulations and thank you from Arm to all contributors recognized in the [Arm Server Software Contribution Challenge](google.com) leaderboard!
 
-<div style="width: auto; height: auto; overflow: hidden; position: relative;">
-  <img src="https://i.countdownmail.com/3do1jx.gif" style="display: block; position: relative; top: -50px;" />
-</div>
+<img src="https://i.countdownmail.com/3do1jx.gif" style="clip-path: inset(0px 0px 50px 0px);" />
 
 | **Medal** | **Rank** | **GitHub Handle** | **Points** |
 |-----------|----------|-------------------|------------|
