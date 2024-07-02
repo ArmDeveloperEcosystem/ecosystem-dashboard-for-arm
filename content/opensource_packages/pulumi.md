@@ -6,7 +6,7 @@ download_url: https://github.com/pulumi/pulumi/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.23.0
-    release_date: 18/03/2021
+    release_date: 2021/03/18
 
 
 optional_info:

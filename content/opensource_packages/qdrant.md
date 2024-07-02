@@ -6,7 +6,7 @@ download_url: https://github.com/qdrant/qdrant/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v0.7.0
-    release_date: 04/13/2022
+    release_date: 2022/13/04
 
 
 optional_info:

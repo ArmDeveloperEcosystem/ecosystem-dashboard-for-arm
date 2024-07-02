@@ -6,7 +6,7 @@ download_url: https://github.com/weaviate/weaviate/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.18.0
-    release_date: 07/03/2023
+    release_date: 2023/03/07
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://www.netbsd.org/releases/
 works_on_arm: true
 supported_minimum_version:
     version_number: 9.0
-    release_date: 14/02/2020
+    release_date: 2020/02/14
 
 
 optional_info:

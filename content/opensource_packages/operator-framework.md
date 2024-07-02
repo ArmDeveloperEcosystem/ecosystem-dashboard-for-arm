@@ -6,7 +6,7 @@ download_url: https://github.com/operator-framework/operator-sdk/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.17.0
-    release_date: 16/4/2020
+    release_date: 2020/04/16
 
 
 optional_info:

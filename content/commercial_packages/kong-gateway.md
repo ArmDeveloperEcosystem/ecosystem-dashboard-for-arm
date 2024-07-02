@@ -5,7 +5,7 @@ category: Networking
 description: Kong Gateway is a lightweight, fast, and flexible cloud-native API gateway.
 product_url: https://konghq.com/products/kong-gateway
 works_on_arm: true
-release_date_on_arm: 5/11/2019
+release_date_on_arm: 2019/11/05
 
 optional_info:
     homepage_url: https://konghq.com/products/kong-gateway

@@ -6,7 +6,7 @@ download_url: https://www.openssl.org/source/
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.0.2
-    release_date: 22/01/2015
+    release_date: 2015/01/22
 
 
 optional_info:

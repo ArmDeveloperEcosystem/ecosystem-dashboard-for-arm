@@ -6,7 +6,7 @@ download_url: https://pulsar.apache.org/download/
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.10.0
-    release_date: 13/04/2022
+    release_date: 2022/04/13
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://github.com/celery/celery/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 4.0.0rc3
-    release_date: 09/07/2016
+    release_date: 2016/07/09
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://pypi.org/project/mmh3/#files
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.0.0
-    release_date: 26/03/2023
+    release_date: 2023/03/26
 
 
 optional_info:

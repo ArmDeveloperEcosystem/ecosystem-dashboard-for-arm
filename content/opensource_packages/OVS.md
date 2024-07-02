@@ -6,7 +6,7 @@ download_url: https://www.openvswitch.org/download/
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.12.4
-    release_date: 21/10/2021
+    release_date: 2021/10/21
 
 
 optional_info:

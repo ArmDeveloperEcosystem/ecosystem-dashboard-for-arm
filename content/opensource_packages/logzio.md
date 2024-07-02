@@ -6,7 +6,7 @@ download_url: https://github.com/logzio/logzio-agent-manifest/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.1.25
-    release_date: 07/01/2024
+    release_date: 2024/01/07
 
 
 optional_info:

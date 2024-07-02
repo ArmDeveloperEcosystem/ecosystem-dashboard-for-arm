@@ -6,7 +6,7 @@ download_url: https://www.cockroachlabs.com/docs/releases/
 works_on_arm: true
 supported_minimum_version:
     version_number: 22.2.5
-    release_date: 16/02/2023
+    release_date: 2023/02/16
 
 optional_info:
     homepage_url: https://www.cockroachlabs.com/

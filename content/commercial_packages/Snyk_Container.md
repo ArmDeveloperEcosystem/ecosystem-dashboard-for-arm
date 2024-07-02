@@ -5,7 +5,7 @@ category: Security applications
 description: Snyk Container works with a range of container image operating systems and package managers, Kubernetes flavors and container registries.
 product_url: https://docs.snyk.io/
 works_on_arm: true
-release_date_on_arm: 1/10/2020
+release_date_on_arm: 2020/10/01
 
 
 optional_info:

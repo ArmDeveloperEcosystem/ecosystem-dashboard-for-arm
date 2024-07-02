@@ -6,7 +6,7 @@ download_url: https://github.com/cloudevents/sdk-java/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v0.3.1
-    release_date: 30/09/2019
+    release_date: 2019/09/30
 
 
 optional_info:

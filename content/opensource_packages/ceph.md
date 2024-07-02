@@ -6,7 +6,7 @@ download_url: https://download.ceph.com/
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.91
-    release_date: 14/01/2015
+    release_date: 2015/01/14
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://docs.tdengine.com/releases/tdengine/
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.0.1.0
-    release_date: 06/09/2022
+    release_date: 2022/09/06
 
 
 optional_info:

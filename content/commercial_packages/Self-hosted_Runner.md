@@ -5,7 +5,7 @@ category: DevOps
 description: CircleCI’s self-hosted runner enables users to use their own infrastructure for running jobs.
 product_url: https://circleci.com/docs/runner-overview/
 works_on_arm: true
-release_date_on_arm: 17/11/2020
+release_date_on_arm: 2020/11/17
 
 
 optional_info:

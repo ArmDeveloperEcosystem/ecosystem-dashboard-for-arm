@@ -6,7 +6,7 @@ download_url: https://github.com/VictoriaMetrics/operator/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v0.2.1
-    release_date: 29/08/2020
+    release_date: 2020/08/29
 
 
 optional_info:

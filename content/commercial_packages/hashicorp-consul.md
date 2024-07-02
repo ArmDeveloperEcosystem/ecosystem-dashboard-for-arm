@@ -5,7 +5,7 @@ category: Containers and Orchestration
 description: Consul is a multi-networking tool that offers a fully-featured service mesh solution.
 product_url: https://www.hashicorp.com/products/consul
 works_on_arm: true
-release_date_on_arm: 9/6/2017
+release_date_on_arm: 2017/06/09
 
 optional_info:
     homepage_url: https://www.hashicorp.com/products/consul

@@ -6,7 +6,7 @@ download_url: https://github.com/apache/storm/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.2.0
-    release_date: 18/06/2020
+    release_date: 2020/06/18
 
 
 optional_info:

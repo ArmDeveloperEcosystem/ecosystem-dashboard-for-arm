@@ -6,7 +6,7 @@ download_url: https://github.com/cloudevents/sdk-go/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v2.0.0
-    release_date: 27/05/2020
+    release_date: 2020/05/27
 
 
 optional_info:

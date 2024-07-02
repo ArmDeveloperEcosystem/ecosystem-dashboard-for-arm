@@ -5,7 +5,7 @@ category: Databases - noSQL
 description: ScyllaDB Enterprise is a distributed NoSQL wide-column database for data-intensive apps that require high performance and low latency.
 product_url: https://www.scylladb.com/product/scylla-enterprise/
 works_on_arm: true
-release_date_on_arm: 04/08/2022
+release_date_on_arm: 2022/08/04
 
 
 optional_info:

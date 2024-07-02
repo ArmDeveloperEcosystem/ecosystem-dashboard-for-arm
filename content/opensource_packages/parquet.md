@@ -6,7 +6,7 @@ download_url: https://github.com/apache/parquet-mr/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.12.0
-    release_date: 25/03/2021
+    release_date: 2021/03/25
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://chromium.googlesource.com/codecs/libgav1/
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.16.0
-    release_date: 16/07/2020
+    release_date: 2020/07/16
 
 
 optional_info:

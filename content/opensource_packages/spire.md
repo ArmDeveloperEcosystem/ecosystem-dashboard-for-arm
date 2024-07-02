@@ -6,7 +6,7 @@ download_url: https://github.com/spiffe/spire/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.6.4
-    release_date: 18/05/2023
+    release_date: 2023/05/18
 
 
 optional_info:

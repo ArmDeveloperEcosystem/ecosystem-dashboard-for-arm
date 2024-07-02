@@ -6,7 +6,7 @@ download_url: https://releases.crossplane.io/stable/
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.1.0
-    release_date: 4/12/2018
+    release_date: 2018/12/04
 
 
 optional_info:

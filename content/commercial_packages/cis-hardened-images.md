@@ -5,7 +5,7 @@ category: Security applications
 description: CIS Hardened Images provide users with a secure, on-demand, and scalable computing environment. CIS offers virtual machine (VM) images hardened in accordance with the CIS Benchmarks.
 product_url: https://www.cisecurity.org/
 works_on_arm: true
-release_date_on_arm: 8/7/2021
+release_date_on_arm: 2021/07/08
 
 
 optional_info:

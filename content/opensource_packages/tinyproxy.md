@@ -6,7 +6,7 @@ download_url: https://github.com/tinyproxy/tinyproxy/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.10.0
-    release_date: 1/9/2018
+    release_date: 2018/09/01
 
 
 optional_info:

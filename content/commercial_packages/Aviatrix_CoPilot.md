@@ -5,7 +5,7 @@ category: Networking
 description: Aviatrix CoPilot provides a global operational view for multi-cloud network. Aviatrix seamlessly integrates with AWS, providing advanced networking capabilities like enhanced security features, global transit networking, and network segmentation.
 product_url: https://community.aviatrix.com/
 works_on_arm: true
-release_date_on_arm: 6/7/2022
+release_date_on_arm: 2022/07/06
 
 
 optional_info:

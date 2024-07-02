@@ -6,7 +6,7 @@ download_url: https://www.mediawiki.org/wiki/Download
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.39.7
-    release_date: 30/11/2022
+    release_date: 2022/11/30
 
 
 optional_info:

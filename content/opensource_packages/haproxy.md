@@ -6,7 +6,7 @@ download_url: https://www.haproxy.org/#down
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.5.0
-    release_date: 19/06/2014
+    release_date: 2014/06/19
 
 
 optional_info:

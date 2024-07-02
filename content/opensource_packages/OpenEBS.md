@@ -6,7 +6,7 @@ download_url: https://github.com/openebs/openebs/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v2.3.0 
-    release_date: 16/11/2020
+    release_date: 2020/11/16
 
 
 optional_info:

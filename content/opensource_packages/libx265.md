@@ -6,7 +6,7 @@ download_url: https://bitbucket.org/multicoreware/x265_git/downloads/?tab=tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.4
-    release_date: 29/5/2020
+    release_date: 2020/05/29
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://www.freebsd.org/where/
 works_on_arm: true
 supported_minimum_version:
     version_number: 11.0
-    release_date: 10/10/2016
+    release_date: 2016/10/10
 
 
 optional_info:

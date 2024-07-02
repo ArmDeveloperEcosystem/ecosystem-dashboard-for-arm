@@ -5,7 +5,7 @@ category: DevOps
 description: TeamCity is an advanced CI/CD solution that allows for flexible workflows, collaboration, and development practices.
 product_url: https://www.jetbrains.com/teamcity/
 works_on_arm: true
-release_date_on_arm: 20/05/2021
+release_date_on_arm: 2021/05/20
 
 
 optional_info:

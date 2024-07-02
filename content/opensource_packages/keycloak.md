@@ -6,7 +6,7 @@ download_url: https://github.com/keycloak/keycloak/releases/
 works_on_arm: true
 supported_minimum_version:
     version_number: 12.0.0
-    release_date: 17/12/2020
+    release_date: 2020/12/17
 
 
 optional_info:

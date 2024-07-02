@@ -6,7 +6,7 @@ download_url: https://github.com/actions/runner/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.161.0
-    release_date: 12/11/2019
+    release_date: 2019/11/12
 
 
 optional_info:

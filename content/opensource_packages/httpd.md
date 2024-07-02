@@ -6,7 +6,7 @@ download_url: https://archive.apache.org/dist/httpd/
 works_on_arm: true
 supported_minimum_version: 
     version_number: 2.4.32 
-    release_date: 14/3/2018 
+    release_date: 2018/03/14 
 
 optional_info: 
     homepage_url: https://httpd.apache.org/ 

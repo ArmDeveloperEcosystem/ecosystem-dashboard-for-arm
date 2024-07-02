@@ -5,7 +5,7 @@ category: Security applications
 description: The Lacework Linux agent provides threat detection, file integrity monitoring, vulnerability detection, and host-based intrusion detection for the cloud or on-premises Linux OS-based workloads.
 product_url: https://www.lacework.com/
 works_on_arm: true
-release_date_on_arm: 18/11/2020
+release_date_on_arm: 2020/11/18
 
 
 optional_info:

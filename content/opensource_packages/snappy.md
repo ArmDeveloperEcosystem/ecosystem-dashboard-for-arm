@@ -6,7 +6,7 @@ download_url: https://github.com/google/snappy/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.1.5
-    release_date: 29/06/2017
+    release_date: 2017/06/29
 
 optional_info:
     homepage_url: https://github.com/google/snappy

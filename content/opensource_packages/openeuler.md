@@ -6,7 +6,7 @@ download_url: https://www.openeuler.org/en/download/archive/
 works_on_arm: true
 supported_minimum_version:
     version_number: 20.03 LTS
-    release_date: 1/3/2020
+    release_date: 2020/03/01
 
 
 optional_info:

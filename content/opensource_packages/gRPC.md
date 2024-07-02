@@ -6,7 +6,7 @@ download_url: https://github.com/grpc/grpc/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v1.38.1
-    release_date: 22/06/2021
+    release_date: 2021/06/22
  
  
 optional_info:

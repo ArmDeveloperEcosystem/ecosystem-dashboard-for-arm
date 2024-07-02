@@ -5,7 +5,7 @@ category: Databases - noSQL
 description: Elasticsearch is the distributed search and analytics engine at the heart of the Elastic Stack.
 product_url: https://www.elastic.co/elasticsearch
 works_on_arm: true
-release_date_on_arm: 13/05/2020
+release_date_on_arm: 2020/05/13
 
 
 optional_info:

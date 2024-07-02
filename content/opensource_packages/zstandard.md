@@ -6,7 +6,7 @@ download_url: https://github.com/indygreg/python-zstandard/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.16.0
-    release_date: 17/10/2021
+    release_date: 2021/10/17
 
 
 optional_info:

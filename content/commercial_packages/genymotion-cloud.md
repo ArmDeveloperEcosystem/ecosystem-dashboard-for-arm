@@ -5,7 +5,7 @@ category: Miscellaneous
 description: Genymotion is a simple, fast developer’s first choice Android emulator. It has evolved into a full-fledged "Android as a service" platform, available across multiple channels in the cloud and on the desktop.
 product_url: https://www.genymotion.com/
 works_on_arm: true
-release_date_on_arm: 5/11/2020
+release_date_on_arm: 2020/11/05
 
 optional_info:
     homepage_url: https://www.genymotion.com/

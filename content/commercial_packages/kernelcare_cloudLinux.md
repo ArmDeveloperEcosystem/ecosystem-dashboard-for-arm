@@ -5,7 +5,7 @@ category: DevOps
 description: KernelCare is a live kernel patching service that provides security patches and bugfixes for a range of popular Linux kernels that can be installed without rebooting the system.
 product_url: https://docs.tuxcare.com/live-patching-services/
 works_on_arm: true
-release_date_on_arm: 12/06/2020
+release_date_on_arm: 2020/06/12
 
 
 optional_info:

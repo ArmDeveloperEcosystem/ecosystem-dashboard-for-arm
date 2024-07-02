@@ -6,7 +6,7 @@ download_url: https://www.suse.com/download/sles/
 works_on_arm: true
 supported_minimum_version:
     version_number: 12 SP2
-    release_date: 8/11/2016
+    release_date: 2016/11/08
 
 
 optional_info:

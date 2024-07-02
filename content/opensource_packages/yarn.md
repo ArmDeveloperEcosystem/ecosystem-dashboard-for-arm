@@ -6,7 +6,7 @@ download_url: https://github.com/yarnpkg/berry/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.1.0
-    release_date: 25/10/2021
+    release_date: 2021/10/25
 
 
 optional_info:

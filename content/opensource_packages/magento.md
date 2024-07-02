@@ -6,7 +6,7 @@ download_url: https://github.com/magento/magento2/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.4.4
-    release_date: 12/04/2022
+    release_date: 2022/04/12
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://www.php.net/downloads.php
 works_on_arm: true
 supported_minimum_version:
     version_number: 8.0.0
-    release_date: 26/11/2020
+    release_date: 2020/11/26
 
 
 optional_info:

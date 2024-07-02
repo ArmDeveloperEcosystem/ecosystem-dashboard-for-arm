@@ -6,7 +6,7 @@ download_url: https://github.com/daytonaio/daytona/releases/
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.11.0
-    release_date: 12/04/2024
+    release_date: 2024/04/12
 
 optional_info:
     homepage_url: https://www.daytona.io/

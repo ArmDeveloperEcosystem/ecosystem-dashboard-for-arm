@@ -6,7 +6,7 @@ download_url: https://github.com/dgraph-io/dgraph/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v22.0.2
-    release_date: 12/17/2022
+    release_date: 2022/17/12
 
 
 optional_info:

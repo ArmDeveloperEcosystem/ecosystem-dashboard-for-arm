@@ -6,7 +6,7 @@ download_url: https://github.com/longhorn/longhorn/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.1.0
-    release_date: 18/12/2020
+    release_date: 2020/12/18
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://github.com/rails/rails/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.1.1
-    release_date: 07/08/2011
+    release_date: 2011/08/07
 
 
 optional_info:

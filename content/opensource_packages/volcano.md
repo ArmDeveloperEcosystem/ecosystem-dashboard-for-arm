@@ -6,7 +6,7 @@ download_url: https://hub.docker.com/u/volcanosh
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.1.0
-    release_date: 30/10/2020
+    release_date: 2020/10/30
 
 
 optional_info:

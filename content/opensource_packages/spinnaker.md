@@ -6,7 +6,7 @@ download_url: https://spinnaker.io/docs/setup/other_config/spin/#on-linux
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.30.0
-    release_date: 27/04/2023
+    release_date: 2023/04/27
 
 
 optional_info:

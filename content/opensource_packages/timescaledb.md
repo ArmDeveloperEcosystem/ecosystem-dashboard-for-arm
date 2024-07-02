@@ -6,7 +6,7 @@ download_url: https://github.com/timescale/timescaledb/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v2.6.0
-    release_date: 23/02/2022
+    release_date: 2022/02/23
 
 
 optional_info:

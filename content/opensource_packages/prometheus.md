@@ -6,7 +6,7 @@ download_url: https://prometheus.io/download/
 works_on_arm: true 
 supported_minimum_version: 
     version_number: 0.18 
-    release_date: 18/4/2016
+    release_date: 2016/04/18
 
 
 optional_info:

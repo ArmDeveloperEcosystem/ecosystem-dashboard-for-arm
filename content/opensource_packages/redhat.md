@@ -6,7 +6,7 @@ download_url: https://developers.redhat.com/products/rhel/download
 works_on_arm: true
 supported_minimum_version:
     version_number: 7.5
-    release_date: 10/4/2018
+    release_date: 2018/04/10
 
 
 optional_info:

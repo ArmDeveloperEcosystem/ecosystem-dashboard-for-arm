@@ -6,7 +6,7 @@ download_url: https://github.com/Snapchat/KeyDB/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 6.3.0
-    release_date: 12/05/2022
+    release_date: 2022/05/12
 
 
 optional_info:

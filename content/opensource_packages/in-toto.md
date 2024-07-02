@@ -6,7 +6,7 @@ download_url: https://github.com/in-toto/in-toto/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.1.1
-    release_date: 10/11/2017
+    release_date: 2017/11/10
 
 
 optional_info:

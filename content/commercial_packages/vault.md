@@ -5,7 +5,7 @@ category: DevOps
 description: HashiCorp Vault is an identity-based secrets and encryption management system.
 product_url: https://www.vaultproject.io/
 works_on_arm: true
-release_date_on_arm: 24/04/2017
+release_date_on_arm: 2017/04/24
 
 
 optional_info:

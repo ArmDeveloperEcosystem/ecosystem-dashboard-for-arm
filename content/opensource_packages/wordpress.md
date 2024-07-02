@@ -6,7 +6,7 @@ download_url: https://wordpress.org/download/releases/
 works_on_arm: true
 supported_minimum_version:
     version_number: 5.9
-    release_date: 25/01/2022
+    release_date: 2022/01/25
 
 
 optional_info:

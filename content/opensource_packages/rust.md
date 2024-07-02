@@ -6,7 +6,7 @@ download_url: https://github.com/rust-lang/rust/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.8.0
-    release_date: 10/09/2020
+    release_date: 2020/09/10
 
 optional_info:
     homepage_url: https://www.rust-lang.org/learn

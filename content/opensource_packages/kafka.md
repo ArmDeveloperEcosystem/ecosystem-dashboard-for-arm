@@ -6,7 +6,7 @@ download_url: https://kafka.apache.org/downloads
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.4.1
-    release_date: 6/06/2023
+    release_date: 2023/06/06
 
 
 optional_info:

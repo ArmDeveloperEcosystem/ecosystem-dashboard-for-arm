@@ -5,7 +5,7 @@ category: HPC
 description: Ansys LS-DYNA is the industry-leading explicit simulation software used for applications like drop tests, impact and penetration, smashes and crashes, occupant safety and more.
 product_url: https://www.ansys.com/products/structures/ansys-ls-dyna
 works_on_arm: true
-release_date_on_arm: 01/06/2023
+release_date_on_arm: 2023/06/01
 
 
 optional_info:

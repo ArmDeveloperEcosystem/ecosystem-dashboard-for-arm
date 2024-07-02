@@ -5,7 +5,7 @@ category: Monitoring/Observability
 description: Cribl LogStream delivers unique intelligence, control, and compliance over users' logs and metrics data in real-time.
 product_url: https://cribl.io/stream/
 works_on_arm: true
-release_date_on_arm: 20/04/2021
+release_date_on_arm: 2021/04/20
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://artifacts.videolan.org/x264/
 works_on_arm: true
 supported_minimum_version:
     version_number: r2971
-    release_date: 16/07/2019
+    release_date: 2019/07/16
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://nats.io/download/
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.0.4
-    release_date: 21/02/2018
+    release_date: 2018/02/21
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://github.com/open-telemetry/opentelemetry-go/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.1.0
-    release_date: 5/11/2023
+    release_date: 2023/11/05
 
 
 optional_info:

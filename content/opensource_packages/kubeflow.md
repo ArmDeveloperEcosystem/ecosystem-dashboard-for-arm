@@ -6,7 +6,7 @@ download_url: https://github.com/kubeflow/kubeflow/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.8.0
-    release_date: 1/11/2023
+    release_date: 2023/11/01
 
 
 optional_info:

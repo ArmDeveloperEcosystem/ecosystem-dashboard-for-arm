@@ -5,7 +5,7 @@ category: Networking
 description: F5 Nginx Plus is the software load balancer, reverse proxy, web server, & content cache with the enterprise features and support we expect.
 product_url: https://www.nginx.com/products/nginx/
 works_on_arm: true
-release_date_on_arm: 2/12/2014
+release_date_on_arm: 2014/12/02
 
 
 optional_info:

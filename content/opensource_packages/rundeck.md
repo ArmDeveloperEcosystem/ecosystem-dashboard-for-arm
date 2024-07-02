@@ -6,7 +6,7 @@ download_url: https://github.com/rundeck/rundeck/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v4.3.0
-    release_date: 03/06/2022
+    release_date: 2022/06/03
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://github.com/minio/minio/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: RELEASE.2017-01-25T03-14-52Z
-    release_date: 25/01/2017
+    release_date: 2017/01/25
 
 
 optional_info:

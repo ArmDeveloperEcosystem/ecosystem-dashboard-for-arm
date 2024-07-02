@@ -6,7 +6,7 @@ download_url: https://github.com/grails/grails-core/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.0.4
-    release_date: 29/07/2015
+    release_date: 2015/07/29
 
 
 optional_info:

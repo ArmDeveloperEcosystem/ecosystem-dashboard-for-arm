@@ -6,7 +6,7 @@ download_url: https://pinot.apache.org/download
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.1.0
-    release_date: 08/03/2019
+    release_date: 2019/03/08
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://github.com/rabbitmq/rabbitmq-server/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.0
-    release_date: 19/11/2012
+    release_date: 2012/11/19
 
 
 optional_info:

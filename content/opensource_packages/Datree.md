@@ -6,7 +6,7 @@ download_url: https://github.com/datreeio/datree/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.14.31-rc
-    release_date: 11/1/2021
+    release_date: 2021/01/11
 
 
 optional_info:

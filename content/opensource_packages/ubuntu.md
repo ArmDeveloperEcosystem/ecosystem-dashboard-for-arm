@@ -6,7 +6,7 @@ download_url: https://ubuntu.com/download/server/arm
 works_on_arm: true
 supported_minimum_version:
     version_number: 16.04
-    release_date: 21/10/2015
+    release_date: 2015/10/21
 
 
 optional_info:

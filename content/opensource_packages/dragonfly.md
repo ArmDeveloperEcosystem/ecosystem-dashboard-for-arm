@@ -6,7 +6,7 @@ download_url: https://github.com/dragonflyoss/Dragonfly2/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.0.5
-    release_date: 4/8/2022
+    release_date: 2022/08/04
 
 
 optional_info:

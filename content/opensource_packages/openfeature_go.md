@@ -6,7 +6,7 @@ download_url: https://github.com/open-feature/go-sdk/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.4.0
-    release_date: 20/09/2022
+    release_date: 2022/09/20
 
 
 optional_info:

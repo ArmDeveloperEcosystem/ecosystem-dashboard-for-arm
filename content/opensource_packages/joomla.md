@@ -6,7 +6,7 @@ download_url: https://downloads.joomla.org/
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.8.10
-    release_date: 26/06/2018
+    release_date: 2018/06/26
 
 
 optional_info:

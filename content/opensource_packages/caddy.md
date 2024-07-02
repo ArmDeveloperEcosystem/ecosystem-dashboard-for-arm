@@ -6,7 +6,7 @@ download_url: https://github.com/caddyserver/caddy/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.8.3
-    release_date: 26/04/2016
+    release_date: 2016/04/26
 
 
 optional_info:

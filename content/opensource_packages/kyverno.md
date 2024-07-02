@@ -6,7 +6,7 @@ download_url: https://github.com/kyverno/kyverno/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.6.0
-    release_date: 8/2/2022
+    release_date: 2022/02/08
 
 
 optional_info:

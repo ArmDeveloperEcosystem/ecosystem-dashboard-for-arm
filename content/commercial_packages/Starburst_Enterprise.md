@@ -5,7 +5,7 @@ category: Databases - Big-data
 description: Starburst Enterprise is a fully supported, production-tested and enterprise-grade distribution of open source Trino. It improves performance and security while making it easy to deploy, connect, and manage your Trino environment.
 product_url: https://www.starburst.io/platform/starburst-enterprise/
 works_on_arm: true
-release_date_on_arm: 16/08/2021
+release_date_on_arm: 2021/08/16
 
 
 optional_info:

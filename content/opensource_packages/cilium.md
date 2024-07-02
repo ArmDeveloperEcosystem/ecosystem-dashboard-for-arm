@@ -6,7 +6,7 @@ download_url: https://github.com/cilium/cilium/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.8.0
-    release_date: 22/06/2020
+    release_date: 2020/06/22
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://github.com/videolan/dav1d/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.1.0
-    release_date: 11/12/2018
+    release_date: 2018/12/11
 
 
 optional_info:

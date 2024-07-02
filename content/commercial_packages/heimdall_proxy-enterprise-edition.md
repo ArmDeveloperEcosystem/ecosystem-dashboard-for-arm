@@ -5,7 +5,7 @@ category: Database
 description: Heimdall Proxy Enterprise Edition is a software product designed to improve the performance, scalability, and security of database connections within an enterprise environment.
 product_url: https://www.heimdalldata.com/
 works_on_arm: true
-release_date_on_arm: 23/05/2022
+release_date_on_arm: 2022/05/23
 
 
 optional_info:

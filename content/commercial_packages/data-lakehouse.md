@@ -5,7 +5,7 @@ category: Database
 description: Data lakehouse is a new, open data management architecture that combines the flexibility, cost-efficiency, and scale of data lakes with the data management and ACID transactions of data warehouses, enabling business intelligence (BI) and machine learning (ML) on all data.
 product_url: https://www.databricks.com/product/data-lakehouse
 works_on_arm: true
-release_date_on_arm: 01/09/2022
+release_date_on_arm: 2022/09/01
 
 
 optional_info:

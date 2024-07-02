@@ -6,7 +6,7 @@ download_url: https://github.com/dotnet/aspnetcore/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v6.0.0
-    release_date: 8/11/2021
+    release_date: 2021/11/08
 
 
 optional_info:

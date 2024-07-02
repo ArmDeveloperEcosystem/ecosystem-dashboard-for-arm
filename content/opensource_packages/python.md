@@ -6,7 +6,7 @@ download_url: https://www.python.org/downloads/source/
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.7.3
-    release_date: 09/04/2012
+    release_date: 2012/04/09
 
 
 optional_info:

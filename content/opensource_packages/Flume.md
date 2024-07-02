@@ -6,7 +6,7 @@ download_url: https://flume.apache.org/releases/index.html
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.10.0
-    release_date: 13/06/2022
+    release_date: 2022/06/13
 
 
 optional_info:

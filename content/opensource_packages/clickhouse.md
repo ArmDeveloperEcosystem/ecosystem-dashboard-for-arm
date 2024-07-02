@@ -6,7 +6,7 @@ download_url: https://github.com/ClickHouse/ClickHouse/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 22.1
-    release_date: 18/01/2022
+    release_date: 2022/01/18
 
 
 optional_info:

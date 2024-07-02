@@ -6,7 +6,7 @@ download_url: https://github.com/open-policy-agent/opa/releases
 works_on_arm: true
 supported_minimum_version: 
     version_number: 0.37.0
-    release_date: 01/02/2022
+    release_date: 2022/02/01
 
   
 optional_info:

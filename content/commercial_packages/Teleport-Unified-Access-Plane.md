@@ -5,7 +5,7 @@ category: DevOps
 description: Teleport provides on-demand, least-privileged access to your infrastructure, on a foundation of cryptographic identity and zero trust, with built-in identity and policy governance.
 product_url: https://goteleport.com/
 works_on_arm: true
-release_date_on_arm: 31/10/2020
+release_date_on_arm: 2020/10/31
 
 
 optional_info:

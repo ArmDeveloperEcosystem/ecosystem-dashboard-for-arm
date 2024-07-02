@@ -5,7 +5,7 @@ category: Security applications
 description: Nessus is industry's most trusted vulnerability assessment solution to assess the modern attack surface.
 product_url: https://www.tenable.com/products/nessus
 works_on_arm: true
-release_date_on_arm: 19/5/2020
+release_date_on_arm: 2020/05/19
 
 
 optional_info:
