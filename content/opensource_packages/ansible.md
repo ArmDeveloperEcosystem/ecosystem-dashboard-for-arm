@@ -15,7 +15,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: https://learn.arm.com/install-guides/ansible/
-        partner_content: https://amperecomputing.com/solution/ansible/regression-results
+        partner_content: 
         official_docs: https://www.redhat.com/fr/blog/red-hat-enterprise-linux-arm-now-supported-aws?source=author&term=25831
     arm_recommended_minimum_version:
         version_number: 

@@ -14,7 +14,7 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/from-iot-to-the-cloud-part1/
+        arm_content: https://learn.arm.com/install-guides/dotnet/
         partner_content: https://aws.amazon.com/blogs/dotnet/powering-net-8-with-aws-graviton3-benchmarks/
         official_docs: https://learn.microsoft.com/en-us/dotnet/core/install/linux-ubuntu
     arm_recommended_minimum_version:
