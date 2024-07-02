@@ -1,5 +1,5 @@
 ---
-name: MS IIS
+name: Microsoft Internet Information Services (MS IIS)
 category: Web Server
 description: Microsoft Internet Information Services (IIS) is a flexible, secure, and manageable web server for hosting various applications on the web.
 download_url: https://www.iis.net/downloads
