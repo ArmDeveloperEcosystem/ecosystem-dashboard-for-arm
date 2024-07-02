@@ -5,7 +5,7 @@ category: DevOps
 description: Bitnami Containers provide ready-to-use, pre-configured container images for popular open-source applications and development stacks.
 product_url: https://bitnami.com/stacks/containers
 works_on_arm: true
-release_date_on_arm: 24/02/2023
+release_date_on_arm: 2023/02/24
 
 
 optional_info:

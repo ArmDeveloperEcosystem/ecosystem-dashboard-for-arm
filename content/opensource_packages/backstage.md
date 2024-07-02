@@ -6,7 +6,7 @@ download_url: https://github.com/backstage/backstage/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.2.0
-    release_date: 29/12/2020
+    release_date: 2020/12/29
 
 
 optional_info:

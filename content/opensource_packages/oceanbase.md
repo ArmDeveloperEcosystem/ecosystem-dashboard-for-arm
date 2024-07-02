@@ -6,7 +6,7 @@ download_url: https://github.com/oceanbase/oceanbase/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v3.1.3_CE
-    release_date: 30/03/2022
+    release_date: 2022/03/30
 
 
 optional_info:

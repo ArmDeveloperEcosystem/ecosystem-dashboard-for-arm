@@ -6,7 +6,7 @@ download_url: https://github.com/keptn/keptn/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.8.3
-    release_date: 21/05/2021
+    release_date: 2021/05/21
 
 
 optional_info:

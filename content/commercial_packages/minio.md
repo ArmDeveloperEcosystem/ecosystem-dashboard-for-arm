@@ -5,7 +5,7 @@ category: Storage
 description: Minio is a high-performance distributed Object Storage server, which is designed for large-scale private cloud infrastructure.
 product_url: https://min.io/
 works_on_arm: true
-release_date_on_arm: 25/01/2017
+release_date_on_arm: 2017/01/25
 
 
 optional_info:

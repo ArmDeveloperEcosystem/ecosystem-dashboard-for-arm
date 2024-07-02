@@ -5,7 +5,7 @@ category: Containers and Orchestration
 description: Flatcar Container Linux is a community Linux distribution designed for container workloads, with high security and low maintenance.
 product_url: https://www.flatcar.org/
 works_on_arm: true
-release_date_on_arm: 15/12/2021
+release_date_on_arm: 2021/12/15
 
 optional_info:
     homepage_url: https://www.flatcar.org/

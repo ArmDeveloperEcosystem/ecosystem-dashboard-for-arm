@@ -6,7 +6,7 @@ download_url: https://github.com/benoitc/gunicorn/releases?page=1
 works_on_arm: true
 supported_minimum_version:
     version_number: 17.5
-    release_date: 03/07/2013
+    release_date: 2013/07/03
 
 
 optional_info:

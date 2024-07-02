@@ -6,7 +6,7 @@ download_url: https://rockylinux.org/download
 works_on_arm: true
 supported_minimum_version:
     version_number: 8.4
-    release_date: 30/09/2021
+    release_date: 2021/09/30
 
 
 optional_info:

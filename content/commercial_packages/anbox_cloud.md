@@ -5,7 +5,7 @@ category: Containers and Orchestration
 description: Anbox Cloud is the mobile cloud computing platform delivered by Canonical.
 product_url: https://anbox-cloud.io/
 works_on_arm: true
-release_date_on_arm: 29/11/2021
+release_date_on_arm: 2021/11/29
 
 
 optional_info:

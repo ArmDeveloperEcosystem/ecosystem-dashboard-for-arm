@@ -6,7 +6,7 @@ download_url: https://cdimage.debian.org/debian-cd/current/arm64/iso-cd/
 works_on_arm: true
 supported_minimum_version:
     version_number: 8
-    release_date: 23/6/2018
+    release_date: 2018/06/23
 
 
 optional_info:

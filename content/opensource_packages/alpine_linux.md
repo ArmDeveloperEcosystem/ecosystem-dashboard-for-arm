@@ -6,7 +6,7 @@ download_url: https://www.alpinelinux.org/downloads/
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.5
-    release_date: 16/11/2016
+    release_date: 2016/11/16
 
 
 optional_info:

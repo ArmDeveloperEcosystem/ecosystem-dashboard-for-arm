@@ -6,7 +6,7 @@ download_url: https://hub.docker.com/u/dapriosamples
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.0.0
-    release_date: 17/02/2021
+    release_date: 2021/02/17
 
 
 optional_info:

@@ -5,7 +5,7 @@ category: DevOps
 description: The Buildkite Agent is an open-source toolkit written in Go for securely running build jobs on any device or network.
 product_url: https://buildkite.com/docs/agent/v3
 works_on_arm: true
-release_date_on_arm: 17/3/2016
+release_date_on_arm: 2016/03/17
 
 optional_info:
     homepage_url: https://buildkite.com/docs/agent/v3

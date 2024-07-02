@@ -6,7 +6,7 @@ download_url: https://www.elastic.co/downloads/elasticsearch
 works_on_arm: true
 supported_minimum_version:
     version_number: 7.7.0
-    release_date: 13/03/2020
+    release_date: 2020/03/13
 
 
 optional_info:

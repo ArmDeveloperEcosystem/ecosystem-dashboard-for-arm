@@ -6,7 +6,7 @@ download_url: https://kubernetes.io/releases/download/
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.5.0
-    release_date: 13/12/2016	
+    release_date: 2016/12/13	
 
 optional_info:
     homepage_url: https://kubernetes.io/

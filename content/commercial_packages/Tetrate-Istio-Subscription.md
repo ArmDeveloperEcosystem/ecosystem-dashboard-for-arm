@@ -5,7 +5,7 @@ category: DevOps
 description: TIS is a fully-supported, Enterprise-ready product from Tetrate that provides vetted builds of Istio, tested against all major cloud platforms.
 product_url: https://tetrate.io/tetrate-istio-subscription/
 works_on_arm: true
-release_date_on_arm: 12/4/2022
+release_date_on_arm: 2022/04/12
 
 optional_info:
     homepage_url: https://tetrate.io/tetrate-istio-subscription/

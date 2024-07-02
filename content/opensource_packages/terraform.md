@@ -6,7 +6,7 @@ download_url: https://developer.hashicorp.com/terraform/install
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.14.0
-    release_date: 1/12/2020
+    release_date: 2020/12/01
 
 
 optional_info:

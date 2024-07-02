@@ -6,7 +6,7 @@ download_url: https://www.elastic.co/downloads/kibana
 works_on_arm: true
 supported_minimum_version:
     version_number: 7.7.0
-    release_date: 13/5/2020
+    release_date: 2020/05/13
 
 
 optional_info:

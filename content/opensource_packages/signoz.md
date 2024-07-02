@@ -6,7 +6,7 @@ download_url: https://github.com/SigNoz/signoz/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.3.3
-    release_date: 03/08/2021
+    release_date: 2021/08/03
 
 
 optional_info:

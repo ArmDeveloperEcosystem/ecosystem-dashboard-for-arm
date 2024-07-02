@@ -5,7 +5,7 @@ category: HPC
 description: Rescale is a cloud platform designed for high-performance computing that provide scalable compute resources for simulations, engineering and scientific applications.
 product_url: https://rescale.com/
 works_on_arm: true
-release_date_on_arm: 14/07/2022
+release_date_on_arm: 2022/07/14
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://pypi.org/project/pyarrow/#files
 works_on_arm: true
 supported_minimum_version:
     version_number: 4.0.0
-    release_date: 26/04/2021
+    release_date: 2021/04/26
 
 
 optional_info:

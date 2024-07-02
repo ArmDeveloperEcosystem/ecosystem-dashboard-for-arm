@@ -6,7 +6,7 @@ download_url: https://mirror.openshift.com/pub/openshift-v4/aarch64/clients/ocp/
 works_on_arm: true
 supported_minimum_version:
     version_number: 4.11
-    release_date: 8/8/2022
+    release_date: 2022/08/08
 
 
 optional_info:

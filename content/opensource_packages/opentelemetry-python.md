@@ -6,7 +6,7 @@ download_url: https://github.com/open-telemetry/opentelemetry-python/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.1.0
-    release_date: 1/10/2019
+    release_date: 2019/10/01
 
 
 optional_info:

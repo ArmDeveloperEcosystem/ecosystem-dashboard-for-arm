@@ -6,7 +6,7 @@ download_url: https://containerd.io/downloads/
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.6.0
-    release_date: 16/02/2022
+    release_date: 2022/02/16
 
 
 optional_info:

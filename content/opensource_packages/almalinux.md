@@ -6,7 +6,7 @@ download_url: https://almalinux.org/get-almalinux/
 works_on_arm: true
 supported_minimum_version:
     version_number: 8.4
-    release_date: 26/05/2021
+    release_date: 2021/05/26
 
 
 optional_info:

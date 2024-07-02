@@ -6,7 +6,7 @@ download_url: https://github.com/webmproject/libvpx/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.4.0
-    release_date: 04/04/2015
+    release_date: 2015/04/04
 
 
 optional_info:

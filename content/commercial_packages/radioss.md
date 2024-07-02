@@ -5,7 +5,7 @@ category: HPC
 description: Radioss is a leading analysis solution to evaluate and optimize product performance for highly nonlinear problems under dynamic loadings. Used worldwide across all industry sectors, it improves the crashworthiness, safety, and manufacturability of complex designs.
 product_url: https://altair.com/radioss
 works_on_arm: true
-release_date_on_arm: 01/01/2021
+release_date_on_arm: 2021/01/01
 
 
 optional_info:

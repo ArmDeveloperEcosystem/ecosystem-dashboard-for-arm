@@ -6,7 +6,7 @@ download_url: https://github.com/open-feature/java-sdk/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.0.1
-    release_date: 24/06/2022
+    release_date: 2022/06/24
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://github.com/jaegertracing/jaeger/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.18.1
-    release_date: 19/06/2020
+    release_date: 2020/06/19
 
 
 optional_info:

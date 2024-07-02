@@ -6,7 +6,7 @@ download_url: https://github.com/envoyproxy/envoy/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v1.16.0
-    release_date: 8/10/2020
+    release_date: 2020/10/08
 
 
 optional_info:

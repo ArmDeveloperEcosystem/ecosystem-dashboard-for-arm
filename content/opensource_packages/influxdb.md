@@ -6,7 +6,7 @@ download_url: https://github.com/influxdata/influxdb/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.0.3
-    release_date: 15/12/2020
+    release_date: 2020/12/15
 
 
 optional_info:

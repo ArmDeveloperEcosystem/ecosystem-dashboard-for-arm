@@ -6,7 +6,7 @@ download_url: https://github.com/coredns/coredns/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.9.10
-    release_date: 04/11/2017
+    release_date: 2017/11/04
 
 
 optional_info:

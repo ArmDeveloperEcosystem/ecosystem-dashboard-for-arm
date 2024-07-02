@@ -5,7 +5,7 @@ category: Database
 description: InterSystems IRIS® makes it easier to build high-performance, machine learning-enabled applications that connect data and application silos.
 product_url: https://www.intersystems.com/data-platform/
 works_on_arm: true
-release_date_on_arm: 13/05/2020
+release_date_on_arm: 2020/05/13
 
 
 optional_info:

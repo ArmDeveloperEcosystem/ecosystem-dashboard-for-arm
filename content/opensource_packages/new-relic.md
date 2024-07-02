@@ -6,7 +6,7 @@ download_url: https://github.com/newrelic/infrastructure-agent/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.16.2
-    release_date: 01/04/2021
+    release_date: 2021/04/01
 
 
 optional_info:

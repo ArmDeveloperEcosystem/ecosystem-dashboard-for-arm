@@ -5,7 +5,7 @@ category: DevOps
 description: Terraform is an infrastructure as code tool. It is used to automate cloud infrastructure.
 product_url: https://developer.hashicorp.com/terraform
 works_on_arm: true
-release_date_on_arm: 15/10/2020
+release_date_on_arm: 2020/10/15
 
 
 optional_info:

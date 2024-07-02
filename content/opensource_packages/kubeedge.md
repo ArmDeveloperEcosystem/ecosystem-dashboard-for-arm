@@ -6,7 +6,7 @@ download_url: https://github.com/kubeedge/kubeedge/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.3.0
-    release_date: 15/05/2020
+    release_date: 2020/05/15
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://falco.org/docs/install-operate/download/
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.32.1
-    release_date: 11/07/2022
+    release_date: 2022/07/11
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://github.com/PowerShell/PowerShell/releases/
 works_on_arm: true
 supported_minimum_version:
     version_number: 7.0.0
-    release_date: 03/04/2020
+    release_date: 2020/04/03
 
 
 optional_info:

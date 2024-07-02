@@ -6,7 +6,7 @@ download_url: https://redis.io/download/
 works_on_arm: true
 supported_minimum_version:
     version_number: 4.0.0
-    release_date: 14/07/2017
+    release_date: 2017/07/14
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://github.com/projectcontour/contour/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.10.0
-    release_date: 8/3/2019
+    release_date: 2019/03/08
 
 
 optional_info:

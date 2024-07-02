@@ -5,7 +5,7 @@ category: Databases - Big-data
 description: Snowflake ODBC (Open Database Connectivity) is a driver that enables applications to connect to a Snowflake database using the ODBC interface.
 product_url: https://developers.snowflake.com/odbc/
 works_on_arm: true
-release_date_on_arm: 21/06/2022
+release_date_on_arm: 2022/06/21
 
 
 optional_info:

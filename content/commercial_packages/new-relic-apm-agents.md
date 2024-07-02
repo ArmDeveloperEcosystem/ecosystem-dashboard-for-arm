@@ -5,7 +5,7 @@ category: Monitoring/Observability
 description: Application Performance Monitoring (APM) provides a unified monitoring service for all the apps and microservices.
 product_url: https://docs.newrelic.com/docs/apm/new-relic-apm/getting-started/introduction-apm/
 works_on_arm: true
-release_date_on_arm: 5/8/2021
+release_date_on_arm: 2021/08/05
 
 
 optional_info:

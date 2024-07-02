@@ -5,7 +5,7 @@ category: Monitoring/Observability
 description: Grafana Enterprise includes access to enterprise plugins that take users existing data sources and allow user to drop them right into Grafana.
 product_url: https://grafana.com/grafana/
 works_on_arm: true
-release_date_on_arm: 15/01/2020
+release_date_on_arm: 2020/01/15
 
 
 optional_info:

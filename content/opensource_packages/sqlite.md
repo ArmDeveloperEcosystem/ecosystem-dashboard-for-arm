@@ -6,7 +6,7 @@ download_url: https://github.com/sqlite/sqlite/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.8.1
-    release_date: 17/10/2013
+    release_date: 2013/10/17
 
 
 optional_info:

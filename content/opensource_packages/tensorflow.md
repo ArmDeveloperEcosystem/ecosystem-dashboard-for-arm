@@ -6,7 +6,7 @@ download_url: https://pypi.org/project/tensorflow/2.15.0/#files
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.10.0
-    release_date: 7/9/2022
+    release_date: 2022/09/07
 
 
 optional_info:

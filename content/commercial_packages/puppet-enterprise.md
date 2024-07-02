@@ -5,7 +5,7 @@ category: DevOps
 description: Puppet Enterprise enables IT operations teams to manage more infrastructure and automate complex workflows at scale. Using Puppet Enterprise helps to achieve greater efficiency and better infrastructure management.
 product_url: https://www.puppet.com/products/puppet-enterprise
 works_on_arm: true
-release_date_on_arm: 01/11/2023
+release_date_on_arm: 2023/11/01
 
 
 optional_info:

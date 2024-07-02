@@ -6,7 +6,7 @@ download_url: https://github.com/kubevirt/kubevirt/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v0.41.0
-    release_date: 12/05/2021
+    release_date: 2021/05/12
 
 
 optional_info:

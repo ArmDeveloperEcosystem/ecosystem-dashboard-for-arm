@@ -6,7 +6,7 @@ download_url: https://github.com/openkruise/kruise/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.10.0
-    release_date: 14/12/2021
+    release_date: 2021/12/14
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://pypi.org/project/openfeature-sdk/#files
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.0.1
-    release_date: 13/10/2022
+    release_date: 2022/10/13
 
 
 optional_info:

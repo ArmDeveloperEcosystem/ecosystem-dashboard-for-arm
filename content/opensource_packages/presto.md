@@ -6,7 +6,7 @@ download_url: http://prestodb.io/getting-started/
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.273
-    release_date: 20/05/2022
+    release_date: 2022/05/20
 
 
 optional_info:

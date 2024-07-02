@@ -6,7 +6,7 @@ download_url: https://github.com/istio/istio/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.6.0-alpha.1
-    release_date: 10/04/2020
+    release_date: 2020/04/10
 
 
 optional_info:

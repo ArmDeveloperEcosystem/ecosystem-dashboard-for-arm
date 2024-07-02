@@ -5,7 +5,7 @@ category: DevOps
 description: CircleCI is a continuous integration(CI) and continuous delivery(CD) platform that can be used to implement DevOps practices.
 product_url: https://circleci.com/
 works_on_arm: true
-release_date_on_arm: 01/02/2021
+release_date_on_arm: 2021/02/01
 
 
 optional_info:

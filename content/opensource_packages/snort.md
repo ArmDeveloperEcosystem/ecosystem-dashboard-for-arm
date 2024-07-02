@@ -6,7 +6,7 @@ download_url: https://www.snort.org/downloads#
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.9.15.1
-    release_date: 6/1/2020
+    release_date: 2020/01/06
 
 
 optional_info:

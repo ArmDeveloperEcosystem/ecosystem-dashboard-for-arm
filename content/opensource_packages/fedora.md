@@ -6,7 +6,7 @@ download_url: https://fedoraproject.org/server/download
 works_on_arm: true
 supported_minimum_version:
     version_number: 28
-    release_date: 01/05/2018
+    release_date: 2018/05/01
 
 
 optional_info:

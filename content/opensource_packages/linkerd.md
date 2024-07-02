@@ -6,7 +6,7 @@ download_url: https://github.com/linkerd/linkerd2/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: edge-20.8.1
-    release_date: 12/08/2020
+    release_date: 2020/08/12
 
 
 optional_info:

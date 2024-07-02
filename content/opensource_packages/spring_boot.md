@@ -6,7 +6,7 @@ download_url: https://github.com/spring-projects/spring-boot/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.0.0
-    release_date: 12/09/2023
+    release_date: 2023/09/12
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://github.com/sendbird/sendbird-uikit-react/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v3.0.0
-    release_date: 12/07/2022
+    release_date: 2022/07/12
 
 
 optional_info:

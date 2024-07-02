@@ -6,7 +6,7 @@ download_url: https://www.couchbase.com/downloads/?family=couchbase-server
 works_on_arm: true
 supported_minimum_version:
     version_number: 7.1
-    release_date: 31/05/2022
+    release_date: 2022/05/31
 
 
 optional_info:

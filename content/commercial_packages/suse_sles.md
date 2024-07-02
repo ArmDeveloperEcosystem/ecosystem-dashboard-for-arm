@@ -5,7 +5,7 @@ category: Operating System
 description: SUSE Linux Enterprise Server (SLES) is a secure, adaptable and easy-to-manage Linux server platform that allows developers and administrators to deploy business-critical workloads on-premises, in the cloud and at the edge.
 product_url: https://www.suse.com/products/server/
 works_on_arm: true
-release_date_on_arm: 20/05/2020
+release_date_on_arm: 2020/05/20
 
 
 optional_info:

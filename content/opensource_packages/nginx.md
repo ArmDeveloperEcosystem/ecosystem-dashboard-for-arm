@@ -6,7 +6,7 @@ download_url: https://nginx.org/en/download.html
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.7.7
-    release_date: 28/10/2014
+    release_date: 2014/10/28
 
 
 optional_info:

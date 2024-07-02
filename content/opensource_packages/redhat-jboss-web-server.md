@@ -6,7 +6,7 @@ download_url: https://developers.redhat.com/products/red-hat-jboss-web-server/do
 works_on_arm: true
 supported_minimum_version:
     version_number: 6.0
-    release_date: 07/02/2024
+    release_date: 2024/02/07
 
 
 optional_info:

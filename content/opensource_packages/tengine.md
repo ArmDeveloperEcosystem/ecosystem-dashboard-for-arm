@@ -6,7 +6,7 @@ download_url: https://tengine.taobao.org/download.html
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.4.0
-    release_date: 8/02/2023
+    release_date: 2023/02/08
 
 
 optional_info:

@@ -5,7 +5,7 @@ category: Security applications
 description: Safeguard Authentication Services enables user to simplify and identity management based on user existing AD investment.
 product_url: https://www.oneidentity.com/one-identity-safeguard/
 works_on_arm: true
-release_date_on_arm: 01/05/2021
+release_date_on_arm: 2021/05/01
 
 
 optional_info:

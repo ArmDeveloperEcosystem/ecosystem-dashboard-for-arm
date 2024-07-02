@@ -5,7 +5,7 @@ category: Operating System
 description: FortiGate VM delivers AI-powered advanced threat protection across clouds and data centers.
 product_url: https://www.fortinet.com/products/private-cloud-security/fortigate-virtual-appliances
 works_on_arm: true
-release_date_on_arm: 01/09/2021
+release_date_on_arm: 2021/09/01
 
 
 optional_info:

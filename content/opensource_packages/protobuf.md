@@ -6,7 +6,7 @@ download_url: https://github.com/protocolbuffers/protobuf/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v3.5.0
-    release_date: 16/11/2017
+    release_date: 2017/11/16
  
  
 optional_info:

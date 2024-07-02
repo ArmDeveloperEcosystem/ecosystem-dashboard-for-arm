@@ -6,7 +6,7 @@ download_url: https://github.com/aquasecurity/trivy/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.0.1
-    release_date: 7/5/2019
+    release_date: 2019/05/07
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://github.com/cloud-custodian/cloud-custodian/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.8.2
-    release_date: 17/04/2016
+    release_date: 2016/04/17
 
 
 optional_info:

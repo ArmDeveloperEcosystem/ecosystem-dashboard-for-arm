@@ -5,7 +5,7 @@ category: Monitoring/Observability
 description: Infrastructure monitoring agent is a lightweight executable file that collects data about the hosts. It also reports data from some third party services, if enabled, and also log data.
 product_url: https://newrelic.com/platform/infrastructure
 works_on_arm: true
-release_date_on_arm: 26/10/2021
+release_date_on_arm: 2021/10/26
 
 optional_info:
     homepage_url: https://newrelic.com/platform/infrastructure

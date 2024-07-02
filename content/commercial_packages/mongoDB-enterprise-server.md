@@ -5,7 +5,7 @@ category: Database
 description: MongoDB Enterprise Server is the commercial edition of MongoDB, which includes additional capabilities such as in-memory storage engine for high throughput and low latency, advanced security features like LDAP and Kerberos access controls, and encryption for data at rest.
 product_url: https://www.mongodb.com/
 works_on_arm: true
-release_date_on_arm: 29/11/2016
+release_date_on_arm: 2016/11/29
 
 
 optional_info:

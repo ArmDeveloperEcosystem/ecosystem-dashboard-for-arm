@@ -6,7 +6,7 @@ download_url: https://github.com/signalfx/signalfx-agent/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v5.4.3
-    release_date: 08/26/2020
+    release_date: 2020/26/08
 
 
 optional_info:

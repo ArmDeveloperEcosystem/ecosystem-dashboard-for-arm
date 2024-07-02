@@ -6,7 +6,7 @@ download_url: http://ftp.am.debian.org/debian/pool/main/l/linux/
 works_on_arm: true
 supported_minimum_version:
     version_number: 4.18
-    release_date: 12/08/2018
+    release_date: 2018/08/12
 
 
 optional_info:

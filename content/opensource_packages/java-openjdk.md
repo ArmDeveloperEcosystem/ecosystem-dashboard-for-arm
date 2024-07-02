@@ -6,7 +6,7 @@ download_url: https://jdk.java.net/archive/
 works_on_arm: true
 supported_minimum_version:
     version_number: 8
-    release_date: 18/3/2014
+    release_date: 2014/03/18
 
 
 optional_info:

@@ -5,7 +5,7 @@ category: Operating System
 description: VMware VSphere is VMware's virtualization platform, which transforms data centers into aggregated computing infrastructures that include CPU, storage, and networking resources.
 product_url: https://www.vmware.com/products/vsphere.html
 works_on_arm: true
-release_date_on_arm: 06/10/2020
+release_date_on_arm: 2020/10/06
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://github.com/fluxcd/flux2/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.0.21
-    release_date: 04/09/2020
+    release_date: 2020/09/04
 
 
 optional_info:

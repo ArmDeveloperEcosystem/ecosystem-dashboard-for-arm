@@ -5,7 +5,7 @@ category: Databases - noSQL
 description: Redis Enterprise is an enterprise-grade Redis, available both on-premises and in the cloud. Redis Enterprise simplifies operations, scaling, and multi-tenancy, includes many integrations, and provides multiple tiers of support.
 product_url: https://redis.io/about/redis-enterprise/
 works_on_arm: true
-release_date_on_arm: 26/09/2017
+release_date_on_arm: 2017/09/26
 
 
 optional_info:

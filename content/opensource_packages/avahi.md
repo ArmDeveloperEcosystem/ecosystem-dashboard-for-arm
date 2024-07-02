@@ -6,7 +6,7 @@ download_url: https://avahi.org/
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.6.31
-    release_date: 15/02/2012
+    release_date: 2012/02/15
 
 
 optional_info:

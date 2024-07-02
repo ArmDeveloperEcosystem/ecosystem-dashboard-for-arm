@@ -6,7 +6,7 @@ download_url: https://developers.redhat.com/products/ansible/download
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.4.0
-    release_date: 15/08/2017
+    release_date: 2017/08/15
 
 
 optional_info:

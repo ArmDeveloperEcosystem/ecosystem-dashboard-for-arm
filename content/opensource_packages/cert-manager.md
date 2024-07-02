@@ -6,7 +6,7 @@ download_url: https://github.com/cert-manager/cert-manager/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.7.0
-    release_date: 11/3/2019
+    release_date: 2019/03/11
 
 
 optional_info:

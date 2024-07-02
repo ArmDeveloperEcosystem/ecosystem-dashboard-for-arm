@@ -5,7 +5,7 @@ category: Operating System
 description: Microsoft Windows is a product line of proprietary graphical operating systems developed and marketed by Microsoft.
 product_url: https://www.microsoft.com/en-in/windows
 works_on_arm: true
-release_date_on_arm: 15/11/2018
+release_date_on_arm: 2018/11/15
 
 
 optional_info:
