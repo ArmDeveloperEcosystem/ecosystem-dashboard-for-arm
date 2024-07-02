@@ -14,7 +14,7 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://community.arm.com/arm-community-blogs/b/internet-of-things-blog/posts/where-no-web-server-has-gone-before
+        arm_content: 
         partner_content: https://aws.amazon.com/blogs/compute/migrating-aws-lambda-functions-to-arm-based-aws-graviton2-processors/
         official_docs: https://nodejs.org/en/learn/getting-started/introduction-to-nodejs
     arm_recommended_minimum_version:
