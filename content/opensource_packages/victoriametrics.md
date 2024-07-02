@@ -1,7 +1,7 @@
 ---
 name: VictoriaMetrics
 category: Database
-description: VictoriaMetrics is a fast, cost-effective monitoring solution and time series database
+description: VictoriaMetrics is a cost-effective monitoring solution and time series database.
 download_url: https://github.com/VictoriaMetrics/operator/releases
 works_on_arm: true
 supported_minimum_version:
