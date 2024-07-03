@@ -1,8 +1,26 @@
 # How to fill out metadata
-This area provides instructions on how to fill out a generic package.md file under the `/content/sw_database/` directory. Please copy an existing example and fill out a new package file based on the below instructions.
+The basic process to contribute a package is to:
+1. Fork this repository.
+2. Add new packages by copying and replacing an existing .md file. Contribute open-source packages in `/content/opensource_packages`, and commercial packages in `/content/commerial_packages`.
+3. Open a Pull Request for review.
+
+## Examples of packages to add
+These are the types of packages you should look to contribution. In short, if it would help a developer migrate to Arm, it should be included.
+
+| **Category**                             | **Examples**                                                                 |
+|----------------------------------------  |------------------------------------------------------------------------------|
+| **Languages (Interpreted and Compiled)** | Python, Java, Ruby, Perl, PHP, JavaScript / C++, C#, Go, Rust, Fortran, Swift |   
+| **Tools and Libraries**                  | x265, OpenSSL, Boost, TensorFlow, NumPy, libc, htop, perf, nmon, sysstat, dstat, gdb, valgrind, strace, CMake, Make, Bazel, apt, yum, pacman, iptables, firewalld | 
+| **Frameworks and Middleware**            | Django, Spring, Ruby on Rails, Express, Laravel, Apache Hadoop, Apache Spark, PyTorch, Keras, scikit-learn, Istio, Consul, Jenkins, GitLab CI/CD, CircleCI, RabbitMQ, Apache Kafka, Kong, NGINX, Snort  | 
+| **Databases**                            | MySQL, PostgreSQL, SQLite, MongoDB, Cassandra, Redis                         |  
+| **Virtualization/Containerization**      | KVM, QEMU, Docker, Kubernetes, Docker Swarm, LXC/LXD                         | 
+| **HPC Packages**                         | OpenMPI, MPICH, SLURM, Torque, HDF5, OpenBLAS, ATLAS, BLIS, LAPACK, PETSc, FFTW |
 
 
+If it is not clear from existing package examples, view how to populate package metadata by expanding the section below.
 
+<details>
+  <summary>Metadata specific instructions</summary>
 
 # Required Information
 All of this data must be populated for this package to submit a valid package.
@@ -85,11 +103,4 @@ This field is for ONE getting started link that is from the official package doc
 
 `- official_docs:`
 
-
-
-
-
-
-
-
-
+</details>
