@@ -3,7 +3,7 @@ name: Kubermatic
 category: DevOps
 description: Kubermatics manages the automation of thousands of Kubernetes clusters across multicloud, on-prem and edge.
 download_url:
-works_on_arm: FALSE
+works_on_arm: false
 supported_minimum_version:
     version_number:
     release_date:
