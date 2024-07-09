@@ -15,7 +15,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: https://community.arm.com/oss-platforms/w/docs/510/spawn-a-linux-virtual-machine-on-arm-using-qemu-kvm
-        partner_content: https://cloud.google.com/kubernetes-engine/docs/how-to/build-multi-arch-for-arm
+        partner_content: 
         official_docs: https://www.qemu.org/download/#linux
     arm_recommended_minimum_version:
         version_number:
