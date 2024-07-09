@@ -24,6 +24,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum: 
     release_notes__recommended_minimum:
-    other_info: Support not explicitly mentioned, but threads indicate this version and above work on Arm: https://pkgs.org/download/lammps and https://matsci.org/t/support-for-linux-arm64/37378.
+    other_info: Support not explicitly mentioned, but threads indicate this version and above work on Arm - pkgs.org/download/lammps and matsci.org/t/support-for-linux-arm64/37378.
 
 ---
