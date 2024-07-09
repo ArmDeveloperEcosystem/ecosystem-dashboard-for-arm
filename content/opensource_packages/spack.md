@@ -1,8 +1,8 @@
 ---
 name: Spack
 category: HPC
-description: Spack is a package management tool designed to support multiple versions and configurations of software on a wide variety of platforms and environments. 
-download_url: https://github.com/spack/spack
+description: Spack is a package management tool. It supports software across versions and configurations on a wide variety of environments. 
+download_url: https://github.com/spack/spack/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.14.0
