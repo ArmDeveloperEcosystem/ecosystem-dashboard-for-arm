@@ -6,7 +6,7 @@ download_url: https://github.com/spack/spack
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.14.0
-    release_date: 2020/03/01
+    release_date: 2020/02/23
 
 
 optional_info:
@@ -22,7 +22,7 @@ optional_info:
         release_date:
 
 optional_hidden_info:
-    release_notes__supported_minimum: 
+    release_notes__supported_minimum: https://github.com/spack/spack/releases/tag/v0.14.0
     release_notes__recommended_minimum:
     other_info:
 
