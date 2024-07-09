@@ -1,5 +1,5 @@
 ---
-name: Bazel - Google
+name: Bazel
 category: Compilers/Tools
 description: Bazel is a build and test tool. It offers support for multi-platform, uses human-readable language to describe the build properties, reliability, is fast, and can be extended to support any other language or framework.
 download_url: https://github.com/bazelbuild/bazel/releases
