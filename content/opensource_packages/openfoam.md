@@ -1,12 +1,12 @@
 ---
 name: OpenFOAM
 category: HPC
-description: 
+description: OpenFOAM is a C++ toolbox often used for computational fluid dynamics (CFD).
 download_url: https://www.openfoam.com/download/release-history
 works_on_arm: true
 supported_minimum_version:
-    version_number: v1812
-    release_date: 2018/01/01
+    version_number: v8
+    release_date: 2020/07/22
 
 
 optional_info:
@@ -22,7 +22,7 @@ optional_info:
         release_date:
 
 optional_hidden_info:
-    release_notes__supported_minimum: 
+    release_notes__supported_minimum: https://openfoam.org/release/8/
     release_notes__recommended_minimum:
     other_info:
 
