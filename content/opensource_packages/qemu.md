@@ -1,5 +1,5 @@
 ---
-name: Linaro - QEMU
+name: QEMU
 category: Compilers/Tools
 description: QEMU is an open-source emulator that allows developers to run ARM-based systems on a non-ARM host, providing a complete system emulation.
 download_url: https://download.qemu.org/
@@ -10,7 +10,7 @@ supported_minimum_version:
 
 
 optional_info:
-    homepage_url: https://ecosystemdashboard.linaro.org/Qemu/
+    homepage_url:
     support_caveats:
     alternative_options:
     getting_started_resources:
