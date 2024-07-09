@@ -1,8 +1,8 @@
 ---
-name: WRF
+name: Weather Research & Forecasting Model (WRF)
 category: HPC
-description: A state of the art mesoscale numerical weather prediction system designed for both atmospheric research and operational forecasting applications
-download_url: https://www.mmm.ucar.edu/models/wrf
+description: The Weather Research & Forcasting Model is a state of the art mesoscale numerical weather prediction system. It is designed for operational forecasting applications and atmospheric research.
+download_url: https://github.com/wrf-model/WRF/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.9.1.1
@@ -24,6 +24,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum: 
     release_notes__recommended_minimum:
-    other_info:
+    other_info: No release notes found before v4, but proven to work in the Arm blog linked in Arm content.
 
 ---
