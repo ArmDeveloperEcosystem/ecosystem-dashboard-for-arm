@@ -6,7 +6,7 @@ download_url: https://hub.docker.com/r/litmuschaos/chaos-operator/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.9.0
-    release_date: 15/10/2020
+    release_date: 2020/10/15
 
 
 optional_info:

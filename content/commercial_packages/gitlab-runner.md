@@ -5,7 +5,7 @@ category: DevOps
 description: GitLab Runner is an application that works with GitLab CI/CD to run jobs in a pipeline.
 product_url: https://docs.gitlab.com/runner/
 works_on_arm: true
-release_date_on_arm: 16/06/2021
+release_date_on_arm: 2021/06/16
 
 
 optional_info:

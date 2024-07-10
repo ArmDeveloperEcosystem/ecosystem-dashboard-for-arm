@@ -6,7 +6,7 @@ download_url: https://github.com/spdk/spdk/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 22.09
-    release_date: 30/12/2022
+    release_date: 2022/12/30
 
 
 optional_info:

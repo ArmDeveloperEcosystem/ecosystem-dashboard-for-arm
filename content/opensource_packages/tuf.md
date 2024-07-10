@@ -6,7 +6,7 @@ download_url: https://github.com/theupdateframework/python-tuf/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.7.5
-    release_date: 27/09/2013
+    release_date: 2013/09/27
 
 
 optional_info:

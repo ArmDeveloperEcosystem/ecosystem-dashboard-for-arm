@@ -6,7 +6,7 @@ download_url: https://github.com/nsqio/nsq/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.2.1
-    release_date: 16/07/2021
+    release_date: 2021/07/16
 
 
 optional_info:

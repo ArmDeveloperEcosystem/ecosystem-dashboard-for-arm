@@ -5,7 +5,7 @@ category: Security applications
 description: Falcon platform leverages real-time indicators of attack, threat intelligence, evolving adversary tradecraft and enriched telemetry from across the enterprise to deliver hyper-accurate detections, automated protection and remediation, elite threat hunting, and prioritized observability of vulnerabilities.
 product_url: https://www.crowdstrike.com/falcon-platform/
 works_on_arm: true
-release_date_on_arm: 03/12/2019
+release_date_on_arm: 2019/12/03
 
 
 optional_info:

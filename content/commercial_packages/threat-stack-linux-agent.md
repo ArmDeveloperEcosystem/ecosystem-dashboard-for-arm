@@ -5,7 +5,7 @@ category: Security applications
 description: The Threat Stack host-based Agent uses the Linux Audit Framework to collect file, network, and process data.
 product_url: https://www.f5.com/
 works_on_arm: true
-release_date_on_arm: 13/4/2021
+release_date_on_arm: 2021/04/13
 
 
 optional_info:

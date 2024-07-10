@@ -6,7 +6,7 @@ download_url: https://github.com/thoughtworks/talisman/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v1.28.1
-    release_date: 13/08/2022
+    release_date: 2022/08/13
 
 
 optional_info:

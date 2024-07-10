@@ -6,7 +6,7 @@ download_url: https://pypi.org/project/xxhash/#files
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.4.4
-    release_date: 20/06/2020
+    release_date: 2020/06/20
 
 
 optional_info:

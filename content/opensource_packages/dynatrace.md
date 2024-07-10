@@ -6,7 +6,7 @@ download_url: https://github.com/Dynatrace/dynatrace-operator/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.14.0
-    release_date: 13/10/2023
+    release_date: 2023/10/13
 
 
 optional_info:

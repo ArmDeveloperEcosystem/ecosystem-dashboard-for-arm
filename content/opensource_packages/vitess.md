@@ -6,7 +6,7 @@ download_url: https://github.com/vitessio/vitess/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 5.0.0
-    release_date: 14/01/2020
+    release_date: 2020/01/14
 
 
 optional_info:

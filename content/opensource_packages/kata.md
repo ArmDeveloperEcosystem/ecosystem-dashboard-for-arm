@@ -6,7 +6,7 @@ download_url: https://github.com/kata-containers/kata-containers/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.2.0
-    release_date: 23/10/2023
+    release_date: 2023/10/23
 
 
 optional_info:

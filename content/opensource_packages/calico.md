@@ -6,7 +6,7 @@ download_url: https://github.com/projectcalico/calico/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.21.3
-    release_date: 13/01/2022
+    release_date: 2022/01/13
 
 optional_info:
     homepage_url: https://docs.tigera.io/calico/latest/about/

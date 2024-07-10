@@ -6,7 +6,7 @@ download_url: https://pypi.org/project/numpy/#files
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.19.0
-    release_date: 21/06/2020
+    release_date: 2020/06/21
 
 
 optional_info:

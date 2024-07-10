@@ -6,7 +6,7 @@ download_url: https://grafana.com/grafana/download
 works_on_arm: true
 supported_minimum_version:
     version_number: 5.2.0
-    release_date: 27/06/2018
+    release_date: 2018/06/27
 
 
 optional_info:

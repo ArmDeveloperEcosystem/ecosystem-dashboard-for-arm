@@ -6,7 +6,7 @@ download_url: https://www.oracle.com/in/database/technologies/oracle-database-so
 works_on_arm: true
 supported_minimum_version:
     version_number: 19c
-    release_date: 30/01/2019
+    release_date: 2019/01/30
 
 
 optional_info:

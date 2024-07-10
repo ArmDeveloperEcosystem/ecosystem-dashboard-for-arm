@@ -6,7 +6,7 @@ download_url: https://github.com/open-quantum-safe/liboqs/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.7.1
-    release_date: 17/12/2021
+    release_date: 2021/12/17
 
 
 optional_info:

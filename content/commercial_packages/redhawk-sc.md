@@ -5,7 +5,7 @@ category: HPC
 description: RedHawk-SC is the proven and trusted industry leader for power noise and reliability signoff for digital IP and SoCs down to 3nm and built on cloud-native elastic compute infrastructure.
 product_url: https://www.ansys.com/products/semiconductors/ansys-redhawk-sc
 works_on_arm: true
-release_date_on_arm: 01/06/2023
+release_date_on_arm: 2023/06/01
 
 
 optional_info:

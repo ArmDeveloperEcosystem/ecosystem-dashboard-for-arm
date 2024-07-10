@@ -6,7 +6,7 @@ download_url: https://cassandra.apache.org/_/download.html
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.0.14
-    release_date: 4/10/2017
+    release_date: 2017/10/04
 
 
 optional_info:

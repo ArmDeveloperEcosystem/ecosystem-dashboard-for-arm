@@ -5,7 +5,7 @@ category: DevOps
 description: Chef Infra Client requests all the cookbook files (including recipes, templates, resources, providers, attributes, and libraries) that it needs for every action identified in the run-list from the Chef Infra Server.
 product_url: https://docs.chef.io/ctl_chef_client/
 works_on_arm: true
-release_date_on_arm: 01/02/2021
+release_date_on_arm: 2021/02/01
 
 
 optional_info:

@@ -5,7 +5,7 @@ category: HPC
 description: Simcenter STAR-CCM+ is a multiphysics CFD software that enables CFD engineers to model the complexity and explore the possibilities of products operating under real-world conditions.
 product_url: https://plm.sw.siemens.com/en-US/simcenter/fluids-thermal-simulation/star-ccm/
 works_on_arm: true
-release_date_on_arm: 23/02/2023
+release_date_on_arm: 2023/02/23
 
 
 optional_info:

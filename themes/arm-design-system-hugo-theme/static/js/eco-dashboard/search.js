@@ -31,31 +31,155 @@ function sanitizeInput(potentially_unsafe_str) {
         // a-z
         // A-Z
         // 0-9 digits
-        // special characters: .-=
-            // - very common in code
-            // = needed for param filtering to work easily
-    let sanitized_str = potentially_unsafe_str.replaceAll(/[^a-z A-Z 0-9 .=-]+/g, "");
+        // special characters: .-
+
+        
+        // Replace \ + & with a single space
+    let sanitized_str = potentially_unsafe_str
+        .replaceAll(/[^a-zA-Z0-9 .\-/]+/g, "")      // Sanitize by removing disallowed characters      (prevent injections)
+        .replaceAll(/[\s\+]+/g, ' ');               // Replace spaces and plus signs with a single space
+    
     return sanitized_str
 }
 
 
+function normalizePackageName(input) {
+    // Azul Platform Prime (with Zing)   -->     azul-platform-prime-with-zing
+    // .NET                              -->     .net
+    // Drone (Runner and Server)           -->     drone-runner-and-server
+        // & will auto-break URLs!! Cannot use it regardless
+    // Clang/LLVM                        -->     clang__llvm
+        
+
+    return input
+        .replace(/\//g, '__')           // Replace '/' with '__'
+        .replace(/[\s\+]+/g, '-')       // Replace spaces and plus signs with hyphens
+        .replace(/[^\w\-.()]+/g, '')    // Remove all non-word characters except hyphens, dots, parentheses
+        .toLowerCase();                 // Convert to lowercase
+}
+
+
+
+function updatePageMetadata(package_dom) {
+
+    console.log(package_dom);
+    
+    let data_woa = package_dom.getAttribute('data-woa');
+    const does_it_woa = data_woa === 'true';
+
+    // Define params
+    let pkg_name = package_dom.getAttribute('data-title');
+    let page_title = pkg_name+" - Ecosystem Dashboard for Arm";
+    let social_title = pkg_name+" - Ecosystem Dashboard for Arm";
+    let social_description = pkg_name+" works on Arm servers! Discover the supported versions and getting started resources in the Ecosystem Dashboard for Arm.";
+    if (!does_it_woa) {
+        social_description = "View "+pkg_name+" in the Ecosystem Dashboard for Arm and discover if it runs on Arm (and if not, what alternative packages do).";
+    }
+
+
+
+
+    // Update titles
+    document.title = page_title;
+
+    const ogTitle = document.querySelector('meta[property="og:title"]');
+    if (ogTitle) {
+        ogTitle.setAttribute('content', social_title);
+    }
+
+    const twitterTitle = document.querySelector('meta[name="twitter:title"]');
+    if (twitterTitle) {
+        twitterTitle.setAttribute('content', social_title);
+    }
+
+
+    // Update descriptions
+    const ogDescription = document.querySelector('meta[property="og:description"]');
+    if (ogDescription) {
+        ogDescription.setAttribute('content', social_description);
+    }
+
+    const twitterDescription = document.querySelector('meta[name="twitter:description"]');
+    if (twitterDescription) {
+        twitterDescription.setAttribute('content', social_description);
+    }
+
+    const metaDescription = document.querySelector('meta[name="description"]');
+    if (metaDescription) {
+        metaDescription.setAttribute('content', social_description);
+    }
+}
+
 function URLsearchAndfiltering(url_str) {
+    let search_box = document.getElementById('search-box');
+
     // Prep params using built in JS functions
     const params = new URLSearchParams(url_str);
 
-    // get Search string
+    // Four possible param types:
+    //    1. Search  (?search=)
+    //    2. Filter  (?license=)
+    //    3. Filter  (?category=)
+    //    4. Package (?package=)    must exactly match a URLIZED package name, or default to main page
     const search_string = sanitizeInput(params.get('search') || '');
+    const license_filter_string = sanitizeInput(params.get('license') || '');
+    const category_filter_string = sanitizeInput(params.get('category') || '');
+    const package_string = sanitizeInput(params.get('package') || '');
 
-    // get filters to activate
-        // TO DO
-    
-    // Activate searching & filtering.
-        // Call search handler to execute search
+    console.log(params);
+
+    // Package first, prioritize. Then others.
+    if (package_string) {
+
+        // Format string for use in querySelector
+        let normalized_package_string = normalizePackageName(package_string);
+        
+        let package_dom = document.querySelector(`[data-title-urlized="${normalized_package_string}"]`);
+
+        if (package_dom) {
+            // show dom, hide the others
+            const all_path_cards = document.querySelectorAll('.search-div');
+            // hide all results except this package
+            let results_to_hide = [...all_path_cards].filter(card => card !== package_dom);
+            hideElements(all_path_cards,results_to_hide);
+            // Open dom
+            rowClickHandler(package_dom);
+            updateShownNumber();
+
+            // scroll to search bar
+            let search_box = document.getElementById('search-box');
+            let search_box_position = search_box.getBoundingClientRect();
+            var scrollPosition = window.pageYOffset + search_box_position.top - 100; // scrolls 100px above element
+            window.scrollTo({
+                top: scrollPosition,
+                behavior: 'smooth'
+            });
+            
+            updatePageMetadata(package_dom);
+        }
+    }
+    else {
         if (search_string) {
             search_box.setAttribute('search-value',search_string);
             searchHandler(search_string);
         }
-        // TO DO ADD FILTER HANDELER!
+        if (license_filter_string) {
+            let license_input_element = document.getElementById("filter-item-"+license_filter_string);
+            if (license_input_element) {
+                license_input_element.checked = true;
+                filterHandler_radio(license_input_element);
+            }
+        }    
+        if (category_filter_string) {
+            // translate '/' to '__' to enable ai/ml/hpc finding
+            let category_filter_string_updated = category_filter_string.replaceAll('/','__');
+            let category_filter_element = document.getElementById("filter-item-"+category_filter_string_updated);
+            if (category_filter_element) {
+                category_filter_element.checked = true;
+                filterHandler_radio(category_filter_element)
+            }
+        }    
+    }
 
 }
 
@@ -89,6 +213,7 @@ function hideElements(all_path_cards,results_to_hide) {
     // Hide elements in array (and actively show all OTHER elements)
     for (let card of all_path_cards) {
         if (results_to_hide.includes(card)) { 
+                    
             // Hide card and subrow!
             card.setAttribute('hidden',true);
             // Remove 'clicked' attribute

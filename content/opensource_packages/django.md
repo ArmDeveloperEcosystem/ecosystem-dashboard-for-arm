@@ -6,7 +6,7 @@ download_url: https://github.com/django/django/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.2.6
-    release_date: 08/05/2012
+    release_date: 2012/05/08
 
 
 optional_info:

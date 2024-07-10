@@ -6,7 +6,7 @@ download_url:  https://hadoop.apache.org/release.html
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.3.0
-    release_date: 14/07/2020
+    release_date: 2020/07/14
 
 
 optional_info:

@@ -5,7 +5,7 @@ category: Security applications
 description: Tailscale is a VPN service that makes the devices and applications you own accessible anywhere in the world, securely and effortlessly.
 product_url: https://tailscale.com/
 works_on_arm: true
-release_date_on_arm: 19/11/2021
+release_date_on_arm: 2021/11/19
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://github.com/intel/isa-l/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: v2.26.0
-    release_date: 26/03/2019
+    release_date: 2019/03/26
 
 
 optional_info:

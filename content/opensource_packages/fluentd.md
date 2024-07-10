@@ -6,7 +6,7 @@ download_url: https://github.com/fluent/fluentd/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.12.32
-    release_date: 3/2/2017
+    release_date: 2017/02/03
 
 
 optional_info:

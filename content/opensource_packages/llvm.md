@@ -6,7 +6,7 @@ download_url: https://releases.llvm.org/download.html
 works_on_arm: true
 supported_minimum_version:
     version_number: 7.1.0
-    release_date: 11/05/2019
+    release_date: 2019/05/11
 
 
 optional_info:

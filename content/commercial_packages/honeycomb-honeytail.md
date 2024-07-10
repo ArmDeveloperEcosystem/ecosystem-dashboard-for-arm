@@ -5,7 +5,7 @@ category: Monitoring/Observability
 description: Honeytail is Honeycomb's agent for ingesting log file data into Honeycomb and making it available for exploration.
 product_url: https://docs.honeycomb.io/getting-data-in/logs/honeytail/
 works_on_arm: true
-release_date_on_arm: 29/02/2020
+release_date_on_arm: 2020/02/29
 
 
 optional_info:

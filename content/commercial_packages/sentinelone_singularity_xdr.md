@@ -5,7 +5,7 @@ category: Security applications
 description: SentinelOne Singularity XDR unifies and extends detection and response capability across multiple security layers, including endpoint, cloud, identity, network, and mobile, providing security teams with centralized end-to-end enterprise visibility, powerful analytics, and automated response across a large cross-section of the technology stack.
 product_url: https://www.sentinelone.com/resources/singularity-xdr/
 works_on_arm: true
-release_date_on_arm: 20/07/2022
+release_date_on_arm: 2022/07/20
 
 
 optional_info:

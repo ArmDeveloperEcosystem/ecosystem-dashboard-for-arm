@@ -6,7 +6,7 @@ download_url: https://github.com/madler/zlib/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.2.12
-    release_date: 27/03/2022
+    release_date: 2022/03/27
 
 
 optional_info:

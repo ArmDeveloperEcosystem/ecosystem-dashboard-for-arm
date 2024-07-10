@@ -6,7 +6,7 @@ download_url: https://github.com/lz4/lz4/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: r116
-    release_date: 10/04/2014
+    release_date: 2014/04/10
 
 
 optional_info:

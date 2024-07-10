@@ -5,7 +5,7 @@ category: Runtimes
 description: Azul Zulu Enterprise, also a component of Azul Platform Core, is designed with the certified builds, tight security, and cost efficiencies needed to run today’s business–critical, Java-based services.
 product_url: https://www.azul.com/products/core/
 works_on_arm: true
-release_date_on_arm: 08/04/2014
+release_date_on_arm: 2014/04/08
 
 optional_info:
     homepage_url: https://www.azul.com/downloads/#zulu

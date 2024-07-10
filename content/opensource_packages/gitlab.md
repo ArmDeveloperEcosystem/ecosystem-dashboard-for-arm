@@ -6,7 +6,7 @@ download_url: https://packages.gitlab.com/gitlab/gitlab-ee
 works_on_arm: true
 supported_minimum_version:
     version_number: 13.4.0
-    release_date: 22/9/2020
+    release_date: 2020/09/22
 
 optional_info:
     homepage_url: https://about.gitlab.com/

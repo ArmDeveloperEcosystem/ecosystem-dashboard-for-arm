@@ -6,7 +6,7 @@ download_url: https://archive.apache.org/dist/druid/
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.17.0
-    release_date: 26/01/2020
+    release_date: 2020/01/26
 
 
 optional_info:

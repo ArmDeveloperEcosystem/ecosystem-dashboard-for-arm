@@ -5,7 +5,7 @@ category: Monitoring/Observability
 description: AppDynamics is the leading provider of Application Intelligence for modern application architectures, operating in distributed, dynamic and agile environments.
 product_url: https://www.appdynamics.com/
 works_on_arm: true
-release_date_on_arm: 24/02/2022
+release_date_on_arm: 2022/02/24
 
 
 optional_info:

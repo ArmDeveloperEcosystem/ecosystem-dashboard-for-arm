@@ -6,7 +6,7 @@ download_url: https://go.dev/dl/
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.5
-    release_date: 19/08/2015
+    release_date: 2015/08/19
 
 
 optional_info:

@@ -5,7 +5,7 @@ category: Security applications
 description: Qualys Cloud Agent is an extremely lightweight cloud security agent that enables real-time, global visibility and response.
 product_url: https://www.qualys.com/cloud-agent/
 works_on_arm: true
-release_date_on_arm: 26/05/2020
+release_date_on_arm: 2020/05/26
 
 
 optional_info:

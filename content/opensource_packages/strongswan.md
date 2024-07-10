@@ -6,7 +6,7 @@ download_url: https://www.strongswan.org/download.html
 works_on_arm: true
 supported_minimum_version:
     version_number: 5.8.3
-    release_date: 24/03/2020
+    release_date: 2020/03/24
 
 
 optional_info:

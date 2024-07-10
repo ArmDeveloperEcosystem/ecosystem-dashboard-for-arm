@@ -5,7 +5,7 @@ category: Containers and Orchestration
 description: Google Kubernetes Engine (GKE) is a managed Kubernetes service that allows users to run containerized applications at scale using Google's infrastructure.
 product_url: https://cloud.google.com/kubernetes-engine/?hl=en
 works_on_arm: true
-release_date_on_arm: 01/06/2022
+release_date_on_arm: 2022/06/01
 
 
 optional_info:

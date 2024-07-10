@@ -6,7 +6,7 @@ download_url: https://github.com/OpenObservability/OpenMetrics/tags
 works_on_arm: true 
 supported_minimum_version: 
     version_number: 1.0.0 
-    release_date: 26/11/2020
+    release_date: 2020/11/26
 
   
 optional_info:

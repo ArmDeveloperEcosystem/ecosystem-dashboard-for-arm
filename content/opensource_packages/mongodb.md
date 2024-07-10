@@ -6,7 +6,7 @@ download_url: https://www.mongodb.com/download-center/enterprise/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.4.24
-    release_date: 29/11/2016
+    release_date: 2016/11/29
 
 
 optional_info:

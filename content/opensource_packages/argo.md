@@ -6,7 +6,7 @@ download_url: https://github.com/argoproj/argo-cd/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.3.0
-    release_date: 06/03/2022
+    release_date: 2022/03/06
 
 
 optional_info:

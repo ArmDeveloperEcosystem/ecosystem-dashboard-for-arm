@@ -5,7 +5,7 @@ category: Security applications
 description: The Fastly Next-Gen WAF provides advanced protection for applications, APIs, and microservices, wherever they live, from a single unified solution.
 product_url: https://www.fastly.com/products/web-application-api-protection
 works_on_arm: true
-release_date_on_arm: 21/06/2022
+release_date_on_arm: 2022/06/21
 
 
 optional_info:

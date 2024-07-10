@@ -6,7 +6,7 @@ download_url: https://hub.docker.com/r/drone/drone/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.0
-    release_date: 17/04/2019
+    release_date: 2019/04/17
 
 
 optional_info:

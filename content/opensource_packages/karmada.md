@@ -6,7 +6,7 @@ download_url: https://github.com/karmada-io/karmada/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.9.0
-    release_date: 30/09/2021
+    release_date: 2021/09/30
 
 
 optional_info:

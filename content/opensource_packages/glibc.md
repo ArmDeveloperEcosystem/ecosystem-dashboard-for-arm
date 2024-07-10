@@ -6,7 +6,7 @@ download_url: https://ftp.gnu.org/gnu/glibc/
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.19
-    release_date: 7/2/2014
+    release_date: 2014/02/07
 
 
 optional_info:

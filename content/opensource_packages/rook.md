@@ -6,7 +6,7 @@ download_url: https://github.com/rook/rook/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.1.0
-    release_date: 08/11/2016
+    release_date: 2016/11/08
 
 
 optional_info:

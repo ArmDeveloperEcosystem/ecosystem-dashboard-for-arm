@@ -6,7 +6,7 @@ download_url: https://github.com/buildpacks/pack/releases/
 works_on_arm: true 
 supported_minimum_version: 
     version_number: 0.25.0 
-    release_date: 22/04/2022
+    release_date: 2022/04/22
 
   
 optional_info:

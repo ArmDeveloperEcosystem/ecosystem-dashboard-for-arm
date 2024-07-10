@@ -6,7 +6,7 @@ download_url: https://github.com/rancher/rancher/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v2.5.8-rc15 
-    release_date: 30/04/2021
+    release_date: 2021/04/30
 
 
 optional_info:

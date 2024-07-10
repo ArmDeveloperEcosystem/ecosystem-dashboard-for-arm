@@ -6,7 +6,7 @@ download_url: https://download.docker.com/linux/ubuntu/dists/jammy/pool/stable/a
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.11.0
-    release_date: 13/04/2016
+    release_date: 2016/04/13
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://www.opencart.com/index.php?route=cms/download
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.3.0.0
-    release_date: 30/07/2016
+    release_date: 2016/07/30
 
 
 optional_info:

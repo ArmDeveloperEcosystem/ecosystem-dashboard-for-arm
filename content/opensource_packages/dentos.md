@@ -6,7 +6,7 @@ download_url: https://github.com/dentproject/dentOS/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.9
-    release_date: 12/12/2020
+    release_date: 2020/12/12
 
 
 optional_info:

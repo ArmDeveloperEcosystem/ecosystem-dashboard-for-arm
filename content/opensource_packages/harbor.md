@@ -6,7 +6,7 @@ download_url: https://github.com/goharbor/harbor/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.7.1
-    release_date: 17/04/2023
+    release_date: 2023/04/17
 
 
 optional_info:

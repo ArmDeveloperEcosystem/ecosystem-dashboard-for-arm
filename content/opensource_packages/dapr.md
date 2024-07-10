@@ -6,7 +6,7 @@ download_url: https://github.com/dapr/dapr/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.11.0
-    release_date: 01/10/2020
+    release_date: 2020/10/01
 
 
 optional_info:

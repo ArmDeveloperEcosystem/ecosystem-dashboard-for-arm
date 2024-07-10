@@ -6,7 +6,7 @@ download_url: https://get.jenkins.io/war-stable/
 works_on_arm: true 
 supported_minimum_version: 
     version_number: 2.60 
-    release_date: 03/09/2020 
+    release_date: 2020/09/03 
 
   
 optional_info:

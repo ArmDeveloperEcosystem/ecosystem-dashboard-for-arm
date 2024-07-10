@@ -5,7 +5,7 @@ category: HPC
 description: CFD Direct From the Cloud is a complete platform providing OpenFOAM (open source computational fluid dynamics) and supporting software running on a long-term support (LTS) version of Ubuntu Linux.
 product_url: https://cfd.direct/
 works_on_arm: true
-release_date_on_arm: 22/07/2020
+release_date_on_arm: 2020/07/22
 
 
 optional_info:

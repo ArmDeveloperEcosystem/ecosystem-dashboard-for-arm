@@ -6,7 +6,7 @@ download_url: https://github.com/kedacore/keda/pkgs/container/keda
 works_on_arm: true
 supported_minimum_version: 
     version_number: 2.7.0
-    release_date: 05/05/2022 
+    release_date: 2022/05/05 
 
   
 optional_info:

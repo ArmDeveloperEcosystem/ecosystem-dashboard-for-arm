@@ -6,7 +6,7 @@ download_url: https://github.com/google/boringssl/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: fips-20220613
-    release_date: 07/12/2022
+    release_date: 2022/12/07
 
 
 optional_info:

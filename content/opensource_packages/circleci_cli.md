@@ -6,7 +6,7 @@ download_url: https://github.com/CircleCI-Public/circleci-cli/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.1.17554
-    release_date: 05/05/2022
+    release_date: 2022/05/05
 
 
 optional_info:

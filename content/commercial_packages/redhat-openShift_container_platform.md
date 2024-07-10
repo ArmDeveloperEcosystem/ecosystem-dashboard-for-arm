@@ -5,7 +5,7 @@ category: Containers and Orchestration
 description: OpenShift Container Platform is a consistent hybrid cloud foundation for building and scaling containerized applications.
 product_url: https://www.redhat.com/en/technologies/cloud-computing/openshift/container-platform
 works_on_arm: true
-release_date_on_arm: 10/3/2022
+release_date_on_arm: 2022/03/10
 
 optional_info:
     homepage_url: https://www.redhat.com/en/technologies/cloud-computing/openshift/container-platform

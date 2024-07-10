@@ -6,7 +6,7 @@ download_url: https://gcc.gnu.org/releases.html
 works_on_arm: true
 supported_minimum_version:
     version_number: 6.5.0
-    release_date: 30/10/2018
+    release_date: 2018/10/30
 
 
 optional_info:

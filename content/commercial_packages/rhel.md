@@ -5,7 +5,7 @@ category: Operating System
 description: Red Hat Enterprise Linux is a fully supported production-grade operating system (OS) available on premises and in the cloud.
 product_url: https://www.redhat.com/en/technologies/linux-platforms/enterprise-linux
 works_on_arm: true
-release_date_on_arm: 10/04/2018
+release_date_on_arm: 2018/04/10
 
 
 optional_info:

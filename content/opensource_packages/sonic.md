@@ -6,7 +6,7 @@ download_url: https://github.com/sonic-net/sonic-buildimage/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 202006-20200712
-    release_date: 12/07/2020
+    release_date: 2020/07/12
 
 
 optional_info:

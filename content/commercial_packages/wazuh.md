@@ -5,7 +5,7 @@ category: Security applications
 description: Wazuh is a monitoring solution for threat detection, integrity monitoring, incident response and compliance.
 product_url: https://wazuh.com/
 works_on_arm: true
-release_date_on_arm: 29/06/2020
+release_date_on_arm: 2020/06/29
 
 
 optional_info:

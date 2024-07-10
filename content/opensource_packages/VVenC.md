@@ -6,7 +6,7 @@ download_url: https://github.com/fraunhoferhhi/vvenc/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v1.7.0-rc1
-    release_date: 5/12/2022
+    release_date: 2022/12/05
 
 
 optional_info:

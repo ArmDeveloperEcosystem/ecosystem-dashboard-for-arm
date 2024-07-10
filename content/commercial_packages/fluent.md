@@ -5,7 +5,7 @@ category: HPC
 description: Ansys Fluent is the industry-leading fluid simulation software known for its advanced physics modeling capabilities and unmatched accuracy.
 product_url: https://www.ansys.com/products/fluids/ansys-fluent
 works_on_arm: true
-release_date_on_arm: 01/02/2024
+release_date_on_arm: 2024/02/01
 
 
 optional_info:

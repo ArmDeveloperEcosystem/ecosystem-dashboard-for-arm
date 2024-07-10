@@ -6,7 +6,7 @@ download_url: https://github.com/helm/helm/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.10.0
-    release_date: 18/08/2018
+    release_date: 2018/08/18
 
 
 optional_info:

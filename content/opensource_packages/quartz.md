@@ -6,7 +6,7 @@ download_url: https://www.quartz-scheduler.org/downloads/
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.3.1
-    release_date: 27/03/2019
+    release_date: 2019/03/27
 
 
 optional_info:

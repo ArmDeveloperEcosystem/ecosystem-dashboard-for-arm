@@ -6,7 +6,7 @@ download_url: https://github.com/containernetworking/cni/releases
 works_on_arm: true 
 supported_minimum_version: 
     version_number: 0.4.0 
-    release_date: 14/01/2017
+    release_date: 2017/01/14
 
   
 optional_info:

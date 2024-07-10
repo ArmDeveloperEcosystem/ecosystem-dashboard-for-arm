@@ -6,7 +6,7 @@ download_url: https://github.com/google/gvisor/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: release-20210121.1
-    release_date: 28/01/2021
+    release_date: 2021/01/28
 
 
 optional_info:

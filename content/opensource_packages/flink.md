@@ -6,7 +6,7 @@ download_url: https://flink.apache.org/downloads/
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.17.1
-    release_date: 25/05/2023
+    release_date: 2023/05/25
 
 
 optional_info:

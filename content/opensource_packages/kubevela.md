@@ -6,7 +6,7 @@ download_url: https://github.com/kubevela/kubevela/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.3.1
-    release_date: 29/01/2021
+    release_date: 2021/01/29
 
 
 optional_info:

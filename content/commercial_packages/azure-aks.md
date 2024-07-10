@@ -5,7 +5,7 @@ category: Containers and Orchestration
 description: Azure Kubernetes Service (AKS) offers the quickest way to start developing and deploying cloud-native apps in Azure, datacenters, or at the edge with built-in code-to-cloud pipelines and guardrails.
 product_url: https://azure.microsoft.com/en-us/products/kubernetes-service/
 works_on_arm: true
-release_date_on_arm: 04/04/2022
+release_date_on_arm: 2022/04/04
 
 
 optional_info:

@@ -5,7 +5,7 @@ category: Security applications
 description: VMware Carbon Black ensure comprehensive protection of an organization's data and customer information against malware, non-malware and living-off-the-land attacks.
 product_url: https://www.vmware.com/products/carbon-black-cloud.html
 works_on_arm: true
-release_date_on_arm: 23/01/2023
+release_date_on_arm: 2023/01/23
 
 
 optional_info:

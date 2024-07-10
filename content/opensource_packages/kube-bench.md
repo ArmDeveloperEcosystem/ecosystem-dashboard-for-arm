@@ -6,7 +6,7 @@ download_url: https://github.com/aquasecurity/kube-bench/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.3.1
-    release_date: 10/7/2020
+    release_date: 2020/07/10
 
 
 optional_info:

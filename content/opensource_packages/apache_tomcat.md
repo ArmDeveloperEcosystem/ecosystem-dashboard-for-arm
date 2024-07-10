@@ -6,7 +6,7 @@ download_url: https://archive.apache.org/dist/tomcat/
 works_on_arm: true
 supported_minimum_version:
     version_number: 6.0.35
-    release_date: 23/01/2012
+    release_date: 2012/01/23
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://github.com/oneapi-src/oneDNN/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.5
-    release_date: 17/6/2020
+    release_date: 2020/06/17
 
 
 optional_info:

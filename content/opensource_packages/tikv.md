@@ -6,7 +6,7 @@ download_url: https://github.com/tikv/tikv/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 5.1.0
-    release_date: 24/01/2021
+    release_date: 2021/01/24
 
 
 optional_info:

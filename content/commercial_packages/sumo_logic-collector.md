@@ -5,7 +5,7 @@ category: Monitoring/Observability
 description: The Sumo Logic OpenTelemetry (OTel) Collector provides a single unified agent to send logs, metrics, traces, and metadata for Observability to Sumo Logic.
 product_url: https://www.sumologic.com/guides/opentelemetry/
 works_on_arm: true
-release_date_on_arm: 20/07/2022
+release_date_on_arm: 2022/07/20
 
 
 optional_info:

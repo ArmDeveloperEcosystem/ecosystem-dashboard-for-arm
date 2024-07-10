@@ -6,7 +6,7 @@ download_url: https://openresty.org/en/linux-packages.html
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.15.8.1
-    release_date: 16/05/2019
+    release_date: 2019/05/16
 
 
 optional_info:

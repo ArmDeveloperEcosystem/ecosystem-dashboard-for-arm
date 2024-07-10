@@ -6,7 +6,7 @@ download_url: https://memcached.org/downloads
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.5.16
-    release_date: 25/05/2019
+    release_date: 2019/05/25
 
 
 optional_info:

@@ -6,7 +6,7 @@ download_url: https://mosquitto.org/files/source/
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.5.1
-    release_date: 16/08/2018
+    release_date: 2018/08/16
 
 
 optional_info:

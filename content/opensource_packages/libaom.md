@@ -6,7 +6,7 @@ download_url: https://github.com/ultrawide/libaom/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.0.0
-    release_date: 25/06/2018
+    release_date: 2018/06/25
 
 
 optional_info:

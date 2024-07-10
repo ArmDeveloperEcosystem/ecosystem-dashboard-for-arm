@@ -1,8 +1,26 @@
 # How to fill out metadata
-This area provides instructions on how to fill out a generic package.md file under the `/content/sw_database/` directory. Please copy an existing example and fill out a new package file based on the below instructions.
+The basic process to contribute a package is to:
+1. Fork this repository.
+2. Add new packages by copying and replacing an existing .md file. Contribute open-source packages in `/content/opensource_packages`, and commercial packages in `/content/commerial_packages`.
+3. Open a Pull Request for review.
+
+## Examples of packages to add
+These are the types of packages you should look to contribution. In short, if it would help a developer migrate to Arm, it should be included.
+
+| **Category**                             | **Examples**                                                                 |
+|----------------------------------------  |------------------------------------------------------------------------------|
+| **Languages (Interpreted and Compiled)** | Python, Java, Ruby, Perl, PHP, JavaScript / C++, C#, Go, Rust, Fortran, Swift |   
+| **Tools and Libraries**                  | x265, OpenSSL, Boost, TensorFlow, NumPy, libc, htop, perf, nmon, sysstat, dstat, gdb, valgrind, strace, CMake, Make, Bazel, apt, yum, pacman, iptables, firewalld | 
+| **Frameworks and Middleware**            | Django, Spring, Ruby on Rails, Express, Laravel, Apache Hadoop, Apache Spark, PyTorch, Keras, scikit-learn, Istio, Consul, Jenkins, GitLab CI/CD, CircleCI, RabbitMQ, Apache Kafka, Kong, NGINX, Snort  | 
+| **Databases**                            | MySQL, PostgreSQL, SQLite, MongoDB, Cassandra, Redis                         |  
+| **Virtualization/Containerization**      | KVM, QEMU, Docker, Kubernetes, Docker Swarm, LXC/LXD                         | 
+| **HPC Packages**                         | OpenMPI, MPICH, SLURM, Torque, HDF5, OpenBLAS, ATLAS, BLIS, LAPACK, PETSc, FFTW |
 
 
+If it is not clear from existing package examples, view how to populate package metadata by expanding the section below.
 
+<details>
+  <summary>Metadata specific instructions</summary>
 
 # Required Information
 All of this data must be populated for this package to submit a valid package.
@@ -34,15 +52,15 @@ Either 'true' or 'false'. If 'false', please fill out the 'alternative_options' 
 `works_on_arm: true`
 
 ## version
-This field specifies both the supported_minimum and recommended_minimum versions for this package to run on Arm. You should also include the dates that each version was released; this gives helpful context to the reader to assist their analysis. If a version just says the month and year it was released, you can fill in the first of the month to use the DD/MM/YYYY format. Here is a description of what both version fields mean:
+This field specifies both the supported_minimum and recommended_minimum versions for this package to run on Arm. You should also include the dates that each version was released; this gives helpful context to the reader to assist their analysis. If a version just says the month and year it was released, you can fill in the first of the month to use the ISO standard YYYY/MM/DD format. Here is a description of what both version fields mean:
 supported_minimum   = The first version that enabled support for Arm hardware. This is an objective measurement, often found in package release notes or news.
 recommended_minimum = The first version that enabled good/great performance on Arm hardware. This is a subjective measurement, and information can be found around release notes, news, and developer first-hand experience. 
 
 `version:
 - supported_minimum: 20.00.0
-- supported_minimum_date: 05/11/2020
+- supported_minimum_date: 2020/05/11
 - recommended_minimum: 22.04.3
-- recommended_minimum_date: 21/04/2022`
+- recommended_minimum_date: 2022//04/21`
 
 # Optional Data
 These fields are an optional addition, adding more context to the package. Fill these out if appropriate.
@@ -85,11 +103,4 @@ This field is for ONE getting started link that is from the official package doc
 
 `- official_docs:`
 
-
-
-
-
-
-
-
-
+</details>

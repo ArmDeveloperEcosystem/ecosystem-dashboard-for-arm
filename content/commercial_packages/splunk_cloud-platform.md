@@ -5,7 +5,7 @@ category: Monitoring/Observability
 description: Splunk is a big data platform that simplifies the task of collecting and managing massive volumes of machine-generated data and searching for information within it.
 product_url: https://www.splunk.com/
 works_on_arm: true
-release_date_on_arm: 01/04/2022
+release_date_on_arm: 2022/04/01
 
 
 optional_info:

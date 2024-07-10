@@ -6,7 +6,7 @@ download_url: https://github.com/mattermost/mattermost/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v8.1.0
-    release_date: 24/08/2023
+    release_date: 2023/08/24
 
 
 optional_info:

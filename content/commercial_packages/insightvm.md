@@ -5,7 +5,7 @@ category: Security applications
 description: InsightVM is a vulnerability management solution. It helps organizations identify, assess, and prioritize vulnerabilities in their IT infrastructure.
 product_url: https://www.rapid7.com/products/insightvm/
 works_on_arm: true
-release_date_on_arm: 08/06/2020
+release_date_on_arm: 2020/06/08
 
 
 optional_info:

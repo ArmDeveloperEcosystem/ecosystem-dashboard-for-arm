@@ -6,7 +6,7 @@ download_url: https://github.com/Shopify/cli/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 3.7.1
-    release_date: 15/08/2022
+    release_date: 2022/08/15
 
 
 optional_info:

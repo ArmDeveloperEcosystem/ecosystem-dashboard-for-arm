@@ -6,7 +6,7 @@ download_url: https://github.com/notaryproject/notary/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.3
-    release_date: 12/05/2016
+    release_date: 2016/05/12
 
 
 optional_info:

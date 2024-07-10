@@ -6,7 +6,7 @@ download_url: https://github.com/chaos-mesh/chaos-mesh/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.1.2
-    release_date: 12/03/2021
+    release_date: 2021/03/12
 
 optional_info:
     homepage_url: https://chaos-mesh.org/

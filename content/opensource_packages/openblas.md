@@ -6,7 +6,7 @@ download_url: https://github.com/OpenMathLib/OpenBLAS/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.3.9
-    release_date: 02/03/2020
+    release_date: 2020/03/02
 
 
 optional_info:

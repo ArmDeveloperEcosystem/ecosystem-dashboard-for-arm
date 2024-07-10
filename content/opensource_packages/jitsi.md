@@ -6,7 +6,7 @@ download_url: https://desktop.jitsi.org/Main/Download.html
 works_on_arm: true
 supported_minimum_version:
     version_number: stable-7287-1
-    release_date: 10/06/2022
+    release_date: 2022/06/10
 
 
 optional_info:

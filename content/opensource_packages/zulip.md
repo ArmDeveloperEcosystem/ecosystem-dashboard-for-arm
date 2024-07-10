@@ -6,7 +6,7 @@ download_url: https://github.com/zulip/zulip/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 4.10
-    release_date: 25/02/2022
+    release_date: 2022/02/25
 
 
 optional_info:

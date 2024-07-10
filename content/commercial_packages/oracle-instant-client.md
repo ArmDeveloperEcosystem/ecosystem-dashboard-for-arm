@@ -5,7 +5,7 @@ category: Database
 description: Oracle Instant Client enables development and deployment of applications that connect to Oracle Database, either on-premise or in the Cloud.
 product_url: https://www.oracle.com/in/database/technologies/instant-client.html
 works_on_arm: true
-release_date_on_arm: 3/5/2021
+release_date_on_arm: 2021/05/03
 
 
 optional_info:

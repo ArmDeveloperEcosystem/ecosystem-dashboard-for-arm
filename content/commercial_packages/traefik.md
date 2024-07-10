@@ -5,7 +5,7 @@ category: Service Mesh
 description: Traefik Enterprise is a unified API Gateway. It simplifies the discovery, security and deployment of APIs and microservices.
 product_url: https://traefik.io/traefik-enterprise/
 works_on_arm: true
-release_date_on_arm: 10/03/2022
+release_date_on_arm: 2022/03/10
 
 
 optional_info:
