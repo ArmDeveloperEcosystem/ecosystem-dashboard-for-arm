@@ -58,6 +58,58 @@ function normalizePackageName(input) {
         .toLowerCase();                 // Convert to lowercase
 }
 
+
+
+function updatePageMetadata(package_dom) {
+
+    console.log(package_dom);
+    
+    let data_woa = package_dom.getAttribute('data-woa');
+    const does_it_woa = data_woa === 'true';
+
+    // Define params
+    let pkg_name = package_dom.getAttribute('data-title');
+    let page_title = pkg_name+" - Ecosystem Dashboard for Arm";
+    let social_title = pkg_name+" - Ecosystem Dashboard for Arm";
+    let social_description = pkg_name+" works on Arm servers! Discover the supported versions and getting started resources in the Ecosystem Dashboard for Arm.";
+    if (!does_it_woa) {
+        social_description = "View "+pkg_name+" in the Ecosystem Dashboard for Arm and discover if it runs on Arm (and if not, what alternative packages do).";
+    }
+
+
+
+
+    // Update titles
+    document.title = page_title;
+
+    const ogTitle = document.querySelector('meta[property="og:title"]');
+    if (ogTitle) {
+        ogTitle.setAttribute('content', social_title);
+    }
+
+    const twitterTitle = document.querySelector('meta[name="twitter:title"]');
+    if (twitterTitle) {
+        twitterTitle.setAttribute('content', social_title);
+    }
+
+
+    // Update descriptions
+    const ogDescription = document.querySelector('meta[property="og:description"]');
+    if (ogDescription) {
+        ogDescription.setAttribute('content', social_description);
+    }
+
+    const twitterDescription = document.querySelector('meta[name="twitter:description"]');
+    if (twitterDescription) {
+        twitterDescription.setAttribute('content', social_description);
+    }
+
+    const metaDescription = document.querySelector('meta[name="description"]');
+    if (metaDescription) {
+        metaDescription.setAttribute('content', social_description);
+    }
+}
+
 function URLsearchAndfiltering(url_str) {
     let search_box = document.getElementById('search-box');
 
@@ -76,24 +128,7 @@ function URLsearchAndfiltering(url_str) {
 
     console.log(params);
 
-    if (search_string) {
-        search_box.setAttribute('search-value',search_string);
-        searchHandler(search_string);
-    }
-    if (license_filter_string) {
-        let license_input_element = document.getElementById("filter-item-"+license_filter_string);
-        if (license_input_element) {
-            license_input_element.checked = true;
-            filterHandler_radio(license_input_element);
-        }
-    }    
-    if (category_filter_string) {
-        let category_filter_element = document.getElementById("filter-item-"+category_filter_string);
-        if (category_filter_element) {
-            category_filter_element.checked = true;
-            filterHandler_radio(category_filter_element)
-        }
-    }    
+    // Package first, prioritize. Then others.
     if (package_string) {
 
         // Format string for use in querySelector
@@ -106,9 +141,46 @@ function URLsearchAndfiltering(url_str) {
             const all_path_cards = document.querySelectorAll('.search-div');
             // hide all results except this package
             let results_to_hide = [...all_path_cards].filter(card => card !== package_dom);
-            hideElements(all_path_cards,results_to_hide)
+            hideElements(all_path_cards,results_to_hide);
+            // Open dom
+            rowClickHandler(package_dom);
+            updateShownNumber();
+
+            // scroll to search bar
+            let search_box = document.getElementById('search-box');
+            let search_box_position = search_box.getBoundingClientRect();
+            var scrollPosition = window.pageYOffset + search_box_position.top - 100; // scrolls 100px above element
+            window.scrollTo({
+                top: scrollPosition,
+                behavior: 'smooth'
+            });
+            
+            updatePageMetadata(package_dom);
         }
     }
+    else {
+        if (search_string) {
+            search_box.setAttribute('search-value',search_string);
+            searchHandler(search_string);
+        }
+        if (license_filter_string) {
+            let license_input_element = document.getElementById("filter-item-"+license_filter_string);
+            if (license_input_element) {
+                license_input_element.checked = true;
+                filterHandler_radio(license_input_element);
+            }
+        }    
+        if (category_filter_string) {
+            // translate '/' to '__' to enable ai/ml/hpc finding
+            let category_filter_string_updated = category_filter_string.replaceAll('/','__');
+            let category_filter_element = document.getElementById("filter-item-"+category_filter_string_updated);
+            if (category_filter_element) {
+                category_filter_element.checked = true;
+                filterHandler_radio(category_filter_element)
+            }
+        }    
+    }
+
 }
 
 function smoothScrollForStickyFilters() {
