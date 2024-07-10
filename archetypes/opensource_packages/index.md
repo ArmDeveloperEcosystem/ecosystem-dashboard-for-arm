@@ -6,7 +6,7 @@ download_url: # The URL where a developer can download the most recent version o
 works_on_arm: # Boolean. It is 'true' if this package works on arm, and 'false' if not.
 supported_minimum_version:
     version_number: # The first version that enabled support for Arm, often found in package release notes or news.
-    release_date: # The date, in DD/MM/YYYY format, when this package first worked on Arm. Example: '21/04/2024'.
+    release_date: # The date, in YYYY/MM/DD format, when this package first worked on Arm. Example: '2024/04/21'.
 
 
 optional_info:
