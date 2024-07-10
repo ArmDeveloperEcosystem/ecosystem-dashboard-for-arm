@@ -31,32 +31,84 @@ function sanitizeInput(potentially_unsafe_str) {
         // a-z
         // A-Z
         // 0-9 digits
-        // special characters: .-=
-            // - very common in code
-            // = needed for param filtering to work easily
-    let sanitized_str = potentially_unsafe_str.replaceAll(/[^a-z A-Z 0-9 .=-]+/g, "");
+        // special characters: .-
+
+        
+        // Replace \ + & with a single space
+    let sanitized_str = potentially_unsafe_str
+        .replaceAll(/[^a-zA-Z0-9 .\-/]+/g, "")      // Sanitize by removing disallowed characters      (prevent injections)
+        .replaceAll(/[\s\+]+/g, ' ');               // Replace spaces and plus signs with a single space
+    
     return sanitized_str
 }
 
 
+function normalizePackageName(input) {
+    // Azul Platform Prime (with Zing)   -->     azul-platform-prime-with-zing
+    // .NET                              -->     .net
+    // Drone (Runner and Server)           -->     drone-runner-and-server
+        // & will auto-break URLs!! Cannot use it regardless
+    // Clang/LLVM                        -->     clang__llvm
+        
+
+    return input
+        .replace(/\//g, '__')           // Replace '/' with '__'
+        .replace(/[\s\+]+/g, '-')       // Replace spaces and plus signs with hyphens
+        .replace(/[^\w\-.()]+/g, '')    // Remove all non-word characters except hyphens, dots, parentheses
+        .toLowerCase();                 // Convert to lowercase
+}
+
 function URLsearchAndfiltering(url_str) {
+    let search_box = document.getElementById('search-box');
+
     // Prep params using built in JS functions
     const params = new URLSearchParams(url_str);
 
-    // get Search string
+    // Four possible param types:
+    //    1. Search  (?search=)
+    //    2. Filter  (?license=)
+    //    3. Filter  (?category=)
+    //    4. Package (?package=)    must exactly match a URLIZED package name, or default to main page
     const search_string = sanitizeInput(params.get('search') || '');
+    const license_filter_string = sanitizeInput(params.get('license') || '');
+    const category_filter_string = sanitizeInput(params.get('category') || '');
+    const package_string = sanitizeInput(params.get('package') || '');
 
-    // get filters to activate
-        // TO DO
-    
-    // Activate searching & filtering.
-        // Call search handler to execute search
-        if (search_string) {
-            search_box.setAttribute('search-value',search_string);
-            searchHandler(search_string);
+    console.log(params);
+
+    if (search_string) {
+        search_box.setAttribute('search-value',search_string);
+        searchHandler(search_string);
+    }
+    if (license_filter_string) {
+        let license_input_element = document.getElementById("filter-item-"+license_filter_string);
+        if (license_input_element) {
+            license_input_element.checked = true;
+            filterHandler_radio(license_input_element);
         }
-        // TO DO ADD FILTER HANDELER!
+    }    
+    if (category_filter_string) {
+        let category_filter_element = document.getElementById("filter-item-"+category_filter_string);
+        if (category_filter_element) {
+            category_filter_element.checked = true;
+            filterHandler_radio(category_filter_element)
+        }
+    }    
+    if (package_string) {
 
+        // Format string for use in querySelector
+        let normalized_package_string = normalizePackageName(package_string);
+        
+        let package_dom = document.querySelector(`[data-title-urlized="${normalized_package_string}"]`);
+
+        if (package_dom) {
+            // show dom, hide the others
+            const all_path_cards = document.querySelectorAll('.search-div');
+            // hide all results except this package
+            let results_to_hide = [...all_path_cards].filter(card => card !== package_dom);
+            hideElements(all_path_cards,results_to_hide)
+        }
+    }
 }
 
 function smoothScrollForStickyFilters() {
@@ -89,6 +141,7 @@ function hideElements(all_path_cards,results_to_hide) {
     // Hide elements in array (and actively show all OTHER elements)
     for (let card of all_path_cards) {
         if (results_to_hide.includes(card)) { 
+                    
             // Hide card and subrow!
             card.setAttribute('hidden',true);
             // Remove 'clicked' attribute
