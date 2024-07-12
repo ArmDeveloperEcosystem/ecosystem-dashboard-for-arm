@@ -137,6 +137,7 @@ function URLsearchAndfiltering(url_str) {
         let package_dom = document.querySelector(`[data-title-urlized="${normalized_package_string}"]`);
 
         if (package_dom) {
+            /*
             // show dom, hide the others
             const all_path_cards = document.querySelectorAll('.search-div');
             // hide all results except this package
@@ -145,6 +146,10 @@ function URLsearchAndfiltering(url_str) {
             // Open dom
             rowClickHandler(package_dom);
             updateShownNumber();
+            */
+            pinRow(package_dom);
+           
+            
 
             // scroll to search bar
             let search_box = document.getElementById('search-box');
@@ -618,6 +623,8 @@ function ifNeededMoveFiltersToMobileOrDesktop(state_is_below_breakpoint) {
         5. Activates URL search/filters
 */
 document.addEventListener("DOMContentLoaded", function () {
+
+
 
     // 1
     // Assign inputChangeHandler to search box
