@@ -248,7 +248,24 @@ function updateShownNumber() {
     // adjust string length when open filter (not sure why needed currently)
     let paths_hidden = hidden_paths.length;
 
-    document.getElementById('currently-shown-number').innerHTML = parseInt(total_num) - paths_hidden;
+    let current_shown_int = parseInt(total_num) - paths_hidden;
+    document.getElementById('currently-shown-number').innerHTML = current_shown_int;
+
+
+    let contribute_div = document.getElementById('if-none-contribute-div');
+    if (current_shown_int == 0) {
+        // Show the contribute info, slow transition
+        contribute_div.classList.remove('no-transition'); // Enable transitions
+        contribute_div.classList.add('show');
+    }
+    else {
+        // Hide contribute info, instantly
+        contribute_div.classList.add('no-transition'); // Disable transitions
+        contribute_div.classList.remove('show');
+        contribute_div.offsetHeight;                      // Browser applies change now
+        contribute_div.classList.remove('no-transition'); // Enable transitions
+    }
+
 }
 
 /* Only for pins....could delete */
