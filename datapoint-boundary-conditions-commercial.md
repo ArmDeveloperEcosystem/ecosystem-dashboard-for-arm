@@ -43,3 +43,15 @@ Provides resources to developers to install, deploy, test or measure performance
 
 ### Official Docs - Criteria
 -	(Optional) Add one link to the official project documentation that specifically talks about the package on Arm. This is NOT to link to general documentation, and should be specifically about guidance to work with this package on Arm.
+
+# Guidelines for picking the right CSP software
+They have a large GitHub with auxillary SW, just like Arm does. How to identify what they offer to developers?
+
+Heuristics:
+- What does the company actually sell?
+- What is downloadable and runnable by the developer?
+  
+
+Examples:
+- Liferay
+- SAS
