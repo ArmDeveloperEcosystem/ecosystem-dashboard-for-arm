@@ -80,7 +80,7 @@ If undetermined Arm support => ??????? Infra guidance on what to do. Ignore, say
 
 ## MS Copilot Prompt to help identify products:
 
-I am creating a public website that lists all software packages that work on Arm Linux cloud servers, and am gathering the software packages now. I need you to identify the core commercial products that developers would care works on Arm or not from this company: Liferay.
+I am creating a public website that lists all software packages that work on Arm Linux cloud servers, and am gathering the software packages now. To be included the package must be downloadedable / installable by developers, not just a SaaS offering. I need you to identify the core commercial products that developers would care works on Arm or not from this company: Liferay.
 
 To help properly, you should output the following:
 1. The company name I provided, and their main website
