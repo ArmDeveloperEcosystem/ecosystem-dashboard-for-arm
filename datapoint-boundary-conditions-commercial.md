@@ -94,3 +94,4 @@ To help properly, you should output the following:
 | --------------------------------------------------------------------- | --------------- |
 | Not sure if software XYZ actually a unique package from ABC software. | Is XYZ a different, unique software package from ABC?    | 
 | Not sure if software XYZ is hostable/downloadable by a dev, or SaaS.  | Can a developer download and host XYZ on their own cloud? |
+| Not sure if software XYZ is hostable/downloadable by a dev, or SaaS.  | Are you sure each package can be run by a developer on their own cloud and not via SaaS? |
