@@ -51,61 +51,34 @@ Provides resources to developers to install, deploy, test or measure performance
 
 A unique software package from an ISV meets these criteria:
 - It can be purchased from the ISV
+- It can be singularly purchased
 - It can be downloaded / installed by developers
-- It is not based on already listed ISV software packages
+- (when confusing) It is not a subcomponent of a broader, already identified software package suite - unless it is independently downloadable. Examples in SAS and Liferay below.
 
 ## Examples
 
 | ISV      					  | Products    | Rational | 
 | ----------------------------------------------- | ----------- | -------- |
-| (SAS)[https://www.sas.com/en_us/home.html]      | SAS Viya    | All SAS products are built from the SAS Viya software platform; this is the core package offering, which includes all other products on top of SAS Viya (like SAS Data Engineering
-| Liferay   					  | Text        |
+| [SAS](https://www.sas.com/en_us/home.html)      | SAS Viya    	| All SAS products are built from the SAS Viya software platform; this is the core package offering, which includes services built on top of SAS Viya (like SAS Data Engineering) |
+| [Liferay](https://www.liferay.com/offerings)    | Liferay DXP, Liferay Commerce   | Liferay Commerce is built on Liferay DXP, but is a uniquely obtainable package from Liferay DXP and should be distinct. In addition|
 
 
-1. Identify core commercial products
-	-	Company website
- 	-	Ask MS Copilot: "
-
-
-**Goal**: Identify core commercial products from a given company and verify their compatibility with Arm architecture for listing on a software ecosystem dashboard.
-
-**Instructions**: For the provided company, follow the steps below to list core commercial products and provide proof of Arm compatibility. Ensure to reference relevant documentation, online discussions mentioning Arm support, GitHub readme files or issues, etc.
-
-### Steps to identify:
+### Detailed steps you can take:
 
 1. **Identify Core Commercial Products**:
-    - Visit the company's official website and locate the section that lists their main commercial products. Focus on products marketed as standalone software solutions.
-    - List the core products found.
+    - Visit the company's website, locate the section that lists their main commercial products. Focus on products marketed as standalone software solutions. Example on [Liferay](https://www.liferay.com/offerings).
+2. **Identify Open-source product versions**:
+    - Check if the ISV has community editions of any of its products to include for Open-source references on the dashboard. Example on [Liferay](https://www.liferay.com/downloads-community).
+3. **Determine Compatibility with Arm Architecture**:
+    - Check on Google: "SAS Viya Arm" or "SAS Viya aarch64".
+    - Check the product docs for Arm architecture. Look for explicit mentions of supported platforms and architectures.
+    - Visit the company's official GitHub page and search relevent repos for
+    - Ask MS Copilot: "Does SAS Viya run on an Arm Linux server? Provide an answer with evidance from community discussions, release notes, announcement blogs, or similar."
+    
 
-2. **Determine Compatibility with Arm Architecture**:
-    - Check the system requirements and product documentation on the official website to see if they mention support for Arm architecture. Look for explicit mentions of supported platforms and architectures.
-    - Search the company's support forums, FAQs, or contact their support team to inquire about Arm compatibility if it's not clearly mentioned in the documentation.
+## MS Copilot Prompt to help identify products:
 
-3. **Examine GitHub Repositories**:
-    - Visit the company's official GitHub page.
-    - Identify repositories that are directly related to their core products. 
-    - Check the README files and documentation within each repository for any mentions of Arm support. Review issues and discussions for additional insights.
-
-4. **Review Community and Open Source Contributions**:
-    - Look for community discussions, issues, or pull requests that mention Arm support. This can provide insights into unofficial support or ongoing efforts to enable compatibility.
-    - Explore forks and clones of official repositories that might have been adapted for Arm.
-
-5. **Vendor Communication**:
-    - If compatibility information is not readily available, reach out to the vendor directly through their contact channels to confirm whether their products support Arm Linux servers.
-
-**Example Company**: SAS
-
-**Output**:
-- A list of core commercial products offered by the company.
-- Proof of Arm compatibility for each product, including references to:
-  - Product documentation or data sheets
-  - Relevant online discussions or forums
-  - GitHub README files or issues
-  - Direct communication from the vendor (if available)
-
-**MS Copilot Prompt to help identify products**:
-
-I am creating a public website that lists all software packages that work on Arm Linux cloud servers, and am gathering the software packages now. I need you to identify the core commercial products that developers would care works on Arm or not from this company: SAS.
+I am creating a public website that lists all software packages that work on Arm Linux cloud servers, and am gathering the software packages now. I need you to identify the core commercial products that developers would care works on Arm or not from this company: Liferay.
 
 To help properly, you should output the following:
 1. The company name I provided, and their main website
@@ -113,10 +86,9 @@ To help properly, you should output the following:
 3. Any online references to support if any of their identified core commercial products from step 2 support the Arm architecture (including documentation, community discussions, etc.)
 
 
-#### Follow up questions
 
-
-| Your concern      				           		      | Prompt to help  | 
-| --------------------------------------------------------------------------- | --------------- |
-| Not sure if software XYZ actually a unique package from ABC software. | Is XYZ a unique package from ABC, or does XYZ use the ABC software to provide a different service?     | 
-| Not sure if software XYZ is hostable/downloadable by a dev, or SaaS. | Can a developer download and host XYZ on their own cloud? |
+#### MS Copilot Follow up questions
+| Your concern      				           		| Prompt to help  | 
+| --------------------------------------------------------------------- | --------------- |
+| Not sure if software XYZ actually a unique package from ABC software. | Is XYZ a different, unique software package from ABC?    | 
+| Not sure if software XYZ is hostable/downloadable by a dev, or SaaS.  | Can a developer download and host XYZ on their own cloud? |
