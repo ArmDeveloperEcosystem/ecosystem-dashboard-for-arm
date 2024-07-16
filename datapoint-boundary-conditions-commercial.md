@@ -55,6 +55,8 @@ A unique software package from an ISV meets these criteria:
 - It can be downloaded / installed by developers
 - (when confusing) It is not a subcomponent of a broader, already identified software package suite - unless it is independently downloadable. Examples in SAS and Liferay below.
 
+If undetermined Arm support => ??????? Infra guidance on what to do. Ignore, say True, ask ISV, etc.????????
+
 ## Examples
 
 | ISV      					  | Products    | Rational | 
