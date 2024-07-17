@@ -53,13 +53,10 @@ A unique software package from an ISV meets these criteria:
 - It can be purchased from the ISV
 - It can be singularly purchased
 - It can be downloaded / installed by developers
-- (when confusing) It is not a subcomponent of a broader, already identified software package suite - unless it is independently downloadable. Examples in SAS and Liferay below.
-
-If undetermined Arm support => ??????? Infra guidance on what to do. Ignore, say True, ask ISV, etc.????????
 
 ## Examples
 
-| ISV      					  | Products    | Rational | 
+| ISV      					  | Products into Dashboard    | Rational | 
 | ----------------------------------------------- | ----------- | -------- |
 | [SAS](https://www.sas.com/en_us/home.html)      | SAS Viya    	| All SAS products are built from the SAS Viya software platform; this is the core package offering, which includes services built on top of SAS Viya (like SAS Data Engineering) |
 | [Liferay](https://www.liferay.com/offerings)    | Liferay DXP, Liferay Commerce   | Liferay Commerce is built on Liferay DXP, but is a uniquely obtainable package from Liferay DXP and should be distinct. In addition|
