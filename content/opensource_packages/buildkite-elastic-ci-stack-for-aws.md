@@ -1,5 +1,5 @@
 ---
-name: Buildkite-Elastic-ci-stack-for-aws
+name: Buildkite Elastic CI Stack for AWS
 category: DevOps
 description: The Buildkite Elastic CI Stack for AWS is a CloudFormation stack that simplifies the process of setting up a scalable, secure, and highly available CI/CD infrastructure on Amazon Web Services (AWS).
 download_url: https://github.com/buildkite/elastic-ci-stack-for-aws/releases
