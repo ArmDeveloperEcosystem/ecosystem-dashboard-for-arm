@@ -2,7 +2,7 @@
 name: VictoriaMetrics Enterprise
 vendor: VictoriaMetrics
 category: Database
-description: VictoriaMetrics Enterprise helps provide monitoring and observability set-ups to the organizations, and is highly scalable, reliable, available, cost-effective, and secure.
+description: VictoriaMetrics Enterprise helps provide monitoring and observability set-ups to organizations, and is highly scalable, reliable, available, cost-effective, and secure.
 product_url: https://victoriametrics.com/products/enterprise/
 works_on_arm: true
 release_date_on_arm: 2020/08/28
