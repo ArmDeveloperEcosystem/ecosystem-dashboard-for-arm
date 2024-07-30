@@ -1,5 +1,5 @@
 ---
-name: Buildkite-CLI
+name: Buildkite CLI
 category: DevOps
 description: Buildkite CLI is a powerful tool for developers and DevOps teams, providing comprehensive control over Buildkite resources and workflows directly from the command line, enhancing productivity and automation capabilities.
 download_url: https://github.com/buildkite/cli/releases
