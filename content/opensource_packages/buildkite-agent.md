@@ -1,5 +1,5 @@
 ---
-name: Buildkite-Agent
+name: Buildkite Agent
 category: DevOps
 description: Buildkite Agent is responsible for executing builds on our infrastructure, which means we can run our CI/CD pipelines on our hardware, cloud servers, or even on-premises machines. These provide flexibility and control over the built environment.
 download_url: https://github.com/buildkite/agent/releases
