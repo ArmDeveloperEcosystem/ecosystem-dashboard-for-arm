@@ -1,5 +1,5 @@
 ---
-name: Swift-arm64
+name: Swift (Arm64)
 category: Languages and Frameworks
 description: Swift is a programming language tailored for building applications on iOS, macOS, watchOS, tvOS, and Linux.
 download_url: https://github.com/futurejones/swift-arm64/releases
