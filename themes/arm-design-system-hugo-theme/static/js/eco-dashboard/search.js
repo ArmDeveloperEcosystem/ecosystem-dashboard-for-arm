@@ -137,6 +137,7 @@ function URLsearchAndfiltering(url_str) {
         let package_dom = document.querySelector(`[data-title-urlized="${normalized_package_string}"]`);
 
         if (package_dom) {
+            /*
             // show dom, hide the others
             const all_path_cards = document.querySelectorAll('.search-div');
             // hide all results except this package
@@ -145,6 +146,10 @@ function URLsearchAndfiltering(url_str) {
             // Open dom
             rowClickHandler(package_dom);
             updateShownNumber();
+            */
+            pinRow(package_dom);
+           
+            
 
             // scroll to search bar
             let search_box = document.getElementById('search-box');
@@ -243,7 +248,24 @@ function updateShownNumber() {
     // adjust string length when open filter (not sure why needed currently)
     let paths_hidden = hidden_paths.length;
 
-    document.getElementById('currently-shown-number').innerHTML = parseInt(total_num) - paths_hidden;
+    let current_shown_int = parseInt(total_num) - paths_hidden;
+    document.getElementById('currently-shown-number').innerHTML = current_shown_int;
+
+
+    let contribute_div = document.getElementById('if-none-contribute-div');
+    if (current_shown_int == 0) {
+        // Show the contribute info, slow transition
+        contribute_div.classList.remove('no-transition'); // Enable transitions
+        contribute_div.classList.add('show');
+    }
+    else {
+        // Hide contribute info, instantly
+        contribute_div.classList.add('no-transition'); // Disable transitions
+        contribute_div.classList.remove('show');
+        contribute_div.offsetHeight;                      // Browser applies change now
+        contribute_div.classList.remove('no-transition'); // Enable transitions
+    }
+
 }
 
 /* Only for pins....could delete */
@@ -618,6 +640,8 @@ function ifNeededMoveFiltersToMobileOrDesktop(state_is_below_breakpoint) {
         5. Activates URL search/filters
 */
 document.addEventListener("DOMContentLoaded", function () {
+
+
 
     // 1
     // Assign inputChangeHandler to search box

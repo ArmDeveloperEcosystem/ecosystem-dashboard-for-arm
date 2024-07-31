@@ -21,8 +21,11 @@ function rowClickHandler(row) {
         // remove highlighting
         row.classList.remove("main-sw-row--clicked");
         // hide sub-DOM
+   
+        if (row.nextElementSibling) {
+            row.nextElementSibling.setAttribute('hidden',true);
+        }
         
-        row.nextElementSibling.setAttribute('hidden',true);
 
     } 
     // Not highlighted
@@ -30,8 +33,11 @@ function rowClickHandler(row) {
         // add highlighting
         row.classList.add("main-sw-row--clicked");
         // show DOM
-        row.nextElementSibling.removeAttribute('hidden');
-        // showAdditionalData(row) // needed when async grabbing data in round two. 
+        if (row.nextElementSibling) {
+            row.nextElementSibling.removeAttribute('hidden');
+        }
+        
+            // showAdditionalData(row) // needed when async grabbing data in round two. 
     }
 
 }
@@ -43,14 +49,16 @@ function pinRow(row) {
     // If row is already pinned, exit now. Need for 'stack' functionality
     if (row.classList.contains('js-pinned')) {  return  }
 
+    
 
     // obtain other nodes around row
     var subrow = row.nextElementSibling;
-    var pin = row.querySelector('.fa-thumbtack')
     var table_body = row.closest('tbody'); // The parent node of the row
     var first_unpinned_row = table_body.querySelector('tr:not(.js-pinned)');
 
-
+    // add pin to row title
+    var pin_span = row.querySelector('.pin-span');
+    var pin = row.querySelector('.fa-thumbtack');
 
 
     // clone row/subrow inplace with a 'placeholder' class to hide them, to keep place in order.
@@ -65,8 +73,9 @@ function pinRow(row) {
     subrow.parentNode.insertBefore(subrow_placeholder, subrow.nextSibling);        
 
 
-    // straighten pin
-    pin.classList.remove("rotated");
+    // show and straighten pin
+    pin_span.removeAttribute('hidden');
+    //pin.classList.remove("rotated");
     
     // Add class to row indicating it is pinned
     row.classList.add("main-sw-row--pinned");    // for CSS behavior
@@ -81,6 +90,9 @@ function pinRow(row) {
         table_body.insertBefore(row, first_unpinned_row);
         table_body.insertBefore(subrow, row.nextSibling); // Insert subrow just below the main row
     }
+
+    // Open subrow
+    rowClickHandler(row);
 }
 
 
@@ -93,7 +105,7 @@ function unpinRow(row) {
 
 
     // Re-Rotate pin
-    pin.classList.add("rotated");
+    //pin.classList.add("rotated");
 
     // Remove 3 classes to row indicating it is not pinned:
         // 1. the css styling class
@@ -117,7 +129,7 @@ function unpinRow(row) {
 
     // Set IDs ==== Update 'placeholder' rows to 'real' rows via ID swap
     row_placeholder.setAttribute("id", row_placeholder.getAttribute("id").replace("-placeholder",''));   // Remove '-placeholder' from ID
-    subrow_placeholder.setAttribute("id", subrow_placeholder.getAttribute("id").replace("-placeholder",''));
+    //subrow_placeholder.setAttribute("id", subrow_placeholder.getAttribute("id").replace("-placeholder",''));
 
     // UNSELECT === Always remove 'main-sw-row--clicked' when unpinned (if open, next step will add back)
     row_placeholder.classList.remove("main-sw-row--clicked");
@@ -127,6 +139,18 @@ function unpinRow(row) {
         // DONT DO THIS NOW. Causes more trouble than it's worth....implement later once cleaned logic.
 
     // Re-run any active search, as it needs to update (should unpinned row still show or not?)
+    
+    // manually unhide row
+    row_placeholder.removeAttribute('hidden');
+    // apply search
+    document.getElementById('search-box').value().then((value) => {              // Get search query (inside promise, continue the rest of this inside the promise)
+        let current_search = value;
+        if (current_search) {
+            searchHandler(current_search);
+        }
+    });
+
+    /*
     document.getElementById('search-box').value().then((value) => {              // Get search query (inside promise, continue the rest of this inside the promise)
         let current_search = value;
         if (current_search) {
@@ -134,10 +158,12 @@ function unpinRow(row) {
             searchHandler(current_search);
         }
         else {
+            console.log('here in unhiding');
             // If no search, need to manually unhide row as it should always display.
             row_placeholder.removeAttribute('hidden');
         }
     });
+    */
 
 }
 

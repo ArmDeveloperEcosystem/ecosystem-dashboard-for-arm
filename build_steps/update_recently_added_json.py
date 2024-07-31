@@ -63,7 +63,8 @@ for content_directory in content_directories:
                         date_str = line.split('release_date:')[1].strip()
                     if date_str:
                         try:
-                            date = datetime.strptime(date_str, '%d/%m/%Y')
+                            #date = datetime.strptime(date_str, '%d/%m/%Y')
+                            date = datetime.strptime(date_str, '%Y/%m/%d')
                             recent_content.append({'file_path_full': file_path_full, 'date': date})
                             break
                         except ValueError:

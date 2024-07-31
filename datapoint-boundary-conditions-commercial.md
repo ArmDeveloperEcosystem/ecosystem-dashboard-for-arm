@@ -43,3 +43,52 @@ Provides resources to developers to install, deploy, test or measure performance
 
 ### Official Docs - Criteria
 -	(Optional) Add one link to the official project documentation that specifically talks about the package on Arm. This is NOT to link to general documentation, and should be specifically about guidance to work with this package on Arm.
+
+
+
+
+# Guidelines for identifying the right ISV software package(s)
+
+A unique software package from an ISV meets these criteria:
+- It can be purchased from the ISV
+- It can be singularly purchased
+- It can be downloaded / installed by developers
+
+## Examples
+
+| ISV      					  | Products into Dashboard    | Rational | 
+| ----------------------------------------------- | ----------- | -------- |
+| [SAS](https://www.sas.com/en_us/home.html)      | SAS Viya    	| All SAS products are built from the SAS Viya software platform; this is the core package offering, which includes services built on top of SAS Viya (like SAS Data Engineering) |
+| [Liferay](https://www.liferay.com/offerings)    | Liferay DXP, Liferay Commerce   | Liferay Commerce is built on Liferay DXP, but is a uniquely obtainable package from Liferay DXP and should be distinct. In addition|
+
+
+### Detailed steps you can take:
+
+1. **Identify Core Commercial Products**:
+    - Visit the company's website, locate the section that lists their main commercial products. Focus on products marketed as standalone software solutions. Example on [Liferay](https://www.liferay.com/offerings).
+2. **Identify Open-source product versions**:
+    - Check if the ISV has community editions of any of its products to include for Open-source references on the dashboard. Example on [Liferay](https://www.liferay.com/downloads-community).
+3. **Determine Compatibility with Arm Architecture**:
+    - Check on Google: "SAS Viya Arm" or "SAS Viya aarch64".
+    - Check the product docs for Arm architecture. Look for explicit mentions of supported platforms and architectures.
+    - Visit the company's official GitHub page and search relevent repos for
+    - Ask MS Copilot: "Does SAS Viya run on an Arm Linux server? Provide an answer with evidance from community discussions, release notes, announcement blogs, or similar."
+    
+
+## MS Copilot Prompt to help identify products:
+
+I am creating a public website that lists all software packages that work on Arm Linux cloud servers, and am gathering the software packages now. To be included the package must be downloadedable / installable by developers, not just a SaaS offering. I need you to identify the core commercial products that developers would care works on Arm or not from this company: Liferay.
+
+To help properly, you should output the following:
+1. The company name I provided, and their main website
+2. A list of their core commercial products that developers could buy and run on an Arm Linux cloud server.
+3. Any online references to support if any of their identified core commercial products from step 2 support the Arm architecture (including documentation, community discussions, etc.)
+
+
+
+#### MS Copilot Follow up questions
+| Your concern      				           		| Prompt to help  | 
+| --------------------------------------------------------------------- | --------------- |
+| Not sure if software XYZ actually a unique package from ABC software. | Is XYZ a different, unique software package from ABC?    | 
+| Not sure if software XYZ is hostable/downloadable by a dev, or SaaS.  | Can a developer download and host XYZ on their own cloud? |
+| Not sure if software XYZ is hostable/downloadable by a dev, or SaaS.  | Are you sure each package can be run by a developer on their own cloud and not via SaaS? |
