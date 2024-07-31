@@ -1,7 +1,7 @@
 ---
 name: SAP HANA
 vendor: SAP
-category: Databases
+category: Database
 description: SAP HANA is an in-memory database and analytics platform designed by SAP. It processes vast amounts of data in real time, enabling high-speed transactions and advanced analytics for businesses, enhancing decision-making and operational efficiency.
 product_url: https://www.sap.com/india/products/technology-platform/hana.html
 works_on_arm: true
