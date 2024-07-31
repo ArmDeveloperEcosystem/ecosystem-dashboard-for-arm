@@ -1,6 +1,6 @@
 ---
 name: ThreatMapper
-category: Security Applications
+category: Security applications
 description: ThreatMapper is a security tool designed to assess and map potential threats within IT environments.
 download_url: https://github.com/deepfence/ThreatMapper/releases
 works_on_arm: true

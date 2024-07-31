@@ -1,6 +1,6 @@
 ---
 name: Julia  
-category: OS & Languages
+category: Languages and Frameworks
 description: The Julia programming language has a rich ecosystem of packages that enhance its capabilities for various applications, including data analysis, scientific computing, machine learning.
 download_url: https://github.com/JuliaLang/julia/releases
 works_on_arm: true
