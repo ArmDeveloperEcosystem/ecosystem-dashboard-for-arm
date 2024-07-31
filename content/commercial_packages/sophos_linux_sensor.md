@@ -5,7 +5,7 @@ category: Security applications
 description: Sophos Linux Sensor is a comprehensive endpoint security solution designed to provide advanced threat detection and response capabilities for Linux environments.
 product_url: https://docs.sophos.com/esg/sls/help/en-us/index.html
 works_on_arm: true
-release_date_on_arm:
+release_date_on_arm: 2022/06/01
 
 
 optional_info:

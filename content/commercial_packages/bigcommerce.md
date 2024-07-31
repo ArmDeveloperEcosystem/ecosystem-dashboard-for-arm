@@ -4,7 +4,7 @@ vendor: BigCommerce
 category: E-commerce platforms
 description: BigCommerce is a leading cloud-based e-commerce platform designed to help businesses of all sizes create, manage, and scale their online stores.
 product_url: https://www.bigcommerce.com/
-works_on_arm: FALSE
+works_on_arm: false
 release_date_on_arm: 
 
 
