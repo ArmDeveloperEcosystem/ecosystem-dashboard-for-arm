@@ -71,8 +71,10 @@ if __name__ == "__main__":
                     except KeyError as e:
                         print("KEY ERROR, package category isn't in category dictionary. Check and try again.")
                         print("attempted: category_dict[packages_category]")
-                        print('category_dict = ',category_dict)
+                        print(packages_name)
                         print('packages_category =',packages_category)
+                        print('category_dict = ',category_dict)
+
                 else:
                     invalid_packages.append({
                         "name": packages_name,
