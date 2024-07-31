@@ -1,5 +1,5 @@
 ---
-name: LifeRay-CLI
+name: LifeRay CLI
 category: Content mgmt platforms
 description: The Liferay CLI is a tool designed to simplify and accelerate the development of Liferay applications and it provides a set of commands that streamline various development tasks, such as creating, building, and deploying Liferay modules and themes.
 download_url: https://github.com/liferay/liferay-cli/releases
