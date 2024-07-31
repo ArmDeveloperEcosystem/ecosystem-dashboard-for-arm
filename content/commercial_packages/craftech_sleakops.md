@@ -4,7 +4,7 @@ vendor: Craftech
 category: Monitoring/Observability
 description: Craftech SleakOps is a comprehensive monitoring and observability platform designed to track and analyze the performance and health of distributed systems. 
 product_url: https://sleakops.com/
-works_on_arm: FALSE
+works_on_arm: false
 release_date_on_arm: 
 
 

@@ -3,7 +3,7 @@ name: Rocket.Chat
 category: Messaging/Comms
 description: Rocket.Chat is an adaptable open-source communication tool built for organizations that value strong data security. It offers a user-friendly interface and extensive customization options.
 download_url:
-works_on_arm: FALSE
+works_on_arm: false
 supported_minimum_version:
     version_number:
     release_date:
