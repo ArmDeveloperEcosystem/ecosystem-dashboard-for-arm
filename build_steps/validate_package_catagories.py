@@ -62,11 +62,17 @@ if __name__ == "__main__":
                 # check if packages_category matches a key in category_dict
                 is_valid = isCategoryValid(packages_category,category_dict)
                 if is_valid:
-                    valid_packages.append({
-                        "name": packages_name,
-                        "category": packages_category,
-                        "group": category_dict[packages_category]
-                    })
+                    try:
+                        valid_packages.append({
+                            "name": packages_name,
+                            "category": packages_category,
+                            "group": category_dict[packages_category]
+                        })
+                    except KeyError as e:
+                        print("KEY ERROR, package category isn't in category dictionary. Check and try again.")
+                        print("attempted: category_dict[packages_category]")
+                        print('category_dict = ',category_dict)
+                        print('packages_category =',packages_category)
                 else:
                     invalid_packages.append({
                         "name": packages_name,
