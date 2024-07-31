@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://developer.arm.com/Tools%20and%20Software/GNU%20Toolchain
-        partner_content:
-        official_docs: https://github.com/ArmDeveloperEcosystem/arm-learning-paths/blob/main/content/install-guides/gcc/arm-gnu.md#installing-on-linux
+        arm_content: https://learn.arm.com/install-guides/gcc/arm-gnu/
+        partner_content: 
+        official_docs: https://gcc.gnu.org/onlinedocs/
     arm_recommended_minimum_version:
         version_number:
         release_date:
