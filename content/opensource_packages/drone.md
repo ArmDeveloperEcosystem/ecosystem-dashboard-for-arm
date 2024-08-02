@@ -1,5 +1,5 @@
 ---
-name: Drone
+name: Drone CI
 category: DevOps
 description: Drone is a Continuous Integration platform that uses a powerful, cloud native pipeline engine, which allows busy teams to automate their build, test and release workflows.
 download_url: https://hub.docker.com/r/drone/drone/tags
@@ -11,8 +11,8 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://www.drone.io/
-    support_caveats:
-    alternative_options:
+    support_caveats: Drone is still availible. However, Gitness is being invested in as the next generation of Drone. Where Drone focused on continuous integration, Gitness adds source code hosting, bringing code management and pipelines closer together.
+    alternative_options: Gitness
     getting_started_resources:
         arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/drone-io-ci-cd-tool-for-developers
         partner_content:
