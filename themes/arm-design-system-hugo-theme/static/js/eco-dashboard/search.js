@@ -101,9 +101,6 @@ function updatePageMetadata(package_dom) {
         canonical_link.setAttribute('href',new_cannonical);
     }
 
-
-    link rel="canonical"
-
     // Update descriptions
     const ogDescription = document.querySelector('meta[property="og:description"]');
     if (ogDescription) {
