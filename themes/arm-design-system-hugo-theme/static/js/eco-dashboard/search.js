@@ -75,7 +75,7 @@ function updatePageMetadata(package_dom) {
     if (!does_it_woa) {
         social_description = "View "+pkg_name+" in the Ecosystem Dashboard for Arm and discover if it runs on Arm (and if not, what alternative packages do).";
     }
-    let new_cannonical = 'https://www.arm.com/developer-hub/ecosystem-dashboard?package='+sanitizeInput(pkg_name);
+    let new_cannonical = 'https://www.arm.com/developer-hub/ecosystem-dashboard?package='+normalizePackageName(pkg_name).replaceAll('(','').replaceAll(')','').replaceAll('__','/');
 
 
 
