@@ -98,7 +98,7 @@ function updatePageMetadata(package_dom) {
     // Update canonical link
     const canonical_link = document.querySelector('link[rel="canonical"]');
     if (canonical_link) {
-        canonical_link.setAttribute('rel',new_cannonical);
+        canonical_link.setAttribute('href',new_cannonical);
     }
 
 
