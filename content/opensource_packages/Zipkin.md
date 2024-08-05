@@ -6,7 +6,7 @@ download_url: https://github.com/openzipkin/zipkin/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.22.1
-    release_date: 2020/01/11
+    release_date: 2020/11/01
 
 
 optional_info:

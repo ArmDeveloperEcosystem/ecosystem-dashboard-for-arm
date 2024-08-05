@@ -6,7 +6,7 @@ download_url: https://nodejs.org/en/blog/release/
 works_on_arm: true
 supported_minimum_version:
     version_number: v4.0.0
-    release_date: 2015/08/09
+    release_date: 2015/09/08
 
 
 optional_info:

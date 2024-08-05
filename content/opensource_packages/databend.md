@@ -6,7 +6,7 @@ download_url: https://github.com/datafuselabs/databend/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: v0.4.95-nightly
-    release_date: 2021/01/09
+    release_date: 2021/09/01
 
 
 optional_info:

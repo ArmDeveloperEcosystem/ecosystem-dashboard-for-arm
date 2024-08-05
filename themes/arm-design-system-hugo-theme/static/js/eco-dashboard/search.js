@@ -75,6 +75,8 @@ function updatePageMetadata(package_dom) {
     if (!does_it_woa) {
         social_description = "View "+pkg_name+" in the Ecosystem Dashboard for Arm and discover if it runs on Arm (and if not, what alternative packages do).";
     }
+    let new_cannonical = 'https://www.arm.com/developer-hub/ecosystem-dashboard?package='+normalizePackageName(pkg_name).replaceAll('(','').replaceAll(')','').replaceAll('__','/');
+
 
 
 
@@ -92,6 +94,12 @@ function updatePageMetadata(package_dom) {
         twitterTitle.setAttribute('content', social_title);
     }
 
+
+    // Update canonical link
+    const canonical_link = document.querySelector('link[rel="canonical"]');
+    if (canonical_link) {
+        canonical_link.setAttribute('href',new_cannonical);
+    }
 
     // Update descriptions
     const ogDescription = document.querySelector('meta[property="og:description"]');
