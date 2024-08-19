@@ -2,7 +2,7 @@
 name: ClearML Enterprise
 vendor: ClearML
 category: AI/ML
-description: ClearML (earlier known as Trains) automates and simplifies machine learning solutions for data science teams all over the world. It is designed as an end-to-end MLOps and LLMOps suite allowing you to focus on developing your ML code and automation, hence ensuring that the work is reproducible and scalable.
+description: ClearML Enterprise automates and simplifies machine learning solutions for data science teams. It is designed as an end-to-end MLOps and LLMOps suite with commercial support.
 product_url: https://clear.ml/enterprise
 works_on_arm: true
 release_date_on_arm: 2019/06/11
@@ -15,7 +15,7 @@ optional_info:
     getting_started_resources:
         arm_content:
         vendor_announcement:
-        official_docs: https://clear.ml/docs/latest/docs/clearml_agent/clearml_agent_deployment
+        official_docs: https://clear.ml/docs/latest/docs/
 
 
 optional_hidden_info:
