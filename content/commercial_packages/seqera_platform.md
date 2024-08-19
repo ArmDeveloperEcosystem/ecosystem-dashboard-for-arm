@@ -14,7 +14,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content:
-        vendor_announcement: https://docs.seqera.io/platform/23.2/enterprise/configuration/overview#:~:text=or%20later).%0A%0A%60-,TOWER_ENABLE_ARM64,-%60%3A%20Enable%20support%20for
+        vendor_announcement: https://docs.seqera.io/platform/23.3/compute-envs/aws-batch
         official_docs: https://docs.seqera.io/platform/24.1/getting-started/quickstart-demo/comm-showcase
  
  
