@@ -1,7 +1,7 @@
 ---
-name: Linaro - GNU toolchain
+name: Arm GNU toolchain
 category: Compilers/Tools
-description: GNU is a group of programming tools used to develop software applications and operating systems.
+description: The Arm GNU Toolchain is a community supported, pre-built GNU compiler toolchain for Arm based CPUs.
 download_url: https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads
 works_on_arm: true
 supported_minimum_version:
@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content: https://developer.arm.com/Tools%20and%20Software/GNU%20Toolchain#Technical-Specifications
         partner_content:
-        official_docs:
+        official_docs: https://gcc.gnu.org/onlinedocs/
     arm_recommended_minimum_version:
         version_number:
         release_date:
