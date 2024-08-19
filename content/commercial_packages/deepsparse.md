@@ -2,7 +2,7 @@
 name: DeepSparse
 vendor: Neural Magic
 category: AI/ML
-description: DeepSparse is a sparsity-aware inference server for CPUs. It makes computer vision (CV), natural language processing (NLP), and large language models (LLMs) more performant on CPU infrastructure.
+description: A deep learning inference runtime for CPUs (and GPUs) that takes advantage of sparsity to accelerate inference.
 product_url: https://neuralmagic.com/deepsparse/
 works_on_arm: true
 release_date_on_arm: 2023/12/12

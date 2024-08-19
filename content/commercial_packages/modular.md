@@ -18,6 +18,6 @@ optional_info:
         official_docs: https://docs.modular.com/max/install
 
 optional_hidden_info:
-    other_info:
+    other_info: Also this announcement - www.modular.com/blog/announcing-max-developer-edition-preview
 
 ---

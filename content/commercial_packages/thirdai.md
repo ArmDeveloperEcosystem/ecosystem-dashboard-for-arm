@@ -2,7 +2,7 @@
 name: ThirdAI Platform
 vendor: ThirdAI
 category: AI/ML
-description: ThirdAI a multi-purpose library that provides a high-level API to build machine learning models. They provide an AI solution with lower cost and no GPUs, no embeddings, and no vector databases.
+description: ThirdAI a multi-purpose library that provides a high-level API to build machine learning models. The platform provides an AI solution with lower cost and no GPUs, no embeddings, and no vector databases.
 product_url: https://www.thirdai.com/thirdai-platform/
 works_on_arm: true
 release_date_on_arm: 2024/01/01

@@ -2,7 +2,7 @@
 name: Anyscale Platform
 vendor: Anyscale
 category: AI/ML
-description: Anyscale platform is a unified compute platform, used to build, deploy and manage scalable AL models and python applications.
+description: Anyscale platform is a unified compute platform built on the open source framework Ray. It is used to build, deploy and manage scalable AL models and python applications.
 product_url: https://www.anyscale.com/platform
 works_on_arm: true
 release_date_on_arm: 2023/02/24
