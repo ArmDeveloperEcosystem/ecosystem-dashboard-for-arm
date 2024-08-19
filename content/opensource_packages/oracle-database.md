@@ -11,11 +11,11 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://www.oracle.com/database/
-    support_caveats: https://docs.oracle.com/en/database/oracle/oracle-database/19/rnrdm/issues-affecting-linux-arm-aarch64-oracle-database-19.14.html
+    support_caveats: For version 19c, there are some known bugs listed [here](https://docs.oracle.com/en/database/oracle/oracle-database/19/rnrdm/issues-affecting-linux-arm-aarch64-oracle-database-19.14.html). The latest versions are more stable on the Arm architecture.
     alternative_options:
     getting_started_resources:
         arm_content:
-        partner_content:
+        partner_content: https://docs.oracle.com/en/learn/ol-db-arm/index.html#introduction
         official_docs: https://docs.oracle.com/en/database/oracle/oracle-database/19/ladbi/operating-system-reqs-arm.html
     arm_recommended_minimum_version:
         version_number:
