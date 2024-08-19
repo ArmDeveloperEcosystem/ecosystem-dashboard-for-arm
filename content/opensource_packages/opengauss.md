@@ -11,7 +11,7 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://opengauss.org/en/
-    support_caveats: OpenGauss rolls out AArch64 tar for CentOS and OpenEuler Operating Systems in the latest version. Version 2.0.0 has OpenGauss AArch64 tar for OpenEuler OS only.
+    support_caveats: As of version 6.0.0, OpenGauss supports the Arm architecture (AArch64) on the OpenEuler OS only - not CentOS.
     alternative_options:
     getting_started_resources:
         arm_content:
