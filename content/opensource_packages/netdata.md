@@ -1,7 +1,7 @@
 ---
 name: Netdata
 category: Monitoring/Observability
-description: Netdata is a real-time monitoring tool that displays performance metrics every second in visually intuitive dashboards, compatible with servers, virtual machines and cloud environments.
+description: Netdata agents are real-time monitoring tools that gather performance metrics every second and display in visually intuitive dashboards, compatible with servers, virtual machines and cloud environments.
 download_url: https://github.com/netdata/netdata/releases
 works_on_arm: true
 supported_minimum_version:
