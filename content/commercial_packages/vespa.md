@@ -1,7 +1,7 @@
 ---
 name: Vespa Cloud
 vendor: Vespa
-category: AI/ML/HPC
+category: AI/ML
 description: Vespa is a robust search engine that supports vector, lexical, and structured data searches. For production-ready search solutions, it integrates machine-learned model inference, ensuring scalability and high availability.
 product_url: https://vespa.ai/
 works_on_arm: true

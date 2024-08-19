@@ -1,6 +1,6 @@
 ---
 name: Crystal Language
-category: OS & Languages
+category: Languages and Frameworks
 description: Crystal is a programming language designed for efficiency and performance, with a syntax similar to Ruby.
 download_url: https://github.com/crystal-lang/crystal/releases
 works_on_arm: true

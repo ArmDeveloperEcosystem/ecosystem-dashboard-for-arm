@@ -15,7 +15,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content:
-        partner_content:
+        partner_content: https://kirenz.github.io/codelabs/codelabs/miniforge-setup/#0
         official_docs: https://github.com/conda-forge/miniforge?tab=readme-ov-file#install
     arm_recommended_minimum_version:
         version_number:
