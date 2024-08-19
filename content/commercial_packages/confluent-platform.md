@@ -2,7 +2,7 @@
 name: Confluent Platform
 vendor: Confluent
 category: Monitoring/Observability
-description: Confluent Platform is a comprehensive event streaming solution built on Apache Kafka, offering tools for data integration, real-time analytics, and scalable stream processing in enterprise environments.
+description: Confluent Platform is a distribution of Apache Kafka. This self-managed platform helps monitor real-time data, at any scale.
 product_url: https://www.confluent.io/product/confluent-platform/
 works_on_arm: true
 release_date_on_arm: 2024/04/01
