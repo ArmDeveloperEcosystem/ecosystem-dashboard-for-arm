@@ -2,7 +2,7 @@
 name: Vector
 vendor: Vector by Datadog
 category: Monitoring/Observability
-description: Vector by Datadog is an observability data pipeline that allows organizations to collect, transform, and route logs, metrics, and traces from various sources to multiple destinations.
+description: Vector is an observability data pipeline that allows organizations to collect, transform, and route logs, metrics, and traces from various sources to multiple destinations.
 product_url: https://vector.dev/
 works_on_arm: true
 release_date_on_arm: 2019/12/12
