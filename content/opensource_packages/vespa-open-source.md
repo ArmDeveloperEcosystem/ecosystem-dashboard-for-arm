@@ -1,6 +1,6 @@
 ---
 name: Vespa (open source)
-category: AI/ML/HPC
+category: AI/ML
 description: Vespa is a search and data processing engine designed for real-time AI data processing applications.
 download_url: https://hub.docker.com/r/vespaengine/vespa/
 works_on_arm: true
