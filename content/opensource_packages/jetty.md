@@ -14,7 +14,7 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://community.arm.com/arm-community-blogs/b/internet-of-things-blog/posts/sensors-to-servers-demo-part-3
+        arm_content: 
         partner_content: 
         official_docs: https://jetty.org/docs/jetty/12/operations-guide/begin/index.html
     arm_recommended_minimum_version:
