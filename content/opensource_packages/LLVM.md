@@ -1,7 +1,7 @@
 ---
-name: Linaro - LLVM builder
+name:  LLVM Toolchain
 category: Compilers/Tools
-description: The LLVM Project is a set of compiler and toolchain technologies.
+description: LLVM is a set of compiler and toolchain technologies. It is broadly capable as a frontend for any programming language and a backend for any ISA.
 download_url: https://github.com/llvm/llvm-project/releases/
 works_on_arm: true
 supported_minimum_version:
@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content: https://developer.arm.com/Tools%20and%20Software/LLVM%20Toolchain#Technical-Specifications
         partner_content:
-        official_docs:
+        official_docs: https://llvm.org/docs/GettingStarted.html
     arm_recommended_minimum_version:
         version_number:
         release_date:
