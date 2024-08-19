@@ -11,8 +11,8 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://github.com/Archiconda/build-tools
-    support_caveats: This project has been superseded by miniforge, a project by conda-forge.
-    alternative_options:
+    support_caveats: This project has been superseded by Miniforge, a project by conda-forge.
+    alternative_options: Miniforge
     getting_started_resources:
         arm_content:
         partner_content:
