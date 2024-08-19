@@ -1,7 +1,7 @@
 ---
-name: OpenAnolis
+name: Anolis OS
 category: Operating System
-description: OpenAnolis is an open-source community and innovation platform for operating systems, that accepts open community cooperation to build Linux open-source distribution and open-source innovation technology.
+description: Anolis OS is an open source Linux distribution provided by the OpenAnolis community / innovation platform.
 download_url: https://openanolis.cn/download
 works_on_arm: true
 supported_minimum_version:
