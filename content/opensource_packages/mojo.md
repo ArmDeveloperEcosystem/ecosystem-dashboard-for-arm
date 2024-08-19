@@ -1,7 +1,7 @@
 ---
 name: Mojo
 category: Languages and Frameworks
-description: Mojo is a language that combines the syntax and expressiveness of Python  with the performance of C. Mojo generalizes code across CPUs, GPUs, and TPUs automatically.
+description: Mojo is a language that combines the syntax and expressiveness of Python with the performance of C. Mojo generalizes code across CPUs, GPUs, and TPUs automatically.
 download_url: https://docs.modular.com/max/install
 works_on_arm: true
 supported_minimum_version:
