@@ -1,7 +1,7 @@
 ---
-name: GDAL
+name: Geospatial Data Abstraction Library (GDAL)
 category: Miscellaneous
-description: GDAL (Geospatial Data Abstraction Library) is an open-source library for reading, writing, and manipulating geospatial data formats, widely used in geographic information system (GIS) applications.
+description: GDAL is an open-source library for reading, writing, and manipulating geospatial data formats, widely used in geographic information system (GIS) applications.
 download_url: https://tracker.debian.org/pkg/gdal
 works_on_arm: true
 supported_minimum_version:
