@@ -1,5 +1,5 @@
 ---
-name: Oracle Database
+name: Oracle Database Free
 category: Database
 description: Oracle Database is the world's leading converged, multi-model database management system for any data management workload.
 download_url: https://www.oracle.com/database/technologies/oracle-database-software-downloads.html
