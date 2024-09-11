@@ -14,7 +14,7 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://learn.arm.com/learning-paths/cross-platform/matrix/2-testing/
+        arm_content: https://learn.arm.com/learning-paths/cross-platform/matrix/
         partner_content:
         official_docs: https://google.github.io/googletest/quickstart-cmake.html
     arm_recommended_minimum_version:
