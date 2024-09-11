@@ -1,5 +1,5 @@
 ---
-name: ITP(The Interpolate, Truncate, Project)
+name: ITP (The Interpolate, Truncate, Project)
 category: HPC
 description: The Interpolate, Truncate, Project (ITP) algorithm is a numerical method used for solving root-finding problems.
 download_url: https://github.com/paulnorthrop/itp/tags
