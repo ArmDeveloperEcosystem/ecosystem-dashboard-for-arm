@@ -1,6 +1,6 @@
 ---
 name: LibXext
-category: Operating System
+category: Miscellaneous
 description: LibXext is an open-source library part of the X.Org project, which provides the X Window System implementation for Linux and other Unix-like operating systems.
 download_url: https://gitlab.freedesktop.org/xorg/lib/libxext/-/tags
 works_on_arm: true
