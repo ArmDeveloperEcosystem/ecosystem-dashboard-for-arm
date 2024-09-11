@@ -1,6 +1,6 @@
 ---
 name: RocketMQ
-category: Miscellaneous 
+category: Messaging/Comms 
 description: RocketMQ is a distributed platform for messaging and streaming, designed to provide high-throughput and low-latency communication, ideal for real-time processing, microservices, and event-driven architectures.
 download_url: https://rocketmq.apache.org/download/
 works_on_arm: true
