@@ -24,6 +24,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: release notes are not available for Linux/Arm64 support. v1.0.0 has been successfully installed on the Neoverse N1 which is also the least available version of Catj.
+    other_info: Release notes are not available for Linux/Arm64 support. v1.0.0 has been successfully installed on the Neoverse N1 which is also the least available version of Catj.
  
 ---
