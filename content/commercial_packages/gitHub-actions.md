@@ -1,5 +1,5 @@
 ---
-name: GitHub Actions Self-hosted Runner
+name: GitHub Actions Runner - Self-hosted
 vendor: GitHub
 category: DevOps
 description: A self-hosted runner is a system that deploys and manages the execution of jobs from GitHub Actions on GitHub.com. Self-hosted runners can be physical, virtual, in a container, on-premises, or in a cloud.

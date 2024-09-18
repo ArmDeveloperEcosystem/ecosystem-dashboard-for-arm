@@ -80,9 +80,9 @@ if __name__ == "__main__":
     output_yaml_relative_path = Path('../data/category_data.yml')
     output_yaml_absolute_path = (script_dir / output_yaml_relative_path).resolve()
 
-
     category_raw_data = read_yaml_file(input_yaml_absolute_path)
     
+
     subcategory_mapping_dict = subcategory_to_group_mapping(category_raw_data)
     group_dict = group_list_simple(category_raw_data)
     group_desc_dict = group_description_list_simple(category_raw_data)
