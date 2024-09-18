@@ -14,7 +14,7 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://developer.arm.com/documentation/dui0498/d/Configuring-debug-hardware-for-GDB/Connections-to-a-target-OS-using-NFS--GDB-NFS-
+        arm_content: 
         partner_content: 
         official_docs: https://documentation.ubuntu.com/server/how-to/networking/install-nfs/
     arm_recommended_minimum_version:
