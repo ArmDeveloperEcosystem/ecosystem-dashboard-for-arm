@@ -24,6 +24,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: Release notes for Linux/Arm64 is not avialable. v2.0.6 is the first released version and has been successfuuly installed on the Neoverse N1.
+    other_info: Release notes for Linux/Arm64 is not avialable. v2.0.6 is the first released version and has been successfully installed on the Neoverse N1.
  
 ---
