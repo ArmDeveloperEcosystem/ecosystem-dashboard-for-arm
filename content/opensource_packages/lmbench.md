@@ -14,8 +14,8 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://developer.arm.com/documentation/102110/0001/Profiling-an-example-application
-        partner_content: https://topic.alibabacloud.com/a/how-to-migrate-lmbench-to-android_1_21_10082654.html
+        arm_content: 
+        partner_content: 
         official_docs: https://github.com/intel/lmbench/blob/master/README
     arm_recommended_minimum_version:
         version_number:
