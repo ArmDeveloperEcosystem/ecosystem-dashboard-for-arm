@@ -5,17 +5,26 @@ The basic process to contribute a package is to:
 3. Open a Pull Request for review.
 
 ## Examples of packages to add
-These are the types of packages you should look to contribution. In short, if it would help a developer migrate to Arm, it should be included.
+These are the types of packages you should look to contribute. In short, if it would help a developer migrate to Arm, it should be included.
 
 | **Category**                             | **Examples**                                                                 |
 |----------------------------------------  |------------------------------------------------------------------------------|
 | **Languages (Interpreted and Compiled)** | Python, Java, Ruby, Perl, PHP, JavaScript / C++, C#, Go, Rust, Fortran, Swift |   
+| **Critical Interpreted Language Modules**| Python's numpy, scipy, pandas, tensorflow, cython, multiprocessing. NodeJS's node-gyp, express, bcrpyt, grpc, bufferutil |   
 | **Tools and Libraries**                  | x265, OpenSSL, Boost, TensorFlow, NumPy, libc, htop, perf, nmon, sysstat, dstat, gdb, valgrind, strace, CMake, Make, Bazel, apt, yum, pacman, iptables, firewalld | 
 | **Frameworks and Middleware**            | Django, Spring, Ruby on Rails, Express, Laravel, Apache Hadoop, Apache Spark, PyTorch, Keras, scikit-learn, Istio, Consul, Jenkins, GitLab CI/CD, CircleCI, RabbitMQ, Apache Kafka, Kong, NGINX, Snort  | 
 | **Databases**                            | MySQL, PostgreSQL, SQLite, MongoDB, Cassandra, Redis                         |  
 | **Virtualization/Containerization**      | KVM, QEMU, Docker, Kubernetes, Docker Swarm, LXC/LXD                         | 
 | **HPC Packages**                         | OpenMPI, MPICH, SLURM, Torque, HDF5, OpenBLAS, ATLAS, BLIS, LAPACK, PETSc, FFTW |
 
+
+## Examples of what NOT TO ADD
+These packages should NOT be added, as the trade-off between clutter and clarity is not high enough. 
+
+| **Category**                             | **Examples**                                                                 |
+|----------------------------------------  |------------------------------------------------------------------------------|
+| **Small Interpreted Language Modules**   | Python's emoji, pyjokes, pytz. NodeJS's is-odd, node-fetch, chalk  |   
+| **Multiple SDK installs of the same SW** | sentry-python, sentry-javascript, sentry-go | 
 
 If it is not clear from existing package examples, view how to populate package metadata by expanding the section below.
 
