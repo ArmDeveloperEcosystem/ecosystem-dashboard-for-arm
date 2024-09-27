@@ -1,5 +1,5 @@
 ---
-name: Spring Framwork
+name: Spring Framework
 category: Languages and Frameworks
 description: The Spring Framework offers a robust infrastructure for building Java applications, leveraging cutting-edge techniques to drive development efficiency.
 download_url:
