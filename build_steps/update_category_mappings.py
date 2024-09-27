@@ -92,3 +92,5 @@ if __name__ == "__main__":
 
     write_mapping_to_yaml(final_category_dict, output_yaml_absolute_path)
     print("   Category mapping success. Updated file: ", output_yaml_absolute_path)
+
+

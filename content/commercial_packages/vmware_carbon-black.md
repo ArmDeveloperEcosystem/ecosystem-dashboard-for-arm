@@ -3,13 +3,13 @@ name: VMware Carbon Black (Linux Sensor)
 vendor: VMware
 category: Security applications
 description: VMware Carbon Black ensure comprehensive protection of an organization's data and customer information against malware, non-malware and living-off-the-land attacks.
-product_url: https://www.vmware.com/products/carbon-black-cloud.html
+product_url: https://www.vmware.com/products/security/endpoint-detection-and-response
 works_on_arm: true
 release_date_on_arm: 2023/01/23
 
 
 optional_info:
-    homepage_url: https://www.vmware.com/products/carbon-black-cloud.html
+    homepage_url: https://www.vmware.com/products/security/endpoint-detection-and-response
     support_caveats:
     alternative_options:
     getting_started_resources:
