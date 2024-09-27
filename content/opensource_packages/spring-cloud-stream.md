@@ -1,5 +1,5 @@
 ---
-name: Spring-cloud-stream
+name: Spring Cloud Stream
 category: Messaging/Comms
 description: Spring Cloud Stream is a framework that enables the creation of microservices powered by messaging, with support for systems like Kafka and RabbitMQ.
 download_url: https://github.com/spring-cloud/spring-cloud-stream/tags
