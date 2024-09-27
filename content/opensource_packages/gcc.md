@@ -1,5 +1,5 @@
 ---
-name: GCC
+name: GNU Toolchain (GCC)
 category: Compilers/Tools
 description: The GNU Compiler Collection (GCC) is a compiler system produced by the GNU Project supporting various programming languages.
 download_url: https://gcc.gnu.org/releases.html

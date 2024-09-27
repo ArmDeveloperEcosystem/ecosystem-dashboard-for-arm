@@ -15,7 +15,7 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://zoomadmin.com/HowToInstall/UbuntuPackage/libev-libevent-dev
+        official_docs: http://cvs.schmorp.de/libev/README
     arm_recommended_minimum_version:
         version_number:
         release_date:

@@ -71,9 +71,9 @@ function updatePageMetadata(package_dom) {
     let pkg_name = package_dom.getAttribute('data-title');
     let page_title = pkg_name+" - Ecosystem Dashboard for Arm";
     let social_title = pkg_name+" - Ecosystem Dashboard for Arm";
-    let social_description = pkg_name+" works on Arm servers! Discover the supported versions and getting started resources in the Ecosystem Dashboard for Arm.";
+    let social_description = pkg_name+" works on Arm Linux servers (Aarch64)! Discover the supported versions and getting started resources in the Software Ecosystem Dashboard for Arm.";
     if (!does_it_woa) {
-        social_description = "View "+pkg_name+" in the Ecosystem Dashboard for Arm and discover if it runs on Arm (and if not, what alternative packages do).";
+        social_description = "View "+pkg_name+" in the Software Ecosystem Dashboard for Arm and discover if it runs on Arm Linux servers (Aarch64) and alternative packages.";
     }
     let new_cannonical = 'https://www.arm.com/developer-hub/ecosystem-dashboard?package='+normalizePackageName(pkg_name).replaceAll('(','').replaceAll(')','').replaceAll('__','/');
 

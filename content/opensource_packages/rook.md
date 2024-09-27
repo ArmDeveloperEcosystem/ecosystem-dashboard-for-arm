@@ -15,7 +15,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content:
-        partner_content: https://ecosystemdashboard.linaro.org/Rook/
+        partner_content: 
         official_docs: https://rook.github.io/docs/rook/latest-release/Getting-Started/quickstart/
     arm_recommended_minimum_version:
         version_number:
