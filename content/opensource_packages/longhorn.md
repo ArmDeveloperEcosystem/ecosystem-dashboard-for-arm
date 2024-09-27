@@ -15,7 +15,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: https://on-demand.arm.com/flow/arm/devhub/sessionCatalog/page/pubSessCatalog/session/1681291098626001BAX5
-        partner_content: https://ecosystemdashboard.linaro.org/Longhorn/
+        partner_content: 
         official_docs: https://longhorn.io/docs/1.6.0/
     arm_recommended_minimum_version:
         version_number:
