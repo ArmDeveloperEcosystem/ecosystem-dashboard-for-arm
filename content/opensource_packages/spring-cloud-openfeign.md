@@ -1,5 +1,5 @@
 ---
-name: Spring-cloud-openfeign
+name: Spring Cloud OpenFeign
 category: Miscellaneous
 description: Spring-cloud-openfeign integrates OpenFeign with Spring Boot apps through autoconfiguration and binding with the Spring Environment, where Feign is a Java to HTTP client binder.
 download_url: https://github.com/spring-cloud/spring-cloud-openfeign/tags
