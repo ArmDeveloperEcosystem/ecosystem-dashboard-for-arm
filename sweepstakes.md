@@ -7,15 +7,26 @@ View the full [Terms and Conditions here.](https://www.arm.com/-/media/files/pdf
 ### How do I get involved?
 Simply contribute a package to the Software Ecosystem Dashboard for Arm through this GitHub repository! Simply follow this process below:
 
-0. Ensure the package does not already exist on the dashboard and that it works on Arm Linux Servers. You'll need to prove it works on Arm in one of three ways:
-   a. Cite release notes that note Arm Linux server (aarch64) support.
-   b. Cite where Aarch64 binaries are downloadable.
-   c. Manually validate the package runs on Arm by spinning up an Arm Neoverse-based server (such as an AWS Graviton instance) running Linux (Ubuntu, RHEL, or SUSE preferred), install the package via package manager or binary (build from source as a last resort), and execute the package to ensure it runs (such as `package --version`). Cite your process during contribution.
-1. Fork this repository
-2. Add the package metadata
-   a. Record relevant metadata, including citing how it works on Arm, in an .md file. The easiest approach is to copy an existing .md file and replace the information with this new package. For full details on metadata functions, read these [contribution guidelines](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/blob/main/contrib.md#required-information).
-3. Make a Pull Request
-   a. Be sure to check the box to join the sweepstakes!
+1. **Ensure the package does not already exist on the dashboard and verify it works on Arm Linux Servers.**  
+   You’ll need to prove that it works on Arm in one of the following ways:
+   1. Cite release notes that confirm Arm Linux server (aarch64) support.
+   2. Provide a link where Aarch64 binaries are available for download.
+   3. Manually validate that the package runs on Arm by following these steps:
+     - Spin up an Arm Neoverse-based server (such as an AWS Graviton instance) running Linux (Ubuntu, RHEL, or SUSE preferred).
+     - Install the package via a package manager or binary (build from source as a last resort).
+     - Execute the package (e.g., run `package --version`) to confirm it works.
+     - Document the process in the `optional_hidden_info` metadata field in your contribution.
+
+2. **Fork this repository.**
+
+3. **Add the package metadata.**  
+   - Record relevant metadata, including how it works on Arm, in an `.md` file.
+   - The easiest way is to copy an existing `.md` file and replace the content with the information for the new package.
+   - For detailed instructions on metadata, refer to the [contribution guidelines](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/blob/main/contrib.md#required-information).
+
+4. **Make a Pull Request.**  
+   - Don’t forget to check the box to join the sweepstakes!
+
    
 Arm engineers will review your submission, ask questions if needed, and then accept your contribution! In a week or so it will appear on the public dashboard.
 
