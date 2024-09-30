@@ -1,14 +1,13 @@
-## Arm Cloud Software Scavenger Hunt
+# Arm Cloud Software Scavenger Hunt
 Welcome to the October 2024 sweepstakes involving Arm cloud developers from around the globe! 
 
-**Your mission:** Locate packages that work on Arm Linux servers (Aarch64) and bring them back to one central place: [The Software Ecosystem Dashboard for Arm](https://www.arm.com/developer-hub/ecosystem-dashboard/).
-
-**Your reward:** Submitting at least one original contribution enters you into a sweepstakes to receive Arm SWAG and recognition of your findings!
+- **Your mission:** Locate packages that work on Arm Linux servers (Aarch64) and bring them back to one central place: [The Software Ecosystem Dashboard for Arm](https://www.arm.com/developer-hub/ecosystem-dashboard/).
+- **Your reward:** Submitting at least one original contribution enters you into a sweepstakes to receive Arm SWAG and recognition of your findings!
 View the full [Terms and Conditions here.](https://www.arm.com/-/media/files/pdf/terms-and-conditions/arm-cloud-software-scavenger-hunt-terms-and-conditions)
 
 ![Scavenger_hunt](https://github.com/user-attachments/assets/b711f5ce-c267-4c6e-8f45-0725c82d1b51)
 
-### How do I get involved?
+# How do I get involved?
 Simply contribute a package to the Software Ecosystem Dashboard for Arm through this GitHub repository! Simply follow this process below:
 
 1. **Ensure the package does not already exist on the dashboard and verify it works on Arm Linux Servers.**  
@@ -35,5 +34,5 @@ Arm engineers will review your submission, ask questions if needed, and then acc
 
 ---
 
-### When will I know if I won the sweepstakes results?
+# When will I know if I won the sweepstakes results?
 About 1-2 weeks after the sweepstakes ends at the end of the month. Your GitHub username will be mentioned in this repository; respond to us within 14 days of being mentioned and we'll send you your SWAG ) and recognition.
