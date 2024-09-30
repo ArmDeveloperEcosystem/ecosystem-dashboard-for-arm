@@ -1,4 +1,4 @@
-# ecosystem-dashboard-for-arm
+# Software Ecosystem Dashboard for Arm
 The Software Ecosystem Dashboard for Arm is available at https://www.arm.com/developer-hub/ecosystem-dashboard/servers-and-cloud-computing/
 
 This repository is maintained by Arm and contains the source files for the Arm Software Ecosystem Dashboard, providing information on software packages that work on Arm. 
