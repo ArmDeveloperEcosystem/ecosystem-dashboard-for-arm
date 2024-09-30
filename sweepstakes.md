@@ -23,9 +23,9 @@ Simply contribute a package to the Software Ecosystem Dashboard for Arm through 
 2. **Fork this repository.**
 
 3. **Add the package metadata.**  
-   - Record relevant metadata, including how it works on Arm, in an `.md` file.
+   - Record relevant metadata, including how it works on Arm, in an `.md` file. 
    - The easiest way is to copy an existing `.md` file and replace the content with the information for the new package.
-   - For detailed instructions on metadata, refer to the [contribution guidelines](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/blob/main/contrib.md#required-information).
+   - View a quick description of the metadata fields for an open-source package [here](https://raw.githubusercontent.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/refs/heads/main/archetypes/opensource_packages/index.md). For detailed instructions on metadata, refer to the [contribution guidelines](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/blob/main/contrib.md#required-information).
 
 4. **Make a Pull Request.**  
    - Don’t forget to check the box to join the sweepstakes!
