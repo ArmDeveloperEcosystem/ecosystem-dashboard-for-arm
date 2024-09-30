@@ -1,6 +1,8 @@
 ## Arm Cloud Software Scavenger Hunt
 Welcome to the October 2024 sweepstakes involving Arm cloud developers from around the globe! 
+
 **Your mission:** Locate packages that work on Arm Linux servers (Aarch64) and bring them back to one central place: [The Software Ecosystem Dashboard for Arm](https://www.arm.com/developer-hub/ecosystem-dashboard/).
+
 **Your reward:** Submitting at least one original contribution enters you into a sweepstakes to receive Arm SWAG and recognition of your findings!
 View the full [Terms and Conditions here.](https://www.arm.com/-/media/files/pdf/terms-and-conditions/arm-cloud-software-scavenger-hunt-terms-and-conditions)
 
