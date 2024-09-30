@@ -6,6 +6,9 @@ This data is sourced from Arm and third parties. While Arm uses reasonable effor
 
 # Sweepstakes happening now, October 2024! The Arm Cloud Software Scavenger Hunt
 Contribute packages, enter for a chance to win Arm SWAG! View details on [this page](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/blob/main/sweepstakes.md).
+[![Scavenger_hunt](https://github.com/user-attachments/assets/ef16c179-6808-48cd-914f-27f6f364eedd)](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/blob/main/sweepstakes.md)
+
+
 
 # How To Contribute and Request:
 * To contribute new package data (or improve existing package data):
