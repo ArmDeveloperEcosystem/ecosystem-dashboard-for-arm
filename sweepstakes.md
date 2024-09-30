@@ -4,6 +4,8 @@ Welcome to the October 2024 sweepstakes involving Arm cloud developers from arou
 **Your reward:** Submitting at least one original contribution enters you into a sweepstakes to receive Arm SWAG and recognition of your findings!
 View the full [Terms and Conditions here.](https://www.arm.com/-/media/files/pdf/terms-and-conditions/arm-cloud-software-scavenger-hunt-terms-and-conditions)
 
+![Scavenger_hunt](https://github.com/user-attachments/assets/b711f5ce-c267-4c6e-8f45-0725c82d1b51)
+
 ### How do I get involved?
 Simply contribute a package to the Software Ecosystem Dashboard for Arm through this GitHub repository! Simply follow this process below:
 
