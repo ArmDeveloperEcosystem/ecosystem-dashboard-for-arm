@@ -32,7 +32,6 @@ Simply contribute a package to the Software Ecosystem Dashboard for Arm through 
    
 Arm engineers will review your submission, ask questions if needed, and then accept your contribution! In a week or so it will appear on the public dashboard.
 
----
 
 # When will I know if I won the sweepstakes results?
 About 1-2 weeks after the sweepstakes ends at the end of the month. Your GitHub username will be mentioned in this repository; respond to us within 14 days of being mentioned and we'll send you your SWAG ) and recognition.
