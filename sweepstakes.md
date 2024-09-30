@@ -15,10 +15,10 @@ Simply contribute a package to the Software Ecosystem Dashboard for Arm through 
    1. Cite release notes that confirm Arm Linux server (aarch64) support.
    2. Provide a link where Aarch64 binaries are available for download.
    3. Manually validate that the package runs on Arm by following these steps:
-     - Spin up an Arm Neoverse-based server (such as an AWS Graviton instance) running Linux (Ubuntu, RHEL, or SUSE preferred).
-     - Install the package via a package manager or binary (build from source as a last resort).
-     - Execute the package (e.g., run `package --version`) to confirm it works.
-     - Document the process in the `optional_hidden_info` metadata field in your contribution.
+       - Spin up an Arm Neoverse-based server (such as an AWS Graviton instance) running Linux (Ubuntu, RHEL, or SUSE preferred).
+       - Install the package via a package manager or binary (build from source as a last resort).
+       - Execute the package (e.g., run `package --version`) to confirm it works.
+       - Document the process in the `optional_hidden_info` metadata field in your contribution.
 
 2. **Fork this repository.**
 
