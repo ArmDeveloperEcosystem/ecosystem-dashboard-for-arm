@@ -1,0 +1,18 @@
+---
+name: uv
+category: Tools & Libraries
+description: uv is a cross-platform asynchronous I/O library written in C. It provides an event-driven I/O API for files, network sockets, and timers.
+download_url: https://github.com/astral-sh/uv/releases
+works_on_arm: true
+supported_minimum_version:     
+  version_number: v0.4.26
+  release_date: 2024/10/23
+optional_info:    
+  support_caveats: No known caveats.
+  getting_started_resources:        
+    arm_content:
+    partner_content:
+    official_docs: https://github.com/astral-sh/uv
+optional_hidden_info:    
+  release_notes__supported_minimum: https://github.com/astral-sh/uv/releases/tag/0.4.26
+---
