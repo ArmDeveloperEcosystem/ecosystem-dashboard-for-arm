@@ -1,11 +1,16 @@
-# ecosystem-dashboard-for-arm
-The Software Ecosystem Dashboard for Arm is available at https://www.arm.com/developer-hub/ecosystem-dashboard/servers-and-cloud-computing/
+# Software Ecosystem Dashboard for Arm
+The Software Ecosystem Dashboard for Arm is available at [https://www.arm.com/developer-hub/ecosystem-dashboard/](https://www.arm.com/developer-hub/ecosystem-dashboard/)
 
 This repository is maintained by Arm and contains the source files for the Arm Software Ecosystem Dashboard, providing information on software packages that work on Arm. 
 This data is sourced from Arm and third parties. While Arm uses reasonable efforts to keep this dashboard accurate, Arm does not warrant (express or implied) or provide any guarantee of data correctness due to the ever-evolving software landscape.  
 
-# How To Contribute and Request:
+# Sweepstakes happening now, October 2024! The Arm Cloud Software Scavenger Hunt
+Contribute packages, enter for a chance to win Arm SWAG! View details on [this page](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/blob/main/sweepstakes.md).
+[![Scavenger_hunt](https://github.com/user-attachments/assets/ef16c179-6808-48cd-914f-27f6f364eedd)](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/blob/main/sweepstakes.md)
 
+
+
+# How To Contribute and Request:
 * To contribute new package data (or improve existing package data):
     * Fork this repo and submit pull requests; follow the step by step instructions in [Contribution guidelines](/contrib.md).
 * Log an issue with package data(or other general issues)
@@ -26,6 +31,3 @@ This site is built on the [Hugo](https://gohugo.io/) web framework, ideal for ge
     * where the html elements are defined to render /content into stylized HTML
   * LICENSE files
     * where the license information is contained
-  * config.toml
-    * where the high-level website configuration settings are defined
-
