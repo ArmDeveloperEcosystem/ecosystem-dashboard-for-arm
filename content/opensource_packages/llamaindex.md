@@ -1,6 +1,6 @@
 ---
 name: LlamaIndex Core
-category: ML/AI
+category: AI/ML
 description: The core python package to the LlamaIndex library, which is a simple, flexible data framework for connecting custom data sources to large language models.
 download_url: https://pypi.org/project/llama-index-core/#history
 works_on_arm: true
