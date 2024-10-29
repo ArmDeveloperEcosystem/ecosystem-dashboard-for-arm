@@ -11,10 +11,10 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://pytorch.org/torchtune/stable/overview.html
-    support_caveats: torchao must be built from source. Instructions can be found using Arm's learning path - https://learn.arm.com/learning-paths/servers-and-cloud-computing/pytorch-llama/pytorch-llama#install-pytorch-and-optimized-libraries
+    support_caveats: torchao must be built from source - instructions in the referenced Arm content below.
     alternative_options: 
     getting_started_resources:
-        arm_content: 
+        arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/pytorch-llama/pytorch-llama#install-pytorch-and-optimized-libraries
         partner_content: 
         official_docs: https://pytorch.org/torchtune/stable/index.html
     arm_recommended_minimum_version:
