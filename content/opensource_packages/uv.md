@@ -5,14 +5,14 @@ description: uv is a cross-platform asynchronous I/O library written in C. It pr
 download_url: https://github.com/astral-sh/uv/releases
 works_on_arm: true
 supported_minimum_version:     
-  version_number: v0.4.26
-  release_date: 2024/10/23
+  version_number: v0.0.5
+  release_date: 2024/02/15
 optional_info:    
-  support_caveats: No known caveats.
+  support_caveats:
   getting_started_resources:        
     arm_content:
     partner_content:
     official_docs: https://github.com/astral-sh/uv
 optional_hidden_info:    
-  release_notes__supported_minimum: https://github.com/astral-sh/uv/releases/tag/0.4.26
+  release_notes__supported_minimum: https://github.com/astral-sh/uv/releases/tag/0.0.5
 ---
