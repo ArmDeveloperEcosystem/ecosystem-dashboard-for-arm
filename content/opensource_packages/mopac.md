@@ -1,6 +1,6 @@
 ---
 name: MOPAC (Molecular Orbital PACkage)
-category: Miscellaneous
+category: HPC
 description: MOPAC (Molecular Orbital PACkage) is a computational chemistry tool for semi-empirical quantum calculations, enabling efficient modeling of molecular structures, reactions, and properties for both research and industrial use.
 download_url: https://github.com/openmopac/mopac/releases
 works_on_arm: true
