@@ -1,5 +1,4 @@
 ---
-draft: true
 name: vLLM
 category: AI/ML
 description: vLLM is a fast, straightforward library for LLM inference and serving.
