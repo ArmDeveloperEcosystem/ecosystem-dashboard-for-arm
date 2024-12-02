@@ -1,6 +1,6 @@
 ---
 name: R
-category: Miscellaneous
+category: Languages and Frameworks
 description: R Project is open-source software for statistical analysis and graphics. It is popular in data science, visualization, and machine learning. The project features extensive packages and a highly supportive community.
 download_url: https://launchpad.net/ubuntu/+source/r-base
 works_on_arm: true
