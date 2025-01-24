@@ -4,11 +4,6 @@ The Software Ecosystem Dashboard for Arm is available at [https://www.arm.com/de
 This repository is maintained by Arm and contains the source files for the Arm Software Ecosystem Dashboard, providing information on software packages that work on Arm. 
 This data is sourced from Arm and third parties. While Arm uses reasonable efforts to keep this dashboard accurate, Arm does not warrant (express or implied) or provide any guarantee of data correctness due to the ever-evolving software landscape.  
 
-# Sweepstakes happening now, January 2024! The Arm Cloud Software Scavenger Hunt
-Contribute packages, enter for a chance to win Arm SWAG! View details on [this page](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/blob/main/sweepstakes.md).
-[![Scavenger_hunt](https://github.com/user-attachments/assets/ef16c179-6808-48cd-914f-27f6f364eedd)](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/blob/main/sweepstakes.md)
-
-
 
 # How To Contribute and Request:
 * To contribute new package data (or improve existing package data):
