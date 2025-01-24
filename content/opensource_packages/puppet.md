@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://www.puppet.com/docs/puppet/8/puppet_index.html
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 
 optional_hidden_info:

@@ -1,7 +1,7 @@
 ---
-name: DeepstreamHub
+name: DeepstreamIO
 category: Messaging/Comms
-description: DeepstreamHub is a platform designed to handle real-time data streams, enabling applications to process and react to data instantly.
+description: DeepstreamIO is a platform designed to handle real-time data streams, enabling applications to process and react to data instantly.
 download_url: https://github.com/deepstreamIO/deepstream.io/releases
 works_on_arm: true
 supported_minimum_version:
@@ -10,16 +10,17 @@ supported_minimum_version:
 
 
 optional_info:
-    homepage_url: https://deepstreamhub.com/
+    homepage_url: https://deepstreamio.github.io/
     support_caveats:
     alternative_options:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://deepstreamhub.com/tutorials/getting-started/node/
+        official_docs: https://deepstreamio.github.io/docs/tutorials/install/linux
     arm_recommended_minimum_version:
         version_number:
         release_date:
+        reference_content:
 
 
 optional_hidden_info:

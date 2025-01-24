@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://mesos.apache.org/documentation/latest/building/
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 optional_hidden_info:
     release_notes__supported_minimum: https://lists.apache.org/thread/pfzrgj4932v0hltrdmv3s56zbyp29fc7

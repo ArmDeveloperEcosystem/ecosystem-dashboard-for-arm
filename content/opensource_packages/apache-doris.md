@@ -15,11 +15,12 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: 
-        partner_content: https://doris.apache.org/docs/install/source-install/compilation-arm/ 
+        partner_content: 
         official_docs: https://doris.apache.org/docs/gettingStarted/quick-start
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 
 optional_hidden_info:

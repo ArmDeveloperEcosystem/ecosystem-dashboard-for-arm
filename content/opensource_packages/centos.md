@@ -16,10 +16,11 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://docs.centos.org/en-US/centos/install-guide/Simple_Installation/
+        official_docs: https://docs.centos.org/
     arm_recommended_minimum_version:
         version_number:
         release_date:
+        reference_content:
  
 optional_hidden_info:
     release_notes__supported_minimum: https://blog.centos.org/2016/01/alternative-architectures-abound-in-centos-7-1511/

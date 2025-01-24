@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://git.lysator.liu.se/nettle/nettle/-/blob/master/README?ref_type=heads
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 optional_hidden_info:
     release_notes__supported_minimum: 

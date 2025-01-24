@@ -15,7 +15,7 @@ optional_info:
     getting_started_resources:
         arm_content: 
         vendor_announcement: https://www.simform.com/blog/aws-graviton-service-delivery/
-        official_docs: https://www.simform.com/services/aws-cloud-management/
+        official_docs: 
 
 optional_hidden_info:
     other_info: 

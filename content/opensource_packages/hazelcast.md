@@ -20,6 +20,7 @@ optional_info:
     arm_recommended_minimum_version:
         version_number:
         release_date:
+        reference_content:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://docs.hazelcast.com/hazelcast/5.3/release-notes/5-3-0#other-enhancements

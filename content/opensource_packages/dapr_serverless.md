@@ -20,6 +20,7 @@ optional_info:
     arm_recommended_minimum_version:
         version_number:
         release_date:
+        reference_content:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://hub.docker.com/layers/dapriosamples/hello-k8s-node/1.0.0/images/sha256-a39ab73532a9bee5486336d67a6f916551d15d34acb4cb611fd4f4b7dfbfbbbc?context=explore

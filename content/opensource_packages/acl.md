@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://github.com/acl-dev/acl/tree/master?tab=readme-ov-file#31-compiling-acl-on-different-platforms
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 optional_hidden_info:
     release_notes__supported_minimum: 

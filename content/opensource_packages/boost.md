@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://github.com/boostorg/wiki/wiki/Getting-Started%3A-Overview#installing-boost
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 optional_hidden_info:
     release_notes__supported_minimum: https://www.boost.org/users/history/version_1_74_0.html

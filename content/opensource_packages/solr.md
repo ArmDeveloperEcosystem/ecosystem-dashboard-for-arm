@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://solr.apache.org/guide/solr/latest/getting-started/solr-tutorial.html
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 
 optional_hidden_info:

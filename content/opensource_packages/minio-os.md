@@ -1,5 +1,5 @@
 ---
-name: MinIO
+name: MinIO OS
 category: Storage
 description: MinIO is a high-performance distributed Object Storage server, which is designed for large-scale private cloud infrastructure.
 download_url: https://github.com/minio/minio/releases
@@ -10,16 +10,17 @@ supported_minimum_version:
 
 
 optional_info:
-    homepage_url: https://min.io/
+    homepage_url: https://github.com/minio/minio
     support_caveats:
     alternative_options:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://min.io/download#/agpl-linux
+        official_docs: https://github.com/minio/minio/blob/master/README.md
     arm_recommended_minimum_version:
         version_number:
         release_date:
+        reference_content:
 
 
 optional_hidden_info:

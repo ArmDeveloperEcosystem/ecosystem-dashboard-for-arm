@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://learn.microsoft.com/en-us/aspnet/core/getting-started/?view=aspnetcore-8.0
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 
 optional_hidden_info:

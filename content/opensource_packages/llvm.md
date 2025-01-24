@@ -24,6 +24,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: The official community releases of the pre-built LLVM native toolchain for AArch64 are built and tested by Linaro and are now available on [LLVM’s GitHub](https://github.com/llvm/llvm-project/releases). The minimum version available at GitHub is v7.1.0, which has AArch64 release. Kindly refer [here](https://www.linaro.org/downloads/) for more information.
+    other_info: The official community releases of the pre-built LLVM native toolchain for AArch64 are built and tested by Linaro and are now available on [LLVM’s GitHub](https://github.com/llvm/llvm-project/releases). The minimum version available at GitHub is v7.1.0, which has AArch64 release. Kindly refer [here](https://www.linaro.org/downloads/) for more information.
 
 ---

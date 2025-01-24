@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://github.com/jemalloc/jemalloc/blob/dev/INSTALL.md
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/jemalloc/jemalloc/releases/tag/3.4.0

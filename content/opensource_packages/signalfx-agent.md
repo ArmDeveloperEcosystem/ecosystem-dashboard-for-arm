@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://docs.splunk.com/observability/en/gdi/smart-agent/smart-agent-resources.html
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 
 optional_hidden_info:

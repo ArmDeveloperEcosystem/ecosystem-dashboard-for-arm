@@ -20,6 +20,7 @@ optional_info:
     arm_recommended_minimum_version:
         version_number: 
         release_date:
+        reference_content:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://dev.mysql.com/doc/relnotes/mysql/8.0/en/news-8-0-23.html
