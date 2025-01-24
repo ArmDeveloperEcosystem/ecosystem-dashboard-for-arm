@@ -14,7 +14,7 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/keras-core/
+        arm_content: 
         partner_content:
         official_docs: https://jax.readthedocs.io/en/latest/installation.html
     arm_recommended_minimum_version:
