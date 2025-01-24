@@ -20,6 +20,7 @@ optional_info:
     arm_recommended_minimum_version:
         version_number:
         release_date:
+        reference_content:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://docs.emqx.com/en/emqx/latest/changes/changes-ce-v4.html#_4-2-0

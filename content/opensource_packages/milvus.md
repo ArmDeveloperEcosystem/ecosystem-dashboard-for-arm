@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://milvus.io/docs/quickstart.md#Install-Milvus
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 optional_hidden_info:
     release_notes__supported_minimum: https://milvus.io/docs/v2.3.x/release_notes.md#v230

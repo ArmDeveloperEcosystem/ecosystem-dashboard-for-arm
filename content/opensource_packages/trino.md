@@ -20,6 +20,7 @@ optional_info:
     arm_recommended_minimum_version:
         version_number:
         release_date:
+        reference_content:
  
 optional_hidden_info:
     release_notes__supported_minimum: https://trino.io/docs/current/release/release-330.html#:~:text=Add%20experimental%20support%20for%20running%20on%20Linux%20aarch64%20(ARM64)

@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://maven.apache.org/download.cgi#Installation
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 
 optional_hidden_info:

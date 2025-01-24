@@ -20,6 +20,7 @@ optional_info:
     arm_recommended_minimum_version:
         version_number: # Leave blank, populated by Arm internal only.
         release_date: # Leave blank, populated by Arm internal only.
+        reference_content: # Leave blank, populated by Arm internal only.
 
 
 optional_hidden_info:

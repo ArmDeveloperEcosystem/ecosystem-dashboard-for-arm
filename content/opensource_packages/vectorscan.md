@@ -20,6 +20,7 @@ optional_info:
     arm_recommended_minimum_version:
         version_number: 
         release_date:
+        reference_content:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/VectorCamp/vectorscan/releases/tag/vectorscan%2F5.4.6

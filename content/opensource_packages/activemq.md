@@ -8,7 +8,6 @@ supported_minimum_version:
     version_number: 5.6.0
     release_date: 2012/05/02
 
-
 optional_info:
     homepage_url: https://activemq.apache.org/
     support_caveats:
@@ -19,7 +18,8 @@ optional_info:
         official_docs: https://activemq.apache.org/components/classic/documentation/getting-started#UnixBinaryInstallationUnixBinaryInstallation
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 optional_hidden_info:
     release_notes__supported_minimum:

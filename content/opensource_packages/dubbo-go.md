@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://dubbo.apache.org/en/docs3-v2/golang-sdk/quickstart/
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 
 optional_hidden_info:

@@ -20,6 +20,7 @@ optional_info:
     arm_recommended_minimum_version:
         version_number:
         release_date:
+        reference_content:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://kernelnewbies.org/Linux_3.9#KVM_support_in_ARM_architectures

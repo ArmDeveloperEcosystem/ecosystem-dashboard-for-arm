@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://robotframework.org/#getting-started
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 
 optional_hidden_info:

@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://github.com/phoronix-test-suite/phoronix-test-suite?tab=readme-ov-file#installation--setup
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 optional_hidden_info:
     release_notes__supported_minimum: 

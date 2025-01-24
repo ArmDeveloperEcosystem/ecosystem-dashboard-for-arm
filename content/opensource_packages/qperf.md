@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://git.launchpad.net/ubuntu/+source/qperf/diff/README?h=ubuntu/bionic&id=e1b3d8ec9e9110b90f82005053f462dfd23595e7
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 optional_hidden_info:
     release_notes__supported_minimum: 

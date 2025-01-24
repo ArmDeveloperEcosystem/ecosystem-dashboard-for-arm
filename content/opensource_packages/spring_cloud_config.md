@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://docs.spring.io/spring-cloud-config/docs/current/reference/html/#_quick_start
     arm_recommended_minimum_version:
         version_number:
-        release_date: 
+        release_date:
+        reference_content: 
 
 optional_hidden_info:
     release_notes__supported_minimum: 

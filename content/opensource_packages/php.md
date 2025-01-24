@@ -19,7 +19,8 @@ optional_info:
         official_docs: https://docs.newrelic.com/docs/apm/agents/php-agent/installation/php-agent-installation-arm64/
     arm_recommended_minimum_version:
         version_number: 
-        release_date: 
+        release_date:
+        reference_content: 
 
 
 optional_hidden_info:
