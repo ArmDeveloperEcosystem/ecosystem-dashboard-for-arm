@@ -15,7 +15,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content:
-        partner_content: https://ecosystemdashboard.linaro.org/AvxToNeon/
+        partner_content: https://ecosystemdashboard.linaro.org/projects/avxtoneon
         official_docs: https://github.com/kunpengcompute/AvxToNeon#test
     arm_recommended_minimum_version:
         version_number:

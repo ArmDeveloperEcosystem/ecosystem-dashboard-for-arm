@@ -15,7 +15,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: https://developer.arm.com/documentation/101136/22-1-3/DDT/Memory-debugging/PMDK-memory-debugging
-        partner_content: https://ecosystemdashboard.linaro.org/PMDK/
+        partner_content: https://ecosystemdashboard.linaro.org/projects/pmdk
         official_docs: https://github.com/pmem/pmdk?tab=readme-ov-file#building-and-installing
     arm_recommended_minimum_version:
         version_number:

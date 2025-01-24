@@ -2,7 +2,7 @@
 name: Kylin
 category: Databases - Big-data
 description: Apache Kylin is an open-source distributed data warehouse for big data analytics. It provides OLAP (Online Analytical Processing) capabilities, enabling ultra-fast query performance on large datasets, and supports integration with Hadoop and Spark for efficient data processing.
-download_url: https://archive.apache.org/dist/kylin/
+download_url: https://kylin.apache.org/docs/download
 works_on_arm: true
 supported_minimum_version:
     version_number: v3.1.3
@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://kylin.apache.org/5.0/docs/quickstart/tutorial
+        official_docs: hhttps://kylin.apache.org/docs/overview
     arm_recommended_minimum_version:
         version_number:
         release_date:

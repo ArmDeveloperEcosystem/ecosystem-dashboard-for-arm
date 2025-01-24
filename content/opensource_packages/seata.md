@@ -2,7 +2,7 @@
 name: Seata
 category: Miscellaneous
 description: Seata provides an open-source distributed transaction solution for delivering high performance and easy to use distributed transaction services under a microservices architecture.
-download_url: https://seata.apache.org/unversioned/download/seata-server
+download_url: https://seata.apache.org/download/seata-server
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.6.0

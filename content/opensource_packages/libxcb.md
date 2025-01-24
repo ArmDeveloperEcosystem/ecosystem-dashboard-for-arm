@@ -2,7 +2,7 @@
 name: Libxcb
 category: Miscellaneous
 description: Libxcb is a library that provides tools for calculating exchange-correlation functionals used in density functional theory (DFT). It aims to enhance performance and flexibility in electronic structure simulations.
-download_url: https://xcb.freedesktop.org/dist/
+download_url: https://gitlab.freedesktop.org/xorg/lib/libxcb
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.10
@@ -10,7 +10,7 @@ supported_minimum_version:
 
 
 optional_info:
-    homepage_url: https://xcb.freedesktop.org/
+    homepage_url: https://gitlab.freedesktop.org/xorg/lib/libxcb
     support_caveats:
     alternative_options:
     getting_started_resources:

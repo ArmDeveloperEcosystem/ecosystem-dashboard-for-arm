@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://pq.hosting/en/help/instructions/570-komanda-figlet-v-linux.html
+        official_docs: https://github.com/cmatsuoka/figlet/blob/master/README
     arm_recommended_minimum_version:
         version_number:
         release_date:
