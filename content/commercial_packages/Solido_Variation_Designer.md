@@ -1,7 +1,7 @@
 ---
 name: Solido Variation Designer
 vendor: Siemens
-category: AI/ML
+category: EDA
 description: Solido Variation Designer is a software tool primarily used in the semiconductor industry, specifically for statistical analysis and design optimization in integrated circuit (IC) manufacturing.
 product_url: https://resources.sw.siemens.com/en-US/fact-sheet-solido-variation-designer
 works_on_arm: true
