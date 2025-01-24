@@ -1,5 +1,5 @@
 ---
-name: ICU
+name: International Components for Unicode (ICU)
 category: Miscellaneous
 description: Unicode icu is the repository for the International Components for Unicode.
 download_url: https://github.com/microsoft/icu/releases
