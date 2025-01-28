@@ -18,9 +18,9 @@ optional_info:
         partner_content: 
         official_docs: https://docs.djangoproject.com/en/5.0/intro/install/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 4.2.7
+        release_date: 2024/08/28
+        reference_content:  https://learn.arm.com/learning-paths/servers-and-cloud-computing/django/
 
 optional_hidden_info:
     release_notes__supported_minimum:

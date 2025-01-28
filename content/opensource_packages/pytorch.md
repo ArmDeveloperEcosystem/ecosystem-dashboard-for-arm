@@ -17,9 +17,9 @@ optional_info:
         partner_content: https://aws.amazon.com/pytorch/
         official_docs: https://pytorch.org/get-started/locally/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 2.4.1
+        release_date: 2024/12/18
+        reference_content: https://learn.arm.com/learning-paths/cross-platform/pytorch-digit-classification-arch-training/
 
 optional_hidden_info:
     release_notes__supported_minimum: https://pypi.org/project/torch/1.8.0/#files

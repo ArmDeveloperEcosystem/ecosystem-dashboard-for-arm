@@ -18,9 +18,9 @@ optional_info:
         partner_content: https://aws.amazon.com/blogs/compute/migrating-aws-lambda-functions-to-arm-based-aws-graviton2-processors/
         official_docs: https://nodejs.org/en/learn/getting-started/introduction-to-nodejs
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content: 
+        version_number: 14.x
+        release_date: 2022/01/24
+        reference_content: https://aws.amazon.com/blogs/compute/migrating-aws-lambda-functions-to-arm-based-aws-graviton2-processors/ 
 
 
 optional_hidden_info:

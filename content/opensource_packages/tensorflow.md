@@ -18,9 +18,9 @@ optional_info:
         partner_content: https://docs.aws.amazon.com/dlami/latest/devguide/tutorial-graviton-tensorflow.html
         official_docs: https://www.tensorflow.org/lite/guide/build_arm
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 2.15.0
+        release_date: 2024/06/07
+        reference_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/keras-core/install_dependencies/
 
 optional_hidden_info:
     release_notes__supported_minimum: https://www.tensorflow.org/install/pip#linux
