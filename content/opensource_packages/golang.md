@@ -18,9 +18,9 @@ optional_info:
         partner_content: https://github.com/aws/aws-graviton-getting-started/blob/main/golang.md
         official_docs: https://go.dev/blog/ports
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 1.23.1
+        release_date: 2024/09/11
+        reference_content: https://learn.arm.com/install-guides/go/
 
 
 optional_hidden_info:

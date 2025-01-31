@@ -17,9 +17,9 @@ optional_info:
         partner_content: https://docs.oracle.com/en/learn/arm_oke_cluster_oci/index.html
         official_docs: https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 1.23.12
+        release_date: 2024/06/26
+        reference_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/aks/cluster_deployment/
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.5.md#downloads-for-v150

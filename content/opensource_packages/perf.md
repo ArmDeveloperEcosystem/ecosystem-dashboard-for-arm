@@ -18,9 +18,9 @@ optional_info:
         partner_content:
         official_docs: https://perf.wiki.kernel.org/index.php/Main_Page
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 5.15.116
+        release_date: 2023/10/12
+        reference_content: https://learn.arm.com/install-guides/perf/
 
 optional_hidden_info:
     release_notes__supported_minimum:

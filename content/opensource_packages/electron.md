@@ -18,9 +18,9 @@ optional_info:
         partner_content: 
         official_docs: https://www.electronjs.org/docs/latest/tutorial/quick-start
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 16.0.5
+        release_date: 2024/02/05
+        reference_content: https://learn.arm.com/learning-paths/laptops-and-desktops/electron/how-to-1/
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/electron/electron/releases/tag/v1.8.1

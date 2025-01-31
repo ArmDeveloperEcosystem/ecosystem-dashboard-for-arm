@@ -18,9 +18,9 @@ optional_info:
         partner_content: https://aws.amazon.com/elasticache/redis/
         official_docs: https://github.com/redis/redis/#readme
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 6.0.9
+        release_date: 2022/12/07
+        reference_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/improve-redis-performance-by-deploying-on-alibaba-cloud-yitian-710-instances
 
 optional_hidden_info:
     release_notes__supported_minimum:

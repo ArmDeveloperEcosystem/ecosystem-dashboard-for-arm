@@ -17,9 +17,9 @@ optional_info:
         partner_content: https://aws.amazon.com/blogs/devops/building-an-arm64-rust-development-environment-using-aws-graviton2-and-aws-cdk/
         official_docs: https://www.rust-lang.org/tools/install
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 1.74.1
+        release_date: 2024/08/28
+        reference_content: https://learn.arm.com/install-guides/rust/
 
 optional_hidden_info:
     release_notes__supported_minimum:
