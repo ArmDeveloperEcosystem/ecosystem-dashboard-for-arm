@@ -18,9 +18,9 @@ optional_info:
         partner_content: https://aws.amazon.com/blogs/dotnet/net-workflows-for-arm64-with-codecatalyst-part-1/
         official_docs: https://learn.microsoft.com/en-us/aspnet/core/getting-started/?view=aspnetcore-8.0
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content: 
+        version_number: 7
+        release_date: 2023/05/09
+        reference_content: https://aws.amazon.com/blogs/dotnet/net-workflows-for-arm64-with-codecatalyst-part-1/
 
 
 optional_hidden_info:

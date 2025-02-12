@@ -18,9 +18,9 @@ optional_info:
         partner_content:
         official_docs: https://nightlies.apache.org/flink/flink-docs-stable/docs/try-flink/local_installation/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 1.17.2
+        release_date: 2024/12/30
+        reference_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/flink/
 
 optional_hidden_info:
     release_notes__supported_minimum:

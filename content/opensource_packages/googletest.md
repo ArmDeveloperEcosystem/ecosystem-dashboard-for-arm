@@ -18,9 +18,9 @@ optional_info:
         partner_content:
         official_docs: https://google.github.io/googletest/quickstart-cmake.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 1.14.0
+        release_date: 2024/07/08
+        reference_content: https://learn.arm.com/learning-paths/cross-platform/matrix/
 
 
 optional_hidden_info:

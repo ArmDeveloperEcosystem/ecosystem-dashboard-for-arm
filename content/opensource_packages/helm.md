@@ -18,9 +18,9 @@ optional_info:
         partner_content: https://amperecomputing.com/guides/dsb-sn-tuning-guide/dsb-sn-tuning-setting-up-kubernetes
         official_docs: https://helm.sh/docs/intro/quickstart/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 3.16.3
+        release_date: 2025/01/03
+        reference_content: https://learn.arm.com/install-guides/helm/
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/helm/helm/releases/tag/v2.10.0

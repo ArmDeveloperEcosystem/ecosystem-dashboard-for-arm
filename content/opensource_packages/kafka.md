@@ -18,9 +18,9 @@ optional_info:
         partner_content:
         official_docs: https://github.com/apache/kafka?tab=readme-ov-file#apache-kafka
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 3.7.0
+        release_date: 2024/06/27
+        reference_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/kafka/events/
 
 
 optional_hidden_info:

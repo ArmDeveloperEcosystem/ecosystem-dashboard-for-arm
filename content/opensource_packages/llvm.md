@@ -18,8 +18,9 @@ optional_info:
         partner_content:
         official_docs: https://llvm.org/docs/GettingStarted.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
+        version_number: 18.1.3
+        release_date: 2024/08/29
+        reference_content: https://learn.arm.com/install-guides/llvm-embedded/
 
 optional_hidden_info:
     release_notes__supported_minimum:

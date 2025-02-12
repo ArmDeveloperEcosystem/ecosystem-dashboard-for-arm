@@ -18,9 +18,9 @@ optional_info:
         partner_content: https://aws.amazon.com/blogs/machine-learning/reduce-amazon-sagemaker-inference-cost-with-aws-graviton/
         official_docs: https://xgboost.readthedocs.io/en/stable/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 1.6.2
+        release_date: 2022/10/21
+        reference_content: https://community.arm.com/arm-community-blogs/b/servers-and-cloud-computing-blog/posts/xgboost-lightgbm-aws-graviton3
 
 optional_hidden_info:
     release_notes__supported_minimum: https://pypi.org/project/xgboost/1.2.1/#files

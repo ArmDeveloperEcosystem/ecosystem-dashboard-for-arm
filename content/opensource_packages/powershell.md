@@ -17,9 +17,9 @@ optional_info:
         arm_content: https://learn.arm.com/install-guides/powershell/
         official_docs: https://learn.microsoft.com/en-us/powershell/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 7.4.1
+        release_date: 2024/04/10
+        reference_content: https://learn.arm.com/install-guides/powershell/
 
 
 optional_hidden_info:

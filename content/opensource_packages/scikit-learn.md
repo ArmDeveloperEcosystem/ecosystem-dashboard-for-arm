@@ -18,9 +18,9 @@ optional_info:
         partner_content:
         official_docs: https://scikit-learn.org/stable/install.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 1.1.2
+        release_date: 2022/10/21
+        reference_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/xgboost-lightgbm-aws-graviton3
 
 optional_hidden_info:
     release_notes__supported_minimum:
