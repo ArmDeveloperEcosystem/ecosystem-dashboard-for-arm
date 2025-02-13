@@ -18,9 +18,9 @@ optional_info:
         partner_content: 
         official_docs: https://github.com/protocolbuffers/protobuf/blob/main/src/README.md 
     arm_recommended_minimum_version:
-        version_number: 
-        release_date:
-        reference_content:
+        version_number: 2.4.1
+        release_date: 2023/10/24
+        reference_content: https://developer.arm.com/documentation/ka002171/latest/
  
  
 optional_hidden_info:

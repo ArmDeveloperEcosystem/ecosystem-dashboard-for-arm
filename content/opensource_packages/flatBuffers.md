@@ -18,9 +18,9 @@ optional_info:
         partner_content: 
         official_docs: https://github.com/google/flatbuffers#quick-start
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content: 
+        version_number: 22.12.6
+        release_date: 2024/07/09
+        reference_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/vectorscan/snort/ 
 
 
 optional_hidden_info:

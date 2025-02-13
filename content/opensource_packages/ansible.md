@@ -18,9 +18,9 @@ optional_info:
         partner_content: 
         official_docs: https://www.redhat.com/fr/blog/red-hat-enterprise-linux-arm-now-supported-aws?source=author&term=25831
     arm_recommended_minimum_version:
-        version_number: 
-        release_date:
-        reference_content:
+        version_number: 2.14.3
+        release_date: 2024/04/21
+        reference_content: https://learn.arm.com/install-guides/ansible/
 
 
 optional_hidden_info:

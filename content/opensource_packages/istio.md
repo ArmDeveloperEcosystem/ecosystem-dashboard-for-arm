@@ -18,9 +18,9 @@ optional_info:
         partner_content: https://aws.amazon.com/blogs/opensource/getting-started-with-istio-on-amazon-eks/
         official_docs: https://github.com/istio/istio/wiki
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 1.12.1
+        release_date: 2022/04/12
+        reference_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/deploying-tetrate-istio-distribution-for-arm-neoverse-based-aws-graviton-processors
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/istio/istio/releases/tag/1.6.0-alpha.1

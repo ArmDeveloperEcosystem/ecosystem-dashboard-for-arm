@@ -18,9 +18,9 @@ optional_info:
         partner_content: https://aws.amazon.com/blogs/containers/optimize-your-spring-boot-application-for-aws-fargate/
         official_docs: https://spring.io/quickstart
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 3.4.0
+        release_date: 2024/11/21
+        reference_content: https://spring.io/blog/2024/11/21/spring-boot-3-4-0-available-now#whats-new-in-34
 
 optional_hidden_info:
     release_notes__supported_minimum:
