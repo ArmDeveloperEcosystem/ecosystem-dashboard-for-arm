@@ -1,6 +1,6 @@
 ---
 name: Python-Xmlsec
-category: Miscellaneous
+category: Security
 description: Python-Xmlsec is a python binding for the XML Security Library (Xmlsec).
 download_url: https://pypi.org/project/xmlsec/#history
 works_on_arm: true
