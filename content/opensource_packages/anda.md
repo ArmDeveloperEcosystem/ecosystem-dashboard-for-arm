@@ -1,6 +1,6 @@
 ---
 name: Anda
-category: Miscellaneous
+category: Compilers/Tools
 description: Anda is a Rust-based package build toolchain, designed to simplify building various types of packages.
 download_url: https://github.com/FyraLabs/anda/tags
 works_on_arm: true
