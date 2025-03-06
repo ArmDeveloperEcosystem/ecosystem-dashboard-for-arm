@@ -1,6 +1,6 @@
 ---
 name: Bison
-category: Miscellaneous
+category: Data-format
 description: Bison converts annotated context-free grammar into a deterministic LR or generalized LR parser.
 download_url: https://github.com/akimd/bison/tags
 works_on_arm: true
