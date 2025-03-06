@@ -1,6 +1,6 @@
 ---
 name: Xml2
-category: Miscellaneous
+category: Data-format
 description: Xml2 package is binding to libxml2, that makes it easier to work with XML and HTML from R.
 download_url: https://github.com/r-lib/xml2/releases
 works_on_arm: true
