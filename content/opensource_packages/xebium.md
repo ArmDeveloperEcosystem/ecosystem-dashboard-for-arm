@@ -1,6 +1,6 @@
 ---
 name: Xebium
-category: Miscellaneous
+category: DevOps
 description: Xebium provides Selenium (web driver) bindings for FitNesse with Selenium-IDE support, combining the powers of FitNesse and Selenium.
 download_url: https://github.com/xebia/Xebium/tags
 works_on_arm: true
