@@ -1,6 +1,6 @@
 ---
 name: Nova
-category: Miscellaneous
+category: Containers and Orchestration
 description: OpenStack Nova provides cloud computing fabric controller, that supports technologies like libvirt, VMware, and OpenStack Ironic.
 download_url: https://github.com/openstack/nova/tags
 works_on_arm: true
