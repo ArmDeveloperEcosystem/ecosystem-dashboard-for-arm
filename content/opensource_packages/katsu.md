@@ -1,6 +1,6 @@
 ---
 name: Katsu
-category: Miscellaneous
+category: HPC
 description: Katsu contains an integrated library for simulating full stokes and mueller polarimetry, modeling simple polarization effects (represented with Mueller calculus), and integrating both as data reduction tools for conducting polarimetry in the laboratory.
 download_url: https://github.com/Jashcraf/katsu/releases
 works_on_arm: true
