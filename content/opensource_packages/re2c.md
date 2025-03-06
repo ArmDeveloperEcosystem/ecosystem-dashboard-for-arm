@@ -1,6 +1,6 @@
 ---
 name: Re2c
-category: Miscellaneous
+category: Compilers/Tools
 description: Re2c acts as a preprocessor, processes the contents of the blocks, translating them to code in C/C++ and outputs the generated code in place of the block.
 download_url: https://github.com/skvadrik/re2c/releases
 works_on_arm: true
