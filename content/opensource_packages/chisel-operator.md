@@ -1,6 +1,6 @@
 ---
 name: Chisel-Operator
-category: DevOps
+category: Networking
 description: Chisel-operator is a k8s operator for chisel, which allows using Chisel as a LoadBalancer provider for the Kubernetes cluster.
 download_url: https://github.com/FyraLabs/chisel-operator/tags
 works_on_arm: true
