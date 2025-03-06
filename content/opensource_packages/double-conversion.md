@@ -1,6 +1,6 @@
 ---
 name: Double-conversion
-category: Miscellaneous
+category: Data-format
 description: Double-conversion provides decimal-binary and binary-decimal routines for IEEE doubles.
 download_url: https://github.com/google/double-conversion/releases
 works_on_arm: true
