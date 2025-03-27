@@ -21,6 +21,7 @@ optional_info:
         version_number:
         release_date:
         reference_content:
+        rationale:
  
 optional_hidden_info:
     release_notes__supported_minimum: https://linbit.com/drbd-user-guide/drbd-guide-9_0-en/#p-intro:~:text=1.5.3.-,CPU%20Requirements,-DRBD%209%20is

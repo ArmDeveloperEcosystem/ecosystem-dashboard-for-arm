@@ -21,6 +21,7 @@ optional_info:
         version_number:
         release_date:
         reference_content:
+        rationale:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://release-next--cert-manager-website.netlify.app/docs/releases/release-notes/release-notes-0.7

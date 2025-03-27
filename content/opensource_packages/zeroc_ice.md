@@ -21,6 +21,7 @@ optional_info:
         version_number:
         release_date:
         reference_content:
+        rationale:
  
 optional_hidden_info:
     release_notes__supported_minimum: https://doc.zeroc.com/rel/ice-releases/ice-3-7/ice-3-7-2-release-notes/supported-platforms-for-ice-3-7-2

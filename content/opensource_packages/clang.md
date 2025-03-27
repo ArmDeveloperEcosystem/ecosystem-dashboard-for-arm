@@ -21,6 +21,7 @@ optional_info:
         version_number:
         release_date:
         reference_content:
+        rationale:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://releases.llvm.org/19.1.0/tools/clang/docs/ReleaseNotes.html#arm-and-aarch64-support

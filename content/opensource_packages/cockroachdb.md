@@ -20,6 +20,7 @@ optional_info:
         version_number:
         release_date:
         reference_content:
+        rationale:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://www.cockroachlabs.com/docs/releases/v22.2#v22-2-0-alpha-1-build-changes

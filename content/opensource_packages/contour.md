@@ -21,6 +21,7 @@ optional_info:
         version_number:
         release_date:
         reference_content:
+        rationale:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://hub.docker.com/layers/projectcontour/contour/v1.10.0/images/sha256-fefd6f921648c38ece476672f35c52cf8faac36347494401f6d2225254ae5e1d?context=explore

@@ -22,6 +22,7 @@ optional_info:
         version_number:
         release_date:
         reference_content:
+        rationale:
 
 
 optional_hidden_info:

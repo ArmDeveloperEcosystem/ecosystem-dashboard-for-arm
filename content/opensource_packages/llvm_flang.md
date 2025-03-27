@@ -21,6 +21,7 @@ optional_info:
         version_number:
         release_date:
         reference_content:
+        rationale:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/llvm/llvm-project/blob/main/flang/docs/GettingStarted.md#supported-c-compilers

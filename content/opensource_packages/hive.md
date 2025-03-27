@@ -21,6 +21,7 @@ optional_info:
         version_number:
         release_date:
         reference_content:
+        rationale:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://issues.apache.org/jira/secure/ReleaseNote.jspa?version=12351489&styleName=Html&projectId=12310843
