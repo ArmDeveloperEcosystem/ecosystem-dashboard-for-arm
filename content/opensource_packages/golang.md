@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://github.com/aws/aws-graviton-getting-started/blob/main/golang.md
         official_docs: https://go.dev/blog/ports
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.18
+        release_date: 2022/05/31
+        reference_content: https://aws.amazon.com/blogs/compute/making-your-go-workloads-up-to-20-faster-with-go-1-18-and-aws-graviton/
+        rationale: These enhancements resulted in up to a 20% increase in performance for Go workloads on Arm-based servers.
 
 
 optional_hidden_info:
