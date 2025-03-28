@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/minio/minio/blob/master/README.md
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: RELEASE.2024-07-13T01-46-15Z
+        release_date: 2024/07/22
+        reference_content: https://blog.min.io/bringing-arm-into-the-ai-data-infrastructure-fold-at-minio-using-sve/
+        rationale: The release adds updated dependencies for ARM SVE support. Refer these [github notes](https://github.com/minio/minio/releases/tag/RELEASE.2024-07-13T01-46-15Z)
 
 
 optional_hidden_info:

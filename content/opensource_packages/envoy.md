@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://www.envoyproxy.io/docs/envoy/latest/start/install#install-envoy-on-ubuntu
     arm_recommended_minimum_version:
-        version_number: 
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.30.0
+        release_date: 2024/04/16
+        reference_content: https://www.envoyproxy.io/docs/envoy/latest/version_history/v1.30/v1.30.0
+        rationale: Envoy v1.30.0 introduced a configuration change where the envoy.restart_features.use_fast_protobuf_hash feature was enabled by default. This adjustment is expected to enhance the performance of hash operations by 2x to 10x and reduce configuration update times by 10-25%. While these improvements are general and not exclusive to any specific architecture, they may positively impact performance on Arm-based systems.
 
 
 optional_hidden_info:
