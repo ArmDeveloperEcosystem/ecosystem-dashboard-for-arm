@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://aquasecurity.github.io/trivy/v0.50/getting-started/installation/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.29.0
+        release_date: 2022/06/22
+        reference_content: https://www.aquasec.com/blog/trivy-v0-29-0-rbac-security/
+        rationale: Trivy v0.29.0 introduced significant enhancements, including role-based access control (RBAC) and Helm chart scanning, as well as support for custom extensions.
 
 
 optional_hidden_info:

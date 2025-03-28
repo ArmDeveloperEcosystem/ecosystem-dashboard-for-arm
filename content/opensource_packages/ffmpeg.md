@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://aws.amazon.com/blogs/opensource/optimized-video-encoding-with-ffmpeg-on-aws-graviton-processors/
         official_docs: https://ffmpeg.org/ffmpeg.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 5.2
+        release_date: 2022/11/15
+        reference_content: https://aws.amazon.com/blogs/opensource/optimized-video-encoding-with-ffmpeg-on-aws-graviton-processors/
+        rationale: This blog shows optimized video encoding with FFMPEG on Graviton processors.
 
 optional_hidden_info:
     release_notes__supported_minimum:
