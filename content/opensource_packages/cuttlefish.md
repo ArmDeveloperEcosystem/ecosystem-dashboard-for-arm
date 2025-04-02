@@ -21,6 +21,7 @@ optional_info:
         version_number:
         release_date:
         reference_content:
+        rationale:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/google/android-cuttlefish/tree/v0.9.26?tab=readme-ov-file#virtual-device-for-android-host-side-utilities

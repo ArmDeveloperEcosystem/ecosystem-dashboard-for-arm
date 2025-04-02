@@ -18,9 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://speed.python.org/comparison/
     arm_recommended_minimum_version:
-        version_number: 
-        release_date:
-        reference_content:
+        version_number: 3.11.0
+        release_date: 2022/10/24
+        reference_content: https://docs.python.org/3/whatsnew/3.11.html
+        rationale: Python 3.11 introduced significant performance improvements, with some benchmarks showing up to a 60% speed increase compared to Python 3.10. These enhancements benefit all platforms, including Arm-based systems.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://pythondev.readthedocs.io/platforms.html

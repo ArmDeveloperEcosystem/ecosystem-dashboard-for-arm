@@ -21,6 +21,7 @@ optional_info:
         version_number:
         release_date:
         reference_content:
+        rationale:
  
 optional_hidden_info:
     release_notes__supported_minimum: https://kylin.apache.org/docs/release_notes.html#:~:text=on%20model%20saving-,%5BKYLIN%2D4864%5D%20%2D%20Support%20building%20and%20testing%20Kylin%20on%20ARM64%20architecture%20platform,-%5BKYLIN%2D4944%5D%20%2D%20Upgrade

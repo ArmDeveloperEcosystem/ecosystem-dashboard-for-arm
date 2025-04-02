@@ -17,9 +17,10 @@ optional_info:
         partner_content: https://aws.amazon.com/pytorch/
         official_docs: https://pytorch.org/get-started/locally/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 2.0.0
+        release_date: 2023/06/22
+        reference_content: https://pytorch.org/blog/optimized-pytorch-w-graviton/
+        rationale: PyTorch 2.0.0 introduced significant performance optimizations for Arm-based processors, particularly enhancing inference speeds on AWS Graviton instances. These optimizations resulted in up to a 3.5x increase in performance for ResNet-50 models compared to previous releases.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://pypi.org/project/torch/1.8.0/#files

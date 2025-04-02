@@ -18,9 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://learn.netdata.cloud/docs/developer-and-contributor-corner/install-the-netdata-agent-from-a-git-checkout
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 2.2.0
+        release_date: 2025/01/22
+        reference_content: https://github.com/netdata/netdata/releases/tag/v2.2.0
+        rationale: Version 2.2.0 introduced significant performance optimizations targeting Parent-to-Parent streaming deployments, achieving 50% less memory usage across all installations, 50% reduced bandwidth usage, and 20% lower CPU utilization. While these improvements are general, they may benefit Arm-based systems.
 
 
 optional_hidden_info:

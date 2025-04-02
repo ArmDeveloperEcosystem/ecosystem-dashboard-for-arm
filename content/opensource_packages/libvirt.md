@@ -21,6 +21,7 @@ optional_info:
         version_number:
         release_date:
         reference_content:
+        rationale:
 
 optional_hidden_info:
     release_notes__supported_minimum: https://gitlab.com/libvirt/libvirt/-/blob/v1.1.4/docs/news.html.in?ref_type=tags#L15

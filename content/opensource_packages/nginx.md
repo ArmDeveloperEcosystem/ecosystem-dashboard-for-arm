@@ -18,9 +18,10 @@ optional_info:
         partner_content: https://amperecomputing.com/briefs/nginx-on-azure-brief
         official_docs: https://www.nginx.com/resources/wiki/start/
     arm_recommended_minimum_version:
-        version_number: 
-        release_date:
-        reference_content:
+        version_number: 1.20.1
+        release_date: 2022/12/14
+        reference_content: https://community.arm.com/arm-community-blogs/b/servers-and-cloud-computing-blog/posts/improve-nginx-performance-up-to-32-by-deploying-on-alibaba-cloud-yitian-710-instances
+        rationale: This blog shows that NGINX version 1.20.1 deployed on Yitian 710 based ECS provides up to 32% more throughput in compared to the equivalent x86 based ECS instances.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://www.nginx.com/blog/nginx-plus-r5-released/

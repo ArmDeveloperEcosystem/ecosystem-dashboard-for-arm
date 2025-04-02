@@ -18,9 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://docs.influxdata.com/influxdb/v2/install/?t=Linux
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 3.0.0
+        release_date: 2024/09/04
+        reference_content: https://www.influxdata.com/blog/power-massive-time-series-workloads-with-influxdb-3.0/
+        rationale: InfluxDB 3.0 introduces significant performance enhancements, including unlimited cardinality, high-speed data ingestion, real-time querying, and improved data compression.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/influxdata/influxdb/releases/tag/v2.0.3

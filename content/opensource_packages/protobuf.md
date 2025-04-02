@@ -18,9 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://github.com/protocolbuffers/protobuf/blob/main/src/README.md 
     arm_recommended_minimum_version:
-        version_number: 
-        release_date:
-        reference_content:
+        version_number: 4.21.0
+        release_date: 2022/05/06
+        reference_content: https://protobuf.dev/news/2022-05-06/
+        rationale: Version 4.21.0 introduced significant performance improvements by adopting the upb library, resulting in notably better parsing performance, especially for large payloads. While these enhancements are general, they benefit Arm-based systems by improving overall efficiency.
  
  
 optional_hidden_info:

@@ -17,9 +17,10 @@ optional_info:
         partner_content: 
         official_docs: https://github.com/libuv/libuv/blob/v1.x/README.md
     arm_recommended_minimum_version:
-        version_number: 
-        release_date:
-        reference_content:
+        version_number: 1.45.0
+        release_date: 2023/05/19
+        reference_content: https://github.com/libuv/libuv/releases/tag/v1.45.0
+        rationale: Version 1.45.0 introduced support for IO_uring, which significantly enhances asynchronous file operations on Linux systems. Performance improvements of up to 8x have been observed with IO_uring integration. Kindly refer [here](https://github.com/libuv/libuv/pull/3952). While these enhancements are not exclusive to Arm architectures, Arm-based systems running on compatible Linux kernels can benefit from these general performance improvements.
 
 
 optional_hidden_info:

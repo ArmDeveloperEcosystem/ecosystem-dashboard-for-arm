@@ -18,9 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://goharbor.io/docs/2.10.0/install-config/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 2.9.0
+        release_date: 2023/08/29
+        reference_content: https://goharbor.io/blog/harbor-2.9/
+        rationale: Harbor v2.9.0 introduced enhanced support for multi-architecture images and image manifests through OCI v1.1.0-rc2, facilitating better management and deployment of images across different architectures. Additionally, this version improved the garbage collection process, leading to more efficient storage management.
 
 optional_hidden_info:
     release_notes__supported_minimum:

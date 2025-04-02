@@ -18,9 +18,10 @@ optional_info:
         partner_content: https://amperecomputing.com/blogs/ampere-computing-and-cncf-supporting-arm-native-ci-for-ncf-projects
         official_docs: https://etcd.io/docs/latest/
     arm_recommended_minimum_version:
-        version_number: 
-        release_date:
-        reference_content:
+        version_number: 3.5.19
+        release_date: 2025/03/05
+        reference_content: https://github.com/etcd-io/etcd/blob/main/CHANGELOG/CHANGELOG-3.5.md#v3519-2025-03-05
+        rationale: Version 3.5.19 addresses a performance regression related to uncertain compaction sleep intervals, which could enhance overall performance. Kindly refer [here](https://github.com/etcd-io/etcd/pull/19405).
  
  
 optional_hidden_info:
