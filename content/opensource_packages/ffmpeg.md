@@ -21,7 +21,7 @@ optional_info:
         version_number: 5.2
         release_date: 2022/11/15
         reference_content: https://aws.amazon.com/blogs/opensource/optimized-video-encoding-with-ffmpeg-on-aws-graviton-processors/
-        rationale: This blog shows optimized video encoding with FFMPEG on Graviton processors.
+        rationale: This blog shows a benchmark of FFmpeg video encoding on Graviton processors, delivering around 60% performance boost vs other architectures.
 
 optional_hidden_info:
     release_notes__supported_minimum:
