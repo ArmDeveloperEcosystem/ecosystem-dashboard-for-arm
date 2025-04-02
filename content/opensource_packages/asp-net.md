@@ -21,7 +21,7 @@ optional_info:
         version_number: 8.0.0
         release_date: 2023/10/03
         reference_content: https://devblogs.microsoft.com/dotnet/this-arm64-performance-in-dotnet-8/
-        rationale: This blog describes ARM64 performance improvements in .NET 8.
+        rationale: Added various conditional instruction processing optimizations, including conditional comparison, conditional increment, negation, and inversion, vector table lookup APIs, peephole optimizations, and more. Shows performance improvements of up to 50% in select cases.
 
 
 optional_hidden_info:
