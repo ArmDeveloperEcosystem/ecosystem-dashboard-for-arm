@@ -21,7 +21,7 @@ optional_info:
         version_number: 5.0.0
         release_date: 2022/11/01
         reference_content: https://www.gatsbyjs.com/docs/reference/release-notes/v5.0/
-        rationale: Version 5.0.0 introduced significant performance improvements, including faster build times and enhanced scalability, benefiting all architectures, including ARM-based systems.
+        rationale: Version 5.0.0 introduced significant performance improvements, including reducing build duration up to 90%, which benefits all architectures including ARM-based systems.
 
 optional_hidden_info:
     release_notes__supported_minimum:
