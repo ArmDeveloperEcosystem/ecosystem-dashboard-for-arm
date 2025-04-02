@@ -20,8 +20,8 @@ optional_info:
     arm_recommended_minimum_version:
         version_number: 3.3.0
         release_date: 2024/04/09
-        reference_content: https://developer.arm.com/Tools%20and%20Software/Security%20Library%20Projects#Components
-        rationale: Arm contributed optimizations for openSSl, latest being optimizations for AES-CTR in version 3.3.0. Kindly refer [here](https://openssl-library.org/news/openssl-3.3-notes/).
+        reference_content: https://openssl-library.org/news/openssl-3.3-notes/
+        rationale: Arm contributed optimizations for openSSl, latest being optimizations for AES-CTR for Neoverse V1 and V2.
 
 
 optional_hidden_info:
