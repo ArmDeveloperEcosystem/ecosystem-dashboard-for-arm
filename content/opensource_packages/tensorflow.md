@@ -21,7 +21,7 @@ optional_info:
         version_number: 2.18.0
         release_date: 2024/10/28
         reference_content: https://blog.tensorflow.org/2024/10/whats-new-in-tensorflow-218.html
-        rationale: This version integrated support for NumPy 2.0, which brought improved type promotion rules and computational precision. This version also includes updates to the CUDA toolkit and introduced the LiteRT repository, contributing to overall performance improvements.
+        rationale: This version integrated support for NumPy 2.0, which brought improved type promotion rules and computational precision.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://www.tensorflow.org/install/pip#linux
