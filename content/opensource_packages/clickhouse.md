@@ -21,8 +21,7 @@ optional_info:
         version_number: v22.5.1.2079-stable
         release_date: 2022/07/12
         reference_content: https://community.arm.com/arm-community-blogs/b/servers-and-cloud-computing-blog/posts/improve-clickhouse-performance-up-to-26-by-using-aws-graviton3
-        rationale: The blog shows improved ClickHouse Performance up to 26% by using AWS Graviton3, benchmarking is done on Clickhouse in this blog.
-
+        rationale: The blog shows benchmarking of ClickHouse, delivering up to 26% improvements by using AWS Graviton3 vs other architectures.
 optional_hidden_info:
     release_notes__supported_minimum: https://clickhouse.com/docs/en/whats-new/changelog/2022#buildtestingpackaging-improvement-11
     release_notes__recommended_minimum:
