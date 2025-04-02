@@ -20,8 +20,8 @@ optional_info:
     arm_recommended_minimum_version:
         version_number: 3.5.0
         release_date: 2023/06/15
-        reference_content: https://kafka.apache.org/downloads#3.5.0
-        rationale: Kafka 3.5.0 includes a significant number of new features and fixes. Full list of features and improvements can be found [here](https://archive.apache.org/dist/kafka/3.5.0/RELEASE_NOTES.html). They aren't ARM specific, but can benefit all architectures, including Linux/ARM64.
+        reference_content: https://kafka.apache.org/blog#apache_kafka_350_release_announcement
+        rationale: Kafka 3.5.0 includes a significant number of new features and fixes, including improing Kafka Connect and MirrorMaker 2. They aren't ARM specific, but can benefit all architectures, including Linux/ARM64.
 
 
 optional_hidden_info:
