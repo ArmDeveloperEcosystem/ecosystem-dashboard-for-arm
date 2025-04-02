@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://wiki.openssl.org/index.php/Compilation_and_Installation
     arm_recommended_minimum_version:
-        version_number: 
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 3.3.0
+        release_date: 2024/04/09
+        reference_content: https://openssl-library.org/news/openssl-3.3-notes/
+        rationale: Arm contributed optimizations for openSSl, latest being optimizations for AES-CTR for Neoverse V1 and V2.
 
 
 optional_hidden_info:

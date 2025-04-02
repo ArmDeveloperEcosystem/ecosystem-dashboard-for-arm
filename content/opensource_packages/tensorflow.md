@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://docs.aws.amazon.com/dlami/latest/devguide/tutorial-graviton-tensorflow.html
         official_docs: https://www.tensorflow.org/lite/guide/build_arm
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.18.0
+        release_date: 2024/10/28
+        reference_content: https://blog.tensorflow.org/2024/10/whats-new-in-tensorflow-218.html
+        rationale: This version integrated support for NumPy 2.0, which brought improved type promotion rules and computational precision.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://www.tensorflow.org/install/pip#linux

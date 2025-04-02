@@ -17,10 +17,10 @@ optional_info:
         partner_content: https://docs.oracle.com/en/learn/arm_oke_cluster_oci/index.html
         official_docs: https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.32.0
+        release_date: 2024/12/11
+        reference_content: https://kubernetes.io/blog/2024/12/11/kubernetes-v1-32-release/
+        rationale: This version enhanced the Dynamic Resource Allocation, with performance improvements for ML/AI applications.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.5.md#downloads-for-v150

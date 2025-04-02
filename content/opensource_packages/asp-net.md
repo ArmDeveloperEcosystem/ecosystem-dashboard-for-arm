@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://aws.amazon.com/blogs/dotnet/net-workflows-for-arm64-with-codecatalyst-part-1/
         official_docs: https://learn.microsoft.com/en-us/aspnet/core/getting-started/?view=aspnetcore-8.0
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 8.0.0
+        release_date: 2023/10/03
+        reference_content: https://devblogs.microsoft.com/dotnet/this-arm64-performance-in-dotnet-8/
+        rationale: Added various conditional instruction processing optimizations, including conditional comparison, conditional increment, negation, and inversion, vector table lookup APIs, peephole optimizations, and more. Shows performance improvements of up to 50% in select cases.
 
 
 optional_hidden_info:
