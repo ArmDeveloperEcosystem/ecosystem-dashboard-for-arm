@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://www.jaegertracing.io/docs/1.54/getting-started/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.0.0
+        release_date: 2024/11/12
+        reference_content: https://www.cncf.io/blog/2024/11/12/jaeger-v2-released-opentelemetry-in-the-core/
+        rationale: This version introduced a new architecture that utilizes the OpenTelemetry Collector framework as its base, enhancing performance and scalability across all supported platforms.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/jaegertracing/jaeger/releases/tag/v1.18.1

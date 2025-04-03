@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/qdrant/qdrant/blob/master/QUICK_START.md
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.13.0
+        release_date: 2025/01/23
+        reference_content: https://qdrant.tech/blog/qdrant-1.13.x/
+        rationale: This version introduced GPU-accelerated HNSW indexing, significantly reducing indexing times by up to 10x compared to CPU-based methods.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/qdrant/qdrant/releases/tag/v0.7.0
