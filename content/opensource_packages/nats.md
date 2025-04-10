@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://docs.nats.io/running-a-nats-service/introduction/installation
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.11
+        release_date: 2025/03/20
+        reference_content: https://nats.io/blog/nats-server-2.11-release/#whats-new-in-211
+        rationale: This version brings several important features requested by the community, introduced the Multi Message Get feature, enabling batch retrieval of messages. This enhancement offers a more efficient approach to processing streams without the overhead of creating dedicated consumers or fetching messages individually.
 
 
 optional_hidden_info:

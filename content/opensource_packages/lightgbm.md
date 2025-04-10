@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://lightgbm.readthedocs.io/en/latest/Installation-Guide.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 4.0.0
+        release_date: 2023/07/14
+        reference_content: https://github.com/microsoft/LightGBM/releases/tag/v4.0.0
+        rationale: This release contains all previously-unreleased changes since v3.3.1 over 1.5 years ago, including support for C++17, added quantized training, fixed DEBUG-mode GPU builds, etc.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/microsoft/LightGBM/releases/tag/v3.2.0

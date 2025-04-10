@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://docs.gradle.org/current/userguide/installation.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 8.11
+        release_date: 2024/11/11
+        reference_content: https://docs.gradle.org/8.11/release-notes.html
+        rationale: This release brings several API improvements for build authors and support for Clang and GCC on Linux arm64 architectures.
  
 optional_hidden_info:
     release_notes__supported_minimum: 
