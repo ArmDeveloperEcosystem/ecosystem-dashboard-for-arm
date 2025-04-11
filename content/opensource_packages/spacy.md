@@ -11,8 +11,7 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://spacy.io/
-    support_caveats: Official Arm64 support via conda-forge begins with spaCy v2.0.0. But prebuilt wheels for pip-based installation on aarch64 were only consistently available starting from v3.4.0 and verified stable PyPI support begins with v3.7.0.
-    
+    support_caveats: Support via conda-forge begins with spaCy v2.0.0, but pip-based installs start from v3.4.0.     
     alternative_options:
     getting_started_resources:
         arm_content: 
@@ -27,8 +26,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info:  
-        Prebuilt pip wheels for aarch64 are available from v3.4.0. 
-        Verified stable PyPI support begins with v3.7.0. 
+    other_info:  Official Arm64 support via conda-forge begins with spaCy v2.0.0. But prebuilt wheels for pip-based installation on aarch64 were only consistently available starting from v3.4.0 and verified stable PyPI support begins with v3.7.0.
 
 ---
