@@ -1,8 +1,8 @@
 ---
-name: Zulu Enterprise JDK
+name: Azul Zulu Builds of OpenJDK (Zulu/Java)
 vendor: Azul
 category: Runtimes
-description: Azul Zulu Enterprise, also a component of Azul Platform Core, is designed with the certified builds, tight security, and cost efficiencies needed to run today’s business–critical, Java-based services.
+description: Azul Zulu Builds of OpenJDK (Zulu), a component of Azul Platform Core, is designed with the certified builds, tight security, and cost efficiencies needed to run today’s business–critical, Java/JVM-based services.
 product_url: https://www.azul.com/products/core/
 works_on_arm: true
 release_date_on_arm: 2014/04/08
