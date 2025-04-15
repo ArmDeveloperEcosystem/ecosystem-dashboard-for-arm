@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://fmt.dev/11.0/get-started/#debianubuntu
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 11.0.0
+        release_date: 2024/07/01
+        reference_content: https://github.com/fmtlib/fmt/releases/tag/11.0.0
+        rationale: This version added fmt/base.h which provides a subset of the API with minimal include dependencies and enough functionality to replace all uses of the printf family of functions. This brings the compile time of code using {fmt} much closer to the equivalent printf code. This gives almost 4x improvement in build speed compared to version 10.
 
 
 optional_hidden_info:

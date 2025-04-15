@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/timescale/timescaledb/blob/main/docs/BuildSource.md
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.16.0
+        release_date: 2024/07/31
+        reference_content: https://github.com/timescale/timescaledb/releases/tag/2.16.0
+        rationale: This version introduced multiple performance focused optimizations for data manipulation operations (DML) over compressed chunks, which improved upsert performance by more than 100x in some cases and more than 1000x in some update/delete scenarios.
 
 optional_hidden_info:
     release_notes__supported_minimum:

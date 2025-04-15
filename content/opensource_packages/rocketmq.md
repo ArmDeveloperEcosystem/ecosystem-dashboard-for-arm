@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://www.alibabacloud.com/blog/exploring-the-new-high-availability-design-of-rocketmq-5-0_600514
         official_docs: https://rocketmq.apache.org/docs/4.x/quickstart/01quickstart
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 5.3.2
+        release_date: 2025/03/08
+        reference_content: https://github.com/apache/rocketmq/releases/tag/rocketmq-all-5.3.2
+        rationale: This release extracted the adaptive lock mechanism, which provided performance gain on Arm CPUs by reducing CPU utilization, as discussed in this [alibabacloud blog](https://www.alibabacloud.com/blog/the-way-to-breaking-through-the-performance-bottleneck-of-locks-in-apache-rocketmq_601937).
 
 optional_hidden_info:
     release_notes__supported_minimum: https://rocketmq.apache.org/release-notes/2022/03/04/4.9.3/
