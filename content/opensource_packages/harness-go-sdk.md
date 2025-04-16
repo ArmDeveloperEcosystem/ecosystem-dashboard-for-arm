@@ -25,11 +25,7 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: >
-        No platform-specific release notes for Linux/Arm64.
-        Install with: go get github.com/harness-io/harness-go-sdk@.
-        Verify with: go list -m all | grep harness-io.
-        Note: the module path is harness-io, not harness.
+    other_info: No platform-specific release notes for Linux/Arm64. Install with: go get github.com/harness-io/harness-go-sdk@. Verify with: go list -m all | grep harness-io. Note: the module path is harness-io, not harness.
 
 
 
