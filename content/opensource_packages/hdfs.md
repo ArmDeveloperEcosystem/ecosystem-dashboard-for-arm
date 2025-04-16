@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://github.com/apache/hadoop/blob/trunk/BUILDING.txt
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 3.3.6
+        release_date: 2023/06/23
+        reference_content: https://hadoop.apache.org/release/3.3.6.html
+        rationale: HDFS is a module within Hadoop source code that provides the primary data storage mechanism for the platform. This version of hadoop moved a number of HDFS-specific APIs to Hadoop Common to make it possible for certain applications that depend on HDFS semantics to run on other Hadoop compatible file systems. HDFS Router-Router Based Federation now supports storing delegation tokens on MySQL, which improves token operation through over the original Zookeeper-based implementation.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://hadoop.apache.org/docs/r3.3.0/

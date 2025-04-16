@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://rqlite.io/docs/install-rqlite/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 8.24.9
+        release_date: 2024/05/31
+        reference_content: https://github.com/rqlite/rqlite/blob/master/CHANGELOG.md#v8249-may-31st-2024
+        rationale: This is the first release for which there are multi-platform Docker images available, including Linux/ARM64.
 
 
 optional_hidden_info:

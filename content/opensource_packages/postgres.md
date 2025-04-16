@@ -18,10 +18,10 @@ optional_info:
         partner_content:  https://www.percona.com/blog/postgresql-on-arm-based-aws-ec2-instances-is-it-any-good/
         official_docs: https://www.postgresql.org/docs/
     arm_recommended_minimum_version:
-        version_number: 
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 16.0
+        release_date: 2023/09/14
+        reference_content: https://www.postgresql.org/docs/release/16.0/
+        rationale: Version 16.0 introduced significant performance improvements, particularly in query parallelism, bulk data loading, and logical replication.
 
 
 optional_hidden_info:
