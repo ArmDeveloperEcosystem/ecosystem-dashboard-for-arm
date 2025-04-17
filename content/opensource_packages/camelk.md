@@ -1,7 +1,7 @@
 ---
 name: Apache Camel K
 category: DevOps
-description: Camel K is a Kubernetes Operator, used to manage the lifecycle of Camel workloads on the cloud. Camel K can manage aspects like build and deploy, only deploy, and any other operational aspect like promoting across environments, monitoring, resource tuning, upgrades, interactions with Knative and Kafka, etc.
+description: Camel K is a Kubernetes operator that automates the build, deployment, and management of Apache Camel integrations on cloud-native platforms. It supports advanced features like environment promotion, monitoring, scaling, Knative and Kafka integration, and resource tuning.
 download_url: https://github.com/apache/camel-k/releases
 works_on_arm: true
 supported_minimum_version:
@@ -10,13 +10,13 @@ supported_minimum_version:
 
 
 optional_info:
-    homepage_url: https://camel.apache.org/camel-k/2.6.x/concepts/overview.html
+    homepage_url: https://camel.apache.org/camel-k/latest/concepts/overview.html
     support_caveats:
     alternative_options:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://camel.apache.org/camel-k/2.6.x/installation/installation.html
+        official_docs: https://camel.apache.org/camel-k/latest/installation/installation.html
     arm_recommended_minimum_version:
         version_number:
         release_date:
@@ -25,6 +25,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/apache/camel-k/releases/tag/v2.0.0
     release_notes__recommended_minimum:
-    other_info: Docker images for Linux/ARM64 have been published officially on DockerHub since version 2.0.0.
+    other_info: Official Docker images for Linux/Arm64 have been published on Docker Hub starting with version 2.0.0.
 
 ---

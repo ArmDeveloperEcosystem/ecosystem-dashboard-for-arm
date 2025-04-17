@@ -1,7 +1,7 @@
 ---
-name: Apache Couchdb
+name: Apache CouchDB
 category: Databases - noSQL
-description: Apache CouchDB is an open-source NoSQL database designed for ease of use and reliability. It uses a document-oriented data model with JSON for data storage, JavaScript for map-reduce queries, and HTTP for its RESTful API.
+description: Apache CouchDB is an open-source NoSQL database that uses a document-oriented data model with JSON for storage, JavaScript for map-reduce queries, and a RESTful HTTP API for communication.
 download_url: https://couchdb.apache.org/#download
 works_on_arm: true
 supported_minimum_version:
@@ -11,7 +11,7 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://docs.couchdb.org/en/stable/intro/index.html
-    support_caveats:
+    support_caveats:   Ensure an Arm64-compatible Erlang is installed when building from source. Docker is recommended for easier setup.
     alternative_options:
     getting_started_resources:
         arm_content:
@@ -25,6 +25,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum: https://docs.couchdb.org/en/stable/whatsnew/3.0.html#version-3-0-0
     release_notes__recommended_minimum:
-    other_info:
+    other_info: Arm64 support was introduced in version 3.0.0. CouchDB can be built from source or installed using Docker or native package managers on Arm64-based Linux systems starting from this version.
 
 ---
