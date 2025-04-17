@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://openresty.org/en/getting-started.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.27.1.1
+        release_date: 2024/10/15
+        reference_content: https://openresty.org/en/ann-1027001001.html
+        rationale: This version highlights LuaJIT updated to 2.1-20240815 with various optimizations and bugfixes, including Improved error handling and stack overflow management, enhanced cross-32/64 bit and deterministic bytecode generation, etc. Also added http_v3_module and http_slice_module to official prebuilt packages.
 
 
 optional_hidden_info:
