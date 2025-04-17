@@ -1,7 +1,7 @@
 ---
 name: Libhelium
 category: Languages and Frameworks
-description: Libhelium is an elegant framework for building beautiful and useful apps, regardless of design background or skill level.
+description: Libhelium is a lightweight UI framework built with Vala and GTK4, designed for creating modern Linux desktop applications.
 download_url: https://github.com/tau-OS/libhelium/releases
 works_on_arm: true
 supported_minimum_version:
@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://github.com/tau-OS/libhelium?tab=readme-ov-file#%EF%B8%8F-dependencies
+        official_docs: https://github.com/tau-OS/libhelium#readme
     arm_recommended_minimum_version:
         version_number:
         release_date:
@@ -25,6 +25,7 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: There are no release notes available for Linux/ARM64. Libhelium initial version can be built from source on Neoverse N1.
+    other_info: There are no release notes available for Linux/Arm64. The initial version of Libhelium can be built from source on Arm64 systems, including Neoverse N1, using the standard GTK and Vala toolchain.
+
 
 ---

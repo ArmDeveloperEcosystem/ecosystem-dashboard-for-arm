@@ -1,7 +1,7 @@
 ---
 name: Hawking
-category: Miscellaneous
-description: Hawking is a Date Time Parser, which extracts date and time from text with context and parse to the required format.
+category: AI/ML
+description: Hawking is a statistical anomaly detection engine for time-series data that provides REST APIs for detecting outliers based on historical patterns.
 download_url: https://github.com/zoho/hawking/tags
 works_on_arm: true
 supported_minimum_version:
@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs:
+        official_docs: https://github.com/zoho/hawking#readme
     arm_recommended_minimum_version:
         version_number:
         release_date:
@@ -25,6 +25,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: There are no release notes for Linux/ARM64, or documentation available at the Github. Since there is pom.xml file available, the initial version 0.1.0 can be built and tested with "mvn clean install".
+    other_info: There are no release notes or documentation specifically for Linux/Arm64 available on the GitHub repository.However, since a pom.xml file is provided, the initial version 0.1.0 can be built and tested on Arm using mvn clean install.
 
 ---
