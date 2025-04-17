@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://neo4j.com/docs/operations-manual/current/installation/linux/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 5.5
+        release_date: 2023/09/27
+        reference_content: https://aws.amazon.com/blogs/apn/give-your-graph-workload-a-cost-performance-boost-with-neo4j-and-aws-graviton/
+        rationale: This version of Neo4j shows significant performance boost of 13-146% and Overall cost-performance boost of 32-189% on AWS Graviton 3 processors.
 
 
 optional_hidden_info:

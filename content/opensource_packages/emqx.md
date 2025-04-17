@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://docs.emqx.com/en/emqx/latest/getting-started/getting-started.html#install-emqx
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 5.0.0
+        release_date: 2022/06/17
+        reference_content: https://github.com/emqx/emqx/releases/tag/v5.0.0
+        rationale: This release introduced an extension to the Mnesia database, named 'Mria', which allows more nodes to join the cluster as 'replicants'. With this, EMQX team managed to achieve 100 million MQTT clients connecting to a 23-node Mria cluster. It's a 3 times larger cluster size compared to a typical version 4 cluster, with 10 times more capacity.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://docs.emqx.com/en/emqx/latest/changes/changes-ce-v4.html#_4-2-0

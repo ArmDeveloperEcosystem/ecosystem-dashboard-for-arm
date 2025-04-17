@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://doris.apache.org/docs/gettingStarted/quick-start
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 3.0.0
+        release_date: 2024/07/22
+        reference_content: https://doris.apache.org/docs/releasenotes/v3.0/release-3.0.0
+        rationale: This version supports a compute-storage decoupled mode in addition to the compute-storage coupled mode for cluster deployment. Hence, users can achieve physical isolation between query loads across multiple compute clusters, as well as isolation between read and write loads. Additionally, users can take advantage of low-cost shared storage systems such as object storage or HDFS to significantly reduce storage costs.
 
 
 optional_hidden_info:

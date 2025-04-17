@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://amperecomputing.com/tuning-guides/memcached-tuning-guide
         official_docs: https://github.com/memcached/memcached/wiki
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.6.28
+        release_date: 2024/05/31
+        reference_content: https://github.com/memcached/memcached/wiki/ReleaseNotes1628
+        rationale: This version fixes unfortunate potentially critical use-after-free bug in the proxy mode that was introduced in 1.6.27. Also adds experimental support for TLS to proxy backends.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/memcached/memcached/wiki/ReleaseNotes145#fixes

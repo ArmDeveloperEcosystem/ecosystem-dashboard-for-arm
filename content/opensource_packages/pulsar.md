@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/apache/pulsar?tab=readme-ov-file#build-pulsar
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 3.0.0
+        release_date: 2023/05/02
+        reference_content: https://pulsar.apache.org/blog/2023/05/02/announcing-apache-pulsar-3-0/
+        rationale: This version is the first Long-Term Support (LTS) version, with over 140 contributors submitting about 1500 commits for feature enhancements and bug fixes. It introduced new Pulsar broker load balancer, Large-scale delayed message support, build for multi-arch docker images including Arm64, Blue-green cluster deployment support, etc.
 
 optional_hidden_info:
     release_notes__supported_minimum:
