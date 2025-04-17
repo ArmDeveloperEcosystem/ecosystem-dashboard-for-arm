@@ -1,7 +1,7 @@
 ---
 name: Tiffin
-category: Miscellaneous
-description: Tiffin is a lightweight and simple Rust library for creating and entering chroot jails on Linux.
+category: Security applications
+description: Tiffin is a lightweight Rust library for creating and managing chroot jails on Linux, enabling simple filesystem isolation for security and sandboxing.
 download_url: https://github.com/FyraLabs/tiffin/releases
 works_on_arm: true
 supported_minimum_version:
@@ -11,12 +11,12 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://github.com/FyraLabs/tiffin
-    support_caveats:
+    support_caveats: Earlier versions such as 0.0.1 build successfully on Linux/Arm64, but only 0.3.1 and later are officially released.
     alternative_options:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: 
+        official_docs: https://github.com/FyraLabs/tiffin#readme
     arm_recommended_minimum_version:
         version_number:
         release_date:
@@ -25,6 +25,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: There are no release notes for Linux/ARM64, or documentation available at the Github. Since there is cargo.toml file available, tiffin initial version, 0.3.1, can be built using "cargo build --release", and testd with "sudo cargo test -- --ignored". 
+    other_info: There are no platform-specific release notes for Linux/Arm64 or additional documentation available on GitHub. Since a `Cargo.toml` file is provided, version 0.3.1 can be built using `cargo build --release` and tested with `cargo test -- --ignored`. Earlier commit-based versions, such as 0.0.1, have also been tested and confirmed to build on Arm64.
 
 ---
