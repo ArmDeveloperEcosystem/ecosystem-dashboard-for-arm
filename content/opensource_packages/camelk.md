@@ -1,7 +1,7 @@
 ---
 name: Apache Camel K
 category: DevOps
-description: Camel K is a Kubernetes Operator, used to manage the lifecycle of Camel workloads on the cloud. Camel K can manage aspects like build and deploy, only deploy, and any other operational aspect like promoting across environments, monitoring, resource tuning, upgrades, interactions with Knative and Kafka, etc.
+description: Camel K is a Kubernetes Operator, used to manage the lifecycle of Camel workloads on the cloud. Camel K can manage aspects like build and deploy, only deploy, and any other operational aspect like promoting across environments, monitoring, resource tuning, upgrades, interactions with Knative and Kafka, etc. 
 download_url: https://github.com/apache/camel-k/releases
 works_on_arm: true
 supported_minimum_version:
