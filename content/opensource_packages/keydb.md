@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://docs.keydb.dev/blog/2020/03/02/blog-post/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 6.3.3
+        release_date: 2023/05/03
+        reference_content: https://docs.keydb.dev/news/2023/05/02/release_6_3_3/
+        rationale: This version updates keydb's supported Linux distributions and base images to better support KeyDB FLASH & C++17 features. The release includes updates to the KeyDB FLASH feature, such as updating RocksDB to v7.9.2 and fixing race conditions in prefetching keys asynchronously. These improvements can enhance the performance and stability of KeyDB when using FLASH storage.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/Snapchat/KeyDB/releases/tag/v6.3.0

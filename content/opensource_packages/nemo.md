@@ -17,10 +17,10 @@ optional_info:
         partner_content:
         official_docs: https://docs.nvidia.com/nemo-framework/user-guide/latest/getting-started.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.21.0
+        release_date: 2023/10/26
+        reference_content: https://github.com/NVIDIA/NeMo/releases/tag/v1.21.0
+        rationale: This version removes nemo_text_processing as a requirement on ARM, since some scripts used to fail on ARM due to missing nemo_text_processing.
 
 
 optional_hidden_info:

@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://cert-manager.io/docs/installation/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.12.0
+        release_date: 2023/05/19
+        reference_content: https://github.com/cert-manager/cert-manager/releases/tag/v1.12.0
+        rationale: This version fixes development environment and go vendoring on Linux arm64. Alongwith, cert-manager v1.12 brings support for JSON logging, a lower memory footprint, support for ephemeral service account tokens with Vault, improved dependency management and support for the ingressClassName field.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://release-next--cert-manager-website.netlify.app/docs/releases/release-notes/release-notes-0.7
