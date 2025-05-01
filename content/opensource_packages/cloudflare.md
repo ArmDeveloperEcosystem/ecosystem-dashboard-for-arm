@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/cloudflare/cloudflared/tree/2024.6.1?tab=readme-ov-file#installing-cloudflared
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2024.1.5
+        release_date: 2024/01/22
+        reference_content: https://github.com/cloudflare/cloudflared/blob/master/RELEASE_NOTES#L226
+        rationale: This version enhances compatibility and performance on a broader range of ARM-based systems, particularly those without a Floating Point Unit (FPU) or with kernel-enabled FPU.
 
 
 optional_hidden_info:

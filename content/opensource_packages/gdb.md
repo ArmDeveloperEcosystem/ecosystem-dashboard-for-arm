@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://sourceware.org/gdb/current/onlinedocs/gdb.html/Installing-GDB.html#Installing-GDB
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 14.1
+        release_date: 2023/12/03
+        reference_content: https://www.sourceware.org/gdb/news/
+        rationale: This version enhanced the Aarch64 support with the initial support for Scalable Matrix Extension (SME) and for Scalable Matrix Extension 2 (SME2), also the 'org.gnu.gdb.aarch64.pauth' Pointer Authentication feature is now deprecated in favor of the 'org.gnu.gdb.aarch64.pauth_v2' feature string.
 
 
 optional_hidden_info:

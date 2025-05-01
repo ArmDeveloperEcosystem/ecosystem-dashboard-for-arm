@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://github.com/jemalloc/jemalloc/blob/dev/INSTALL.md
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 5.3.0
+        release_date: 2022/05/07
+        reference_content: https://github.com/jemalloc/jemalloc/releases/tag/5.3.0
+        rationale: This version improved CPU_SPINWAIT specifically on ARM systems.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/jemalloc/jemalloc/releases/tag/3.4.0

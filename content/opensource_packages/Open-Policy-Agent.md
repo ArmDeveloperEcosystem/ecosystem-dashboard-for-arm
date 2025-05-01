@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://aws.amazon.com/blogs/opensource/deploying-open-policy-agent-opa-as-a-sidecar-on-amazon-elastic-container-service-amazon-ecs/
         official_docs: https://www.openpolicyagent.org/docs/latest/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.0.0
+        release_date: 2024/12/21
+        reference_content: https://github.com/open-policy-agent/opa/releases/tag/v1.0.0
+        rationale: This version introduces stricter Rego syntax defaults, requiring if and contains, and disallowing duplicate/shadowed imports. It delivers major memory optimizations, cutting allocations and improving evaluation speed by 10–20%. Test suite performance was significantly boosted, with topdown and storage/disk tests running 50% and 75% faster, respectively. Additional updates include support for scientific notation, customizable Prometheus metrics, and enhanced Rego v1 compatibility.
 
   
 optional_hidden_info:
