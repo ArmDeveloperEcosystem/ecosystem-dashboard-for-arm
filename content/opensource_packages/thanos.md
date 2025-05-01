@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://thanos.io/tip/thanos/getting-started.md/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.25.0
+        release_date: 2022/02/28
+        reference_content: https://github.com/thanos-io/thanos/releases/tag/v0.25.0-rc.0
+        rationale: This version supported docker images for arm64.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/thanos-io/thanos/releases/tag/v0.1.0
