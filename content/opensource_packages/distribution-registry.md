@@ -1,7 +1,7 @@
 ---
 name: Distribution Registry
 category: Containers and Orchestration
-description: Registry is a stateless and highly scalable application that stores and enables the distribution of container images and other content.
+description: Distribution Registry is a stateless service for storing and distributing container images using the OCI specification.
 download_url: https://github.com/distribution/distribution/releases
 works_on_arm: true
 supported_minimum_version:
@@ -11,7 +11,7 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://distribution.github.io/distribution/
-    support_caveats:
+    support_caveats:  Version 3.0.0 added support for additional Arm variants and introduced changes to cryptographic libraries and configuration paths. Review 3.0.0 release notes for deprecations that may affect Arm64 deployments.
     alternative_options:
     getting_started_resources:
         arm_content:

@@ -1,7 +1,7 @@
 ---
 name: Exechealthz
-category: DevOps
-description: Exec healthz server is a sidecar container, which serves as a liveness-exec-over-http bridge by isolating pods from the idiosyncrasies of container runtime exec implementations.
+category: Monitoring/Observability
+description: Exechealthz is a lightweight sidecar container that exposes liveness check results over HTTP to support container health monitoring in Kubernetes.
 download_url: https://github.com/kubernetes-retired/contrib/releases
 works_on_arm: true
 supported_minimum_version:
@@ -11,7 +11,7 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://github.com/kubernetes-retired/contrib/tree/master/exec-healthz
-    support_caveats:
+    support_caveats: This is the only known version supporting cross-compilation for multiple architectures, including Arm, as noted in the project's README.
     alternative_options:
     getting_started_resources:
         arm_content:
