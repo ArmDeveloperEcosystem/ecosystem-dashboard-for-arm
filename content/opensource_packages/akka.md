@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://doc.akka.io/docs/akka/current/typed/guide/index.html
     arm_recommended_minimum_version:
-        version_number: 2.8.0
-        release_date: 2023/03/16
-        reference_content: https://github.com/akka/akka/releases/tag/v2.8.0
-        rationale: This version has introduced new features like API for dynamic scaling of Sharded daemon process instances, more fine grained control of stream error logging, included bug fixes and several performance optimisations in typed and streams actors.
+        version_number:
+        release_date: 
+        reference_content: 
+        rationale: 
 
 optional_hidden_info:
     release_notes__supported_minimum:
