@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://aws.amazon.com/blogs/containers/all-you-need-to-know-about-moving-to-containerd-on-amazon-eks/
         official_docs: https://containerd.io/docs/getting-started/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 
+        release_date: 
+        reference_content: 
+        rationale: 
 
 
 optional_hidden_info:

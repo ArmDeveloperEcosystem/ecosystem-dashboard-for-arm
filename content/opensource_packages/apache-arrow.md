@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://arrow.apache.org/install/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 7.0.0
+        release_date: 2022/02/08
+        reference_content: https://arrow.apache.org/blog/2022/02/08/7.0.0-release/
+        rationale: This version introduced Arm64 NEON SIMD optimized assembly for internal min_max utility functions, resulting in a 4x to 6x performance improvement.
 
 
 optional_hidden_info:

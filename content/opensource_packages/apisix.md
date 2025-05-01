@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://apisix.apache.org/docs/apisix/installation-guide/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.14.1
+        release_date: 2022/06/07
+        reference_content: https://apisix.apache.org/blog/2022/06/07/installation-performance-test-of-apigateway-apisix-on-aws-graviton3/
+        rationale: This blog shows that in a network IO dense computing scenario such as API Gateway, Apisix running on AWS Graviton3 improves the performance by 76% compared to AWS Graviton2, while reducing latency by 38%. This data is even better than the official data given by AWS mentioned at the beginning of blog (25% performance improvement).
 
 
 optional_hidden_info:
