@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://www.bytebase.com/docs/cli/overview/#install-bb
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.7.0
+        release_date: 2023/08/31
+        reference_content: https://www.bytebase.com/changelog/bytebase-2-7-0/
+        rationale: This version officially released docker images for Linux/ARM64.
 
 
 optional_hidden_info:
