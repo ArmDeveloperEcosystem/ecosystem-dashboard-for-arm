@@ -1,7 +1,7 @@
 ---
 name: Chef Infra
 category: DevOps
-description: Chef Infra platform transforms infrastructure into code, automating how infrastructure is configured, deployed, and managed across any environment, at any scale.
+description: Chef Infra automates infrastructure configuration and management using code-defined policies across servers and environments.
 download_url: https://community.chef.io/downloads/tools/infra-client
 works_on_arm: true
 supported_minimum_version:
@@ -11,7 +11,7 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://www.chef.io/products/chef-infra
-    support_caveats:
+    support_caveats: Chef Infra 15 improved cross-platform compatibility, including better support for Arm64 across multiple distributions.
     alternative_options:
     getting_started_resources:
         arm_content:
