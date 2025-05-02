@@ -1,7 +1,7 @@
 ---
 name: RocksDBjni
 category: Database
-description: RocksDB JNI provides a Java Native Interface (JNI) to the RocksDB C++ library, enabling Java applications to leverage RocksDB's high-performance, embeddable, persistent key-value store.
+description: RocksDB JNI provides Java bindings to the RocksDB C++ library, enabling Java applications to use its high-performance, embeddable key-value store.
 download_url: https://mvnrepository.com/artifact/org.rocksdb/rocksdbjni
 works_on_arm: true
 supported_minimum_version:

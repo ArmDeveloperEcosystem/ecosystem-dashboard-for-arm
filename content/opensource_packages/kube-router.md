@@ -1,7 +1,7 @@
 ---
 name: Kube-Router
 category: Networking
-description: Kube-router is an all-in-one networking solution for Kubernetes that handles network routing, network policies, and service proxying using standard Linux networking tools. It replaces components like kube-proxy and kube-dns with a simpler, more efficient, and native approach to cluster networking. Designed for performance and simplicity, it’s especially useful in bare-metal and performance-sensitive environments.
+description: Kube-router is a lightweight networking solution for Kubernetes that replaces kube-proxy and kube-dns by handling routing, network policies, and service proxying using standard Linux networking tools.
 download_url: https://github.com/cloudnativelabs/kube-router/releases
 works_on_arm: true
 supported_minimum_version:
@@ -11,7 +11,7 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://www.kube-router.io/
-    support_caveats:
+    support_caveats: Official prebuilt linux-arm64 binaries were introduced in version 1.0.0-rc4, improving accessibility and eliminating the need for manual builds on Arm systems.
     alternative_options:
     getting_started_resources:
         arm_content:
