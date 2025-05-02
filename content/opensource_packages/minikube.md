@@ -11,16 +11,16 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://minikube.sigs.k8s.io/docs/
-    support_caveats:
+    support_caveats: Starting with K3s v1.24.14+k3s1, support for ARM64 systems with 64KB page sizes was introduced. Earlier versions required a 4KB page size. For compatibility with 64KB page size systems, use v1.24.14+k3s1 or newer.
     alternative_options:
     getting_started_resources:
-        arm_content:
-        partner_content:
+        arm_content: https://learn.arm.com/learning-paths/embedded-and-microcontrollers/cloud-native-deployment-on-hybrid-edge-systems/k3s/
+        partner_content: https://www.arm.com/-/media/global/solutions/infrastructure/Rancher_final.pdf?revision=99d09102-85ea-476f-9323-b0f194f6570c
         official_docs: https://minikube.sigs.k8s.io/docs/start/
     arm_recommended_minimum_version:
         version_number:
         release_date:
-        reference_content:
+        reference_content: 
         rationale:
 
 optional_hidden_info:

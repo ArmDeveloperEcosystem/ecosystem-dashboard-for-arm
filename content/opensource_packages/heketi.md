@@ -1,7 +1,7 @@
 ---
 name: Heketi
-category: DevOps
-description: Heketi is a RESTful-based volume management framework used to manage the lifecycle of GlusterFS volumes.
+category: Storage
+description: Heketi is a REST-based volume management service that automates the provisioning and lifecycle of GlusterFS volumes across distributed storage nodes.
 download_url: https://github.com/heketi/heketi/releases
 works_on_arm: true
 supported_minimum_version:
@@ -11,7 +11,7 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://github.com/heketi/heketi
-    support_caveats:
+    support_caveats: 
     alternative_options:
     getting_started_resources:
         arm_content:
