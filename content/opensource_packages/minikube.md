@@ -15,7 +15,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: https://learn.arm.com/learning-paths/embedded-and-microcontrollers/cloud-native-deployment-on-hybrid-edge-systems/k3s/
-        partner_content: https://www.arm.com/-/media/global/solutions/infrastructure/Rancher_final.pdf?revision=99d09102-85ea-476f-9323-b0f194f6570c
+        partner_content: 
         official_docs: https://minikube.sigs.k8s.io/docs/start/
     arm_recommended_minimum_version:
         version_number:
