@@ -11,7 +11,7 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://github.com/kubernetes-retired/contrib/tree/master/exec-healthz
-    support_caveats: This is the only known version supporting cross-compilation for multiple architectures, including Arm, as noted in the project's README.
+    support_caveats: 
     alternative_options:
     getting_started_resources:
         arm_content:
