@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/brianfrankcooper/YCSB#building-from-source
     arm_recommended_minimum_version:
-        version_number: 0.17.0
-        release_date: 2021/06/03
-        reference_content: https://github.com/brianfrankcooper/YCSB/releases/tag/0.17.0
-        rationale: Version 0.17.0 is used in Arm Learning Paths and offers improved performance and compatibility for benchmarking NoSQL databases on Arm.
+        version_number:
+        release_date: 
+        reference_content: 
+        rationale: 
 
 optional_hidden_info:
     release_notes__supported_minimum:
