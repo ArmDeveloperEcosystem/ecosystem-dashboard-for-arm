@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: http://supervisord.org/installing.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 4.2.5
+        release_date: 2022/12/24
+        reference_content: https://supervisord.org/changes.html#id1
+        rationale: This release fixes key bugs, including proper XML-RPC error handling and a UnicodeDecodeError in the web UI on Python 2.7. Deprecated Python APIs (e.g., asyncore, asynchat, and urllib.parse functions) were removed for compatibility with Python 3.8+ and 3.10+. Logging for unexpected subprocess exit codes is now at the WARN level. Performance was improved with faster file descriptor cleanup using os.closerange(). Minor usability enhancements were made to supervisorctl shutdown and XML-RPC response details.
 
 optional_hidden_info:
     release_notes__supported_minimum:

@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/flannel-io/flannel/blob/master/Documentation/building.md
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.19.1
+        release_date: 2022/08/05
+        reference_content: https://github.com/flannel-io/flannel/releases/tag/v0.19.1
+        rationale: This version bumps etcd version to 3.5.1, that lets the functional tests pass successfully on Linux/ARM64 platform.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/flannel-io/flannel/releases/tag/v0.7.1

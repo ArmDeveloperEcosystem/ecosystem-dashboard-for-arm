@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/oceanbase/oceanbase?tab=readme-ov-file#quick-start
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 4.2.5
+        release_date: 2025/02/10
+        reference_content: https://en.oceanbase.com/blog/17414420480
+        rationale: OceanBase 4.2.5 LTS is a long-term support release tailored for mission-critical TP scenarios, delivering major gains in kernel stability, SQL engine performance, and high availability. It introduces full MySQL 5.7 compatibility, OBKV-Redis model support, enhanced diagnostics, and expanded backup/restore options (e.g., AWS S3, Huawei OBS). The release features optimized execution and parsing engines, new security controls, and improved usability via adaptive compaction and log stream management. Benchmarks show a 6–28% TP performance boost on 96-core clusters compared to v4.2.1.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/oceanbase/oceanbase/releases/tag/v3.1.3_CE
