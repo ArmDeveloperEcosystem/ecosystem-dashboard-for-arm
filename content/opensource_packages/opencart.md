@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/opencart/opencart/blob/master/INSTALL.md
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 4.0.0.0
+        release_date: 2022/05/24
+        reference_content: https://github.com/opencart/opencart/releases/tag/4.0.0.0
+        rationale: This version introduces full PHP 8.1+ compatibility, a new event-based extension system, and major admin enhancements like CRON jobs, GDPR tools, and product variant management. The update modernizes the stack with Bootstrap 5, jQuery 3.6.0, and CKEditor 5, while switching to AJAX-powered forms and a revamped upgrade system. Security and flexibility have been improved with optional telephone fields, admin folder renaming, and enhanced backup handling. OCMOD has been removed, with a new system for managing extensions directly via the admin interface.
 
 
 optional_hidden_info:
