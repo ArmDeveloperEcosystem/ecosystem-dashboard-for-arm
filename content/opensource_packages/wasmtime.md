@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://docs.wasmtime.dev/cli-install.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 14.0.0
+        release_date: 2023/10/20
+        reference_content: https://github.com/bytecodealliance/wasmtime/releases/tag/v14.0.0
+        rationale: This version introduced support for the v128 WebAssembly type on aarch64 architectures, enhancing Wasmtime's capabilities on ARM-based Linux systems.  The intention of this type is to allow platforms to perform typed between two functions that take or return v128 wasm values.
 
 optional_hidden_info:
     release_notes__supported_minimum:

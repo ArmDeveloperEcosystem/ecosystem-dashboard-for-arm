@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://blogs.oracle.com/developers/post/getting-started-with-ruby-and-ruby-on-rails-on-oci
         official_docs: https://www.ruby-lang.org/en/documentation/installation/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 3.4.0
+        release_date: 2024/12/25
+        reference_content: https://www.ruby-lang.org/en/news/2024/12/25/ruby-3-4-0-released/
+        rationale: This version introduced significant performance enhancements, notably improvements to YJIT (Yet Another Ruby JIT), which is a Just-In-Time compiler for Ruby. These enhancements are particularly beneficial for Arm architectures, as YJIT has been optimized to deliver better performance on such platforms. Upgrading to Ruby 3.4.0 or later is recommended to leverage these improvements.
 
 optional_hidden_info:
     release_notes__supported_minimum:

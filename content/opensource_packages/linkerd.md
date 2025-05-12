@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://awsgravitonweekly.com/posts/aws-graviton-weekly-33
         official_docs: https://linkerd.io/docs/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: stable-2.11.2
+        release_date: 2022/04/21
+        reference_content: https://github.com/linkerd/linkerd2/releases/tag/stable-2.11.2
+        rationale: This version upgraded jaeger to v1.31 and opentelemetry-collector to v0.43 to support ARM architecture. Additionally, it fixed a configuration issue that prevented multicluster gateways from running on ARM nodes.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/linkerd/linkerd2/releases/tag/edge-20.8.1

@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://www.infracost.io/docs/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.10.17
+        release_date: 2023/02/07
+        reference_content: https://github.com/infracost/infracost/releases/tag/v0.10.17
+        rationale: This version adds support for AWS Lambda ARM architectures for estimating the infrastructure cost.
 
 
 optional_hidden_info:

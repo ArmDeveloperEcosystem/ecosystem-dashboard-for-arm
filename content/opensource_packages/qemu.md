@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://www.qemu.org/download/#linux
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 8.2.0
+        release_date: 2023/12/20
+        reference_content: https://www.qemu.org/2023/12/20/qemu-8-2-0/
+        rationale: In this version, architectural feature support for PACQARMA3, EPAC, Pauth2, FPAC, FPACCOMBINE, TIDCP1, MOPS, HBC, and HPMN0 have been added for ARM. This version also includes CPU emulation support for cortex-a710 and neoverse-n2.
 
 optional_hidden_info:
     release_notes__supported_minimum:

@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://developer.hashicorp.com/nomad/tutorials/get-started/gs-install
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.6.1
+        release_date: 2023/07/21
+        reference_content: https://github.com/hashicorp/nomad/releases/tag/v1.6.1
+        rationale: This version uses config "cpu_total_compute" (if set) for all CPU statistics. Prior to this fix, CPU usage metrics on ARM servers were inaccurately reported, impacting scheduling and performance monitoring.
 
 
 optional_hidden_info:

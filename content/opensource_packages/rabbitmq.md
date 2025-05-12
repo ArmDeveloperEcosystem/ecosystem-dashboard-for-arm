@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://www.rabbitmq.com/documentation.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 3.11.0
+        release_date: 2024/05/01
+        reference_content: https://github.com/rabbitmq/rabbitmq-server/blob/main/release-notes/3.11.0.md
+        rationale: RabbitMQ version 3.11.0 introduced significant performance enhancements for Arm-based architectures. This version requires Erlang 25.0 or later, which brings Just-In-Time (JIT) compilation and modern flame graph profiling tooling to both x86 and ARM64 CPUs. These features result in improved performance on ARM64 architectures.
 
 
 optional_hidden_info:
