@@ -1,7 +1,7 @@
 ---
 name: Libunwind
 category: Compilers/Tools
-description: Libunwind is a library that enables programs to inspect and manipulate call stacks, primarily used for stack unwinding. It supports debugging, profiling, and handling exceptions across multiple CPU architectures.
+description: libunwind is a library that enables programs to inspect and manipulate call stacks, supporting stack unwinding for debugging, profiling, and exception handling across multiple CPU architectures.
 download_url: https://github.com/libunwind/libunwind/releases
 works_on_arm: true
 supported_minimum_version:
