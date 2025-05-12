@@ -1,11 +1,11 @@
 ---
 name: Zerotier
 category: Networking
-description: ZeroTier is a virtual networking software that enables secure, encrypted, and peer-to-peer networking across various devices and platforms.
+description: ZeroTier is a virtual networking software that enables secure, encrypted, and peer-to-peer connectivity across devices and platforms.
 download_url: https://github.com/zerotier/ZeroTierOne/releases
 works_on_arm: true
 supported_minimum_version:
-    version_number: v1.5.0
+    version_number: 1.5.0
     release_date: 2020/10/05
 
 
