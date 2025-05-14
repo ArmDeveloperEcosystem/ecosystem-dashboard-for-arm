@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://amperecomputing.com/solution/cassandra
         official_docs: https://cassandra.apache.org/doc/latest/cassandra/getting-started/index.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 5.0.0
+        release_date: 2024/09/05
+        reference_content: https://cassandra.apache.org/_/blog/Apache-Cassandra-5.0-Announcement.html
+        rationale: Apache Cassandra 5.0 is a major release introducing significant performance, usability, and scalability enhancements. Key features include Storage Attached Indexes (SAI) for flexible querying, Trie-based memtables/SSTables for better efficiency, and the Unified Compaction Strategy (UCS) for automated data management. It also supports JDK 17 for up to 20% performance gains and adds vector search for AI applications. The release marks the end-of-life for the 3.x series, urging users to upgrade for continued support.
 
 
 optional_hidden_info:
