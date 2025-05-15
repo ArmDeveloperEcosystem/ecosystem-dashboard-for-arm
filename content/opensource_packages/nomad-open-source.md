@@ -1,16 +1,16 @@
 ---
-name: Nomad Community
+name: Nomad
 category: Containers and Orchestration
 description: Nomad is used for orchestration and management of application deployments, both containerized and non-containerized, across on-prem and cloud environments.
 download_url: https://developer.hashicorp.com/nomad/install#linux
 works_on_arm: true
 supported_minimum_version:
-    version_number: v0.8.6
+    version_number: 0.8.6
     release_date: 2018/09/26
 
 
 optional_info:
-    homepage_url: 
+    homepage_url: https://www.hashicorp.com/products/nomad
     support_caveats:
     alternative_options:
     getting_started_resources:
@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://developer.hashicorp.com/nomad/tutorials/get-started/gs-install
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 1.6.1
+        release_date: 2023/07/21
+        reference_content: https://github.com/hashicorp/nomad/releases/tag/v1.6.1
+        rationale: This version uses config "cpu_total_compute" (if set) for all CPU statistics. Prior to this fix, CPU usage metrics on ARM servers were inaccurately reported, impacting scheduling and performance monitoring.
 
 
 optional_hidden_info:
