@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/oneapi-src/oneTBB/blob/master/INSTALL.md
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2021.9.0
+        release_date: 2023/04/14
+        reference_content: https://github.com/uxlfoundation/oneTBB/releases/tag/v2021.9.0
+        rationale: Hybrid CPU support is a fully supported feature in this release.
 
 optional_hidden_info:
     release_notes__supported_minimum:

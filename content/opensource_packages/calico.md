@@ -17,10 +17,10 @@ optional_info:
         partner_content:
         official_docs: https://docs.tigera.io/calico/latest/getting-started/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 3.29.0
+        release_date: 2024/10/28
+        reference_content: https://github.com/projectcalico/calico/blob/release-v3.29/release-notes/v3.29.0-release-notes.md
+        rationale: Calico now supports a tech-preview nftables dataplane, offering native Linux policy enforcement with enhanced kernel integration. Felix's route resync logic has been optimized, using 50% less CPU time and 80% less memory, significantly improving efficiency on Linux nodes. eBPF improvements include fixes for memory leaks, dual-stack compatibility, and enhanced ICMP and VXLAN traffic handling, improving network stability under load. Calico now sets Go’s GC threshold to 40%, reducing CPU usage, and exposes GOMAXPROCS for tuning CPU-bound performance.
 
 
 optional_hidden_info:
