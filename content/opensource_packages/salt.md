@@ -1,7 +1,7 @@
 ---
 name: Salt
 category: DevOps
-description: Salt is an open-source automation tool used for configuration management, remote execution, and infrastructure orchestration. It enables efficient control of large-scale systems through a master-minion architecture.
+description: Salt is an open-source automation tool used for configuration management, remote execution, and infrastructure orchestration. It enables scalable system  control through a master-minion or agentless architecture.
 download_url: https://pypi.org/project/salt/#history
 works_on_arm: true
 supported_minimum_version:
