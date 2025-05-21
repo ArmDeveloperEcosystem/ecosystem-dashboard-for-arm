@@ -17,10 +17,10 @@ optional_info:
         partner_content:
         official_docs: https://chaos-mesh.org/docs/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.3.0
+        release_date: 2022/07/29
+        reference_content: https://github.com/chaos-mesh/chaos-mesh/releases/tag/v2.3.0
+        rationale: This release introduces AArch64 support for TimeChaos and a new BlockChaos implementation in chaos-daemon, expanding chaos testing capabilities. Significant Helm chart enhancements include improved update strategies, PSP policy relaxation, and OpenAPI-based client updates. Several bug fixes were applied, including compatibility with Kubernetes >1.24 and stability improvements across JVMChaos, NetworkChaos, and StressChaos. ARM support is reinforced with new integration tests and cleanup of ARM-specific CI and scripts.
 
 
 optional_hidden_info:

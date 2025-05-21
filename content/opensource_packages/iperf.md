@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://software.es.net/iperf/obtaining.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 3.16
+        release_date: 2023/12/02
+        reference_content: https://github.com/esnet/iperf/releases/tag/3.16
+        rationale: Iperf 3.16 introduces multi-threaded support for parallel test streams, enabling better CPU core utilization and significantly improved throughput. The build system now detects OpenSSL 3, avoiding deprecated APIs while maintaining compatibility with OpenSSL 1.1.1. pthreads and C11 atomic support are now mandatory for building iperf3, marking a breaking change for developers.
 
 optional_hidden_info:
     release_notes__supported_minimum:
