@@ -1,7 +1,7 @@
 ---
 name: Sysdig
 category: Monitoring/Observability
-description: Sysdig is a system monitoring and troubleshooting tool that offers real-time visibility into Linux and container environments. It’s used for analyzing performance, detecting anomalies, and enhancing security.
+description: Sysdig is a system monitoring and troubleshooting tool that offers real-time visibility into Linux and container environments. It is used to analyze performance, detect anomalies, and improve security across cloud-native infrastructures.
 download_url: https://github.com/draios/sysdig/releases
 works_on_arm: true
 supported_minimum_version:
