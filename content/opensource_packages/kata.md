@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/kata-containers/kata-containers/tree/main/docs/install
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 3.14.0
+        release_date: 2025/02/18
+        reference_content: https://github.com/kata-containers/kata-containers/releases/tag/3.14.0
+        rationale: This release has various fixes to make the rootfs build on aarch64, fixed arm64 kernel build issue, and switched to GitHub Actions ARM runners.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/kata-containers/kata-containers/releases/tag/3.2.0

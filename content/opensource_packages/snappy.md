@@ -17,10 +17,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/google/snappy/blob/main/docs/README.md
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.2.0
+        release_date: 2024/04/05
+        reference_content: https://github.com/google/snappy/releases/tag/1.2.0
+        rationale: This release added Level API with level 2 support, that can compress 5-10% denser and can decompress 5-10% faster. The compression speed drop is about 20-30%.
 
 optional_hidden_info:
     release_notes__supported_minimum: 

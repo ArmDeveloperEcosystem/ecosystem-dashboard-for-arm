@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://hub.datree.io/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 1.9.4
+        release_date: 2023/06/07
+        reference_content: https://github.com/datreeio/datree/releases/tag/1.9.4
+        rationale: This version added cache compiled rules to improve performance by 30%.
 
 
 optional_hidden_info:

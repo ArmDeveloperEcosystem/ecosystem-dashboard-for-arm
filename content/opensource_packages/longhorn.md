@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://longhorn.io/docs/1.6.0/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.6.0
+        release_date: 2024/02/01
+        reference_content: https://github.com/longhorn/longhorn/releases/tag/v1.6.0
+        rationale: This release includes new V2 Data Engine features, and supports v2 volume on ARM64 platform. Other highlights include platform-agnostic deployment, node maintenance, and improvements to stability, performance, and resilience.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/longhorn/longhorn/releases/tag/v1.1.0
