@@ -1,7 +1,7 @@
 ---
 name: SonarQube Server
 category: DevOps
-description: SonarQube Server is an automated code review and static analysis tool, that can integrate directly with the CI pipeline or the supported DevOps platforms, and can detect coding issues against an extensive set of rules.
+description: SonarQube Server is an automated code review and static analysis platform that integrates with CI pipelines and DevOps tools to detect code issues based on extensive rules sets.
 download_url: https://hub.docker.com/_/sonarqube/tags
 works_on_arm: true
 supported_minimum_version:
@@ -26,6 +26,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: There are no official release notes to support Linux/ARM64. However, SonarQube server can be installed via the docker image, which is available for Linux/ARM64 from version 9.9 onwards. Kindly refer [here](https://hub.docker.com/_/sonarqube/tags).
+    other_info: There are no official release notes to support Linux/Arm64. However, SonarQube server can be installed via the docker image, which is available for Linux/Arm64 from version 9.9 onwards. Kindly refer [here](https://hub.docker.com/_/sonarqube/tags).
 
 ---
