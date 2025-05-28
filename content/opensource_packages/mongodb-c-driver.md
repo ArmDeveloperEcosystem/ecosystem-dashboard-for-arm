@@ -14,7 +14,7 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content:
+        arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/mongodb/benchmark_mongodb-8.0/
         partner_content:
         official_docs: https://www.mongodb.com/docs/languages/c/c-driver/current/get-started/#std-label-c-get-started
     arm_recommended_minimum_version:
