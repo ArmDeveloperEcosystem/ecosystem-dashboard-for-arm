@@ -5,7 +5,7 @@ description: Rundeck helps in streamlining operations by enabling users to defin
 download_url: https://github.com/rundeck/rundeck/releases
 works_on_arm: true
 supported_minimum_version:
-    version_number: v4.3.0
+    version_number: 4.3.0
     release_date: 2022/06/03
 
 
@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/rundeck/rundeck/wiki/Development
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 5.4.0
+        release_date: 2024/06/19
+        reference_content: https://docs.rundeck.com/docs/history/5_x/version-5.4.0.html
+        rationale: This version enabled building Linux/ARM64 docker images for rundeck locally.
 
 optional_hidden_info:
     release_notes__supported_minimum:
