@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://yarnpkg.com/getting-started/install
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 4.0.0
+        release_date: 2023/10/23
+        reference_content: https://yarnpkg.com/blog/release/4.0
+        rationale: This version drops support for Node.js <18 and replaces yarnPath with Corepack for simpler version management. It introduces a new JavaScript-based constraints engine, replacing Prolog, and now includes all official plugins by default. A new Hardened Mode boosts lockfile security, especially in public GitHub PRs. UI has been revamped, with clearer install logs and config output. Performance sees a major leap—installs are up to 3x faster than Yarn 3.6, thanks to improved metadata caching.
 
 
 optional_hidden_info:
