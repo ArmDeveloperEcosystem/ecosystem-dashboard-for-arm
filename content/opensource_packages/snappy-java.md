@@ -1,7 +1,7 @@
 ---
 name: Snappy-Java
 category: Compression
-description: Snappy-Java is a fast compression and decompression library for Java, leveraging Google's Snappy algorithm. It provides native performance through JNI bindings to efficiently handle large volumes of data.
+description: Snappy-Java is a fast Java library for compression and decompression, using JNI bindings to access Google's Snappy algorithm for high-performance data processing.
 download_url: https://github.com/xerial/snappy-java/releases
 works_on_arm: true
 supported_minimum_version:
@@ -10,7 +10,7 @@ supported_minimum_version:
 
 
 optional_info:
-    homepage_url: https://github.com/xerial/snappy-java.git
+    homepage_url: https://github.com/xerial/snappy-java
     support_caveats:
     alternative_options:
     getting_started_resources:
