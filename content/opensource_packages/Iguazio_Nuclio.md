@@ -16,12 +16,12 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://github.com/nuclio/nuclio?tab=readme-ov-file#quick-start-steps
+        official_docs: https://github.com/nuclio/nuclio#quick-start-steps
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.11.18
+        release_date: 2023/05/04
+        reference_content: https://github.com/nuclio/nuclio/releases/tag/1.11.18
+        rationale: This version allows building nuclio services on arm64-based systems, fixes building java & go runtimes for arm, and also fixes building images for arm.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/nuclio/nuclio/releases/tag/1.6.0

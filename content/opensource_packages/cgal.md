@@ -17,10 +17,10 @@ optional_info:
         partner_content: 
         official_docs: https://doc.cgal.org/latest/Manual/general_intro.html
     arm_recommended_minimum_version:
-        version_number: 
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 6.0
+        release_date: 2024/09/27
+        reference_content: https://github.com/CGAL/cgal/releases/tag/v6.0
+        rationale: CGAL 6.0 requires C++17, Boost ≥ 1.72.0, and now supports GCC ≥ 11.4, Clang ≥ 15.0.7, and Qt6 for demos. It removes GMP/MPFR as mandatory, enabling Boost.Multiprecision as an alternative. Major CMake changes drop UseCGAL.cmake. New packages include Kinetic Space Partition, Kinetic Surface Reconstruction, Basic Viewer, and Polygon Repair. Several internal types switch from Boost to C++17 types (std::variant, std::optional, std::shared_ptr). Key modules like AABB Tree, Arrangements, and Polygon Mesh Processing received API changes and new features. Numerous breaking changes and deprecations across triangulation, mesh generation, and shape detection modernize and streamline the library.
 
 
 optional_hidden_info:

@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://docs.janusgraph.org/getting-started/installation/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.1.0
+        release_date: 2024/11/07
+        reference_content: https://github.com/JanusGraph/janusgraph/releases/tag/v1.1.0
+        rationale: In this release, vertex properties can now be inlined into composite indexes, significantly improving fetch performance. Key compatibility includes Cassandra 3.11.10/4.0.6, HBase 2.6.0, ScyllaDB 6.2.0, Elasticsearch 6–8.15.3, and TinkerPop 3.7.3. Pre-packaged setup includes Cassandra 4.0.6 and Elasticsearch 7.17.8.
  
 optional_hidden_info:
     release_notes__supported_minimum:

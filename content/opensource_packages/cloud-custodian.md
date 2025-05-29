@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://cloudcustodian.io/getting-started/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.9.21.0
+        release_date: 2022/12/15
+        reference_content: https://github.com/cloud-custodian/cloud-custodian/releases/tag/0.9.21.0
+        rationale: This version introduced changes to the code to make custodian lambdas aws graviton compatible.
 
 optional_hidden_info:
     release_notes__supported_minimum:
