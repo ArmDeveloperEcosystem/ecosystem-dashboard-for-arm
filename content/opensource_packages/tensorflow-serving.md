@@ -11,7 +11,7 @@ supported_minimum_version:
  
 optional_info:
     homepage_url: https://www.tensorflow.org/tfx/guide/serving
-    support_caveats: Build and setup via docker isn't available for ARM64 (as of May 2025), since tensorflow/serving docker images are only available for Linux/AMD64. Not officially recommended, but consider [install without docker](https://github.com/tensorflow/serving/blob/master/tensorflow_serving/g3doc/setup.md) for ARM platforms.
+    support_caveats: Build and setup via Docker isn't available for Arm64 (as of May 2025), since official tensorflow/serving images are only built for Linux/Amd64. Not officially recommended, but consider [install without docker](https://github.com/tensorflow/serving/blob/master/tensorflow_serving/g3doc/setup.md) for Arm platforms.
     alternative_options:
     getting_started_resources:
         arm_content:
