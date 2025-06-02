@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://amperecomputing.com/assets/Hadoop_on_Ampere_Arm_Processors_Ref_Architecture_0_75_20231024_f5784a93f6.pdf
         official_docs: https://hbase.apache.org/book.html#build.on.linux.aarch64
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.5.11
+        release_date: 2025/03/30
+        reference_content: https://downloads.apache.org/hbase/2.5.11/RELEASENOTES.md
+        rationale: This release updates its default Hadoop build to version 3.4.1 and adjusts Kerby dependencies to align with Hadoop versions, requiring manual overrides for 3.2.x and 3.3.x. Phoenix now uses jaxws-rt instead of jaxws-ri for better compatibility. Security is improved by removing the deprecated javax.el dependency, replaced with tomcat-jasper. A new RowCounter option allows counting delete marker types via a CLI flag. Slowlog responses can now be queried using client IP alone. Build efficiency is enhanced by running flaky tests every 12 hours and staggering nightly test jobs. Finally, hbase-webapps is no longer bundled in the default JARs, reducing build size.
 
 optional_hidden_info:
     release_notes__supported_minimum:

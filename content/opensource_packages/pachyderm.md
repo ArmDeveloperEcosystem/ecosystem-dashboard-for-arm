@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://docs.pachyderm.com/products/mldm/latest/get-started/first-time-setup/#first-time-setup-2-install-pachctl-cli
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.4.0-nightly.20221108
+        release_date: 2022/11/08
+        reference_content: https://github.com/pachyderm/pachyderm/releases/tag/v2.4.0-nightly.20221108
+        rationale: This version added deploy tests for ARM64 in the CircleCI. It is to be noted that the prior version 2.3.6 already has updated etcd to an image that has an arm64 build.
 
 
 optional_hidden_info:

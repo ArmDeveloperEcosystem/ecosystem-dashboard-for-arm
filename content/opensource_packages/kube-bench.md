@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://aquasecurity.github.io/kube-bench/dev/installation/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.6.6
+        release_date: 2022/01/12
+        reference_content: https://github.com/aquasecurity/kube-bench/releases/tag/v0.6.6
+        rationale: Linux/ARM64 artifacts were released in prior versions, but official ARM64 support is declared in version 0.6.6. Numerous dependency upgrades were made, including golang, gorm, client-go, and aws-sdk-go, improving performance and security.
 
 
 optional_hidden_info:

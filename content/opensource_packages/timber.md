@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://timber.github.io/docs/v2/installation/installation/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.0.0
+        release_date: 2023/11/09
+        reference_content: https://github.com/timber/timber/releases/tag/2.0.0
+        rationale: Timber 2.0 marks a major architectural shift by dropping support for the WordPress plugin version and transitioning fully to a Composer-based package. This update aims to improve consistency, extensibility, and compatibility with WordPress Core and modern PHP versions. Key enhancements include a streamlined API for working with posts, terms, users, and menus, a revamped system for fetching meta values, improved Twig integration, and the introduction of Class Maps and the PostCollectionInterface for more flexible object handling. Timber 2.0 also offers better support for custom integrations and an upgraded WP-CLI interface.
 
 
 optional_hidden_info:
