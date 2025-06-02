@@ -1,6 +1,6 @@
 ---
 name: Htop
-category: Miscellaneous
+category: Monitoring/Observability
 description: Htop is a cross-platform interactive text-mode process viewer for consoles and X terminals, that allows viewing the process-related information like memory, CPU consumption, load average, swap usage, etc.
 download_url: https://htop.dev/downloads.html
 works_on_arm: true
