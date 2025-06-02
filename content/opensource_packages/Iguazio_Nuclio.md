@@ -1,7 +1,7 @@
 ---
 name: Nuclio
-category: DevOps
-description: Nuclio by Iguazio is a high-performance serverless framework for data science tasks. It allows developers to deploy data-focused functions quickly, automating workflows from development to production.
+category: AI/ML
+description: Nuclio by Iguazio is a high-performance serverless framework for real-time data and machine learning workloads. It enables developers to deploy inference functions with sub-second latency, making it ideal for integrating into AI pipelines and production-grade model serving. 
 download_url: https://github.com/nuclio/nuclio/releases
 works_on_arm: true
 supported_minimum_version:
