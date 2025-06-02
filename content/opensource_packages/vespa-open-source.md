@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://docs.vespa.ai/en/getting-started.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 8.344
+        release_date: 2024/05/31
+        reference_content: https://blog.vespa.ai/vespa-newsletter-may-2024/
+        rationale: Vespa 8.344 introduces optimized value type conversions and distance computations for vector search operations. These enhancements yield up to 2× QPS improvement for float vectors with Euclidean distance and up to 9× QPS for int8 vectors with Euclidean distance. Bit vectors show up to a 40% increase in QPS for exact nearest neighbor queries, while bfloat16 vectors with HNSW indexing see up to 50% faster feed throughput and 40% higher QPS. Int8 vectors also benefit with up to 5× QPS gain for dotproduct and 30% for angular distance queries. While these benchmarks are measured on x86-64, similar (though smaller) gains are expected on Arm64 systems.
 
 
 optional_hidden_info:
