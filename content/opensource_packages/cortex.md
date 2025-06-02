@@ -21,7 +21,7 @@ optional_info:
         version_number: 1.15.0
         release_date: 2023/04/20
         reference_content: https://github.com/cortexproject/cortex/releases/tag/v1.15.0
-        rationale: This version built the ARM docker images and tested them on the AWS graviton instances.
+        rationale: This version added the official Arm64 docker image builds and included testing on AWS Graviton instances. This ensures Cortex works reliably on Arm-based infrastructure.
 
 
 optional_hidden_info:
