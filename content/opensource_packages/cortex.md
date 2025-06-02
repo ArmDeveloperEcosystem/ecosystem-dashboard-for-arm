@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://cortexmetrics.io/docs/getting-started/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.15.0
+        release_date: 2023/04/20
+        reference_content: https://github.com/cortexproject/cortex/releases/tag/v1.15.0
+        rationale: This version added the official Arm64 docker image builds and included testing on AWS Graviton instances. This ensures Cortex works reliably on Arm-based infrastructure.
 
 
 optional_hidden_info:
