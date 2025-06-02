@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://google.github.io/glog/stable/build/#cmake
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.7.0
+        release_date: 2024/02/17
+        reference_content: https://github.com/google/glog/releases/tag/v0.7.0
+        rationale: This version fixes empty stack trace issue when using bazel on aarch64. Other highlights include C++ 14 support, Emscripten support, and many other fixes and enhancements.
 
 optional_hidden_info:
     release_notes__supported_minimum:
