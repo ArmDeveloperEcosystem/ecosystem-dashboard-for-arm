@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://pytorch.org/torchtune/stable/index.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.4.0
+        release_date: 2024/11/14
+        reference_content: https://github.com/pytorch/torchtune/releases/tag/v0.4.0
+        rationale: Torchtune v0.4.0 introduces major enhancements, including full support for activation offloading, new training recipes for Llama3.2V 90B and QLoRA variants, expanded support for Qwen2.5 models, and updated documentation. Activation offloading reduces memory usage by ~24% during training (tested on Llama3 8B) with minimal performance impact (<1%) and can be enabled via two simple config flags.
 
 
 optional_hidden_info:

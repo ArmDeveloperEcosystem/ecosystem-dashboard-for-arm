@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://community.deepfence.io/threatmapper/docs/installation
     arm_recommended_minimum_version:
-        version_number: 
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.1.1
+        release_date: 2024/03/14
+        reference_content: https://github.com/deepfence/ThreatMapper/releases/tag/v2.1.1
+        rationale: ARM64 binary build via makefile is introduced in this release.
 
 
 optional_hidden_info:
