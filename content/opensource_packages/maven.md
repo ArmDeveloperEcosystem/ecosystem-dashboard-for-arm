@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://www.alibabacloud.com/help/en/acr/use-cases/build-and-push-multi-schema-images-locally-to-container-mirroring-service
         official_docs: https://maven.apache.org/download.cgi#Installation
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 3.9.0
+        release_date: 2023/02/14
+        reference_content: https://maven.apache.org/docs/3.9.0/release-notes.html
+        rationale: Minimum Java version to use with Maven 3.9.0 is raised to Java 8. This ensures full compatibility with Linux/Arm64 architecture.
 
 
 optional_hidden_info:
