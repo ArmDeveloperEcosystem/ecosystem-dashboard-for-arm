@@ -21,8 +21,8 @@ optional_info:
         version_number:
         release_date:
         reference_content:
-        rationale:
-
+        rationale: 
+ 
 
 optional_hidden_info:
     release_notes__supported_minimum: 
