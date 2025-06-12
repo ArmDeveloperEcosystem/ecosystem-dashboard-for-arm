@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://docs.sensu.io/sensu-go/latest/operations/deploy-sensu/install-sensu/#install-sensuctl
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 6.7.0
+        release_date: 2022/04/21
+        reference_content: https://docs.sensu.io/sensu-go/latest/release-notes/#670-release-notes
+        rationale: This version fixed a bug that prevented accurate ARM version detection for sensu-agent.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://docs.sensu.io/sensu-go/latest/release-notes/#520-release-notes

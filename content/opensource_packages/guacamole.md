@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://guacamole.apache.org/doc/gug/installing-guacamole.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 1.5.5
+        release_date: 2024/04/05
+        reference_content: https://guacamole.apache.org/releases/1.5.5/
+        rationale: The 1.5.5 release is a bugfix release that addresses bugs and regressions from 1.5.4 and earlier, including a resource leak that may affect RDP and SSH connections, and updates all dependencies to their latest compatible versions.  A display issue with Japanese characters in the guacd Docker image has been resolved. Several critical bugs affecting RDP protocol stability have been addressed, including segfaults during connection startup, resizing, and concurrency issues, as well as a double free issue and TLS socket synchronization problems. Authentication now correctly handles per-user connection concurrency limits, and a VNC password challenge issue has been resolved. On the maintenance side, the build process has been updated to support FFmpeg 5.0.
 
 optional_hidden_info:
     release_notes__supported_minimum:

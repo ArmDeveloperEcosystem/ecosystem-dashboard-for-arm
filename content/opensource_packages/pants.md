@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://www.pantsbuild.org/2.22/docs/getting-started
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.23.0.dev6
+        release_date: 2024/08/08
+        reference_content: https://github.com/pantsbuild/pants/releases/tag/release_2.23.0.dev6
+        rationale: This version adds a new architecture field on all AWS Lambda targets and allows it to be set to either x86_64 or arm64 - then, uses both architecture and runtime to find the appropriate complete_platforms file to use.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://www.pantsbuild.org/2.21/docs/getting-started/prerequisites#linux

@@ -18,14 +18,14 @@ optional_info:
         partner_content:
         official_docs: https://avro.apache.org/docs/1.12.0/getting-started-python/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.12.0
+        release_date: 2024/08/05
+        reference_content: https://github.com/apache/avro/releases/tag/release-1.12.0
+        rationale: This version started using TravisCI for testing Apache Avro on Linux ARM64, which confirms the stablility of the software on Arm platform.
  
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
     other_info: Linux/ARM64 release notes are not available. v1.7.3 has been successfully installed on the Neoverse N1, prior versions are failing to install.
- 
+
 ---

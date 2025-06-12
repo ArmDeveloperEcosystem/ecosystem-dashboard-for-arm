@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://docs.geoserver.org/latest/en/user/gettingstarted/index.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.27.1
+        release_date: 2025/05/14
+        reference_content: https://geoserver.org/announcements/vulnerability/2025/05/13/geoserver-2-27-1-released.html
+        rationale: This is a stable release of GeoServer, officially recommended for production use. GeoServer 2.27.1 is made in conjunction with GeoTools 33.1, and GeoWebCache 1.27.1. This release enhanced WPS support with improved value reading from coverage positions and enforced coding standards by disallowing var, resolved issues including broken JSON legends, symbolizer URL errors, vector tile clipping, XML attribute encoding errors, GUI glitches, and feature templating failures.
 
 
 optional_hidden_info:

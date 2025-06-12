@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://www.alibabacloud.com/blog/arm-container-applications-accelerating-development-and-testing_595802
         official_docs: https://www.docker.com/blog/getting-started-with-docker-for-arm-on-linux/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 24.0.3
+        release_date: 2023/07/06
+        reference_content: https://docs.docker.com/engine/release-notes/24.0/#2403
+        rationale: This release significantly reduces CPU and memory usage when populating the debug section of GET/ info, improving performance during diagnostics. Packaging updates include Go 1.20.5, Docker Compose v2.19.1, and Buildx v0.11.1, ensuring runtime and build tool improvements.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://docs.docker.com/engine/release-notes/prior-releases/#misc
