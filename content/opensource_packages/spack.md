@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://aws.amazon.com/blogs/hpc/introducing-the-spack-rolling-binary-cache/
         official_docs: https://spack.readthedocs.io/en/latest/index.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.21.3
+        release_date: 2024/10/03
+        reference_content: https://github.com/spack/spack/releases/tag/v0.21.3
+        rationale: This version bumps archspec to 0.2.5-dev for better aarch64 support.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/spack/spack/releases/tag/v0.14.0
