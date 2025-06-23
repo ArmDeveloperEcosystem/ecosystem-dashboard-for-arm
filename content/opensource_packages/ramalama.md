@@ -24,7 +24,7 @@ optional_info:
         rationale:
  
 optional_hidden_info:
-    release_notes__supported_minimum:
+    release_notes__supported_minimum: https://pypi.org/project/ramalama/0.0.1/
     release_notes__recommended_minimum:
     other_info: There are no release notes for Linux/Arm64. Ramalama initial version on Pypi, i.e. 0.0.1, can be installed via pip on the Neoverse N1.
  
