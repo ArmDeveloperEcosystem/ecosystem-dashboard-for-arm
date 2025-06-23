@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content: https://learn.arm.com/learning-paths/laptops-and-desktops/electron/how-to-1/
         partner_content: 
-        official_docs: https://www.electronjs.org/docs/latest/tutorial/quick-start
+        official_docs: https://www.electronjs.org/docs/latest/tutorial/tutorial-first-app
     arm_recommended_minimum_version:
         version_number:
         release_date:

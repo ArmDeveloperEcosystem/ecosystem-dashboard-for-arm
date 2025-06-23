@@ -13,7 +13,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: 
-        vendor_announcement: https://help.okta.com/asa/en-us/content/topics/releasenotes/advanced-server-access-release-notes-archive-2023-and-older.htm#panel2
+        vendor_announcement:
         official_docs: https://help.okta.com/asa/en-us/content/topics/adv_server_access/docs/start-here.htm
 
 optional_hidden_info:
