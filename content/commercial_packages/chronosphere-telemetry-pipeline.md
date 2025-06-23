@@ -14,7 +14,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: 
-        vendor_announcement: https://calyptia.com/blog/scaling-builds-with-actuated
+        vendor_announcement:
         official_docs: https://docs.chronosphere.io/pipeline-install/linux/ubuntu-server-linux
 
 

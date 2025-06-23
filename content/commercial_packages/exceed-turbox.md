@@ -1,15 +1,15 @@
 ---
 name: Exceed-TurboX
-vendor: Opentext
+vendor: Rocket Software
 category: Miscellaneous
 description: OpenText Exceed TurboX (ETX) is a remote access software solution designed to provide high-performance virtual desktop and application delivery, particularly suited for graphics-intensive applications used in engineering and design.
-product_url: https://www.opentext.com/products/exceed-turbox
+product_url: https://etxlive.rocketsoftware.com/
 works_on_arm: true
 release_date_on_arm: 2021/09/03
 
 
 optional_info:
-    homepage_url: https://www.opentext.com/products/exceed-turbox
+    homepage_url: https://etxlive.rocketsoftware.com/
     support_caveats:
     alternative_options:
     getting_started_resources:

@@ -14,7 +14,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: 
-        vendor_announcement: https://documentation.commvault.com/2024e/essential/newsletter_for_new_features_in_commvault_platform_release_2024.html
+        vendor_announcement: 
         official_docs: https://documentation.commvault.com/2023e/essential/quick_start_guide.html
 
 optional_hidden_info:

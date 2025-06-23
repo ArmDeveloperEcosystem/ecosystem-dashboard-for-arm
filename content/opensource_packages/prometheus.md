@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources: 
         arm_content: 
         partner_content:  
-        official_docs: https://prometheus.io/docs/prometheus/latest
+        official_docs: https://prometheus.io/docs/introduction/overview/
     arm_recommended_minimum_version: 
         version_number: 
         release_date: 

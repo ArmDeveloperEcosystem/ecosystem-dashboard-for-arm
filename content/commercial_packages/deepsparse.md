@@ -13,7 +13,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: 
-        vendor_announcement: https://docs.neuralmagic.com/products/deepsparse/releases/#deepsparse-v1-6-0
+        vendor_announcement: 
         official_docs: https://docs.neuralmagic.com/get-started/install/deepsparse
 
 optional_hidden_info:
