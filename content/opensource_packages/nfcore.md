@@ -1,7 +1,7 @@
 ---
-name: Nf-core
+name: nf-core
 category: HPC
-description: Nf-core is a community-driven collection of curated, reproducible bioinformatics pipelines built with Nextflow, offering standardized, portable workflows for users, facilities, and developers. Its companion Python package, nf-core tools, provides templates and utilities to streamline pipeline development and usage.
+description: nf-core is a community-driven collection of curated, reproducible bioinformatics pipelines built with Nextflow, offering standardized, portable workflows for users, facilities, and developers. Its companion Python package, nf-core tools, provides templates and utilities to streamline pipeline development and usage.
 download_url: https://pypi.org/project/nf-core/#history
 works_on_arm: true
 supported_minimum_version:
@@ -26,6 +26,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: There are no release notes for Linux/Arm64. Nf-core version on Pypi, 0.0.1, can be installed via pip on the Neoverse N1.
+    other_info: There are no release notes for Linux/Arm64. nf-core version on Pypi, 1.0.1, can be installed via pip on the Neoverse N1.
  
 ---
