@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://min.io/docs/minio/linux/reference/minio-mc.html
     arm_recommended_minimum_version:
-        version_number: RELEASE.2024-04-18T16-45-29Z
-        release_date: 2024/04/19
-        reference_content: https://github.com/minio/mc/releases/tag/RELEASE.2024-04-18T16-45-29Z
-        rationale: This version is a large bugfix release. This release introduces breaking changes to encryption-related flags for improved security and clarity. The old --encrypt, --encrypt-s3, and --encrypt-kms flags have been renamed to --enc-c, --enc-s3, and --enc-kms, respectively. These updated flags now only accept RawBase64-encoded keys and support multiple entries, while the older flags are no longer supported. Additionally, the --continue flag has been removed due to insecure behavior. Other notable changes include UI enhancements using the lipgloss table package for ILM commands, renaming of the mc idp ldap accesskey create --login command, removal of session code, updated dependencies, and minor UI cleanups.
+        version_number: 
+        release_date: 
+        reference_content: 
+        rationale: 
  
 optional_hidden_info:
     release_notes__supported_minimum:
