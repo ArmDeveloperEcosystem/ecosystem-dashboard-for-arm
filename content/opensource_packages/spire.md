@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://spiffe.io/docs/latest/try/getting-started-linux-macos-x/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.8.0
+        release_date: 2023/09/20
+        reference_content: https://github.com/spiffe/spire/releases/tag/v1.8.0
+        rationale: This version fixed an issue that prevented the server from running on Linux ARM64 when using SQLite.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/spiffe/spire/releases/tag/v1.6.4
