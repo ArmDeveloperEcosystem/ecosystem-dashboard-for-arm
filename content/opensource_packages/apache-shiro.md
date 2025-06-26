@@ -19,10 +19,9 @@ optional_info:
         official_docs: https://shiro.apache.org/10-minute-tutorial.html
     arm_recommended_minimum_version:
         version_number:
-        release_date:
-        reference_content:
-        rationale:
-
+        release_date: 
+        reference_content: 
+        rationale: 
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:

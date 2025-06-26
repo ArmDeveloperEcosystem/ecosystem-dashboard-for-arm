@@ -17,10 +17,10 @@ optional_info:
         partner_content:
         official_docs: https://orientdb.org/docs/3.2.x/gettingstarted/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 
+        release_date: 
+        reference_content: 
+        rationale: 
 
 optional_hidden_info:
     release_notes__supported_minimum: 

@@ -5,7 +5,7 @@ description: Spring Cloud Netflix is a collection of tools for building microser
 download_url: https://github.com/spring-cloud/spring-cloud-netflix/releases
 works_on_arm: true
 supported_minimum_version:
-    version_number: v1.2.5.RELEASE
+    version_number: 1.2.5.RELEASE
     release_date: 2017/02/03
  
  
@@ -16,12 +16,12 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://github.com/spring-cloud/spring-cloud-netflix#:~:text=declarative%20Java%20configuration-,Building,-Basic%20Compile%20and
+        official_docs: https://github.com/spring-cloud/spring-cloud-netflix
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 4.1.2
+        release_date: 2024/05/30
+        reference_content: https://github.com/spring-cloud/spring-cloud-netflix/releases/tag/v4.1.2
+        rationale: This release introduces improved observability with Eureka Server Micrometer metrics for registered services and enhanced event ordering. It also adds missing observability support in RestTemplateTransportClientFactory. Bug fixes include resolving a shutdown exception introduced in 4.1.1 and correcting basic auth failures when using encoded characters.
  
 optional_hidden_info:
     release_notes__supported_minimum:

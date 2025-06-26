@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://cloud.spring.io/spring-cloud-gateway/reference/html/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 4.1.2
+        release_date: 2024/03/27
+        reference_content: https://github.com/spring-cloud/spring-cloud-gateway/releases/tag/v4.1.2
+        rationale: Spring Cloud Gateway introduced several enhancements in this version, including the ability to disable filters and headers via properties, support for @Order in global and gateway filters, and improvements to filter configuration using the Java DSL. It added AOT support for Gateway MVC and updated the dashboard to Grafana 9.x. Other highlights include enabling random-aware WeightCalculatorWebFilter, public access to key constants, and a new Mono-returning method for better reactive handling.
 
 optional_hidden_info:
     release_notes__supported_minimum:
