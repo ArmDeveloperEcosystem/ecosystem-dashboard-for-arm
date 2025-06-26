@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://github.com/spring-cloud/spring-cloud-netflix#:~:text=declarative%20Java%20configuration-,Building,-Basic%20Compile%20and
+        official_docs: https://github.com/spring-cloud/spring-cloud-netflix
     arm_recommended_minimum_version:
         version_number: 4.1.2
         release_date: 2024/05/30
