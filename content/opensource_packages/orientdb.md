@@ -17,10 +17,10 @@ optional_info:
         partner_content:
         official_docs: https://orientdb.org/docs/3.2.x/gettingstarted/
     arm_recommended_minimum_version:
-        version_number: 3.2.40
-        release_date: 2025/05/29
-        reference_content: https://github.com/orientechnologies/orientdb/releases/tag/3.2.40
-        rationale: This release addresses critical issues across core, server, client, and distributed components. Most notably, it fixes a composite index bug that caused incomplete query results when multiple fields were used in conditions, and resolves a disk data leak issue related to vertex link collections. Additional updates include schema access safeguards, improved index handling in views, precise float/double casting, enhanced client logging, and better rollback behavior in distributed DDL operations.
+        version_number: 
+        release_date: 
+        reference_content: 
+        rationale: 
 
 optional_hidden_info:
     release_notes__supported_minimum: 
