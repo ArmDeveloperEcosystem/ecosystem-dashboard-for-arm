@@ -1,10 +1,10 @@
 ---
 name: Libopus
-category: Video
-description: Libopus is a free, open-source library for the Opus audio codec, which is designed for high-quality, low-latency audio compression.
-download_url: https://github.com/xiph/opus/tags
+category: Miscellaneous
+description: Opus is a fully open, royalty-free audio codec designed for exceptional versatility across speech, music, and streaming. Standardized as IETF RFC 6716, it combines Skype’s SILK and Xiph.Org’s CELT technologies to deliver unmatched performance for real-time internet communication, storage, and broadcast applications.
+download_url: https://opus-codec.org/downloads/
 works_on_arm: true
-supported_minimum_version: 
+supported_minimum_version:
     version_number: 0.9.9
     release_date: 2012/02/22
 
@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://github.com/xiph/opus/blob/main/README
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.5
+        release_date: 2024/09/11
+        reference_content: https://github.com/xiph/opus/releases/tag/v1.5
+        rationale: This version marks a major leap with machine learning–driven enhancements in both encoder and decoder. It introduces Deep Redundancy (DRED) for significantly better packet loss robustness and Deep PLC for improved concealment. Low-bitrate speech quality is enhanced down to 6 kb/s wideband, while Neon (ARM) optimizations boost performance. The release also adds support for 4th and 5th order ambisonics, expanding its spatial audio capabilities.
 
 
 optional_hidden_info:
