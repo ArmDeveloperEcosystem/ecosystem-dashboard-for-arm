@@ -18,11 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://shiro.apache.org/10-minute-tutorial.html
     arm_recommended_minimum_version:
-        version_number: 2.0.4
-        release_date: 2025/04/17
-        reference_content: https://github.com/apache/shiro/releases/tag/shiro-root-2.0.4
-        rationale: This release includes bug fixes such as removing InheritableThreadLocal from ThreadContext and enhancing class loader usage during serialization. Improvements involve cleanup of unused test modules and updating the OpenSSF Scorecard badge. Several dependency versions were also updated, including junit, codeql-action, and dependency-check-maven, ensuring better security and compatibility.
-
+        version_number:
+        release_date: 
+        reference_content: 
+        rationale: 
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
