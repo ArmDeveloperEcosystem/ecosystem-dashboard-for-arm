@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://static.linaro.org/connect/lvc20/presentations/LVC20-115-0.pdf
         official_docs: https://www.cni.dev/docs/
     arm_recommended_minimum_version: 
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.2.0
+        release_date: 2024/04/16
+        reference_content: https://github.com/containernetworking/cni/releases/tag/v1.2.0
+        rationale: CNI v1.2.0 introduces support for CNI spec v1.1.0 with two major enhancements - a new GC (Garbage Collection) verb to clean up stale IPAM reservations and cached attachments, and a STATUS verb allowing plugins to report readiness for ADD operations. These improvements help runtimes like containerd and cri-o detect plugin health more reliably.
   
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/containernetworking/cni/releases/tag/v0.4.0

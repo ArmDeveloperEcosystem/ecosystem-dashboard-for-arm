@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://docs.crossplane.io/latest/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.16
+        release_date: 2024/05/15
+        reference_content: https://blog.crossplane.io/crossplane-v1-16/
+        rationale: This version introduced enhanced observability by enabling providers to export fine-grained metrics about managed resource operations. These metrics, integrated into the Upjet framework, allow for better monitoring and performance tuning.
 
 
 optional_hidden_info:

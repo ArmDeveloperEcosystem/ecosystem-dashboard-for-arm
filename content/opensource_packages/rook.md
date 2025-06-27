@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://rook.github.io/docs/rook/latest-release/Getting-Started/quickstart/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.15.8
+        release_date: 2025/01/17
+        reference_content: https://github.com/rook/rook/releases/tag/v1.15.8
+        rationale: This version fixed the build architecture for the s5cmd on arm platforms.
 
 
 optional_hidden_info:

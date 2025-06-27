@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://druid.apache.org/docs/latest/tutorials/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 27.0.0
+        release_date: 2023/08/11
+        reference_content: https://github.com/apache/druid/releases/tag/druid-27.0.0
+        rationale: This version added a new OSHI system monitor (OshiSysMonitor) to replace SysMonitor. The new monitor has a wider support for different machine architectures including ARM instances.
 
 optional_hidden_info:
     release_notes__supported_minimum:

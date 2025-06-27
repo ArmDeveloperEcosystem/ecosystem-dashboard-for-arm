@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://github.com/giampaolo/psutil/blob/master/INSTALL.rst#install-psutil
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 6.0.0
+        release_date: 2024/06/18
+        reference_content: https://github.com/giampaolo/psutil/blob/master/HISTORY.rst#600
+        rationale:  This version introduces official AArch64 Linux wheels on PyPI, significantly improving installation and usability for ARM-based Linux systems without requiring source builds.
 
 optional_hidden_info:
     release_notes__supported_minimum: 

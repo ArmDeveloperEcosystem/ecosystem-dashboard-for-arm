@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 22.0.0
+        release_date: 2024/04/17
+        reference_content: https://github.com/benoitc/gunicorn/releases/tag/22.0.0
+        rationale: This version introduces major HTTP parsing security improvements, fixing CVE-2024-1135 and blocking several request smuggling vectors. It refuses unsafe HTTP methods, headers, and transfer codings by default, breaking compatibility with some non-standard clients. The setup system migrates to pyproject.toml, worker liveness signaling uses utime, and support for Python 3.12 is added. Minimum supported Python version is now 3.7.
 
 optional_hidden_info:
     release_notes__supported_minimum:

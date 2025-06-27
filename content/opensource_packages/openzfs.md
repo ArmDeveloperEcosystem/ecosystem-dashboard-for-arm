@@ -17,10 +17,10 @@ optional_info:
         partner_content:
         official_docs: https://openzfs.github.io/openzfs-docs/Getting%20Started/Ubuntu/index.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.2.4
+        release_date: 2024/05/03
+        reference_content: https://github.com/openzfs/zfs/releases/tag/zfs-2.2.4
+        rationale: This version adds the BTI elf note to the AArch64 SHA2 assembly.
 
 
 optional_hidden_info:

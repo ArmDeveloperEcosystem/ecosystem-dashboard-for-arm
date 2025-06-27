@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://mariadb.com/kb/en/getting-installing-and-upgrading-mariadb/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 11.8.0
+        release_date: 2024/12/18
+        reference_content: https://mariadb.com/kb/en/mariadb-11-8-0-release-notes/
+        rationale: This release supports aarch64 SIMD instructions in mhnsw algorithm. However, version 11.8.0 is an alpha release, so consider switching to 11.8.1 for the stable functionality.
 
 
 optional_hidden_info:

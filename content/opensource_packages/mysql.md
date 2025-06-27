@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://www.percona.com/blog/comparing-graviton-arm-performance-to-intel-and-amd-for-mysql-part-2/
         official_docs: https://dev.mysql.com/doc/mysql-apt-repo-quick-guide/en/
     arm_recommended_minimum_version:
-        version_number: 
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 8.0.38
+        release_date: 2024/07/01
+        reference_content: https://dev.mysql.com/doc/relnotes/mysql/8.0/en/news-8-0-38.html
+        rationale: From this verson onwards, Linux aarch64 platform binaries are built using patchelf --page-size=65536 for compatibility with systems using either 4k or 64k for the page size.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://dev.mysql.com/doc/relnotes/mysql/8.0/en/news-8-0-23.html

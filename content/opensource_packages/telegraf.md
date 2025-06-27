@@ -17,10 +17,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/influxdata/telegraf/blob/master/docs/INSTALL_GUIDE.md
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.26.0
+        release_date: 2023/03/16
+        reference_content: https://www.influxdata.com/blog/release-announcement-telegraf-oss-1-26-0/
+        rationale: Linux builds are now statically built from this version.
 
 
 optional_hidden_info:

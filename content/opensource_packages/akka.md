@@ -19,9 +19,9 @@ optional_info:
         official_docs: https://doc.akka.io/docs/akka/current/typed/guide/index.html
     arm_recommended_minimum_version:
         version_number:
-        release_date:
-        reference_content:
-        rationale:
+        release_date: 
+        reference_content: 
+        rationale: 
 
 optional_hidden_info:
     release_notes__supported_minimum:

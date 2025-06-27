@@ -1,5 +1,5 @@
 # Software Ecosystem Dashboard for Arm
-The Software Ecosystem Dashboard for Arm is available at [https://www.arm.com/developer-hub/ecosystem-dashboard/](https://www.arm.com/developer-hub/ecosystem-dashboard/)
+The Software Ecosystem Dashboard for Arm is available at [https://developer.arm.com/ecosystem-dashboard/](https://developer.arm.com/ecosystem-dashboard/)
 
 This repository is maintained by Arm and contains the source files for the Arm Software Ecosystem Dashboard, providing information on software packages that work on Arm. 
 This data is sourced from Arm and third parties. While Arm uses reasonable efforts to keep this dashboard accurate, Arm does not warrant (express or implied) or provide any guarantee of data correctness due to the ever-evolving software landscape.  

@@ -2,7 +2,7 @@
 name: Flume
 category: Databases - Big-data
 description: Flume is a distributed, reliable, and available service for efficiently collecting, aggregating, and moving large amounts of log data.
-download_url: https://flume.apache.org/releases/index.html
+download_url: https://flume.apache.org/download.html
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.10.0
@@ -18,7 +18,7 @@ optional_info:
         partner_content:
         official_docs: https://flume.apache.org/releases/content/1.10.0/FlumeUserGuide.html
     arm_recommended_minimum_version:
-        version_number:
+        version_number: 
         release_date:
         reference_content:
         rationale:

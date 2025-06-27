@@ -19,7 +19,7 @@ optional_info:
         official_docs: https://docs.nats.io/running-a-nats-service/introduction/installation
     arm_recommended_minimum_version:
         version_number:
-        release_date:
+        release_date: 
         reference_content:
         rationale:
 

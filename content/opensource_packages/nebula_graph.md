@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://docs.nebula-graph.io/master/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 3.5.0
+        release_date: 2023/07/26
+        reference_content: https://www.nebula-graph.io/posts/nebulagraph-benchmark-3.5.0
+        rationale: NebulaGraph v3.5.0 introduced substantial performance enhancements, particularly for the FIND ALL PATH queries, which experienced improvements ranging from approximately 50% to 500% across varying depths, with some scenarios observing up to a 600% increase in performance for 1 to 5 hops. Additionally, the Match2HOP_count operation saw a performance boost of around 15%. While these optimizations are general and not explicitly targeted at Arm architectures, they are likely to benefit performance across all platforms, including Arm-based systems.
 
 
 optional_hidden_info:

@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://openebs.io/docs/quickstart-guide/installation
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 3.3.0
+        release_date: 2022/07/15
+        reference_content: https://github.com/openebs/openebs/releases/tag/v3.3.0
+        rationale: This release focuses on refactoring, maintenance, and critical bug fixes across several storage engines. Notable updates include ARM64 infrastructure support for Mayastor, improved logging and rate limiting in LocalPV, and Helm chart fixes for Jiva. The LocalPV Device and LVM components saw CRD updates, scheduler fixes, and dynamic client refactoring. Enhancements to NDM added better path filtering via custom udev rules.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/openebs/openebs/releases/tag/v2.3.0 

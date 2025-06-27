@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://amperecomputing.com/tuning-guides/DPDK-setup-and-tuning-guide
         official_docs: https://core.dpdk.org/doc/quick-start/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 23.03
+        release_date: 2023/03/31
+        reference_content: https://doc.dpdk.org/guides/rel_notes/release_23_03.html
+        rationale: This version adds power monitor and wake up API support with WFE/SVE instructions for the Arm architecture.
 
 
 optional_hidden_info:

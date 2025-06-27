@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://docs.devtron.ai/resources/graviton
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.6.2
+        release_date: 2022/10/13
+        reference_content: https://github.com/devtron-labs/devtron/releases/tag/v0.6.2
+        rationale: This release enhanced Devtron to work upon ARM based Kubernetes nodes.
 
 
 optional_hidden_info:
