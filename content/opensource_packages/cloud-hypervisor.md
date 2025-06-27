@@ -5,7 +5,7 @@ description: Cloud Hypervisor is an open-source Virtual Machine Monitor (VMM) wr
 download_url: https://github.com/cloud-hypervisor/cloud-hypervisor/releases
 works_on_arm: true
 supported_minimum_version: 
-    version_number: v18.0
+    version_number: 18.0
     release_date: 2021/09/09
 
 
@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://www.cloudhypervisor.org/docs/prologue/quick-start/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 46.0
+        release_date: 2025/05/24
+        reference_content: https://github.com/cloud-hypervisor/cloud-hypervisor/releases/tag/v46.0
+        rationale: This release contains experimental AArch64 support for MSHV hypervisor. It is now possible to start VMs on AArch64 platforms when using MSHV hypervisor.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/cloud-hypervisor/cloud-hypervisor/releases/tag/v18.0

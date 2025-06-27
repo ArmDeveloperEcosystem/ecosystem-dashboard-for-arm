@@ -23,7 +23,6 @@ optional_info:
         reference_content:
         rationale:
 
-
 optional_hidden_info:
     release_notes__supported_minimum: 
     release_notes__recommended_minimum: 

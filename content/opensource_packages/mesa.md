@@ -2,7 +2,7 @@
 name: Mesa
 category: Miscellaneous
 description: Mesa is an open-source library in Python, used for agent-based modeling, and is ideal for simulating complex systems and exploring emergent behaviors.
-download_url: https://pypi.org/project/Mesa/2.3.4/#files
+download_url: https://pypi.org/project/Mesa/#history
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.5

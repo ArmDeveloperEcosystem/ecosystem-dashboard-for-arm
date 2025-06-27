@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://projectcontour.io/getting-started/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.22.1
+        release_date: 2022/09/08
+        reference_content: https://github.com/projectcontour/contour/releases/tag/v1.22.1
+        rationale: This release updates Envoy to v1.23.1. This fixes an issue where the arm64 variant of the Envoy image was not built properly.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://hub.docker.com/layers/projectcontour/contour/v1.10.0/images/sha256-fefd6f921648c38ece476672f35c52cf8faac36347494401f6d2225254ae5e1d?context=explore

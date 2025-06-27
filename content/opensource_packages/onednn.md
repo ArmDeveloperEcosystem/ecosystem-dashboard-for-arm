@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://aws.amazon.com/blogs/machine-learning/run-machine-learning-inference-workloads-on-aws-graviton-based-instances-with-amazon-sagemaker/
         official_docs: https://uxlfoundation.github.io/oneDNN/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 3.7
+        release_date: 2025/02/19
+        reference_content: https://github.com/uxlfoundation/oneDNN/releases/tag/v3.7
+        rationale: This release delivers significant performance and usability improvements for AArch64-based processors. Performance enhancements include improved bf16 matrix multiplication (matmul) with fp32 destination using the Arm Compute Library (ACL), as well as better performance for bf16-to-fp32 reordering, bf16 reordering in general, and bf16 convolution operations via ACL. On the usability front, the release adds support for ACL’s ThreadpoolScheduler through thread_local configuration, fixes a memory inefficiency by enabling proper use of scratchpad memory in ACL matmuls, and makes the ACL matmul primitive thread-safe to support concurrent execution. Together, these changes enhance both computational throughput and multi-threaded execution efficiency on Arm-based platforms.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/oneapi-src/oneDNN/releases/tag/v1.5
