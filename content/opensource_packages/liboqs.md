@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/open-quantum-safe/liboqs/wiki/Platform-specific-notes-for-building-liboqs#benchmarking-on-armv8
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.13.0
+        release_date: 2025/04/17
+        reference_content: https://github.com/open-quantum-safe/liboqs/releases/tag/0.13.0
+        rationale: This version updates the default ML-KEM implementation to PQCP's mlkem-native, offering Portable C, AVX2, and AArch64 variants. These implementations are formally verified for memory safety (via CBMC) and functional correctness (via HOL-Light for AArch64). Additionally, support has been added for the public Ubuntu 24.04 ARM GitHub Actions runner.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/open-quantum-safe/liboqs/releases/tag/0.7.1
