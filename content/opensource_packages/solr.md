@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://solr.apache.org/guide/solr/latest/getting-started/solr-tutorial.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 9.7.0
+        release_date: 2024/09/09
+        reference_content: https://solr.apache.org/news.html
+        rationale: This version brings key performance improvements, including multithreaded search execution, Lucene 9.11.1 upgrade with Java 21 optimizations, and POSIX madvise support for better read-ahead on Linux. Reduced heap usage and improved async operation scaling further enhance efficiency on high-core-count systems. These improvements aren't specific to Linux/ARM64, but will definitely improve the performance on Arm based linux systems too.
 
 
 optional_hidden_info:
