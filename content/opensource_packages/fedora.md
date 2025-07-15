@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://fedoraproject.org/wiki/Architectures/ARM
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 42
+        release_date: 2025/04/09
+        reference_content: https://dl.fedoraproject.org/pub/fedora/linux/releases/42/Workstation/aarch64/iso/
+        rationale: Fedora Workstation 42 introduces official ISO images for Aarch64. This makes it easier to perform clean installations on Arm64 hardware, better suited for UEFI/Secure Boot, which is important for modern Arm servers/laptops, and more accessible for developers and users needing full installation control.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/28/Server/
