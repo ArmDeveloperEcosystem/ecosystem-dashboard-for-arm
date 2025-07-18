@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/openebs/mayastor/blob/develop/doc/build.md
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.5.0
+        release_date: 2023/12/18
+        reference_content: https://github.com/openebs/mayastor/releases/tag/v2.5.0
+        rationale: This version is the first to roll out official tar for kubectl-mayastor-aarch64-linux-musl.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/openebs/mayastor/releases/tag/v0.8.0

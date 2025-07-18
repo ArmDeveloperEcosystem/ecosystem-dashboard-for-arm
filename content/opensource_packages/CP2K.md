@@ -5,7 +5,7 @@ description: CP2K is an open-source quantum chemistry and molecular dynamics sof
 download_url: https://github.com/cp2k/cp2k/releases
 works_on_arm: true
 supported_minimum_version:
-    version_number: v8.2.0
+    version_number: 8.2.0
     release_date: 2021/05/28
 
 
@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/cp2k/cp2k/blob/master/INSTALL.md
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2023.1
+        release_date: 2023/01/01
+        reference_content: https://github.com/cp2k/cp2k/releases/tag/v2023.1
+        rationale: This version fixes regression test failures on the Arm (Aarch64) platform.
 
 
 optional_hidden_info:
