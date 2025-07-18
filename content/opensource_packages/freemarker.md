@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://freemarker.apache.org/docs/index.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.3.33
+        release_date: 2024/06/01
+        reference_content: https://freemarker.apache.org/docs/versions_2_3_33.html
+        rationale: This version optimized the string comparison using binary comparison over Unicode NFKC normalization, which improves template execution speed on all platforms. This isn't Arm-specific, but can benefit all Linux users on Arm.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://freemarker.apache.org/docs/versions_2_3_31.html

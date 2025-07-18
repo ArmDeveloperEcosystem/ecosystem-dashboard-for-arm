@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://adoptium.net/installation/linux/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 21
+        release_date: 2024/08/09
+        reference_content: https://adoptium.net/news/2024/08/adoptium-reproducible-verification-builds
+        rationale: Eclipse Temurin JDK 21+ releases are now fully reproducible for many platforms, including Linux Aarch64. This ensures nothing malicious or unexpected is embedded in the binaries. This is a major milestone for transparency, security, and trustworthiness, especially for environments like Linux/Arm64 where deterministic builds can reduce platform-specific bugs.
 
 optional_hidden_info:
     release_notes__supported_minimum:
