@@ -1,7 +1,7 @@
 ---
 name: Git
 category: DevOps
-description: Git is a distributed version control system that enables developers to efficiently track code changes, collaborate seamlessly, and revert to earlier versions when needed.
+description: Git is a distributed version control system that enables developers to track code changes, collaborate effectively, and manage project history.
 download_url: https://git-scm.com/downloads/linux
 works_on_arm: true
 supported_minimum_version:
