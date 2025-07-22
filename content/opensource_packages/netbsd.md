@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://www.netbsd.org/docs/guide/en/part-install.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 10.0
+        release_date: 2024/03/28
+        reference_content: https://www.netbsd.org/releases/formal-10/NetBSD-10.0.html
+        rationale: This version significantly improves performance and support for Arm/Aarch64 systems. The scheduler now better handles big.LITTLE cores, and Aarch64 I/O and networking performance has been greatly optimized. Cryptographic algorithms like AES and ChaCha now use CPU acceleration and constant-time execution for added security. Key Armv8-A features—PAN, PAC, and BTI—are now supported to strengthen memory safety and ROP protection. Linux binary compatibility is now available on Aarch64 via compat_linux(8). Virtualization support has been extended to VMware ESXi-Arm and Oracle Cloud. UEFI bootloader improvements and expanded device driver support further enhance the Arm user experience.
 
 
 optional_hidden_info:
