@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://python-zstandard.readthedocs.io/en/latest/
     arm_recommended_minimum_version:
-        version_number: 
-        release_date: 
-        reference_content:
-        rationale: 
+        version_number: 0.22.0
+        release_date: 2023/11/01
+        reference_content: https://github.com/indygreg/python-zstandard/releases/tag/0.22.0
+        rationale: Binary wheels for musllinux_1_1 x86_64 and Aarch64 are being built and published from this version. That means, Arm64 users on musl-based Linux distros (like Alpine) will now have much easier and faster installs of this Python package.
 
 
 optional_hidden_info:
