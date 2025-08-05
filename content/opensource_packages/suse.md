@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://documentation.suse.com/sles/15-SP5/
     arm_recommended_minimum_version:
-        version_number: 15 SP3
-        release_date: 2024/11/20
-        reference_content: https://www.suse.com/releasenotes/aarch64/SUSE-SLES/15-SP3/index.html
-        rationale: SUSE Linux Enterprise Server for Arm 15 SP3 adds a kernel flavor 64kb, offering a page size of 64 KiB and physical/virtual address size of 52 bits. Main purpose at this time is to allow for side-by-side benchmarking for High Performance Computing, Machine Learning and other Big Data use cases. Starting from 12 SP5, official Vagrant Boxes for SUSE Linux Enterprise Server x86-64 and AArch64 using the VirtualBox and libvirt providers have been released, and continued. 15 SP3 includes driver enablement for the AWS Graviton, Graviton2 System-on-Chip (SoC) chipsets, and more. 15 SP3 kernel updates the Arm Generic Interrupt Controller (GIC) driver irq-gic-v4 to prepare for upcoming chips with GIC version 4.1.
+        version_number: 15 SP5
+        release_date: 2025/07/18
+        reference_content: https://www.suse.com/c/simple-vm-management-on-ampere-infrastructure/
+        rationale: SUSE Virtualization 1.5 brings full GA support for VM management on Arm64-based Kubernetes clusters running on Ampere infrastructure. With SLES 15 SP5 as the underlying OS, users gain not only compatibility but also efficiency—thanks to its support for 64K kernel page sizes. This combination provides a high-performance foundation for virtualization on Arm64, making SUSE Virtualization 1.5 both production-ready and cloud-native friendly.
 
 optional_hidden_info:
     release_notes__supported_minimum:  https://www.suse.com/releasenotes/aarch64/SUSE-SLES/12-SP2/index.html
