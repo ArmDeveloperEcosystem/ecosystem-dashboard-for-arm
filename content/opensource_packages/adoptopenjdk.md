@@ -2,7 +2,7 @@
 name: AdoptOpenJDK
 category: Miscellaneous
 description: AdoptOpenJDK is an open-source project that provides prebuilt OpenJDK binaries for various platforms.
-download_url: https://github.com/AdoptOpenJDK/openjdk8-binaries/releases
+download_url: https://adoptium.net/temurin/releases
 works_on_arm: true
 supported_minimum_version: 
     version_number: jdk8u-2021-01-31-20-36
@@ -10,18 +10,18 @@ supported_minimum_version:
 
 
 optional_info:
-    homepage_url: https://github.com/AdoptOpenJDK
-    support_caveats: There are other versions of AdoptOpenJDK also i.e. AdoptOpenJDK11(jdk11u-2021-01-22-01-38), AdoptOpenJDK17(jdk-2020-12-22-07-39).
-    alternative_options: 
+    homepage_url: https://adoptium.net/
+    support_caveats: AdoptOpenJDK has transitioned to the Eclipse Foundation under the Adoptium project. Starting with the July 2021 releases, future builds are available from [Adoptium.net](https://adoptium.net/) under the new name Eclipse Temurin.
+    alternative_options:
     getting_started_resources:
         arm_content: 
         partner_content: 
-        official_docs: https://github.com/AdoptOpenJDK/openjdk-jdk8u/blob/master/README
+        official_docs: https://adoptium.net/docs
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 21
+        release_date: 2024/08/09
+        reference_content: https://adoptium.net/news/2024/08/adoptium-reproducible-verification-builds
+        rationale: Eclipse Temurin JDK 21+ releases are now fully reproducible for many platforms, including Linux AArch64. This ensures nothing malicious or unexpected is embedded in the binaries. This is a major milestone for transparency, security, and trustworthiness, especially for environments like Linux/Arm64 where deterministic builds can reduce platform-specific bugs.
 
 
 optional_hidden_info:
