@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/fraunhoferhhi/vvdec/wiki/Build
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 3.0.0
+        release_date: 2024/10/25
+        reference_content: https://github.com/fraunhoferhhi/vvdec/releases/tag/v3.0.0
+        rationale: This version ports (copied/adapted) SIMD-optimized routines from VVenC to support Arm architecture.
 
 
 optional_hidden_info:

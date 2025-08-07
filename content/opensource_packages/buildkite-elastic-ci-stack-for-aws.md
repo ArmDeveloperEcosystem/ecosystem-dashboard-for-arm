@@ -5,7 +5,7 @@ description: The Buildkite Elastic CI Stack for AWS is a CloudFormation stack th
 download_url: https://github.com/buildkite/elastic-ci-stack-for-aws/releases
 works_on_arm: true
 supported_minimum_version:
-    version_number: v5.1.0
+    version_number: 5.1.0
     release_date: 2020/12/11
 
 
@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://buildkite.com/docs/agent/v3/elastic-ci-aws
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 6.0.0
+        release_date: 2023/07/26 
+        reference_content: https://github.com/buildkite/elastic-ci-stack-for-aws/releases/tag/v6.0.0-beta1
+        rationale: This version adds support for running and building multi-platform docker images on Linux, including Arm64.
 
 
 optional_hidden_info:
