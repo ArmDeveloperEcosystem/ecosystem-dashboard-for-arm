@@ -2,7 +2,7 @@
 name: MOPAC (Molecular Orbital PACkage)
 category: HPC
 description: MOPAC (Molecular Orbital PACkage) is a computational chemistry tool for semi-empirical quantum calculations, enabling efficient modeling of molecular structures, reactions, and properties for both research and industrial use.
-download_url: https://github.com/openmopac/mopac/releases
+download_url: https://github.com/openmopac/mopac/tags
 works_on_arm: true
 supported_minimum_version:
     version_number: 22.0.4
@@ -16,16 +16,16 @@ optional_info:
     getting_started_resources:
         arm_content: 
         partner_content: 
-        official_docs: https://github.com/openmopac/mopac?tab=readme-ov-file#cmake
+        official_docs: https://github.com/openmopac/mopac#cmake
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 23.0.0
+        release_date: 2024/11/11
+        reference_content: https://github.com/openmopac/mopac/releases/tag/v23.0.0
+        rationale: In this iversion, Arm processor support was formalized by adopting OpenBLAS or vendor-provided BLAS libraries for Arm builds, delivering improved numerical performance compared to the x86-optimized Intel MKL previously used.
 
 optional_hidden_info:
     release_notes__supported_minimum: 
     release_notes__recommended_minimum:
-    other_info: Linux/ARM64 release notes are not available. Installation and testing are done using tar archive [22.0.4](https://github.com/openmopac/mopac/releases/tag/v22.0.4). 
+    other_info: Linux/Arm64 release notes are not available. Installation and testing are done using tar archive [22.0.4](https://github.com/openmopac/mopac/releases/tag/v22.0.4). 
 
 ---

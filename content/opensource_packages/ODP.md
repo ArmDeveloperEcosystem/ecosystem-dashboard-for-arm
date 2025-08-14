@@ -18,14 +18,14 @@ optional_info:
         partner_content:
         official_docs: https://opendataplane.org/index.php/services/get-started/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.42.1.0
+        release_date: 2023/10/23
+        reference_content: https://github.com/OpenDataPlane/odp/releases/tag/v1.42.1.0
+        rationale: In this version, the odp_cpu_cycles() function was optimized specifically for Arm’s AArch64 architecture by replacing the generic implementation with a direct read from the cntvct_el0 virtual counter register. This change significantly reduces the overhead of retrieving CPU cycle counts, delivering faster and more efficient timing operations on Arm servers.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/OpenDataPlane/odp/releases/tag/v1.28.0.0
     release_notes__recommended_minimum:
-    other_info: New enumerations for ARMv8.7-A, ARMv9.0-A, ARMv9.1-A, and ARMv9.2-A ISA versions were added in version 1.28.0.0. However, version 1.36.0.0 is the minimum version that successfully got built and tested on the neoverse N1. Before version 1.36.0.0, the build fails on both Linux/ARM64 and Linux/AMD64 platforms because HMAC_CTX_free is deprecated since OpenSSL 3.0.
+    other_info: New enumerations for ARMv8.7-A, ARMv9.0-A, ARMv9.1-A, and ARMv9.2-A ISA versions were added in version 1.28.0.0. However, version 1.36.0.0 is the minimum version that successfully got built and tested on the neoverse N1. Before version 1.36.0.0, the build fails on both Linux/Arm64 and Linux/Amd64 platforms because HMAC_CTX_free is deprecated since OpenSSL 3.0.
 
 ---
