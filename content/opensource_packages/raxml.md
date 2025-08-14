@@ -16,12 +16,12 @@ optional_info:
     getting_started_resources:
         arm_content: 
         partner_content: 
-        official_docs: https://github.com/stamatak/standard-RAxML?tab=readme-ov-file#quick-start-under-linux
+        official_docs: https://github.com/stamatak/standard-RAxML#quick-start-under-linux
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 8.2.13
+        release_date: 2023/10/04
+        reference_content: https://github.com/stamatak/standard-RAxML/releases/tag/v8.2.13
+        rationale: This version adds compatibility with Arm instruction set.
 
 optional_hidden_info:
     release_notes__supported_minimum: 
