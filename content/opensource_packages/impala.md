@@ -18,14 +18,14 @@ optional_info:
         partner_content: https://learn.microsoft.com/en-us/connectors/impala/
         official_docs: https://cwiki.apache.org/confluence/display/IMPALA/Building+Impala
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 4.5.0
+        release_date: 2025/05/07
+        reference_content: https://impala.apache.org/docs/changelog-4.5.0.html
+        rationale: This version addresses several critical issues impacting ARM-based builds and tests for Impala. It resolves failures in core unit tests like TestRuntimeFilters, DataStreamTestSlowServiceQueue, and TestStatestoredHA under ARM and UBSAN environments. A hanging issue in disk-file-test and a build failure on Rocky Linux 9 ARM are also fixed.
  
 optional_hidden_info:
     release_notes__supported_minimum: https://issues.apache.org/jira/browse/IMPALA-12353
     release_notes__recommended_minimum:
-    other_info: According to the [documentation](https://github.com/apache/impala?tab=readme-ov-file#supported-platforms), experimental support for Linux/ARM64 is introduced in version 4.0, but Jira ticket IMPALA-12353 confirms that the proper support is added in version 4.4.0.
+    other_info: According to the [documentation](https://github.com/apache/impala#supported-platforms), experimental support for Linux/ARM64 is introduced in version 4.0, but Jira ticket IMPALA-12353 confirms that the proper support is added in version 4.4.0.
 
 ---

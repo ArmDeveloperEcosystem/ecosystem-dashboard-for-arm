@@ -5,7 +5,7 @@ description: Weather Research and Forecasting (WRF) model is a numerical weather
 download_url: https://github.com/wrf-model/WRF/releases
 works_on_arm: true
 supported_minimum_version:
-    version_number: v4.2.2
+    version_number: 4.2.2
     release_date: 2021/01/15
 
 
@@ -18,10 +18,10 @@ optional_info:
         partner_content: https://aws.amazon.com/blogs/hpc/numerical-weather-prediction-on-aws-graviton2/
         official_docs: https://www.mmm.ucar.edu/models/wrf/support
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 4.7.0
+        release_date: 2025/04/25
+        reference_content: https://github.com/wrf-model/WRF/releases/tag/v4.7.0
+        rationale: This version introduces critical fix enabling successful DM (distributed memory) builds on AArch64 by correcting DMPARALLEL configuration in configure.defaults for both GCC and armclang.
 
 
 optional_hidden_info:

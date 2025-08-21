@@ -1,5 +1,5 @@
 ---
-name: opentelemetry-cpp
+name: Opentelemetry-cpp
 category: Monitoring/Observability
 description: C++ Client for observability framework & toolkit designed to create, manage telemetry data such as traces, metrics, and log.
 download_url: https://github.com/open-telemetry/opentelemetry-cpp/releases
@@ -18,15 +18,15 @@ optional_info:
         partner_content:
         official_docs: https://opentelemetry.io/docs/languages/cpp/getting-started/
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.18.0
+        release_date: 2024/11/26
+        reference_content: https://github.com/open-telemetry/opentelemetry-cpp/releases/tag/v1.18.0
+        rationale: This version improves how opentelemetry-cpp handles yield() on Arm64/Aarch64 platforms. This improves the multi-threading capabilities.
 
 
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: The Project don't build/test on arm64 in ci although arm64 support is present, Refer- https://github.com/open-telemetry/opentelemetry-cpp/discussions/2261.
+    other_info: The Project don't build/test on Arm64 in ci although arm64 support is present, Refer- https://github.com/open-telemetry/opentelemetry-cpp/discussions/2261.
 
 ---

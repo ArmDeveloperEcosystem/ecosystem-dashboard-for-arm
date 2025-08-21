@@ -16,12 +16,12 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://github.com/CircleCI-Public/circleci-cli?tab=readme-ov-file#getting-started
+        official_docs: https://github.com/CircleCI-Public/circleci-cli#getting-started
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.1.26786
+        release_date: 2023/05/16
+        reference_content: https://github.com/CircleCI-Public/circleci-cli/releases/tag/v0.1.26786
+        rationale: In this version, the CircleCI CLI installer has been updated to support downloading and installing prebuilt Arm64 binaries of the CLI.
 
 
 optional_hidden_info:

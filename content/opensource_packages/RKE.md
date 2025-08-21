@@ -1,6 +1,6 @@
 ---
 name: Rancher Kubernetes Engine (RKE)
-category: Miscellaneous
+category: Containers and Orchestration
 description: Rancher Kubernetes Engine (RKE) is a lightning-fast installer for kubernetes.
 download_url: https://github.com/rancher/rke/releases
 works_on_arm: true
@@ -11,12 +11,12 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://github.com/rancher/rke
-    support_caveats:
+    support_caveats: RKE is reaching EOL with the final release of version 1.8. It is recommended to migrate to RKE2. Kindly refer [here](https://github.com/rancher/rke#-important-notice-rke-end-of-life-announcement).
     alternative_options:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs: https://github.com/rancher/rke?tab=readme-ov-file#building
+        official_docs: https://github.com/rancher/rke#building
     arm_recommended_minimum_version:
         version_number:
         release_date:

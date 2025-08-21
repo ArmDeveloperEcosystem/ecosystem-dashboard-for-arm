@@ -1,7 +1,7 @@
 ---
-name: Longhorn
+name: Longhorn (Developed by Rancher, now an incubating project of CNCF)
 category: Storage
-description: Longhorn is a distributed block storage system for Kubernetes. Longhorn is cloud-native storage built using Kubernetes and container primitives.
+description: Longhorn is an open-source, distributed block storage system for Kubernetes, originally developed by Rancher Labs (now acquired by SUSE). It is now a Cloud Native Computing Foundation (CNCF) incubating project, providing a lightweight and reliable way to manage persistent storage for stateful applications.
 download_url: https://github.com/longhorn/longhorn/releases
 works_on_arm: true
 supported_minimum_version:
