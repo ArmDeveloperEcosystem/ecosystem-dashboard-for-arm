@@ -14,7 +14,9 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content: https://learn.arm.com/install-guides/kubectl/
-        partner_content: https://docs.oracle.com/en/learn/arm_oke_cluster_oci/index.html
+        partner_content:
+            - display_name: Oracle OCI
+              url: https://docs.oracle.com/en/learn/arm_oke_cluster_oci/index.html
         official_docs: https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/
     arm_recommended_minimum_version:
         version_number: 1.32.0

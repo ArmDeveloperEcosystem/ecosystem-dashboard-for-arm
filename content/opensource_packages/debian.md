@@ -5,28 +5,29 @@ description: Debian is an operating system and a distribution of Free Software.
 download_url: https://cdimage.debian.org/debian-cd/current/arm64/iso-cd/
 works_on_arm: true
 supported_minimum_version:
-    version_number: 8
-    release_date: 2018/06/23
-
-
+  version_number: 8
+  release_date: 2018/06/23
 optional_info:
-    homepage_url: https://www.debian.org/
-    support_caveats:
-    alternative_options:
-    getting_started_resources:
-        arm_content: https://community.arm.com/oss-platforms/w/docs/501/debian
-        partner_content: https://amperecomputing.com/tutorials/getting-started-on-azure-ampere-VMs-with-Debian-using-Terraform
-        official_docs: https://www.debian.org/releases/stable/arm64/ch02s01.en.html#idm186
-    arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
-
-
+  homepage_url: https://www.debian.org/
+  support_caveats: null
+  alternative_options: null
+  getting_started_resources:
+    arm_content: https://community.arm.com/oss-platforms/w/docs/501/debian
+    partner_content:
+      - display_name: Microsoft Azure
+        url: https://amperecomputing.com/tutorials/getting-started-on-azure-ampere-VMs-with-Debian-using-Terraform
+      - display_name: Amazon AWS
+        url: https://aws.amazon.com/blogs/aws/new-m6g-ec2-instances-powered-by-arm-based-aws-graviton2/
+      - display_name: Microsoft Azure
+        url: https://azure.microsoft.com/en-us/blog/azure-virtual-machines-with-ampere-altra-arm-based-processors-generally-available/
+    official_docs: https://www.debian.org/releases/stable/arm64/ch02s01.en.html#idm186
+  arm_recommended_minimum_version:
+    version_number: null
+    release_date: null
+    reference_content: null
+    rationale: null
 optional_hidden_info:
-    release_notes__supported_minimum: https://www.debian.org/releases/jessie/arm64/release-notes.en.txt
-    release_notes__recommended_minimum:
-    other_info:
-
+  release_notes__supported_minimum: https://www.debian.org/releases/jessie/arm64/release-notes.en.txt
+  release_notes__recommended_minimum: null
+  other_info: null
 ---

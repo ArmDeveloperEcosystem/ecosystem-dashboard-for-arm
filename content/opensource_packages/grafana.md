@@ -5,28 +5,25 @@ description: Grafana is an open-source analytics and interactive visualization w
 download_url: https://grafana.com/grafana/download
 works_on_arm: true
 supported_minimum_version:
-    version_number: 5.2.0
-    release_date: 2018/06/27
-
-
+  version_number: 5.2.0
+  release_date: 2018/06/27
 optional_info:
-    homepage_url: https://grafana.com/
-    support_caveats:
-    alternative_options:
-    getting_started_resources:
-        arm_content: 
-        partner_content: https://aws.amazon.com/grafana/
-        official_docs: https://grafana.com/grafana/download?platform=arm
-    arm_recommended_minimum_version:
-        version_number: 
-        release_date:
-        reference_content:
-        rationale:
-
+  homepage_url: https://grafana.com/
+  support_caveats: null
+  alternative_options: null
+  getting_started_resources:
+    arm_content: null
+    partner_content:
+      - display_name: Amazon AWS
+        url: https://aws.amazon.com/grafana/
+    official_docs: https://grafana.com/grafana/download?platform=arm
+  arm_recommended_minimum_version:
+    version_number: null
+    release_date: null
+    reference_content: null
+    rationale: null
 optional_hidden_info:
-    release_notes__supported_minimum: https://grafana.com/grafana/download/5.2.0?platform=arm
-    release_notes__recommended_minimum: 
-    other_info: 
-
+  release_notes__supported_minimum: https://grafana.com/grafana/download/5.2.0?platform=arm
+  release_notes__recommended_minimum: null
+  other_info: null
 ---
-
