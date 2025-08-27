@@ -1,7 +1,7 @@
 ---
 name: Heartbeat
 category: Monitoring/Observability
-description: Heartbeat is a lightweight agent that monitors the availability of services and endpoints, providing uptime data and response time metrics for Elasticsearch observability.
+description: Heartbeat, developed and maintained by Elastic, is a lightweight agent that monitors the availability of services and endpoints, providing uptime data and response time metrics for Elasticsearch observability.
 download_url: https://www.elastic.co/downloads/past-releases#heartbeat
 works_on_arm: true
 supported_minimum_version:
@@ -26,6 +26,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: Linux/ARM64 release notes are not available. The first Linux/ARM64 tar is available in version [7.12.0](https://www.elastic.co/downloads/past-releases/heartbeat-7-12-0)
+    other_info: Linux/Arm64 release notes are not available. The first Linux/Arm64 tar is available in version [7.12.0](https://www.elastic.co/downloads/past-releases/heartbeat-7-12-0)
 
 ---
