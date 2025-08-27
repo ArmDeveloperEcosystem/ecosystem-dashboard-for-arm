@@ -1,0 +1,31 @@
+---
+name: Kubewarden/audit-scanner - Developed by Rancher (now part of SUSE)
+category: Monitoring/Observability
+description: Audit-scanner is a Kubernetes component that continuously audits cluster resources against Kubewarden policies, flagging workloads that no longer comply with updated or newly deployed policies. Kubewarden, originally created by SUSE Rancher, is a Kubernetes Policy Engine.
+download_url: https://github.com/kubewarden/audit-scanner/pkgs/container/audit-scanner/versions
+works_on_arm: true
+supported_minimum_version:
+    version_number: 1.7.0
+    release_date: 2023/09/20
+ 
+ 
+optional_info:
+    homepage_url: https://github.com/kubewarden/audit-scanner
+    support_caveats:
+    alternative_options:
+    getting_started_resources:
+        arm_content:
+        partner_content:
+        official_docs: https://docs.kubewarden.io/explanations/audit-scanner
+    arm_recommended_minimum_version:
+        version_number:
+        release_date:
+        reference_content:
+        rationale:
+ 
+optional_hidden_info:
+    release_notes__supported_minimum:
+    release_notes__recommended_minimum:
+    other_info: There are no release notes for the initial Arm support. The first stable version, 1.7.0, publishes container images for Arm on the [GitHub registry](https://github.com/kubewarden/audit-scanner/pkgs/container/audit-scanner/129756899?tag=v1.7.0). 
+ 
+---
