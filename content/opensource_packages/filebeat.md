@@ -1,5 +1,5 @@
 ---
-name: Filebeat
+name: Filebeat (by Elastic)
 category: DevOps
 description: Filebeat is a lightweight log shipper that monitors and forwards log files to a central data processing system.
 download_url: https://www.elastic.co/downloads/past-releases#filebeat

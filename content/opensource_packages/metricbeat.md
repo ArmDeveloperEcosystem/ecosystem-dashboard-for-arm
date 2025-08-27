@@ -1,5 +1,5 @@
 ---
-name: Metricbeat
+name: Metricbeat (by Elastic)
 category: Monitoring/Observability
 description: Metricbeat is a lightweight shipper that collects and sends metrics from your systems and services. It helps monitor performance, utilization, and health metrics in real-time, aiding in proactive system management and troubleshooting.
 download_url: https://www.elastic.co/downloads/beats/metricbeat

@@ -1,5 +1,5 @@
 ---
-name: Logstash
+name: Logstash (by Elastic)
 category: Monitoring/Observability
 description: Logstash is a tool that helps to collect, parse, and improve log and event data from different sources. It also allows to manage data pipelines in real-time, providing insights and analysis for complex setups across multiple locations.
 download_url: https://www.elastic.co/downloads/logstash
