@@ -11,7 +11,7 @@ supported_minimum_version:
  
 optional_info:
     homepage_url: https://epinio.io/
-    support_caveats: The project was originally named Carrier.
+    support_caveats: Epinio was originally named Carrier during early development, so some legacy references or documentation may still use the former name.
     alternative_options:
     getting_started_resources:
         arm_content:
