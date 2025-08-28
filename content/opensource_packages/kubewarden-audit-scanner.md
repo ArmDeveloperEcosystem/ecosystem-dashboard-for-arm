@@ -26,6 +26,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: There are no release notes for the initial Arm support. The first stable version, 1.7.0, publishes container images for Arm on the [GitHub registry](https://github.com/kubewarden/audit-scanner/pkgs/container/audit-scanner/129756899?tag=v1.7.0). 
+    other_info: There are no release notes for the initial Arm support. The first stable version, 1.7.0, publishes container images for Arm on the [GitHub registry](https://github.com/kubewarden/audit-scanner/releases/tag/v1.7.0). 
  
 ---
