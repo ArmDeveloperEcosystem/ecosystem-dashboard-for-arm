@@ -1,5 +1,5 @@
 ---
-name: Kibana
+name: Kibana (by Elastic)
 category: Monitoring/Observability
 description: Kibana is a browser-based analytics and search dashboard for Elasticsearch.
 download_url: https://www.elastic.co/downloads/kibana

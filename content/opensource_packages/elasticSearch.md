@@ -1,5 +1,5 @@
 ---
-name: ElasticSearch
+name: ElasticSearch (by Elastic)
 category: Databases - noSQL
 description: Elasticsearch is a distributed, RESTful search engine optimized for speed and relevance on production-scale workloads. You can use Elasticsearch to perform real-time search over massive datasets for applications.
 download_url: https://www.elastic.co/downloads/elasticsearch
