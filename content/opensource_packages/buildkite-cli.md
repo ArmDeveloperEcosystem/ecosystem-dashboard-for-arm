@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: null
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/apn/introducing-the-aws-graviton-ready-program-for-graviton-enabled-software-products
     official_docs: https://buildkite.com/docs/cli/installation
   arm_recommended_minimum_version:
     version_number: null

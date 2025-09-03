@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: null
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/gametech/how-singularity-6s-palia-conquered-cross-regional-gaming-with-amazon-eks-and-karpenter/
     official_docs: https://docs.litmuschaos.io/docs/getting-started/installation#install-litmus-using-kubectl
   arm_recommended_minimum_version:
     version_number: null

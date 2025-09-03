@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: null
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/aws/new-m6g-ec2-instances-powered-by-arm-based-aws-graviton2/
     official_docs: https://docs.keydb.dev/blog/2020/03/02/blog-post/
   arm_recommended_minimum_version:
     version_number: 6.3.3

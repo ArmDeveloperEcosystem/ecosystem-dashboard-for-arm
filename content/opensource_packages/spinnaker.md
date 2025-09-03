@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: null
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/gametech/developers-guide-to-operate-game-servers-on-kubernetes-part-2/
     official_docs: https://spinnaker.io/docs/guides/spin/
   arm_recommended_minimum_version:
     version_number: null

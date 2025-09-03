@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/rancher-kubernetes-to-the-edge
     partner_content:
-      - display_name: Oracle OCI
-        url: https://blogs.oracle.com/cloud-infrastructure/post/announcing-rancher-support-for-kubernetes-clusters-running-on-arm
     official_docs: https://ranchermanager.docs.rancher.com/getting-started/installation-and-upgrade/installation-requirements
   arm_recommended_minimum_version:
     version_number: null

@@ -16,10 +16,6 @@ optional_info:
     partner_content:
       - display_name: Microsoft Azure
         url: https://amperecomputing.com/briefs/nginx-on-azure-brief
-      - display_name: Google GCP
-        url: https://cloud.google.com/kubernetes-engine/docs/how-to/autopilot-arm-workloads
-      - display_name: Oracle OCI
-        url: https://blogs.oracle.com/cloud-infrastructure/post/introducing-oci-ampere-a2-arm-cloud-compute
     official_docs: https://www.nginx.com/resources/wiki/start/
   arm_recommended_minimum_version:
     version_number: 1.20.1

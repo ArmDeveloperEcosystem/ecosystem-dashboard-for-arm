@@ -16,8 +16,6 @@ optional_info:
     partner_content:
       - display_name: Google GCP
         url: https://cloud.google.com/compute/docs/images/os-details#rocky_linux
-      - display_name: Google GCP
-        url: https://cloud.google.com/blog/products/compute/tau-t2a-is-first-compute-engine-vm-on-an-arm-chip
     official_docs: https://docs.rockylinux.org/guides/virtualization/vbox-rocky/?h=arm64#prerequisites
   arm_recommended_minimum_version:
     version_number: 9.0

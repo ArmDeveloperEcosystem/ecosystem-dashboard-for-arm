@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/postgresql/install_postgresql/
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/database/key-considerations-in-moving-to-graviton2-for-amazon-rds-and-amazon-aurora-databases/
     official_docs: https://www.postgresql.org/docs/
   arm_recommended_minimum_version:
     version_number: 16.0

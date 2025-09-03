@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: null
     partner_content:
-      - display_name: Amazon AWS
-        url: https://docs.aws.amazon.com/zh_cn/elasticbeanstalk/latest/relnotes/release-2024-03-28-al2.html
     official_docs: https://docs.docker.com/compose/install/
   arm_recommended_minimum_version:
     version_number: null

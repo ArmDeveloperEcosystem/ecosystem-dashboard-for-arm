@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: null
     partner_content:
-      - display_name: Microsoft Azure
-        url: https://learn.microsoft.com/en-us/java/openjdk/containers
     official_docs: https://adoptium.net/installation/linux/
   arm_recommended_minimum_version:
     version_number: 21

@@ -16,8 +16,6 @@ optional_info:
     partner_content:
       - display_name: Ampere
         url: https://amperecomputing.com/guides/dsb-sn-tuning-guide/dsb-sn-tuning-setting-up-kubernetes
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/containers/migrating-from-x86-to-aws-graviton-on-amazon-eks-using-karpenter/
     official_docs: https://helm.sh/docs/intro/quickstart/
   arm_recommended_minimum_version:
     version_number: null

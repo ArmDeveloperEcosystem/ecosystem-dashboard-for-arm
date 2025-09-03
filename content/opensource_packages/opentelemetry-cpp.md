@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: null
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/developer/tuning-apache-kafka-and-confluent-platform-for-graviton2-using-amazon-corretto/
     official_docs: https://opentelemetry.io/docs/languages/cpp/getting-started/
   arm_recommended_minimum_version:
     version_number: 1.18.0

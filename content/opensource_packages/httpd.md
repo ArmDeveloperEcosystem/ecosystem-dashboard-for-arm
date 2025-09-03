@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: null
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/devops/multi-architecture-container-builds-with-codecatalyst/
     official_docs: https://httpd.apache.org/docs/
   arm_recommended_minimum_version:
     version_number: null

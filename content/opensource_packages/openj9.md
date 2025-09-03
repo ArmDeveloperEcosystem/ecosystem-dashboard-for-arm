@@ -14,10 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/empowering-software-development-with-works-on-arm-initiative
     partner_content:
-      - display_name: Microsoft Azure
-        url: https://techcommunity.microsoft.com/blog/azurecompute/scaling-azure-arm64-vms-with-microsoft%E2%80%99s-build-of-openjdk-a-performance-testing-/3820435
-      - display_name: Oracle OCI
-        url: https://blogs.oracle.com/javamagazine/post/java-arm64-aarch64-development
     official_docs: https://adoptium.net/installation/
   arm_recommended_minimum_version:
     version_number: null

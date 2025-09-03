@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: https://community.arm.com/arm-community-blogs/b/ai-and-ml-blog/posts/how-to-build-scalable-next-best-action-solution-in-pure-sql-with-hivemall
     partner_content:
-      - display_name: Amazon AWS
-        url: https://docs.aws.amazon.com/emr/latest/EMR-Serverless-UserGuide/architecture.html
     official_docs: https://cwiki.apache.org/confluence/display/Hive/GettingStarted
   arm_recommended_minimum_version:
     version_number: 4.0.0

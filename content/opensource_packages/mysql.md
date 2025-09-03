@@ -14,10 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/mysql/install_mysql/
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/aws/new-amazon-rds-on-graviton2-processors/
-      - display_name: Oracle OCI
-        url: https://blogs.oracle.com/developers/post/how-to-migrate-to-ampere-on-oke-with-heterogeneous-kubernetes-clusters
     official_docs: https://dev.mysql.com/doc/mysql-apt-repo-quick-guide/en/
   arm_recommended_minimum_version:
     version_number: 8.0.38

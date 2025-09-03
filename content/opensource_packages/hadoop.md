@@ -16,8 +16,6 @@ optional_info:
     partner_content:
       - display_name: Ampere
         url: https://amperecomputing.com/tuning-guides/hadoop-tuning-guide-on-bare-metal
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/compute/aws-compute-optimizer-supports-aws-graviton-migration-guidance/
     official_docs: https://hadoop.apache.org/docs/current/
   arm_recommended_minimum_version:
     version_number: 3.3.6
