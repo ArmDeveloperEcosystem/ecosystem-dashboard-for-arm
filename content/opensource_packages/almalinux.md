@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://wiki.almalinux.org/documentation/installation-guide.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 10
+        release_date: 2025/05/27
+        reference_content: https://almalinux.org/blog/2025-05-27-welcoming-almalinux-10/
+        rationale: This version introduces Secure Boot support for Arm platforms, strengthening trusted boot in both bare-metal and virtualized environments. Installation ISOs, cloud, container, and live images are available for Arm64 (Aarch64) alongside other architectures, ensuring compatibility across modern workloads.
 
 
 optional_hidden_info:

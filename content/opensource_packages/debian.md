@@ -22,10 +22,10 @@ optional_info:
         url: https://azure.microsoft.com/en-us/blog/azure-virtual-machines-with-ampere-altra-arm-based-processors-generally-available/
     official_docs: https://www.debian.org/releases/stable/arm64/ch02s01.en.html#idm186
   arm_recommended_minimum_version:
-    version_number: null
-    release_date: null
-    reference_content: null
-    rationale: null
+    version_number: Debian 13 Trixie
+    release_date: 2025/08/09
+    reference_content: https://www.debian.org/News/2025/20250809
+    rationale: This release integrates Linux kernel 6.12 LTS, GCC 14.2, and glibc 2.41, delivering improved stability and performance for Arm platforms. Optimized Arm64 cloud images are published for Amazon EC2, OpenStack, PlainVM, and GenericCloud, providing cloud-init integration and fast startup.
 optional_hidden_info:
   release_notes__supported_minimum: https://www.debian.org/releases/jessie/arm64/release-notes.en.txt
   release_notes__recommended_minimum: null
