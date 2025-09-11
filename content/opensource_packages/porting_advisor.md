@@ -15,7 +15,9 @@ optional_info:
     alternative_options: 
     getting_started_resources:
         arm_content: https://learn.arm.com/install-guides/porting-advisor/
-        partner_content: 
+        partner_content:
+          - display_name: Amazon AWS
+            url: https://aws.amazon.com/blogs/compute/using-porting-advisor-for-graviton/
         official_docs: https://github.com/arm-hpc/porting-advisor/blob/master/README.md
     arm_recommended_minimum_version:
         version_number: 

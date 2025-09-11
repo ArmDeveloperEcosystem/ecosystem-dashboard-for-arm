@@ -14,6 +14,8 @@ optional_info:
   getting_started_resources:
     arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/microsoft-azure-preview-now-available-for-arm-neoverse
     partner_content:
+      - display_name: Oracle OCI
+        url: https://blogs.oracle.com/javamagazine/post/java-arm64-aarch64-development
       - display_name: Alibaba Cloud
         url: https://www.alibabacloud.com/help/en/acr/use-cases/build-and-push-multi-schema-images-locally-to-container-mirroring-service
     official_docs: https://maven.apache.org/download.cgi#Installation

@@ -16,6 +16,8 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
+          - display_name: Oracle OCI
+            url: https://blogs.oracle.com/linux/post/announcing-the-release-of-oracle-linux-8-update-6
         official_docs: https://github.com/Perl/perl5?tab=readme-ov-file#installation
     arm_recommended_minimum_version:
         version_number:
