@@ -18,10 +18,10 @@ optional_info:
         partner_content: 
         official_docs: https://gitlab.inria.fr/mpfr/mpfr/-/blob/master/INSTALL?ref_type=heads
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale: 
+        version_number: 4.2.2
+        release_date: 2025/03/20
+        reference_content: https://www.mpfr.org/mpfr-4.2.2/
+        rationale: This version has been successfully built and validated on multiple Arm64 platforms, including Apple Darwin (clang 14.0.0), Linux (GCC 8.5.0 / 14.2.0, Clang 19.1.7 via Termux/Android, and tcc), as well as Linux-musl (GCC 14.2.0). This confirms stable Arm64 support across diverse toolchains and environments.
 
 optional_hidden_info:
     release_notes__supported_minimum: 

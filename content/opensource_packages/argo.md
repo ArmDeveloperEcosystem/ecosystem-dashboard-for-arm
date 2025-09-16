@@ -15,7 +15,7 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content:
-        partner_content: https://cloudbase.it/bare-metal-kubernetes-on-mixed-x64-and-arm64-part-2/
+        partner_content: 
         official_docs: https://argo-cd.readthedocs.io/en/stable/getting_started/
     arm_recommended_minimum_version:
         version_number:

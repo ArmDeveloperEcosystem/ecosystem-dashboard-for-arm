@@ -6,19 +6,17 @@ description: CircleCI is a continuous integration(CI) and continuous delivery(CD
 product_url: https://circleci.com/
 works_on_arm: true
 release_date_on_arm: 2021/02/01
-
-
 optional_info:
-    homepage_url: https://circleci.com/
-    support_caveats:
-    alternative_options:
-    getting_started_resources:
-        arm_content: https://community.arm.com/arm-community-blogs/b/internet-of-things-blog/posts/new-arm-virtual-hardware
-        vendor_announcement: https://circleci.com/changelog/arm-resources-on-circleci/
-        official_docs: https://circleci.com/docs/using-arm/
-
-
+  homepage_url: https://circleci.com/
+  support_caveats: null
+  alternative_options: null
+  getting_started_resources:
+    arm_content: https://community.arm.com/arm-community-blogs/b/internet-of-things-blog/posts/new-arm-virtual-hardware
+    vendor_announcement: https://circleci.com/changelog/arm-resources-on-circleci/
+    official_docs: https://circleci.com/docs/using-arm/
+    partner_content:
+      - display_name: Amazon AWS
+        url: https://aws.amazon.com/blogs/apn/build-test-and-deploy-a-containerized-application-on-aws-graviton2-using-circleci/
 optional_hidden_info:
-    other_info: 
-
+  other_info: null
 ---

@@ -16,6 +16,8 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
+          - display_name: Amazon AWS
+            url: https://aws.amazon.com/blogs/compute/building-arm64-applications-on-aws-graviton2-using-the-aws-cdk-and-self-hosted-runners-for-github-actions/
         official_docs: https://flask.palletsprojects.com/en/3.0.x/installation/
     arm_recommended_minimum_version:
         version_number:
