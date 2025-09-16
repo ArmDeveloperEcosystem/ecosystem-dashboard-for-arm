@@ -10,7 +10,7 @@ supported_minimum_version:
  
  
 optional_info:
-    homepage_url: https://www.elastic.co/beats/auditbeat
+    homepage_url: https://www.elastic.co/docs/reference/beats/auditbeat
     support_caveats:
     alternative_options:
     getting_started_resources:
