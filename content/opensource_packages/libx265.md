@@ -23,7 +23,7 @@ optional_info:
     version_number: 3.6
     release_date: 2024/04/04
     reference_content: https://x265.readthedocs.io/en/master/releasenotes.html#version-3-6
-    rationale: In this version, Arm64 NEON optimizations were done which included several performance-critical C functions were optimizedfor Aarch64 using NEON instructions, resulting in an overall performance improvement around 20%.
+    rationale: This version introduced Arm64 NEON optimizations, with several performance-critical C functions rewritten for AArch64. These changes delivered ~20% overall performance improvement.
 optional_hidden_info:
   release_notes__supported_minimum: https://x265.readthedocs.io/en/master/releasenotes.html#version-3-4
   release_notes__recommended_minimum: null
