@@ -1,5 +1,5 @@
 ---
-name: Elastic Distribution of Opentelemetry (EDOT) .NET SDK
+name: Elastic Distribution of OpenTelemetry (EDOT) .NET SDK
 category: Monitoring/Observability
 description: Elastic Distribution of OpenTelemetry (EDOT) .NET SDK, a component of EDOT, is Elastic’s enhanced distribution of the OpenTelemetry .NET SDK, preconfigured for seamless integration with Elastic Observability. It enables .NET applications to automatically capture and export traces, metrics, and logs using OTLP, while including Elastic-specific optimizations and early bug fixes for improved compatibility and performance.
 download_url: https://github.com/elastic/elastic-otel-dotnet/releases
@@ -11,7 +11,7 @@ supported_minimum_version:
  
 optional_info:
     homepage_url: https://www.elastic.co/docs/reference/opentelemetry/edot-sdks/dotnet
-    support_caveats: EDOT SDKs are available in multiple languages (Java, Node.js, PHP, etc.). Please visit [here](https://www.elastic.co/docs/reference/opentelemetry/edot-sdks/#supported-languages) for more information.
+    support_caveats: EDOT SDKs are available in multiple languages (Java, Node.js, PHP, etc.). See https://www.elastic.co/docs/reference/opentelemetry/edot-sdks/#supported-languages for details.
     alternative_options:
     getting_started_resources:
         arm_content:
