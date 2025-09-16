@@ -1,7 +1,7 @@
 ---
 name: Elastic Agent
 category: Monitoring/Observability
-description: Elastic Agent is a simple tool that gathers and sends data to the Elastic Stack, making it easier to monitor and manage the systems. It helps collect logs, metrics, and security information in real-time.
+description: Elastic Agent, developed by Elastic, is a simple tool that gathers and sends data to the Elastic Stack, making it easier to monitor and manage the systems. It helps collect logs, metrics, and security information in real-time.
 download_url: https://www.elastic.co/downloads/elastic-agent
 works_on_arm: true
 supported_minimum_version:

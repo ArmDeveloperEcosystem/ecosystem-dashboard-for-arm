@@ -1,7 +1,7 @@
 ---
 name: Heartbeat
 category: Monitoring/Observability
-description: Heartbeat is a lightweight agent that monitors the availability of services and endpoints, providing uptime data and response time metrics for Elasticsearch observability.
+description: Heartbeat, developed and maintained by Elastic, is a lightweight agent that monitors the availability of services and endpoints, providing uptime data and response time metrics for Elasticsearch observability.
 download_url: https://www.elastic.co/downloads/past-releases#heartbeat
 works_on_arm: true
 supported_minimum_version:
