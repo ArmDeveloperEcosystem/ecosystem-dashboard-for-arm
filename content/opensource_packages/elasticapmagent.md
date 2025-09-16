@@ -1,7 +1,7 @@
 ---
 name: Elastic APM Python Agent
 category: Monitoring/Observability
-description: Elastic APM Python Agent, a component of Elastic Observability, automatically collects performance metrics, traces, and errors from the python applications and sends them to Elastic APM server for observability.
+description: Elastic APM Python Agent, a component of Elastic Observability, automatically collects performance metrics, traces, and errors from Python applications and sends them to the Elastic APM Server for centralized observability.
 download_url: https://pypi.org/project/elastic-apm/#history
 works_on_arm: true
 supported_minimum_version:
