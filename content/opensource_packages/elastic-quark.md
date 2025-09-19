@@ -1,7 +1,7 @@
 ---
 name: Elastic Quark
 category: Miscellaneous
-description: Quark is a Linux library (used within Elastic projects) that provides a unified API to capture and aggregate process events like fork, exec, and exit, ensuring ordered, buffered, and system-wide monitoring.
+description: Quark is a Linux library (used within Elastic projects) that provides a unified API to capture and aggregate process events such as fork, exec, and exit, ensuring ordered, buffered, and system-wide monitoring.
 download_url: https://github.com/elastic/quark/releases
 works_on_arm: true
 supported_minimum_version:
