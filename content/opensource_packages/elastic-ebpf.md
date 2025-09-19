@@ -1,7 +1,7 @@
 ---
 name: Elastic eBPF
 category: Security applications
-description: Elastic eBPF (Elastic Endpoint Security – Linux) provides eBPF-based kernel code and userspace tools for Elastic Endpoint Security on Linux, enabling event sourcing (process/file monitoring) and host isolation.
+description: Elastic eBPF (Elastic Endpoint Security – Linux) provides eBPF-based kernel code and userspace tools for Elastic Endpoint Security on Linux, enabling event sourcing such as process and file monitoring, along with host isolation.
 download_url: https://github.com/elastic/ebpf/releases
 works_on_arm: true
 supported_minimum_version:
