@@ -1,7 +1,7 @@
 ---
 name: Elastic Mockotlpserver
 category: Monitoring/Observability
-description: Elastic Mockotlpserver is a mock OTLP (OpenTelemetry Protocol) server and receiver from the Elastic OpenTelemetry Node.js (elastic-otel-node) project, designed for development and testing. It launches HTTP and gRPC servers on the default OTLP ports to capture telemetry data, print it in multiple formats, and enable assertions in test workflows. It can run standalone or from Node.js code, and is used within the opentelemetry-node package to validate instrumentation and telemetry pipelines.
+description: Elastic Mockotlpserver is a mock OpenTelemetry Protocol (OTLP) server from the Elastic OpenTelemetry Node.js project. It provides HTTP and gRPC servers to capture telemetry data, print it in multiple formats, and support assertions in test workflows.
 download_url: https://github.com/elastic/elastic-otel-node/pkgs/container/elastic-otel-node%2Fmockotlpserver
 works_on_arm: true
 supported_minimum_version:
@@ -26,6 +26,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: There are no release notes for the initial Linux/Arm64 support. Docker images for Linux/Arm64 are available from version 0.6.2 onwards. Please see [this](https://github.com/elastic/elastic-otel-node/pkgs/container/elastic-otel-node%2Fmockotlpserver/325115510?tag=0.6.2).
+    other_info: Elastic Mockotlpserver can run standalone or from Node.js code. It is primarily used within the opentelemetry-node package to validate instrumentation and telemetry pipelines. There are no release notes for the initial Linux/Arm64 support. Docker images for Linux/Arm64 are available from version 0.6.2 onwards. See [this release](https://github.com/elastic/elastic-otel-node/pkgs/container/elastic-otel-node%2Fmockotlpserver/325115510?tag=0.6.2).
  
 ---
