@@ -26,6 +26,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: The release notes for the initial Linux/Arm64 support isn't available. However, version 0.9.1 started releasing Linux/Arm64 artifacts at GitHub.
+    other_info: The release notes for the initial Linux/Arm64 support are not available. However, version 0.9.1 started releasing Linux/Arm64 artifacts at GitHub.
  
 ---
