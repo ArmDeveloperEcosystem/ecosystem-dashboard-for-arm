@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: https://learn.arm.com/install-guides/gcc/native/
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/containers/eks-on-graviton-generally-available/
       - display_name: Oracle OCI
         url: https://blogs.oracle.com/linux/post/building-aarch64-linux-kernel-ol8
     official_docs: https://gcc.gnu.org/onlinedocs/gcc/AArch64-Options.html

@@ -16,8 +16,6 @@ optional_info:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/alps/modernizing-platform-management-hilti-groups-approach-to-improving-kubernetes-multicluster-operations/
-      - display_name: Oracle OCI
-        url: https://blogs.oracle.com/developers/post/cncf-reports-arm-credit-use-up-precipitously
     official_docs: https://docs.crossplane.io/latest/
   arm_recommended_minimum_version:
     version_number: 1.16

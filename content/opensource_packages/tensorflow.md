@@ -16,8 +16,6 @@ optional_info:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/machine-learning/run-machine-learning-inference-workloads-on-aws-graviton-based-instances-with-amazon-sagemaker/
-      - display_name: Google GCP
-        url: https://cloud.google.com/blog/products/compute/introducing-googles-new-arm-based-cpu
     official_docs: https://www.tensorflow.org/lite/guide/build_arm
   arm_recommended_minimum_version:
     version_number: 2.18.0

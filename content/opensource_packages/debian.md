@@ -14,12 +14,8 @@ optional_info:
   getting_started_resources:
     arm_content: https://community.arm.com/oss-platforms/w/docs/501/debian
     partner_content:
-      - display_name: Microsoft Azure
+      - display_name: Ampere
         url: https://amperecomputing.com/tutorials/getting-started-on-azure-ampere-VMs-with-Debian-using-Terraform
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/aws/new-m6g-ec2-instances-powered-by-arm-based-aws-graviton2/
-      - display_name: Microsoft Azure
-        url: https://azure.microsoft.com/en-us/blog/azure-virtual-machines-with-ampere-altra-arm-based-processors-generally-available/
     official_docs: https://www.debian.org/releases/stable/arm64/ch02s01.en.html#idm186
   arm_recommended_minimum_version:
     version_number: Debian 13 Trixie

@@ -14,10 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/spotlight-on-the-linux-software-ecosystem---the-fedora-project
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/developer/aws-cli-v2-now-available-for-linux-arm/
-      - display_name: Google GCP
-        url: https://cloud.google.com/compute/docs/images/os-details#fedora_coreos
     official_docs: https://fedoraproject.org/wiki/Architectures/ARM
   arm_recommended_minimum_version:
     version_number: 42

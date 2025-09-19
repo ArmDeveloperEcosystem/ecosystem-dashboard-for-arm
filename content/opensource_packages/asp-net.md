@@ -16,8 +16,6 @@ optional_info:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/dotnet/net-workflows-for-arm64-with-codecatalyst-part-1/
-      - display_name: Microsoft Azure
-        url: https://devblogs.microsoft.com/dotnet/improving-multiplatform-container-support/
     official_docs: https://learn.microsoft.com/en-us/aspnet/core/getting-started/?view=aspnetcore-8.0
   arm_recommended_minimum_version:
     version_number: 8.0.0

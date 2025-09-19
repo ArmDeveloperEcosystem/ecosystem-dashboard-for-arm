@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/clickhouse/
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/solutions/case-studies/clickhouse-case-study/
     official_docs: https://clickhouse.com/docs/en/development/build-cross-arm
   arm_recommended_minimum_version:
     version_number: v22.5.1.2079-stable

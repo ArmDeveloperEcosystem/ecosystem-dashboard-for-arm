@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: null
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/apn/new-relic-powers-sustainable-observability-with-aws/
     official_docs: https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/linux-installation/install-infrastructure-monitoring-agent-linux/
   arm_recommended_minimum_version:
     version_number: 1.52.0

@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: null
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/aws/new-graviton2-instance-types-c6g-r6g-and-their-d-variant/
     official_docs: https://www.freebsd.org/releases/11.0R/installation/
   arm_recommended_minimum_version:
     version_number: 14.0

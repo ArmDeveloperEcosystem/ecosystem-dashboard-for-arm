@@ -16,8 +16,6 @@ optional_info:
     partner_content:
       - display_name: Ampere
         url: https://amperecomputing.com/tuning-guides/mongoDB-tuning-guide
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/about-aws/whats-new/2021/11/better-performance-amazon-documentdb-mongodb-graviton2-instances/
     official_docs: https://www.mongodb.com/docs/manual/tutorial/install-mongodb-enterprise-on-ubuntu/
   arm_recommended_minimum_version:
     version_number: null

@@ -16,12 +16,6 @@ optional_info:
     partner_content:
       - display_name: Alibaba Cloud
         url: https://www.alibabacloud.com/blog/arm-container-applications-accelerating-development-and-testing_595802
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/containers/how-to-build-your-containers-for-arm-and-save-with-graviton-and-spot-instances-on-amazon-ecs/
-      - display_name: Microsoft Azure
-        url: https://devblogs.microsoft.com/dotnet/improving-multiplatform-container-support/
-      - display_name: Google GCP
-        url: https://cloud.google.com/dataflow/docs/guides/multi-architecture-container
       - display_name: Oracle OCI
         url: https://blogs.oracle.com/linux/post/oracle-container-runtime-for-docker-on-oracle-linux-for-arm
     official_docs: https://www.docker.com/blog/getting-started-with-docker-for-arm-on-linux/

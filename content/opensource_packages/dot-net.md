@@ -16,8 +16,6 @@ optional_info:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/dotnet/powering-net-8-with-aws-graviton3-benchmarks/
-      - display_name: Microsoft Azure
-        url: https://azure.microsoft.com/en-us/blog/azure-virtual-machines-with-ampere-altra-arm-based-processors-generally-available/
     official_docs: https://learn.microsoft.com/en-us/dotnet/core/install/linux-ubuntu
   arm_recommended_minimum_version:
     version_number: 8.0

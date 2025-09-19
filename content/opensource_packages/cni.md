@@ -16,8 +16,6 @@ optional_info:
     partner_content:
       - display_name: Linaro
         url: https://static.linaro.org/connect/lvc20/presentations/LVC20-115-0.pdf
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/containers/how-to-route-udp-traffic-into-kubernetes/
     official_docs: https://www.cni.dev/docs/
   arm_recommended_minimum_version:
     version_number: 1.2.0

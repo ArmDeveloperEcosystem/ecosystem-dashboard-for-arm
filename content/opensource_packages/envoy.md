@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/envoy/
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/fr/about-aws/whats-new/2021/11/aws-app-mesh-arm64-envoy-images/
     official_docs: https://www.envoyproxy.io/docs/envoy/latest/start/install#install-envoy-on-ubuntu
   arm_recommended_minimum_version:
     version_number: 1.30.0

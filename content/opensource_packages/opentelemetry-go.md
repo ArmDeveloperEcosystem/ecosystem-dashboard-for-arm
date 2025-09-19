@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: null
     partner_content:
-      - display_name: Oracle OCI
-        url: https://blogs.oracle.com/developers/post/cncf-reports-arm-credit-use-up-precipitously
     official_docs: https://opentelemetry.io/docs/languages/go/getting-started/
   arm_recommended_minimum_version:
     version_number: null

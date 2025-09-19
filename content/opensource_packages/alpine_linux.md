@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: https://learn.arm.com/learning-paths/laptops-and-desktops/wsl2/import/
     partner_content:
-      - display_name: Amazon AWS
-        url: https://aws.amazon.com/blogs/developer/net-5-on-aws/
     official_docs: https://docs.alpinelinux.org/user-handbook/0.1a/index.html
   arm_recommended_minimum_version:
     version_number: null

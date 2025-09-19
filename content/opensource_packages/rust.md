@@ -16,8 +16,6 @@ optional_info:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/devops/building-an-arm64-rust-development-environment-using-aws-graviton2-and-aws-cdk/
-      - display_name: Microsoft Azure
-        url: https://azure.microsoft.com/en-us/blog/azure-virtual-machines-with-ampere-altra-arm-based-processors-generally-available/
     official_docs: https://www.rust-lang.org/tools/install
   arm_recommended_minimum_version:
     version_number: null

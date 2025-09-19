@@ -16,8 +16,6 @@ optional_info:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/opensource/video-encoding-on-graviton-in-2025/
-      - display_name: Oracle OCI
-        url: https://blogs.oracle.com/cloud-infrastructure/post/containers-arm-oci
     official_docs: https://artifacts.videolan.org/x264/release-debian-aarch64/
   arm_recommended_minimum_version:
     version_number: null

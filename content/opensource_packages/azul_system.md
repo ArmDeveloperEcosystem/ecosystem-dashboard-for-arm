@@ -14,8 +14,6 @@ optional_info:
   getting_started_resources:
     arm_content: null
     partner_content:
-      - display_name: Oracle OCI
-        url: https://blogs.oracle.com/javamagazine/post/java-on-arm-processors-understanding-aarch64-vs-x86
     official_docs: https://docs.azul.com/core/
   arm_recommended_minimum_version:
     version_number: 17
