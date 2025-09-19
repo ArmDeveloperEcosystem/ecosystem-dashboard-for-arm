@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://docs.open-mpi.org/en/v5.0.x/installing-open-mpi/quickstart.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 5.0.4
+        release_date: 2024/07/19
+        reference_content: https://docs.open-mpi.org/en/v5.0.x/release-notes/changelog/v5.0.x.html#open-mpi-version-v5-0-4
+        rationale: In this version, support for Aarch64 OP component for for NEON and SVE ISA were added.
 
 
 optional_hidden_info:

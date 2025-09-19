@@ -18,10 +18,10 @@ optional_info:
         url: https://aws.amazon.com/blogs/ibm-redhat/installing-red-hat-openshift-on-aws-in-a-restricted-network-using-aws-secure-token-service/
     official_docs: https://docs.openshift.com/container-platform/4.9/installing/installing_sno/install-sno-installing-sno.html
   arm_recommended_minimum_version:
-    version_number: null
-    release_date: null
-    reference_content: null
-    rationale: null
+    version_number: 4.18
+    release_date: 2024/12/03
+    reference_content: https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/release_notes/ocp-4-18-release-notes#ocp-4-18-new-features-and-enhancements_release-notes
+    rationale: In this release, OpenShift Container Platform added support for ARM architecture on AWS user-provisioned infrastructure and on bare-metal installer-provisioned infrastructure.
 optional_hidden_info:
   release_notes__supported_minimum: https://docs.openshift.com/container-platform/4.11/release_notes/ocp-4-11-release-notes.html
   release_notes__recommended_minimum: null
