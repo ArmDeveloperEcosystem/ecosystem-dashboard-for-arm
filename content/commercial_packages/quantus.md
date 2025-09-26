@@ -2,7 +2,7 @@
 name: Cadence Quantus Extraction Solution
 vendor: Cadence
 category: EDA
-description: Cadence Quantus Extraction Solution is a foundry-certified parasitic extraction tool  that delivers faster, highly accurate RC extractions for both digital and transistor-level designs, ensuring efficient signoff and faster tapeout.
+description: Cadence Quantus Extraction Solution is a foundry-certified parasitic extraction tool that delivers faster, highly accurate RC extractions for both digital and transistor-level designs, ensuring efficient signoff and faster tapeout.
 product_url: https://www.cadence.com/en_US/home/tools/digital-design-and-signoff/silicon-signoff/quantus-extraction-solution.html
 works_on_arm: true
 release_date_on_arm: 2025/12/31
