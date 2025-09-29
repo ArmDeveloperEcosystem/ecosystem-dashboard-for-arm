@@ -10,7 +10,7 @@ release_date_on_arm: 2025/12/31
 
 optional_info:
     homepage_url: https://www.cadence.com/en_US/home/tools/digital-design-and-signoff/soc-implementation-and-floorplanning/innovus-implementation-system.html
-    support_caveats: Arm support is coming in 2025-Q4. For access to early releases, please contact arm-ecosystem@cadence.com
+    support_caveats: Arm64 support is planned for Q4 2025 according to Cadence’s platform roadmap. For early-access builds, contact arm-ecosystem@cadence.com.
     alternative_options:
     getting_started_resources:
         arm_content:
