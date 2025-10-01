@@ -18,10 +18,10 @@ optional_info:
         partner_content:
         official_docs: https://github.com/FyraLabs/submarine/tree/v0.1.0?tab=readme-ov-file#%EF%B8%8F-building
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.3.0
+        release_date: 2024/12/30
+        reference_content: https://github.com/FyraLabs/submarine/releases/tag/v0.3.0
+        rationale: This release adds cross-compilation for Arm64 on GitHub runners, indicating active efforts toward Arm64 compatibility and increased confidence in Linux/Arm64 support.
 
 optional_hidden_info:
     release_notes__supported_minimum:
