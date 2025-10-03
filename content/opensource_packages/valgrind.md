@@ -17,10 +17,10 @@ optional_info:
         arm_content: https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/valgrind-3-10-0-supports-64-bit-armv8
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 3.23.0
+        release_date: 2024/04/26
+        reference_content: https://valgrind.org/docs/manual/dist.news.html
+        rationale: In this version, support for FreeBSD and dotprod instructions (sdot/udot) were added for Arm64.
 
 optional_hidden_info:
     release_notes__supported_minimum:

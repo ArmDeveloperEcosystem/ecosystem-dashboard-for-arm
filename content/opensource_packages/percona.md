@@ -18,10 +18,10 @@ optional_info:
       - display_name: Google GCP
         url: https://cloud.google.com/database-migration/docs/mysql/migrate-with-physical-xtrabackup
   arm_recommended_minimum_version:
-    version_number: null
-    release_date: null
-    reference_content: null
-    rationale: null
+    version_number: 8.0.33-25
+    release_date: 2023/06/05
+    reference_content: https://docs.percona.com/percona-server/8.0/yum-repo.html
+    rationale: In this version, the RPM builds for RHEL8 and RHEL9 ARM packages with the Aarch64.rpm extension were released.
 optional_hidden_info:
   release_notes__supported_minimum: null
   release_notes__recommended_minimum: null

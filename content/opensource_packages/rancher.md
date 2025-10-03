@@ -1,15 +1,17 @@
 ---
-name: Rancher
+name: Rancher (acquired by SUSE)
 category: Containers and Orchestration
-description: Rancher is a complete software stack for teams adopting containers. It addresses the operational and security challenges of managing multiple Kubernetes clusters.
+description: Rancher is an open-source Kubernetes management platform that simplifies multi-cluster operations and empowers DevOps teams with integrated tools for containerized workloads. It is available in three editions - the free Rancher (community-supported), Rancher Prime (enterprise-grade with support and trusted registry access), and Rancher Prime Hosted (a fully managed premium service for streamlined operations).
 download_url: https://github.com/rancher/rancher/releases
 works_on_arm: true
 supported_minimum_version:
-  version_number: v2.5.8-rc15
-  release_date: 2021/04/30
+    version_number: 2.2.0
+    release_date: 2019/03/26
+
+
 optional_info:
   homepage_url: https://www.rancher.com/
-  support_caveats: null
+  support_caveats: Rancher has been acquired by SUSE in December 2020. Kindly refer [here](https://www.suse.com/news/suse-completes-rancher-acquisition/).
   alternative_options: null
   getting_started_resources:
     official_docs: https://ranchermanager.docs.rancher.com/getting-started/installation-and-upgrade/installation-requirements
@@ -21,7 +23,8 @@ optional_info:
     reference_content: null
     rationale: null
 optional_hidden_info:
-  release_notes__supported_minimum: https://github.com/rancher/rancher/releases/tag/v2.5.8-rc15
-  release_notes__recommended_minimum: null
-  other_info: null
+    release_notes__supported_minimum: https://github.com/rancher/rancher/releases/tag/v2.2.0
+    release_notes__recommended_minimum:
+    other_info: Experimental support has been added for Arm64 in version 2.2.0, Users can manage Arm64 clusters with Rancher. Not all Rancher features would work with Arm64 clusters.
+
 ---

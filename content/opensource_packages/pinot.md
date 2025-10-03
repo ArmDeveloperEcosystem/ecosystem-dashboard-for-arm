@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.2.0
+        release_date: 2024/08/20
+        reference_content: https://docs.pinot.apache.org/basics/releases/1.2.0
+        rationale: In this version, Netty arm64 dependencies were added.
 
 optional_hidden_info:
     release_notes__supported_minimum:

@@ -18,10 +18,10 @@ optional_info:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/industries/building-an-automotive-embedded-linux-image-for-edge-using-arm-graviton-yocto-project-soafee/
   arm_recommended_minimum_version:
-    version_number: null
-    release_date: null
-    reference_content: null
-    rationale: null
+    version_number: v5.0 (scarthgap)
+    release_date: 2024/04/01
+    reference_content: https://docs.yoctoproject.org/migration-guides/release-notes-5.0.html#new-features-enhancements-in-5-0
+    rationale: In this release, the new genericarm64 MACHINE was introduced to represent a 64-bit Arm SystemReady platform. For Armv9, redundant CRC/SVE tunes were dropped (now defaults in GCC), and new Arm tunes from GCC 13.2.0 were added. The default kernel was updated to 6.6 LTS, with support for genericarm64.
 optional_hidden_info:
   release_notes__supported_minimum: https://docs.yoctoproject.org/migration-guides/release-notes-4.0.html
   release_notes__recommended_minimum: null
