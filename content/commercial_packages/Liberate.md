@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.cadence.com/en_US/home/resources/datasheets/liberate-trio-characterization-suite-ds.html
         arm_content: https://community.arm.com/arm-community-blogs/b/servers-and-cloud-computing-blog/posts/arm-on-arm-cadence-characterization-in-the-aws-cloud
         vendor_announcement: https://community.cadence.com/cadence_blogs_8/b/di/posts/over-the-clouds-and-beyond-with-arm-based-graviton-and-cadence-liberate-trio
-        official_docs: https://www.cadence.com/en_US/home/resources/datasheets/liberate-trio-characterization-suite-ds.html
-
 optional_hidden_info:
     other_info:
 

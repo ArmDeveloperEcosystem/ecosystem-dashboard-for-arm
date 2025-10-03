@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: 
         official_docs: https://jfrog.com/help/r/jfrog-installation-setup-documentation/requirements-matrix
-
+        arm_content:
+        vendor_announcement:
 optional_hidden_info:
     other_info: Proof of Arm support is in this matrix - jfrog.com/help/r/jfrog-installation-setup-documentation/requirements-matrix. Support in this version here - https://jfrog.com/help/r/jfrog-release-information/distribution-2.23.0
 

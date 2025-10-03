@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.ansys.com/training-center/course-catalog/fluids/ansys-fluent-getting-started-basics
         arm_content:
         vendor_announcement: https://www.ansys.com/content/dam/it-solutions/platform-support/2024-r1/arm-processor-support-announcement-february-2024.pdf
-        official_docs: https://www.ansys.com/training-center/course-catalog/fluids/ansys-fluent-getting-started-basics
-
-
 optional_hidden_info:
     other_info:
 

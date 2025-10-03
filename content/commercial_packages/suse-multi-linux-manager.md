@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://documentation.suse.com/multi-linux-manager
         arm_content:
         vendor_announcement: https://www.suse.com/c/introducing-suse-manager-5-0/
-        official_docs: https://documentation.suse.com/multi-linux-manager
-
-
 optional_hidden_info:
     other_info: 
 

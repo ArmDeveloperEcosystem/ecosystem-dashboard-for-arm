@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.nginx.com/nginx/
         arm_content: https://www.arm.com/resources/white-paper/cost-optimize-nginx-with-amazon
         vendor_announcement: https://www.nginx.com/blog/nginx-plus-r5-released/#Other-Changes-in-NGINX&nbsp;Plus-R5
-        official_docs: https://docs.nginx.com/nginx/
-
-
 optional_hidden_info:
     other_info: The release date for version 5 with ARM64 support can be found [here](https://docs.nginx.com/nginx/releases/#nginxplus-release5-r5).
 

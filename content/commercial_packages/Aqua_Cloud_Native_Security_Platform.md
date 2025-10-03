@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:   
     getting_started_resources:
+        official_docs: https://www.aquasec.com/demo/
         arm_content:
         vendor_announcement: https://blog.aquasec.com/aqua-support-aws-graviton
-        official_docs: https://www.aquasec.com/demo/
-
-
 optional_hidden_info:
     other_info: 
 

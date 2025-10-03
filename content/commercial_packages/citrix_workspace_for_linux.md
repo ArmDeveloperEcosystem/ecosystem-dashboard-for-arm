@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.citrix.com/en-us/citrix-workspace-app-for-linux/downloads/citrix-workspace-app-for-linux-2305.pdf
         arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/kasm-remote-workspace-solutions-on-arm
         vendor_announcement: https://docs.citrix.com/en-us/citrix-workspace-app-for-linux/whats-new.html#:~:text=two%20virtual%20desktops-,Support%20for%20ARM64%20architecture,-Support%20for%20IPv6
-        official_docs: https://docs.citrix.com/en-us/citrix-workspace-app-for-linux/downloads/citrix-workspace-app-for-linux-2305.pdf
- 
- 
 optional_hidden_info:
     other_info:
  

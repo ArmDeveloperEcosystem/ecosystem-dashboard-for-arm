@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://buddy.works/docs/pipelines/introduction/creating-pipeline/pipeline-ui
         arm_content:
         vendor_announcement: https://buddy.works/blog/introducing-arm-runners
-        official_docs: https://buddy.works/docs/pipelines/introduction/creating-pipeline/pipeline-ui
-
-
 optional_hidden_info:
     other_info:
 

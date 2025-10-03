@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.arangodb.com/3.11/operations/installation/#linux
         arm_content:
         vendor_announcement: https://arangodb.com/news/arangodb-provides-graph-usability-at-scale-with-release-of-arangodb-3-10/
-        official_docs: https://docs.arangodb.com/3.11/operations/installation/#linux
-
-
 optional_hidden_info:
     other_info: 
 

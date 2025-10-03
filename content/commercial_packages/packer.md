@@ -13,11 +13,9 @@ optional_info:
     support_caveats: 
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: 
         official_docs: https://developer.hashicorp.com/packer/install
-
-
+        arm_content:
+        vendor_announcement:
 optional_hidden_info:
     other_info: The vendor announcement is unavailable, but they began releasing ARM64 binaries starting from version 1.0.1.
 

@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.cadence.com/en_US/home/resources/white-papers/revolution-by-evolution-getting-to-the-next-technology-breakthrough-in-analog-simulation-wp.html
         arm_content: https://community.arm.com/arm-community-blogs/b/high-performance-computing-blog/posts/aws-graviton3-improves-cadence-eda-tools-performance-for-arm
         vendor_announcement: https://community.cadence.com/cadence_blogs_8/b/cic/posts/spectre-24-1-release-is-now-available
-        official_docs: https://www.cadence.com/en_US/home/resources/white-papers/revolution-by-evolution-getting-to-the-next-technology-breakthrough-in-analog-simulation-wp.html
-
 optional_hidden_info:
     other_info:
 

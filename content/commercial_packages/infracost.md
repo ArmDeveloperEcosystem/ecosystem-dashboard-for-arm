@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://github.com/infracost/infracost/releases/tag/v0.9.18
         official_docs: https://www.infracost.io/docs/#1-install-infracost
-
-
+        arm_content:
+        vendor_announcement: https://github.com/infracost/infracost/releases/tag/v0.9.18
 optional_hidden_info:
     other_info: Releases on the official website directs to the GitHub release page. 
 

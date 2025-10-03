@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.cadence.com/en_US/home/multimedia.html/content/dam/cadence-www/global/en_US/videos/tools/system_design_verification/helium-virtual-hybrid-studio.mp4
         arm_content:
         vendor_announcement:
-        official_docs: https://www.cadence.com/en_US/home/multimedia.html/content/dam/cadence-www/global/en_US/videos/tools/system_design_verification/helium-virtual-hybrid-studio.mp4
-
-
 optional_hidden_info:
     other_info: 
 

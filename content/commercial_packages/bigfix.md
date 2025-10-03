@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://help.hcl-software.com/bigfix/landing/index.html
         arm_content:
         vendor_announcement: https://forum.bigfix.com/t/bigfix-10-0-patch-8-is-now-available/43749
-        official_docs: https://help.hcl-software.com/bigfix/landing/index.html
-
-
 optional_hidden_info:
     other_info: 
 

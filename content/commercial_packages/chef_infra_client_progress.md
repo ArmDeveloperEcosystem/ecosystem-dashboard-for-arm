@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.chef.io/quick_start/
         arm_content:
         vendor_announcement: https://www.chef.io/docs/cheflibraries/product-and-user-guides/chef-infra-client-16_product-guide.pdf?sfvrsn=6595b433_4
-        official_docs: https://docs.chef.io/quick_start/
-
 optional_hidden_info:
     other_info:
 

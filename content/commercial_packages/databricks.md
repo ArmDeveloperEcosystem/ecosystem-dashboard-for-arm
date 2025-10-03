@@ -12,10 +12,9 @@ optional_info:
     support_caveats: Support is listed for AWS Graviton instance types with some limitations. View all details [here.](https://docs.databricks.com/en/compute/configure.html#aws-graviton-instance-types)
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://www.anaconda.com/blog/anaconda-aws-graviton2
         official_docs: https://docs.anaconda.com/free/anaconda/install/index.html
-
+        arm_content:
+        vendor_announcement: https://www.anaconda.com/blog/anaconda-aws-graviton2
 optional_hidden_info:
     other_info:
 

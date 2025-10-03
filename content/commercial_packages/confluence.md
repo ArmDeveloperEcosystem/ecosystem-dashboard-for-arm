@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options: MediaWiki
     getting_started_resources:
+        official_docs: https://atlassian.github.io/data-center-helm-charts/containers/CONFLUENCE/
         arm_content:
         vendor_announcement: https://community.atlassian.com/t5/Data-Center-discussions/Atlassian-Data-Center-Container-Images-Now-on-ARM64/td-p/2731758
-        official_docs: https://atlassian.github.io/data-center-helm-charts/containers/CONFLUENCE/
-
-
 optional_hidden_info:
     other_info: 
 

@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/PagerDuty/automated-remediation-docs/blob/master/README.md
         arm_content:
         vendor_announcement: https://www.apkmirror.com/apk/pagerduty-inc/pagerduty/pagerduty-7-62-1-release/pagerduty-7-62-1-android-apk-download/#file
-        official_docs: https://github.com/PagerDuty/automated-remediation-docs/blob/master/README.md
-
 optional_hidden_info:
     other_info:
 

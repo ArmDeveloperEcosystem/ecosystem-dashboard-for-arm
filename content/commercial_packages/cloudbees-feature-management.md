@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: 
         official_docs: https://docs.cloudbees.com/docs/cloudbees-feature-management/latest/
-
+        arm_content:
+        vendor_announcement:
 optional_hidden_info:
     other_info: Maybe SDK source code which runs on any platform.
 

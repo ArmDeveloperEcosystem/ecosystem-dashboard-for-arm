@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.cisecurity.org/cis-hardened-images
         arm_content:
         vendor_announcement: https://www.cisecurity.org/insights/blog/new-hardened-vms-from-cis-graviton2-windows-2019-stig
-        official_docs: https://www.cisecurity.org/cis-hardened-images
-
-
 optional_hidden_info:
     other_info:
 

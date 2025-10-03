@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options: 
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://www.litespeedtech.com/products/litespeed-web-server/download
         official_docs: https://www.litespeedtech.com/docs/webserver/install
-
+        arm_content:
+        vendor_announcement: https://www.litespeedtech.com/products/litespeed-web-server/download
 optional_hidden_info:
     other_info: 
 ---

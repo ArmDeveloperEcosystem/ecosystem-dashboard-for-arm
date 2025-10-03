@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.modular.com/max/install
         arm_content:
         vendor_announcement: https://www.modular.com/blog/modular-partners-with-amazon-web-services-aws-to-bring-max-to-aws-services
-        official_docs: https://docs.modular.com/max/install
-
 optional_hidden_info:
     other_info: Also this announcement - www.modular.com/blog/announcing-max-developer-edition-preview
 

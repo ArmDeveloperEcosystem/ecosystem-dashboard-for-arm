@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://octopus.com/downloads/tentacle#linux
         arm_content:
         vendor_announcement: https://octopus.com/blog/tentacle-on-arm
-        official_docs: https://octopus.com/downloads/tentacle#linux
-
-
 optional_hidden_info:
     other_info:
 

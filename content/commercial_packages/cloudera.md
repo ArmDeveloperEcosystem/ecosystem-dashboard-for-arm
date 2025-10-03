@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.cloudera.com/data-engineering/cloud/enable-data-engineering/topics/cde-aws-graviton.html
         arm_content:
         vendor_announcement: https://docs.cloudera.com/data-engineering/cloud/release-notes/topics/cde-whats-new-1.22.html#pnavId1https://docs.cloudera.com/data-engineering/cloud/release-notes/topics/cde-whats-new-1.22.html#pnavId1
-        official_docs: https://docs.cloudera.com/data-engineering/cloud/enable-data-engineering/topics/cde-aws-graviton.html
-
-
 optional_hidden_info:
     other_info: 
 

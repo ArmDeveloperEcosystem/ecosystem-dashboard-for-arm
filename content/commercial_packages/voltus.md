@@ -13,11 +13,9 @@ optional_info:
     support_caveats: Arm support is coming in 2025-Q4. For access to early releases, please contact arm-ecosystem@cadence.com
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.cadence.com/en_US/home/resources/datasheets/voltus-ic-power-integrity-solution-gt-ds.html
         arm_content:
         vendor_announcement:
-        official_docs: https://www.cadence.com/en_US/home/resources/datasheets/voltus-ic-power-integrity-solution-gt-ds.html
-
-
 optional_hidden_info:
     other_info:
 

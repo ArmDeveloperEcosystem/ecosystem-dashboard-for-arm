@@ -12,11 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://access.redhat.com/documentation/en-us/openshift_container_platform/4.10/html/getting_started/index
         arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/software-innovations-with-red-hat-and-arm
         vendor_announcement: https://www.redhat.com/en/blog/introducing-red-hat-openshift-4.10
-        official_docs: https://access.redhat.com/documentation/en-us/openshift_container_platform/4.10/html/getting_started/index
-
-
 optional_hidden_info:
     other_info: The official arm64 release is prior to vendor announcement blog refer  https://access.redhat.com/errata/RHSA-2022:0056
 

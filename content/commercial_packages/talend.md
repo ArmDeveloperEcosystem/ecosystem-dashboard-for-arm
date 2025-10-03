@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://help.qlik.com/talend/en-US/patch-notes/8.0/r2022-11#anchor-3
         arm_content:
         vendor_announcement: https://help.qlik.com/talend/en-US/patch-notes/8.0/r2022-11
-        official_docs: https://help.qlik.com/talend/en-US/patch-notes/8.0/r2022-11#anchor-3
-
-
 optional_hidden_info:
     other_info: 
 

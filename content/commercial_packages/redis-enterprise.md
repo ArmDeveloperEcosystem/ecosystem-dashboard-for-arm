@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://redis.io/docs/latest/operate/rs/installing-upgrading/install/install-on-linux/
         arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/redis-on-aws-graviton2
         vendor_announcement: https://redis.io/docs/latest/operate/oss_and_stack/reference/arm/
-        official_docs: https://redis.io/docs/latest/operate/rs/installing-upgrading/install/install-on-linux/
-
 optional_hidden_info:
     other_info: The vendor announcement for Redis v4.0 includes its availability for Redis Enterprise. Kindly refer the official [blog](https://redis.io/blog/redis-4-0-availability-redis-enterprise/).
 

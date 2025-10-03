@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.azul.com/prime/prime-quick-start-apt
         arm_content:
         vendor_announcement: https://www.azul.com/newsroom/azul-platform-prime-now-supports-64-bit-arm-including-aws-graviton-processors/
-        official_docs: https://docs.azul.com/prime/prime-quick-start-apt
-
 optional_hidden_info:
     other_info: The support for ARM64 for Zing OpenJDK build was added from version 22.06.0.0 which was released on June 30, 2022. However the broader Prime product was announced later, see the vendor announcement note.
 

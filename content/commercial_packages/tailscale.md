@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://tailscale.com/kb/1017/install
         arm_content:
         vendor_announcement: https://tailscale.com/changelog#2021-11-19
-        official_docs: https://tailscale.com/kb/1017/install
-
-
 optional_hidden_info:
     other_info:
 

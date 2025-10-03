@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://help.sumologic.com/release-notes-collector/2022/12/31/#july-20-2022-19403-1
         official_docs: https://help.sumologic.com/docs/send-data/opentelemetry-collector/install-collector/linux/
-
-
+        arm_content:
+        vendor_announcement: https://help.sumologic.com/release-notes-collector/2022/12/31/#july-20-2022-19403-1
 optional_hidden_info:
     other_info: 
 

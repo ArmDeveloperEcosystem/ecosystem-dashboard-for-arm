@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://help.deepsecurity.trendmicro.com/20_0/on-premise/agent-install.html
         arm_content:
         vendor_announcement: https://help.deepsecurity.trendmicro.com/20_0/on-premise/release-notes-dsa.html
-        official_docs: https://help.deepsecurity.trendmicro.com/20_0/on-premise/agent-install.html
-
 optional_hidden_info:
     other_info:
 

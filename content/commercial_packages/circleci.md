@@ -11,9 +11,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://circleci.com/docs/using-arm/
     arm_content: https://community.arm.com/arm-community-blogs/b/internet-of-things-blog/posts/new-arm-virtual-hardware
     vendor_announcement: https://circleci.com/changelog/arm-resources-on-circleci/
-    official_docs: https://circleci.com/docs/using-arm/
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/apn/build-test-and-deploy-a-containerized-application-on-aws-graviton2-using-circleci/

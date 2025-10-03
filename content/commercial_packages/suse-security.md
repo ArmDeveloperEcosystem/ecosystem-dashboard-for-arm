@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://documentation.suse.com/en-us/cloudnative/security/
         arm_content:
         vendor_announcement: https://documentation.suse.com/cloudnative/security/5.4/en/5x.html#_5_3_0_february_2024
-        official_docs: https://documentation.suse.com/en-us/cloudnative/security/
-
-
 optional_hidden_info:
     other_info: 
 

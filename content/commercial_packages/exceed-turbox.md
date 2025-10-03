@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.opentext.com/file_source/OpenText/en_US/PDF/opentext-po-exceed-turbo-x-12-0-4-en.pdf
         arm_content:
         vendor_announcement: https://blogs.opentext.com/whats-new-in-opentext-exceed-turbox-12-0-4/#:~:text=available%20ETX%20servers.-,Other%20new%20features,-The%20ETX%20node
-        official_docs: https://www.opentext.com/file_source/OpenText/en_US/PDF/opentext-po-exceed-turbo-x-12-0-4-en.pdf
-
-
 optional_hidden_info:
     other_info:
 
