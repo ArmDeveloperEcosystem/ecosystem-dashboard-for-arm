@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://doc.traefik.io/traefik-enterprise/kb/release-notes/#v260-2022-03-10
         official_docs: https://doc.traefik.io/traefik/getting-started/quick-start/
-
+        arm_content:
+        vendor_announcement: https://doc.traefik.io/traefik-enterprise/kb/release-notes/#v260-2022-03-10
 optional_hidden_info:
     other_info:
 ---

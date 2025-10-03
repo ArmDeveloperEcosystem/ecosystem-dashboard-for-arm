@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.wallaroo.ai/wallaroo-platform-operations/wallaroo-platform-operations-install/
         arm_content:
         vendor_announcement: https://wallaroo.ai/wallaroo-ai-ampere-bring-low-cost-energy-efficient-ml/
-        official_docs: https://docs.wallaroo.ai/wallaroo-platform-operations/wallaroo-platform-operations-install/
-
 optional_hidden_info:
     other_info: For more details we can go through these release notes -   docs.wallaroo.ai/wallaroo-release-notes/wallaroo-release-20230300/          Uses Kubernetes based deployments. So it's supported on any cloud with Arm nodes
 

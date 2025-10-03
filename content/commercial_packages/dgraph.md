@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://dgraph.io/docs
         arm_content:
         vendor_announcement: https://discuss.dgraph.io/t/dgraph-release-v22-0-2-is-now-generally-available/18117
-        official_docs: https://dgraph.io/docs
-
-
 optional_hidden_info:
     other_info: 
 

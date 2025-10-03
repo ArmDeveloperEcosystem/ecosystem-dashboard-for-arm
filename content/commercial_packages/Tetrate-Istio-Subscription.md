@@ -12,11 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.tetrate.io/istio-subscription/installation/
         arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/deploying-tetrate-istio-distribution-for-arm-neoverse-based-aws-graviton-processors
         vendor_announcement: https://tetrate.io/blog/tetrate-adds-istio-and-envoy-support-for-arm-neoverse/
-        official_docs: https://docs.tetrate.io/istio-subscription/installation/
-
-
 optional_hidden_info:
     other_info:
 

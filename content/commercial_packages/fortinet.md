@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.fortinet.com/document/fortigate-public-cloud/7.4.0/azure-administration-guide/468935/deploying-fortigate-vm-arm64-from-a-vhd-image-file
         arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/fortigate-on-aws-gravtion
         vendor_announcement: https://docs.fortinet.com/document/fortigate/7.0.0/new-features/564436/fortigate-vm-on-kvm-running-arm-processors-7-0-1
-        official_docs: https://docs.fortinet.com/document/fortigate-public-cloud/7.4.0/azure-administration-guide/468935/deploying-fortigate-vm-arm64-from-a-vhd-image-file
-
 optional_hidden_info:
     other_info:
 ---

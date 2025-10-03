@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://yellowbrick.com/blog/yellowbrick-engineering/introduction-to-our-engineering-blog/
         official_docs: https://docs.yellowbrick.com/6.9.3/getting_started/getting_started_home.html
-
+        arm_content:
+        vendor_announcement: https://yellowbrick.com/blog/yellowbrick-engineering/introduction-to-our-engineering-blog/
 optional_hidden_info:
     other_info:
 

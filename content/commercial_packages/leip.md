@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://leipdocs.latentai.io/home/content/guides/getting-started-with-leip-ami/
         arm_content:
         vendor_announcement: https://latentai.com/blog/leip-optimize/
-        official_docs: https://leipdocs.latentai.io/home/content/guides/getting-started-with-leip-ami/
- 
- 
 optional_hidden_info:
     other_info:
  

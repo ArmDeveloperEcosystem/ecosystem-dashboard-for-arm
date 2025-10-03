@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.apps.rancher.io/
         arm_content:
         vendor_announcement: https://www.suse.com/c/simple-vm-management-on-ampere-infrastructure/
-        official_docs: https://docs.apps.rancher.io/
-
-
 optional_hidden_info:
     other_info: 
 

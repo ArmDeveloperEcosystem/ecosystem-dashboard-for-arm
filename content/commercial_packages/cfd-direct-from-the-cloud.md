@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://cfd.direct/cloud/cfddfc-arm-aws-c6g/
         official_docs: https://cfd.direct/cloud/aws/
-
+        arm_content:
+        vendor_announcement: https://cfd.direct/cloud/cfddfc-arm-aws-c6g/
 optional_hidden_info:
     other_info:
 

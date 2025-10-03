@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://goteleport.com/docs/installation/
         arm_content:
         vendor_announcement: https://goteleport.com/docs/changelog/#438
-        official_docs: https://goteleport.com/docs/installation/
-
-
 optional_hidden_info:
     other_info: Version 4.3.8 adds automatic arm64 builds of Teleport to the download portal. [This](https://github.com/gravitational/teleport/pull/4658/files) is the related PR. [Here](https://github.com/gravitational/teleport/releases/tag/v4.3.8) are the github release notes with the release date. However, we can download binaries for AArch64 upto minimum version 12.0.1 only. Below that, releases are not available on the official website. Kindly consider the [install-links](https://goteleport.com/download/#install-links).
 

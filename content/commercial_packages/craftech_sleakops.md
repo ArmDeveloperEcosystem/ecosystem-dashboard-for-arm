@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options: Rancher
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: 
-        official_docs: https://docs.sleakops.com/ 
-
+        official_docs: https://docs.sleakops.com/
+        arm_content:
+        vendor_announcement:
 optional_hidden_info:
     other_info: Rancher is an open-source package that supports ARM64 and is an alternative to SleakOps.
 ---

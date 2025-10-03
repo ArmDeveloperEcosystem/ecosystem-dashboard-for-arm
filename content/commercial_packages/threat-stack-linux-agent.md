@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://clouddocs.f5.com/training/community/threat-stack/html/class1/Threat_Stack_Linux_Agent.html
         arm_content:
         vendor_announcement: https://www.f5.com/company/news/press-releases/arm-support-release
-        official_docs: https://clouddocs.f5.com/training/community/threat-stack/html/class1/Threat_Stack_Linux_Agent.html
-
-
 optional_hidden_info:
     other_info:
 

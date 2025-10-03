@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement:
         official_docs: https://docs.chronosphere.io/pipeline-install/linux/ubuntu-server-linux
-
-
+        arm_content:
+        vendor_announcement:
 optional_hidden_info:
     other_info: 
 

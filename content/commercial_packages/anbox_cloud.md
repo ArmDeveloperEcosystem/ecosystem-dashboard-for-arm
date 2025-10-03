@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://anbox-cloud.io/docs/tutorial/landing
         arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/canonical-android-anbox-cloud-on-arm
         vendor_announcement: https://ubuntu.com/blog/canonical-achieves-aws-graviton-ready-designation
-        official_docs: https://anbox-cloud.io/docs/tutorial/landing
-
 optional_hidden_info:
     other_info:
 ---

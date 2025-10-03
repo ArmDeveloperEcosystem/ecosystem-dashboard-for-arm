@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.sentinelone.com/platform/how-singularity-xdr-works/
         arm_content:
         vendor_announcement: https://www.sentinelone.com/press/sentinelone-announces-service-ready-designation-for-aws-graviton/
-        official_docs: https://www.sentinelone.com/platform/how-singularity-xdr-works/
-
-
 optional_hidden_info:
     other_info: Releases are not available on the official website. We probably have to sign in/log in to get access to the downloads page. However, the announcement for the Graviton support was made on 20/07/2022.
 

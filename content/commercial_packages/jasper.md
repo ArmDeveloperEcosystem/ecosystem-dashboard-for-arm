@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.cadence.com/en_US/home/tools/system-design-and-verification/formal-and-static-verification.html
         arm_content:
         vendor_announcement:
-        official_docs: https://www.cadence.com/en_US/home/tools/system-design-and-verification/formal-and-static-verification.html
-
-
 optional_hidden_info:
     other_info: 
 

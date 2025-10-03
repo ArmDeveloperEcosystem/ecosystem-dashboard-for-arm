@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://documentation.suse.com/en-us/cloudnative/storage/
         arm_content:
         vendor_announcement: https://www.suse.com/suse-longhorn/support-matrix/all-supported-versions/longhorn-v1-4-x/
-        official_docs: https://documentation.suse.com/en-us/cloudnative/storage/
-
-
 optional_hidden_info:
     other_info: 
 

@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://demoa.heimdalldata.com/docs/basics/install.html
         arm_content:
         vendor_announcement: https://www.heimdalldata.com/release-notes
-        official_docs: https://demoa.heimdalldata.com/docs/basics/install.html
-
 optional_hidden_info:
     other_info: Release notes for Heimdall Data version 22.05.23.1 state that "Add Graviton3 instances to AWS Marketplace offering". Kindly find it [here](https://www.heimdalldata.com/release-notes).
 ---

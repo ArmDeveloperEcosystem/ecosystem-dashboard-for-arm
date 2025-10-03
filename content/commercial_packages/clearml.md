@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://clear.ml/docs/latest/docs/
         arm_content:
         vendor_announcement:
-        official_docs: https://clear.ml/docs/latest/docs/
-
-
 optional_hidden_info:
     other_info: There is no vendor announcement for Linux/ARM64. ClearML was named [Trains](https://clear.ml/docs/latest/docs/release_notes/ver_0_16) before version 0.17.0. Trains has the minimum version [0.9](https://pypi.org/project/trains/0.9.0/#files) available on PyPi with none-any wheels, which can be installed on Neoverse N1. Kindly choose the [ClearML pricing plan](https://clear.ml/pricing) that suits you the best.
 

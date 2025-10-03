@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.ibm.com/docs/en/ibm-mq
         arm_content:
         vendor_announcement: https://www.ibm.com/docs/en/ibm-mq/9.3?topic=wnim9-whats-new-in-mq-933-multiplatforms-base-advanced-entitlement
-        official_docs: https://www.ibm.com/docs/en/ibm-mq
-
 optional_hidden_info:
     other_info:
 ---

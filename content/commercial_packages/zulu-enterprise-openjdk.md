@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://docs.azul.com/core/supported-platforms
         official_docs: https://docs.azul.com/core/install/debian
-
+        arm_content:
+        vendor_announcement: https://docs.azul.com/core/supported-platforms
 optional_hidden_info:
     other_info: The support for ARM64 was added from version 8 which was released on April 8, 2014.
 

@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.logicmonitor.com/support
         arm_content:
         vendor_announcement: https://www.logicmonitor.com/release-notes/v-167-release-notes
-        official_docs: https://www.logicmonitor.com/support
-
-
 optional_hidden_info:
     other_info: 
 

@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.crowdstrike.com/blog/tech-center/install-falcon-sensor-for-linux/
         arm_content:
         vendor_announcement: https://www.crowdstrike.com/blog/join-crowdstrike-at-aws-reinvent-2019/
-        official_docs: https://www.crowdstrike.com/blog/tech-center/install-falcon-sensor-for-linux/
-
-
 optional_hidden_info:
     other_info: Linux/ARM64 falcon supportive versions can be found on the FAQ page [here](https://www.crowdstrike.com/products/faq/), under the heading - What Linux versions does the falcon agent support.
 

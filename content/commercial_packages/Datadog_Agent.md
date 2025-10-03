@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://www.datadoghq.com/blog/datadog-arm-agent/
         official_docs: https://docs.datadoghq.com/getting_started/agent/
-
-
+        arm_content:
+        vendor_announcement: https://www.datadoghq.com/blog/datadog-arm-agent/
 optional_hidden_info:
     other_info: 
 

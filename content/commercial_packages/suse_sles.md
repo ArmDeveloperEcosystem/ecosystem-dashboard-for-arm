@@ -11,16 +11,16 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://documentation.suse.com/sles/15-SP4/html/SLES-all/cha-aarch64.html#
     arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/sustainable-infrastructure-with-suse-and-arm
     vendor_announcement: https://www.suse.com/releasenotes/aarch64/SUSE-SLES/12-SP2/index.html#Intro.New
-    official_docs: https://documentation.suse.com/sles/15-SP4/html/SLES-all/cha-aarch64.html#
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/aws/now-available-bare-metal-arm-based-ec2-instances
-      - display_name: Microsoft Azure
-        url: https://azure.microsoft.com/en-us/blog/azure-virtual-machines-with-ampere-altra-arm-based-processors-generally-available/
       - display_name: Google GCP
         url: https://cloud.google.com/compute/docs/images/os-details
+      - display_name: Microsoft Azure
+        url: https://azure.microsoft.com/en-us/blog/azure-virtual-machines-with-ampere-altra-arm-based-processors-generally-available/
 optional_hidden_info:
   other_info: null
 ---

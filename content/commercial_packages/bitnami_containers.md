@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://blog.bitnami.com/2023/02/bitnami-arm-containers-available-at.html
         official_docs: https://github.com/bitnami/containers/blob/main/README.md
-
+        arm_content:
+        vendor_announcement: https://blog.bitnami.com/2023/02/bitnami-arm-containers-available-at.html
 optional_hidden_info:
     other_info:
 ---

@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.blinkops.com/docs/integrations/uptycs
         arm_content:
         vendor_announcement: https://www.uptycs.com/blog/uptycs-now-supports-amazon-graviton
-        official_docs: https://docs.blinkops.com/docs/integrations/uptycs
-
 optional_hidden_info:
     other_info:
 

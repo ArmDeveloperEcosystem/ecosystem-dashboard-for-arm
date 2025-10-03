@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://www.chainguard.dev/unchained/building-wolfi-from-the-ground-up-and-announcing-arm64-support
         official_docs: https://edu.chainguard.dev/chainguard/chainguard-images/how-to-use/how-to-use-chainguard-images/
-
+        arm_content:
+        vendor_announcement: https://www.chainguard.dev/unchained/building-wolfi-from-the-ground-up-and-announcing-arm64-support
 optional_hidden_info:
     other_info:
 

@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options: Ray
     getting_started_resources:
+        official_docs:
         arm_content:
         vendor_announcement: https://www.anyscale.com/blog/announcing-ray-2-3-performance-improvements-new-features-and-new-platforms#support-for-arm-and-python-3.11
-        official_docs: 
-
-
 optional_hidden_info:
     other_info: Developers cannot use on their own, this is a SAAS offering. Questionable if it should be included, but keeping for now.
 

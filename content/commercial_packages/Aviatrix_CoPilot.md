@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.aviatrix.com/documentation/latest/index.html
         arm_content:
         vendor_announcement: https://docs.aviatrix.com/documentation/latest/release-notes/copilot-image-release-notes/copilot-image-release-notes.html#copilot-image-version-2-0-4-06-july-2022-aws-arm
-        official_docs: https://docs.aviatrix.com/documentation/latest/index.html
-
-
 optional_hidden_info:
     other_info:
 

@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://github.com/minio/minio/releases/tag/RELEASE.2017-01-25T03-14-52Z
         official_docs: https://min.io/docs/minio/linux/index.html
-
+        arm_content:
+        vendor_announcement: https://github.com/minio/minio/releases/tag/RELEASE.2017-01-25T03-14-52Z
 optional_hidden_info:
     other_info:
 ---

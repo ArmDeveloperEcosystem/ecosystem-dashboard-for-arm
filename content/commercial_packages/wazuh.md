@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://documentation.wazuh.com/current/getting-started/index.html
         arm_content:
         vendor_announcement: https://github.com/wazuh/wazuh/blob/master/CHANGELOG.md#v3130---2020-06-29
-        official_docs: https://documentation.wazuh.com/current/getting-started/index.html
-
-
 optional_hidden_info:
     other_info:
 

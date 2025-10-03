@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://learn.microsoft.com/en-us/azure/aks/create-node-pools#add-an-arm64-node-pool
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/aks/
         vendor_announcement: https://azure.microsoft.com/en-us/blog/now-in-preview-azure-virtual-machines-with-ampere-altra-armbased-processors/
-        official_docs: https://learn.microsoft.com/en-us/azure/aks/create-node-pools#add-an-arm64-node-pool
-
-
 optional_hidden_info:
     other_info:
 

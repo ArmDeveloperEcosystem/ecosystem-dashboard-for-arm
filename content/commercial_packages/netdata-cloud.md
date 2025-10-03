@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: 
         official_docs: https://learn.netdata.cloud/
-
+        arm_content:
+        vendor_announcement:
 optional_hidden_info:
     other_info: Arm support identified here - https://github.com/netdata/netdata/releases/tag/v1.32.0
 

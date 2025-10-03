@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://www.haproxy.com/documentation/haproxy-enterprise/release-notes/#version-2.4r1
         official_docs: https://www.haproxy.com/documentation/haproxy-enterprise/getting-started/installation/linux/
-
+        arm_content:
+        vendor_announcement: https://www.haproxy.com/documentation/haproxy-enterprise/release-notes/#version-2.4r1
 optional_hidden_info:
     other_info: https://www.haproxy.com/blog/haproxy-forwards-over-2-million-http-requests-per-second-on-a-single-aws-arm-instance
 ---
