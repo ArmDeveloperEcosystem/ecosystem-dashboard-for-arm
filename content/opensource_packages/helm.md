@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://helm.sh/docs/intro/quickstart/
+    arm_content:
     partner_content:
       - display_name: Ampere
         url: https://amperecomputing.com/guides/dsb-sn-tuning-guide/dsb-sn-tuning-setting-up-kubernetes
-    official_docs: https://helm.sh/docs/intro/quickstart/
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

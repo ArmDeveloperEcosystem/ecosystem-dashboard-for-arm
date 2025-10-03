@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/akopytov/sysbench#:~:text=in%20your%20script.-,Installing%20from%20Binary%20Packages,-Linux
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/mysql_benchmark/setup_sysbench/
         partner_content:
-        official_docs: https://github.com/akopytov/sysbench#:~:text=in%20your%20script.-,Installing%20from%20Binary%20Packages,-Linux
     arm_recommended_minimum_version:
         version_number:
         release_date:

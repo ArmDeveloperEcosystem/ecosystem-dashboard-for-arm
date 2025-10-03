@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
-    partner_content:
     official_docs: https://adoptium.net/installation/linux/
+    arm_content:
+    partner_content:
   arm_recommended_minimum_version:
     version_number: 21
     release_date: 2024/08/09

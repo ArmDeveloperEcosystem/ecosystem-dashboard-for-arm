@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://docs.crossplane.io/latest/
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/alps/modernizing-platform-management-hilti-groups-approach-to-improving-kubernetes-multicluster-operations/
-    official_docs: https://docs.crossplane.io/latest/
   arm_recommended_minimum_version:
     version_number: 1.16
     release_date: 2024/05/15

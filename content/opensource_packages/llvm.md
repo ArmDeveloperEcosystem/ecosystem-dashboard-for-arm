@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://llvm.org/docs/GettingStarted.html
         arm_content: https://developer.arm.com/Tools%20and%20Software/LLVM%20Toolchain#Technical-Specifications
         partner_content:
-        official_docs: https://llvm.org/docs/GettingStarted.html
     arm_recommended_minimum_version:
         version_number: 19.1.0
         release_date: 2024/10/07

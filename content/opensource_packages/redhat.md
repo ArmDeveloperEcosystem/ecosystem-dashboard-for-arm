@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/performing_a_standard_rhel_9_installation/assembly_installing-on-amd64-intel-64-and-64-bit-arm_installing-rhel
     arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/software-innovations-with-red-hat-and-arm
     partner_content:
-    official_docs: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/performing_a_standard_rhel_9_installation/assembly_installing-on-amd64-intel-64-and-64-bit-arm_installing-rhel
   arm_recommended_minimum_version:
     version_number: 9.4
     release_date: 2024/04/30

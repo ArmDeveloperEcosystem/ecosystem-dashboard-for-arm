@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://docs.databend.com/guides/cloud/
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 0.8.137-nightly
         release_date: 2022/12/01

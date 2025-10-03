@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://help.split.io/hc/en-us/articles/360020359652-Python-SDK
         arm_content:
         partner_content:
-        official_docs: https://help.split.io/hc/en-us/articles/360020359652-Python-SDK
     arm_recommended_minimum_version:
         version_number:
         release_date:

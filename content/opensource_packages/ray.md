@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options: Spark
     getting_started_resources:
-        arm_content:
-        partner_content: 
         official_docs: https://docs.ray.io/en/latest/ray-overview/installation.html
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:

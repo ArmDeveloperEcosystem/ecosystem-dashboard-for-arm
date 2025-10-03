@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://learn.microsoft.com/en-us/dotnet/core/install/linux-ubuntu
     arm_content: https://learn.arm.com/install-guides/dotnet/
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/dotnet/powering-net-8-with-aws-graviton3-benchmarks/
-    official_docs: https://learn.microsoft.com/en-us/dotnet/core/install/linux-ubuntu
   arm_recommended_minimum_version:
     version_number: 8.0
     release_date: 2023/10/03

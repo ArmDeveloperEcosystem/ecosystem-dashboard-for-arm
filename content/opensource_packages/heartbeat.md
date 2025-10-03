@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://www.elastic.co/guide/en/beats/heartbeat/8.14/setup-repositories.html
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 9.0.3
         release_date: 2025/06/24

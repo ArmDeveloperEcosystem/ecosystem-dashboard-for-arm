@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://clickhouse.com/docs/en/development/build-cross-arm
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/clickhouse/
     partner_content:
-    official_docs: https://clickhouse.com/docs/en/development/build-cross-arm
   arm_recommended_minimum_version:
     version_number: v22.5.1.2079-stable
     release_date: 2022/07/12

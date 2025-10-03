@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options: 
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://github.com/xiph/opus/blob/main/README
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 1.5
         release_date: 2024/09/11

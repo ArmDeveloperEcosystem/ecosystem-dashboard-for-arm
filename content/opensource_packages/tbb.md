@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/oneapi-src/oneTBB/blob/master/INSTALL.md
         arm_content:
         partner_content:
-        official_docs: https://github.com/oneapi-src/oneTBB/blob/master/INSTALL.md
     arm_recommended_minimum_version:
         version_number: 2021.9.0
         release_date: 2023/04/14

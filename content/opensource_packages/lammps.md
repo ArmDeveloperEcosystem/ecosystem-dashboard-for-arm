@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://docs.lammps.org/Build_make.html
     arm_content: https://community.arm.com/arm-community-blogs/b/servers-and-cloud-computing-blog/posts/choosing-compilers-for-arm-hpc
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/hpc/best-practices-for-running-molecular-dynamics-simulations-on-aws-graviton3e/
-    official_docs: https://docs.lammps.org/Build_make.html
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

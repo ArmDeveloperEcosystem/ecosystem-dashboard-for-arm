@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://on-demand.arm.com/flow/arm/devhub/sessionCatalog/page/pubSessCatalog/session/1681291098626001BAX5
-        partner_content: 
         official_docs: https://longhorn.io/docs/1.6.0/
+        arm_content: https://on-demand.arm.com/flow/arm/devhub/sessionCatalog/page/pubSessCatalog/session/1681291098626001BAX5
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 1.6.0
         release_date: 2024/02/01

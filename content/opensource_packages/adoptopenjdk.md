@@ -14,9 +14,9 @@ optional_info:
     support_caveats: AdoptOpenJDK has transitioned to the Eclipse Foundation under the Adoptium project. Starting with the July 2021 releases, future builds are available from [Adoptium.net](https://adoptium.net/) under the new name Eclipse Temurin.
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://adoptium.net/docs
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 21
         release_date: 2024/08/09

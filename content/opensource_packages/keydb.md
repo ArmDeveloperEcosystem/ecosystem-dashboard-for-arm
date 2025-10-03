@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
-    partner_content:
     official_docs: https://docs.keydb.dev/blog/2020/03/02/blog-post/
+    arm_content:
+    partner_content:
   arm_recommended_minimum_version:
     version_number: 6.3.3
     release_date: 2023/05/03

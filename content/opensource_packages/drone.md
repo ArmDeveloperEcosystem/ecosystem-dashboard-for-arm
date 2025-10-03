@@ -14,9 +14,9 @@ optional_info:
     support_caveats: Drone is still availible. However, Gitness is being invested in as the next generation of Drone. Where Drone focused on continuous integration, Gitness adds source code hosting, bringing code management and pipelines closer together.
     alternative_options: Gitness
     getting_started_resources:
+        official_docs: https://docs.drone.io/
         arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/drone-io-ci-cd-tool-for-developers
         partner_content:
-        official_docs: https://docs.drone.io/
     arm_recommended_minimum_version:
         version_number:
         release_date:

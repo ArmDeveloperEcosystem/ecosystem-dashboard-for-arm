@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://www.postgresql.org/docs/
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/postgresql/install_postgresql/
     partner_content:
-    official_docs: https://www.postgresql.org/docs/
   arm_recommended_minimum_version:
     version_number: 16.0
     release_date: 2023/09/14

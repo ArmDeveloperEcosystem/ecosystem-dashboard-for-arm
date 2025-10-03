@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://www.mmm.ucar.edu/models/wrf/support
     arm_content: https://community.arm.com/arm-community-blogs/b/high-performance-computing-blog/posts/bringing-wrf-up-to-speed-with-arm-neoverse
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/hpc/numerical-weather-prediction-on-aws-graviton2/
-    official_docs: https://www.mmm.ucar.edu/models/wrf/support
   arm_recommended_minimum_version:
     version_number: 4.7.0
     release_date: 2025/04/25

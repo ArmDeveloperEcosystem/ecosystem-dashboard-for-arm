@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://milvus.io/docs/quickstart.md#Install-Milvus
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 2.3.12
         release_date: 2024/03/15

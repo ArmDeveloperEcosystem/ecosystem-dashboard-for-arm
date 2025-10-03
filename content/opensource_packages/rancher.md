@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://ranchermanager.docs.rancher.com/getting-started/installation-and-upgrade/installation-requirements
     arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/rancher-kubernetes-to-the-edge
     partner_content:
-    official_docs: https://ranchermanager.docs.rancher.com/getting-started/installation-and-upgrade/installation-requirements
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

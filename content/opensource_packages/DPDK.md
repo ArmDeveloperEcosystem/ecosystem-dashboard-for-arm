@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://core.dpdk.org/doc/quick-start/
     arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/dpdk-optimization-on-arm
     partner_content:
       - display_name: Ampere
         url: https://amperecomputing.com/tuning-guides/DPDK-setup-and-tuning-guide
-    official_docs: https://core.dpdk.org/doc/quick-start/
   arm_recommended_minimum_version:
     version_number: 23.03
     release_date: 2023/03/31

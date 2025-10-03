@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://source.android.com/docs/devices/cuttlefish/get-started
         arm_content:
         partner_content:
-        official_docs: https://source.android.com/docs/devices/cuttlefish/get-started
     arm_recommended_minimum_version:
         version_number: 1.12.0
         release_date: 2025/06/19

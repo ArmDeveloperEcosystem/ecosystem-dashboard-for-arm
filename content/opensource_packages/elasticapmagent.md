@@ -14,9 +14,9 @@ optional_info:
     support_caveats: Elastic APM agents are available for various programming languages (Java, .NET, Node.js, Go, etc.). These agents are designed to be installed within your application code and are written in the same language as the service they are monitoring.
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.elastic.co/docs/reference/apm/agents/python/set-up-apm-python-agent
         arm_content:
         partner_content:
-        official_docs: https://www.elastic.co/docs/reference/apm/agents/python/set-up-apm-python-agent
     arm_recommended_minimum_version:
         version_number:
         release_date:

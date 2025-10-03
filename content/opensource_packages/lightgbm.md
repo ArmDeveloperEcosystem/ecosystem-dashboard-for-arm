@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://lightgbm.readthedocs.io/en/latest/Installation-Guide.html
         arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/xgboost-lightgbm-aws-graviton3
         partner_content:
-        official_docs: https://lightgbm.readthedocs.io/en/latest/Installation-Guide.html
     arm_recommended_minimum_version:
         version_number: 4.0.0
         release_date: 2023/07/14

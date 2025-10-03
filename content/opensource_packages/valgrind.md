@@ -13,9 +13,9 @@ optional_info:
     support_caveats: Certain Valgrind tools may have limitations on Arm servers.
     alternative_options:
     getting_started_resources:
-        arm_content: https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/valgrind-3-10-0-supports-64-bit-armv8
-        partner_content: 
         official_docs: https://valgrind.org/docs/manual/manual.html
+        arm_content: https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/valgrind-3-10-0-supports-64-bit-armv8
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:

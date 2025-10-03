@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://cwiki.apache.org/confluence/display/IMPALA/Building+Impala
+    arm_content:
     partner_content:
       - display_name: Microsoft Azure
         url: https://learn.microsoft.com/en-us/connectors/impala/
-    official_docs: https://cwiki.apache.org/confluence/display/IMPALA/Building+Impala
   arm_recommended_minimum_version:
     version_number: 4.5.0
     release_date: 2025/05/07

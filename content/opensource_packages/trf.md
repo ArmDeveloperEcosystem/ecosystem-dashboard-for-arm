@@ -13,9 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/Benson-Genomics-Lab/TRF?tab=readme-ov-file#instructions-for-compiling
         arm_content:
         partner_content:
-        official_docs: https://github.com/Benson-Genomics-Lab/TRF?tab=readme-ov-file#instructions-for-compiling
     arm_recommended_minimum_version:
         version_number:
         release_date:

@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://www.nginx.com/resources/wiki/start/
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/nginx/
     partner_content:
       - display_name: Microsoft Azure
         url: https://amperecomputing.com/briefs/nginx-on-azure-brief
-    official_docs: https://www.nginx.com/resources/wiki/start/
   arm_recommended_minimum_version:
     version_number: 1.20.1
     release_date: 2022/12/14

@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://spiffe.io/docs/latest/try/getting-started-linux-macos-x/
         arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/hardware-backed-security-multitenancy-edge-spiffe-parsec
         partner_content:
-        official_docs: https://spiffe.io/docs/latest/try/getting-started-linux-macos-x/
     arm_recommended_minimum_version:
         version_number: 1.8.0
         release_date: 2023/09/20

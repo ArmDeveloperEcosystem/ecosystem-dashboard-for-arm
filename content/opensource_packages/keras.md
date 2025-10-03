@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://keras.io/getting_started/
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/keras-core/
         partner_content:
-        official_docs: https://keras.io/getting_started/
     arm_recommended_minimum_version:
         version_number:
         release_date:

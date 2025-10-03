@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://sourceware.org/gdb/current/onlinedocs/gdb.html/Installing-GDB.html#Installing-GDB
         arm_content: https://developer.arm.com/documentation/102435/0100/Debugging-with-GDB
         partner_content:
-        official_docs: https://sourceware.org/gdb/current/onlinedocs/gdb.html/Installing-GDB.html#Installing-GDB
     arm_recommended_minimum_version:
         version_number: 14.1
         release_date: 2023/12/03

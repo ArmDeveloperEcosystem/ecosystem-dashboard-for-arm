@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content:  
-        partner_content: 
         official_docs: https://freedesktop-sdk.gitlab.io/documentation/getting-started/
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: freedesktop-sdk-25.08beta.1
         release_date: 2025/06/25

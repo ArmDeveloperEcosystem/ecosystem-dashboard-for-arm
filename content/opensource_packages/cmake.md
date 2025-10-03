@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://cmake.org/getting-started/
     arm_content: https://learn.arm.com/install-guides/cmake/
     partner_content:
       - display_name: Amazon AWS
         url: https://docs.aws.amazon.com/ja_jp/sdk-for-cpp/v1/developer-guide/cmake-params.html
-    official_docs: https://cmake.org/getting-started/
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

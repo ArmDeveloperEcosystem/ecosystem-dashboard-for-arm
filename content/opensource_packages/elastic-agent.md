@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.elastic.co/guide/en/fleet/8.14/elastic-agent-installation.html
         arm_content:
         partner_content:
-        official_docs: https://www.elastic.co/guide/en/fleet/8.14/elastic-agent-installation.html
     arm_recommended_minimum_version:
         version_number: 9.1.0
         release_date: 2025/07/19

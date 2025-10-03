@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://git.lysator.liu.se/nettle/nettle/-/blob/master/README?ref_type=heads
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 3.8
         release_date: 2022/06/03

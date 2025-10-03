@@ -14,9 +14,9 @@ optional_info:
     support_caveats: This is the first version with confirmed Arm64 binary support and multi-arch image build capability.
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/google/cadvisor/blob/master/docs/development/build.md
         arm_content:
         partner_content:
-        official_docs: https://github.com/google/cadvisor/blob/master/docs/development/build.md
     arm_recommended_minimum_version:
         version_number:
         release_date:

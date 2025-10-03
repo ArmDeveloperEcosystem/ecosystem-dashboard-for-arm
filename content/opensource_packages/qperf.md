@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://git.launchpad.net/ubuntu/+source/qperf/diff/README?h=ubuntu/bionic&id=e1b3d8ec9e9110b90f82005053f462dfd23595e7
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:

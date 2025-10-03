@@ -13,9 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://pyzmq.readthedocs.io/en/latest/howto/build.html
         arm_content:
         partner_content:
-        official_docs: https://pyzmq.readthedocs.io/en/latest/howto/build.html
     arm_recommended_minimum_version:
         version_number: 23.2.1
         release_date: 2022/08/12

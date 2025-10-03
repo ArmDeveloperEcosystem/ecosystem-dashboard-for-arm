@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://wiki.squid-cache.org/SquidFaq/InstallingSquid
         arm_content:
         partner_content:
-        official_docs: https://wiki.squid-cache.org/SquidFaq/InstallingSquid
     arm_recommended_minimum_version:
         version_number: 3.2.10
         release_date: 2024/12/30

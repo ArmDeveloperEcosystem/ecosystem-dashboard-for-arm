@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://python-zstandard.readthedocs.io/en/latest/
         arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/comparing-data-compression-algorithm-performance-on-aws-graviton2-342166113
         partner_content:
-        official_docs: https://python-zstandard.readthedocs.io/en/latest/
     arm_recommended_minimum_version:
         version_number: 0.22.0
         release_date: 2023/11/01

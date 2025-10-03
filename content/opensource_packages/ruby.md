@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://www.ruby-lang.org/en/documentation/installation/
     arm_content: https://developer.arm.com/Additional%20Resources/Video%20Tutorials/Arm%20Socrates%20-%20Managing%20Projects%20-%20Generating%20and%20Running%20IP%20Configuration%20Scripts%20and%20Ruby%20API
     partner_content:
       - display_name: Oracle OCI
         url: https://blogs.oracle.com/developers/post/getting-started-with-ruby-and-ruby-on-rails-on-oci
-    official_docs: https://www.ruby-lang.org/en/documentation/installation/
   arm_recommended_minimum_version:
     version_number: 3.4.0
     release_date: 2024/12/25

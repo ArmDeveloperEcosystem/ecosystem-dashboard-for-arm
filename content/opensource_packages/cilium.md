@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://docs.cilium.io/en/stable/gettingstarted/k8s-install-default/#install-cilium
+    arm_content:
     partner_content:
       - display_name: Oracle OCI
         url: https://docs.oracle.com/en/learn/oke-flannel-to-cilium-cni-plugin/index.html#introduction
-    official_docs: https://docs.cilium.io/en/stable/gettingstarted/k8s-install-default/#install-cilium
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

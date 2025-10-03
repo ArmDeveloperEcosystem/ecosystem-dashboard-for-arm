@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
-    partner_content:
     official_docs: https://docs.litmuschaos.io/docs/getting-started/installation#install-litmus-using-kubectl
+    arm_content:
+    partner_content:
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

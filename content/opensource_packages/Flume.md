@@ -14,9 +14,9 @@ optional_info:
     support_caveats: 
     alternative_options:
     getting_started_resources:
+        official_docs: https://flume.apache.org/releases/content/1.10.0/FlumeUserGuide.html
         arm_content:
         partner_content:
-        official_docs: https://flume.apache.org/releases/content/1.10.0/FlumeUserGuide.html
     arm_recommended_minimum_version:
         version_number: 
         release_date:

@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/OpenMathLib/OpenBLAS/wiki/Installation-Guide
         arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/deep-learning-yitian-710
         partner_content:
-        official_docs: https://github.com/OpenMathLib/OpenBLAS/wiki/Installation-Guide
     arm_recommended_minimum_version:
         version_number: 0.3.29
         release_date: 2025/01/12

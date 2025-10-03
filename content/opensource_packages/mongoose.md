@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://mongoosejs.com/docs/index.html
         arm_content: https://community.arm.com/management/archive/cn/b/blog/posts/mongoose
         partner_content:
-        official_docs: https://mongoosejs.com/docs/index.html
     arm_recommended_minimum_version:
         version_number:
         release_date:

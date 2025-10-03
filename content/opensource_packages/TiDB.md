@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://docs.pingcap.com/tidb-in-kubernetes/stable/deploy-cluster-on-arm64
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/startups/achieve-better-price-to-performance-for-tidb-graviton2-processors/
-    official_docs: https://docs.pingcap.com/tidb-in-kubernetes/stable/deploy-cluster-on-arm64
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

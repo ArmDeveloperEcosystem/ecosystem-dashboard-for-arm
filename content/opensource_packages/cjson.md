@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://github.com/DaveGamble/cJSON?tab=readme-ov-file#building
+    arm_content:
     partner_content:
       - display_name: Alibaba Cloud
         url: https://www.alibabacloud.com/help/en/linkvisual/link-visual-enterprise-edition/developer-reference/use-the-linkvisual-sdk
-    official_docs: https://github.com/DaveGamble/cJSON?tab=readme-ov-file#building
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

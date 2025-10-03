@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://etcd.io/docs/latest/
     arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/improve-etcd-performance-by-18-percent-by-deploying-on-aws-graviton2
     partner_content:
       - display_name: Ampere
         url: https://amperecomputing.com/blogs/ampere-computing-and-cncf-supporting-arm-native-ci-for-ncf-projects
-    official_docs: https://etcd.io/docs/latest/
   arm_recommended_minimum_version:
     version_number: 3.5.19
     release_date: 2025/03/05

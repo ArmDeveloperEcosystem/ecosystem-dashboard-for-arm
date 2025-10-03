@@ -14,9 +14,9 @@ optional_info:
     support_caveats: Epinio was originally named Carrier during early development, so some legacy references or documentation may still use the former name.
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.epinio.io/installation/install_epinio
         arm_content:
         partner_content:
-        official_docs: https://docs.epinio.io/installation/install_epinio
     arm_recommended_minimum_version:
         version_number:
         release_date:

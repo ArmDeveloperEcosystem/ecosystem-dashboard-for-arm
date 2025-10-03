@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://openresty.org/en/getting-started.html
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/cn/blogs/china/aws-graviton4-accelerates-apache-apisix-message-processing/
-    official_docs: https://openresty.org/en/getting-started.html
   arm_recommended_minimum_version:
     version_number: 1.27.1.1
     release_date: 2024/10/15

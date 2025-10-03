@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/oceanbase/oceanbase?tab=readme-ov-file#quick-start
         arm_content:
         partner_content:
-        official_docs: https://github.com/oceanbase/oceanbase?tab=readme-ov-file#quick-start
     arm_recommended_minimum_version:
         version_number: 4.2.5
         release_date: 2025/02/10

@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options: 
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://www.infracost.io/docs/
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 0.10.17
         release_date: 2023/02/07

@@ -12,9 +12,9 @@ optional_info:
   support_caveats: On Oracle Linux 7, ARM64 requires the Oracle Linux 7 Software Collections Repository which can be installed following the commands as mentioned [here](https://dev.mysql.com/doc/mysql-repo-excerpt/8.3/en/linux-installation-yum-repo.html)
   alternative_options: null
   getting_started_resources:
+    official_docs: https://dev.mysql.com/doc/mysql-apt-repo-quick-guide/en/
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/mysql/install_mysql/
     partner_content:
-    official_docs: https://dev.mysql.com/doc/mysql-apt-repo-quick-guide/en/
   arm_recommended_minimum_version:
     version_number: 8.0.38
     release_date: 2024/07/01

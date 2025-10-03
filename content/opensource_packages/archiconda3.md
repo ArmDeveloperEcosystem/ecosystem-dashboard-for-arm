@@ -14,9 +14,9 @@ optional_info:
     support_caveats: This project has been superseded by Miniforge, a project by conda-forge.
     alternative_options: Miniforge
     getting_started_resources:
+        official_docs: https://github.com/Archiconda/build-tools?tab=readme-ov-file#archiconda3
         arm_content:
         partner_content:
-        official_docs: https://github.com/Archiconda/build-tools?tab=readme-ov-file#archiconda3
     arm_recommended_minimum_version:
         version_number:
         release_date:

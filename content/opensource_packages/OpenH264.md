@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/cisco/openh264#for-all-platforms
         arm_content:
         partner_content:
-        official_docs: https://github.com/cisco/openh264#for-all-platforms
     arm_recommended_minimum_version:
         version_number: 2.5.0
         release_date: 2024/11/08

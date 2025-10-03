@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.mediawiki.org/wiki/Local_development_quickstart
         arm_content:
         partner_content:
-        official_docs: https://www.mediawiki.org/wiki/Local_development_quickstart
     arm_recommended_minimum_version:
         version_number:
         release_date:

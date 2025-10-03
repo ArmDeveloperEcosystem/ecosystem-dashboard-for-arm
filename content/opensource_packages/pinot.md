@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content:
-        partner_content: 
         official_docs: https://docs.pinot.apache.org/operators/tutorials/build-docker-images#build-image-with-arm64-base-image
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:

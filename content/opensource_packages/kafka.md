@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://github.com/apache/kafka?tab=readme-ov-file#apache-kafka
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/kafka/
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/developer/tuning-apache-kafka-and-confluent-platform-for-graviton2-using-amazon-corretto/
-    official_docs: https://github.com/apache/kafka?tab=readme-ov-file#apache-kafka
   arm_recommended_minimum_version:
     version_number: 3.5.0
     release_date: 2023/06/15

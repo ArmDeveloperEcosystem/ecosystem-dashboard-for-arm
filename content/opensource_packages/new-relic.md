@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
-    partner_content:
     official_docs: https://docs.newrelic.com/docs/infrastructure/install-infrastructure-agent/linux-installation/install-infrastructure-monitoring-agent-linux/
+    arm_content:
+    partner_content:
   arm_recommended_minimum_version:
     version_number: 1.52.0
     release_date: 2024/03/26

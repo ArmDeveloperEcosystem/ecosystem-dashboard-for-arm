@@ -12,13 +12,13 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://github.com/onnx/onnx/blob/main/README.md
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/machine-learning/accelerate-nlp-inference-with-onnx-runtime-on-aws-graviton-processors/
       - display_name: Microsoft Azure
         url: https://techcommunity.microsoft.com/blog/azuredevcommunityblog/ml-inference-on-edge-devices-with-onnx-runtime-using-azure-devopsmlops/1737331
-    official_docs: https://github.com/onnx/onnx/blob/main/README.md
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

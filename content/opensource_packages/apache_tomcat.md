@@ -12,15 +12,15 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://tomcat.apache.org/tomcat-9.0-doc/building.html
+    arm_content:
     partner_content:
-      - display_name: Oracle OCI
-        url: https://docs.oracle.com/en/solutions/deploy-tomcat-adb/index.html#GUID-41F8F9FF-61DB-4F11-AF0E-69DD3E5ECCBD
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/compute/running-java-applications-on-amazon-ec2-a1-instances-with-amazon-corretto/
       - display_name: Oracle OCI
+        url: https://docs.oracle.com/en/solutions/deploy-tomcat-adb/index.html#GUID-41F8F9FF-61DB-4F11-AF0E-69DD3E5ECCBD
+      - display_name: Oracle OCI
         url: https://blogs.oracle.com/cloud-infrastructure/post/apm-sm-om-apache-linux-arm
-    official_docs: https://tomcat.apache.org/tomcat-9.0-doc/building.html
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

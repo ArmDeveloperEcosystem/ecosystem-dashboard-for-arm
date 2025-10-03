@@ -12,11 +12,11 @@ optional_info:
   support_caveats: The AArch64 wheels are present from python 3.9 onwards.
   alternative_options: null
   getting_started_resources:
+    official_docs: https://pytorch.org/get-started/locally/
     arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/aarch64-docker-images-for-tensorflow-and-pytorch
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/machine-learning/accelerated-pytorch-inference-with-torch-compile-on-aws-graviton-processors
-    official_docs: https://pytorch.org/get-started/locally/
   arm_recommended_minimum_version:
     version_number: 2.0.0
     release_date: 2023/06/22

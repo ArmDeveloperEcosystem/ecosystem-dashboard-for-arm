@@ -12,9 +12,9 @@ optional_info:
   support_caveats: Istio support for aarch64 was added in [v1.15](https://istio.io/latest/news/releases/1.15.x/announcing-1.15/change-notes/) (Aug-31-2022). Istio and Envoy are often used together.
   alternative_options: null
   getting_started_resources:
+    official_docs: https://www.envoyproxy.io/docs/envoy/latest/start/install#install-envoy-on-ubuntu
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/envoy/
     partner_content:
-    official_docs: https://www.envoyproxy.io/docs/envoy/latest/start/install#install-envoy-on-ubuntu
   arm_recommended_minimum_version:
     version_number: 1.30.0
     release_date: 2024/04/16

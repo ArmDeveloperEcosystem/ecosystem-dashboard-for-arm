@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://kubeedge.io/docs/category/developer-guide/
     arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/q-a-with-priyanka-sharma-for-arm-devsummit-2020
     partner_content:
       - display_name: Alibaba Cloud
         url: https://www.alibabacloud.com/blog/openyurt-the-practice-of-extending-native-kubernetes-to-the-edge_597903
-    official_docs: https://kubeedge.io/docs/category/developer-guide/
   arm_recommended_minimum_version:
     version_number: 1.20.0
     release_date: 2025/01/21

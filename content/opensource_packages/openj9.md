@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://adoptium.net/installation/
     arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/empowering-software-development-with-works-on-arm-initiative
     partner_content:
-    official_docs: https://adoptium.net/installation/
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

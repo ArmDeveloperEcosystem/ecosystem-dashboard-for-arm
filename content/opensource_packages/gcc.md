@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://gcc.gnu.org/onlinedocs/gcc/AArch64-Options.html
     arm_content: https://learn.arm.com/install-guides/gcc/native/
     partner_content:
       - display_name: Oracle OCI
         url: https://blogs.oracle.com/linux/post/building-aarch64-linux-kernel-ol8
-    official_docs: https://gcc.gnu.org/onlinedocs/gcc/AArch64-Options.html
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

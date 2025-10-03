@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content:
-        partner_content: 
         official_docs: https://github.com/boostorg/wiki/wiki/Getting-Started%3A-Overview#installing-boost
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 1.82.0
         release_date: 2023/04/14

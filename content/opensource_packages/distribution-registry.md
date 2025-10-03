@@ -14,9 +14,9 @@ optional_info:
     support_caveats:  Version 3.0.0 added support for additional Arm variants and introduced changes to cryptographic libraries and configuration paths. Review 3.0.0 release notes for deprecations that may affect Arm64 deployments.
     alternative_options:
     getting_started_resources:
+        official_docs: https://distribution.github.io/distribution/#basic-commands
         arm_content:
         partner_content:
-        official_docs: https://distribution.github.io/distribution/#basic-commands
     arm_recommended_minimum_version:
         version_number:
         release_date:

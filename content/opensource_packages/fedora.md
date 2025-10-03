@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://fedoraproject.org/wiki/Architectures/ARM
     arm_content: https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/spotlight-on-the-linux-software-ecosystem---the-fedora-project
     partner_content:
-    official_docs: https://fedoraproject.org/wiki/Architectures/ARM
   arm_recommended_minimum_version:
     version_number: 42
     release_date: 2025/04/09

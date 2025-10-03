@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://github.com/daytonaio/daytona/blob/main/README.md
+    arm_content:
     partner_content:
       - display_name: Daytona
         url: https://www.daytona.io/dotfiles/daytona-goes-open-source
-    official_docs: https://github.com/daytonaio/daytona/blob/main/README.md
   arm_recommended_minimum_version:
     version_number: 0.21.0
     release_date: 2024/07/12

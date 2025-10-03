@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://docs.rockylinux.org/guides/virtualization/vbox-rocky/?h=arm64#prerequisites
+    arm_content:
     partner_content:
       - display_name: Google GCP
         url: https://cloud.google.com/compute/docs/images/os-details#rocky_linux
-    official_docs: https://docs.rockylinux.org/guides/virtualization/vbox-rocky/?h=arm64#prerequisites
   arm_recommended_minimum_version:
     version_number: 9.0
     release_date: 2022/07/14

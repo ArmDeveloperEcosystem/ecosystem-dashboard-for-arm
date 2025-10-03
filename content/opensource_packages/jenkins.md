@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://www.jenkins.io/doc/book/
     arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/jenkins-community-support-for-arm-architecture
     partner_content:
       - display_name: Oracle OCI
         url: https://blogs.oracle.com/cloud-infrastructure/post/announcing-jenkins-support-for-the-arm-compute-platform-on-oracle-cloud-infrastructure
-    official_docs: https://www.jenkins.io/doc/book/
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

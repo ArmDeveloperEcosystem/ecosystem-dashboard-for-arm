@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://mariadb.com/kb/en/getting-installing-and-upgrading-mariadb/
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/mariadb/
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/database/powering-amazon-rds-with-aws-graviton3-benchmarks/
-    official_docs: https://mariadb.com/kb/en/getting-installing-and-upgrading-mariadb/
   arm_recommended_minimum_version:
     version_number: 11.8.0
     release_date: 2024/12/18

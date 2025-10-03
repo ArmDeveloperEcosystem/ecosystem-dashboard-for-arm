@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://buildkite.com/docs/agent/v3/elastic-ci-aws
         arm_content:
         partner_content:
-        official_docs: https://buildkite.com/docs/agent/v3/elastic-ci-aws
     arm_recommended_minimum_version:
         version_number: 6.29.0
         release_date: 2024/10/09

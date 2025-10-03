@@ -14,9 +14,9 @@ optional_info:
     support_caveats: Linux/Arm64 binaries are available from version 7.12.0. Official Docker images for Arm are only available starting from version 7.17.11.
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.elastic.co/docs/solutions/observability/apm/get-started
         arm_content:
         partner_content:
-        official_docs: https://www.elastic.co/docs/solutions/observability/apm/get-started
     arm_recommended_minimum_version:
         version_number:
         release_date:
