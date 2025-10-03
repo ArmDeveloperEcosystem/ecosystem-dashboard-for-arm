@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/open-quantum-safe/liboqs/wiki/Platform-specific-notes-for-building-liboqs#benchmarking-on-armv8
         arm_content:
         partner_content:
-        official_docs: https://github.com/open-quantum-safe/liboqs/wiki/Platform-specific-notes-for-building-liboqs#benchmarking-on-armv8
     arm_recommended_minimum_version:
         version_number: 0.13.0
         release_date: 2025/04/17

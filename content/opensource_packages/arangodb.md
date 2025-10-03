@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.arangodb.com/3.11/operations/installation/#linux
         arm_content:
         partner_content:
-        official_docs: https://docs.arangodb.com/3.11/operations/installation/#linux
     arm_recommended_minimum_version:
         version_number: 3.11
         release_date: 2023/05/24

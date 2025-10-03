@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs:
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/zlib
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/opensource/improving-zlib-cloudflare-and-comparing-performance-with-other-zlib-forks/
-    official_docs: null
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

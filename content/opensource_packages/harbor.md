@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://goharbor.io/docs/2.10.0/install-config/
         arm_content:
         partner_content:
-        official_docs: https://goharbor.io/docs/2.10.0/install-config/
     arm_recommended_minimum_version:
         version_number: 2.9.0
         release_date: 2023/08/29

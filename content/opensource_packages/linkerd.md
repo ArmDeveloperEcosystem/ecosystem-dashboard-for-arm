@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://linkerd.io/docs/
     arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/service-mesh-with-linkerd-and-arm-based-k8s
     partner_content:
       - display_name: Amazon AWS
         url: https://awsgravitonweekly.com/posts/aws-graviton-weekly-33
-    official_docs: https://linkerd.io/docs/
   arm_recommended_minimum_version:
     version_number: stable-2.11.2
     release_date: 2022/04/21

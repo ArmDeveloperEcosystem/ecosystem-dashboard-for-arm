@@ -13,9 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/serverless-on-arm64
-        partner_content: 
         official_docs: https://knative.dev/docs/install/
+        arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/serverless-on-arm64
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:

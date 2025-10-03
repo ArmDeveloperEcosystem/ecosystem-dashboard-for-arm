@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://go.dev/blog/ports
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/migration/golang/
     partner_content:
       - display_name: Amazon AWS
         url: https://github.com/aws/aws-graviton-getting-started/blob/main/golang.md
-    official_docs: https://go.dev/blog/ports
   arm_recommended_minimum_version:
     version_number: 1.18
     release_date: 2022/05/31

@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.pachyderm.com/products/mldm/latest/get-started/first-time-setup/#first-time-setup-2-install-pachctl-cli
         arm_content:
         partner_content:
-        official_docs: https://docs.pachyderm.com/products/mldm/latest/get-started/first-time-setup/#first-time-setup-2-install-pachctl-cli
     arm_recommended_minimum_version:
         version_number: 2.4.0-nightly.20221108
         release_date: 2022/11/08

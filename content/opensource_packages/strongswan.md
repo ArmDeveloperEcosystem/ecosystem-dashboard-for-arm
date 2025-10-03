@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.strongswan.org/docs/5.9/install/install.html#_building_strongswan
         arm_content:
         partner_content:
-        official_docs: https://docs.strongswan.org/docs/5.9/install/install.html#_building_strongswan 
     arm_recommended_minimum_version:
         version_number: 
         release_date:

@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/fraunhoferhhi/vvenc/wiki/Build
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/vvenc/vvenc/
         partner_content:
-        official_docs: https://github.com/fraunhoferhhi/vvenc/wiki/Build
     arm_recommended_minimum_version:
         version_number: 1.13.0
         release_date: 2024/12/13

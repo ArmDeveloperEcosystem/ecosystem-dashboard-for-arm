@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.bytebase.com/docs/cli/overview/#install-bb
         arm_content:
         partner_content:
-        official_docs: https://www.bytebase.com/docs/cli/overview/#install-bb
     arm_recommended_minimum_version:
         version_number: 2.7.0
         release_date: 2023/08/31

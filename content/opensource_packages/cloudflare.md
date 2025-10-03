@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/cloudflare/cloudflared/tree/2024.6.1?tab=readme-ov-file#installing-cloudflared
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/zlib/setup/
         partner_content:
-        official_docs: https://github.com/cloudflare/cloudflared/tree/2024.6.1?tab=readme-ov-file#installing-cloudflared
     arm_recommended_minimum_version:
         version_number: 2024.1.5
         release_date: 2024/01/22

@@ -14,9 +14,9 @@ optional_info:
     support_caveats: The official Linux/Arm64 Docker images are not yet rolled out. However, the local images for Arm can be built with Dockerfile, since the base image was updated to support Linux/Arm64 in version 2.5.0.
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/opensearch-project/data-prepper/blob/main/docs/getting_started.md
         arm_content:
         partner_content:
-        official_docs: https://github.com/opensearch-project/data-prepper/blob/main/docs/getting_started.md
     arm_recommended_minimum_version:
         version_number:
         release_date:

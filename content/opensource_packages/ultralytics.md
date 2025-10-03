@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.ultralytics.com/quickstart/#install-ultralytics
         arm_content: https://community.arm.com/arm-research/b/articles/posts/ensuring-your-ai-is-sure
         partner_content:
-        official_docs: https://docs.ultralytics.com/quickstart/#install-ultralytics
     arm_recommended_minimum_version:
         version_number:
         release_date:

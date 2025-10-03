@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://knox.apache.org/books/knox-2-1-0/user-guide.html#Quick+Start
         arm_content:
         partner_content:
-        official_docs: https://knox.apache.org/books/knox-2-1-0/user-guide.html#Quick+Start
     arm_recommended_minimum_version:
         version_number:
         release_date:

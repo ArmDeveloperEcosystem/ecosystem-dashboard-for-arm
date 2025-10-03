@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/google/boringssl/blob/fips-20220613/BUILDING.md#building
         arm_content:
         partner_content:
-        official_docs: https://github.com/google/boringssl/blob/fips-20220613/BUILDING.md#building
     arm_recommended_minimum_version:
         version_number:
         release_date:

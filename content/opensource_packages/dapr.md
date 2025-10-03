@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://docs.dapr.io/getting-started/
+    arm_content:
     partner_content:
       - display_name: Microsoft Azure
         url: https://learn.microsoft.com/en-us/azure/container-apps/microservices-dapr-azure-resource-manager?tabs=bash&pivots=container-apps-arm
-    official_docs: https://docs.dapr.io/getting-started/
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

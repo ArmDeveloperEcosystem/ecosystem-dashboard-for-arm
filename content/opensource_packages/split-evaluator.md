@@ -14,9 +14,9 @@ optional_info:
     support_caveats: Earlier versions require manual npm setup on Arm. Official Arm64 Docker images are available starting from version 2.7.0, simplifying deployment.
     alternative_options:
     getting_started_resources:
+        official_docs: https://help.split.io/hc/en-us/articles/360020037072-Split-Evaluator#docker-recommended
         arm_content:
         partner_content:
-        official_docs: https://help.split.io/hc/en-us/articles/360020037072-Split-Evaluator#docker-recommended
     arm_recommended_minimum_version:
         version_number:
         release_date:

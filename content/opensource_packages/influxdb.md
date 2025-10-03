@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://docs.influxdata.com/influxdb/v2/install/?t=Linux
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/compute/making-your-go-workloads-up-to-20-faster-with-go-1-18-and-aws-graviton/
-    official_docs: https://docs.influxdata.com/influxdb/v2/install/?t=Linux
   arm_recommended_minimum_version:
     version_number: 3.0.0
     release_date: 2024/09/04

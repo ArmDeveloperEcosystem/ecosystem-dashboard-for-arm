@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://docs.julialang.org/en/v1/
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 1.11.0
         release_date: 2024/10/08

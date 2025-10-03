@@ -13,9 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://chaos-mesh.org/docs/
         arm_content:
         partner_content:
-        official_docs: https://chaos-mesh.org/docs/
     arm_recommended_minimum_version:
         version_number: 2.3.0
         release_date: 2022/07/29

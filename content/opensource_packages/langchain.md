@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://python.langchain.com/v0.2/docs/tutorials/llm_chain/#installation
+    arm_content:
     partner_content:
       - display_name: Oracle OCI
         url: https://blogs.oracle.com/ai-and-datascience/post/inference-rag-cpus-efficient-generative-ai
-    official_docs: https://python.langchain.com/v0.2/docs/tutorials/llm_chain/#installation
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

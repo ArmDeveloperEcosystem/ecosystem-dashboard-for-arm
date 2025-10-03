@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://github.com/rails/rails/blob/main/README.md
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/aws/new-t4g-instances-burstable-performance-powered-by-aws-graviton2/
-    official_docs: https://github.com/rails/rails/blob/main/README.md
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://docs.fluentd.org/installation/install-by-gem
     arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/enabling-cloud-native-experience-across-a-diverse-and-secure-edge-ecosystem
     partner_content:
       - display_name: Amazon AWS
         url: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Container-Insights-setup-logs.html
-    official_docs: https://docs.fluentd.org/installation/install-by-gem
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

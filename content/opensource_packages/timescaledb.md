@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/timescale/timescaledb/blob/main/docs/BuildSource.md
         arm_content:
         partner_content:
-        official_docs: https://github.com/timescale/timescaledb/blob/main/docs/BuildSource.md
     arm_recommended_minimum_version:
         version_number: 2.16.0
         release_date: 2024/07/31

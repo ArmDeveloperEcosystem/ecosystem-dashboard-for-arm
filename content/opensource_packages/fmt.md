@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options: 
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://fmt.dev/11.0/get-started/#debianubuntu
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 11.0.0
         release_date: 2024/07/01

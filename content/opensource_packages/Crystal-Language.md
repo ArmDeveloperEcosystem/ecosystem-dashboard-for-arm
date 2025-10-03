@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://crystal-lang.org/reference/1.12/getting_started/index.html
         arm_content:
         partner_content:
-        official_docs: https://crystal-lang.org/reference/1.12/getting_started/index.html
     arm_recommended_minimum_version:
         version_number: 1.4.0
         release_date: 2022/04/06

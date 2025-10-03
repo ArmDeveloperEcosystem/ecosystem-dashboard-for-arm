@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://www.tensorflow.org/lite/guide/build_arm
     arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/aarch64-docker-images-for-tensorflow-and-pytorch
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/machine-learning/run-machine-learning-inference-workloads-on-aws-graviton-based-instances-with-amazon-sagemaker/
-    official_docs: https://www.tensorflow.org/lite/guide/build_arm
   arm_recommended_minimum_version:
     version_number: 2.18.0
     release_date: 2024/10/28

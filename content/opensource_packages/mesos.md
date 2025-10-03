@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/deploying-mesos-and-marathon-on-an-arm-cluster
-        partner_content: 
         official_docs: https://mesos.apache.org/documentation/latest/building/
+        arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/deploying-mesos-and-marathon-on-an-arm-cluster
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:

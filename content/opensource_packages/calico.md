@@ -13,9 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.tigera.io/calico/latest/getting-started/
         arm_content:
         partner_content:
-        official_docs: https://docs.tigera.io/calico/latest/getting-started/
     arm_recommended_minimum_version:
         version_number: 3.29.0
         release_date: 2024/10/28

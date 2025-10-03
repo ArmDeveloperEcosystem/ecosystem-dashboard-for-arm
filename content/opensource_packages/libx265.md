@@ -12,13 +12,13 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://bitbucket.org/multicoreware/x265_git/wiki/Home
     arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/reduce-h-265-high-res-encoding-costs-by-over-80-with-aws-graviton2-1207706725
     partner_content:
-      - display_name: Ampere
-        url: https://amperecomputing.com/tuning-guides/FFmpeg-Tuning-Guide
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/opensource/video-encoding-on-graviton-in-2025/
-    official_docs: https://bitbucket.org/multicoreware/x265_git/wiki/Home
+      - display_name: Ampere
+        url: https://amperecomputing.com/tuning-guides/FFmpeg-Tuning-Guide
   arm_recommended_minimum_version:
     version_number: 3.6
     release_date: 2024/04/04

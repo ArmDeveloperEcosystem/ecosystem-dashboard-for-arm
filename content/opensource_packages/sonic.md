@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://github.com/sonic-net/sonic-buildimage?tab=readme-ov-file#usage-for-arm-architecture
+    arm_content:
     partner_content:
       - display_name: Marvell
         url: https://www.marvell.com/blogs/sonic-its-not-just-for-switches-anymore.html
-    official_docs: https://github.com/sonic-net/sonic-buildimage?tab=readme-ov-file#usage-for-arm-architecture
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

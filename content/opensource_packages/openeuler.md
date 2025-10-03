@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://docs.openeuler.org/en/
+    arm_content:
     partner_content:
       - display_name: Microsoft Azure
         url: https://apps.microsoft.com/detail/9nwb78l1mps2?hl=en-mt&gl=MT
-    official_docs: https://docs.openeuler.org/en/
   arm_recommended_minimum_version:
     version_number: 24.03 LTS SP2
     release_date: 2024/03/01

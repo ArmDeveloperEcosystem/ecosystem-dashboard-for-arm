@@ -14,9 +14,9 @@ optional_info:
     support_caveats: Chef Infra 15 improved cross-platform compatibility, including better support for Arm64 across multiple distributions.
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.chef.io/install_bootstrap/
         arm_content:
         partner_content:
-        official_docs: https://docs.chef.io/install_bootstrap/
     arm_recommended_minimum_version:
         version_number:
         release_date:

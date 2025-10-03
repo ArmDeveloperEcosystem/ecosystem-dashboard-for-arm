@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/kata-containers/kata-containers/tree/main/docs/install
         arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/serverless-on-arm64
         partner_content:
-        official_docs: https://github.com/kata-containers/kata-containers/tree/main/docs/install
     arm_recommended_minimum_version:
         version_number: 3.14.0
         release_date: 2025/02/18

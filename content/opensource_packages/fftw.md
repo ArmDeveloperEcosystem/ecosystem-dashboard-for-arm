@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.fftw.org/fftw3_doc/Installation-on-Unix.html
         arm_content: https://community.arm.com/arm-community-blogs/b/servers-and-cloud-computing-blog/posts/arm-performance-libraries-24-10
         partner_content:
-        official_docs: https://www.fftw.org/fftw3_doc/Installation-on-Unix.html
     arm_recommended_minimum_version:
         version_number:
         release_date:

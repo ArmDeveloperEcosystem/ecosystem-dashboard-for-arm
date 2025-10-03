@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/ThinkParQ/beegfs#build-instructions
         arm_content:
         partner_content:
-        official_docs: https://github.com/ThinkParQ/beegfs#build-instructions
     arm_recommended_minimum_version:
         version_number: 7.4.5
         release_date: 2024/09/30

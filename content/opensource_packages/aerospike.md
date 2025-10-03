@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://aerospike.com/docs/server/operations/install/linux/ubuntu
         arm_content:
         partner_content:
-        official_docs: https://aerospike.com/docs/server/operations/install/linux/ubuntu
     arm_recommended_minimum_version:
         version_number: 6.3
         release_date: 2023/03/21

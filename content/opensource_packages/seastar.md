@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://github.com/scylladb/seastar?tab=readme-ov-file#building-seastar
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/apn/scylladb-on-aws-is-a-nosql-database-built-for-gigabyte-to-petabyte-scale/
-    official_docs: https://github.com/scylladb/seastar?tab=readme-ov-file#building-seastar
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

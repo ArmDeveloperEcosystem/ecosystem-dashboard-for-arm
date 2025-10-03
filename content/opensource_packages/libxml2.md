@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://gitlab.gnome.org/GNOME/libxml2/-/blob/master/README.md?ref_type=heads
         arm_content:
         partner_content:
-        official_docs: https://gitlab.gnome.org/GNOME/libxml2/-/blob/master/README.md?ref_type=heads
     arm_recommended_minimum_version:
         version_number:
         release_date:

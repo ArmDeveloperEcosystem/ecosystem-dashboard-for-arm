@@ -14,9 +14,9 @@ optional_info:
     support_caveats: EDOT SDKs are available in multiple languages (Java, Node.js, PHP, etc.). See https://www.elastic.co/docs/reference/opentelemetry/edot-sdks/#supported-languages for details.
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.elastic.co/docs/reference/opentelemetry/edot-sdks/dotnet/setup/aspnet
         arm_content:
         partner_content:
-        official_docs: https://www.elastic.co/docs/reference/opentelemetry/edot-sdks/dotnet/setup/aspnet
     arm_recommended_minimum_version:
         version_number:
         release_date:

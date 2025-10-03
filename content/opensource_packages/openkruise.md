@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://openkruise.io/docs/installation/
+    arm_content:
     partner_content:
       - display_name: Alibaba Cloud
         url: https://www.alibabacloud.com/blog/597549
-    official_docs: https://openkruise.io/docs/installation/
   arm_recommended_minimum_version:
     version_number: 1.7.0
     release_date: 2024/08/28

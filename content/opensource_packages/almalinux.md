@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://wiki.almalinux.org/documentation/installation-guide.html
         arm_content:
         partner_content:
-        official_docs: https://wiki.almalinux.org/documentation/installation-guide.html
     arm_recommended_minimum_version:
         version_number: 10
         release_date: 2025/05/27

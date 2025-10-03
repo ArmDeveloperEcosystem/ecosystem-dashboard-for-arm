@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://openanolis.cn/sig/Cloud-Kernel/doc/721476209221304399
+    arm_content:
     partner_content:
       - display_name: Alibaba Cloud
         url: https://www.alibabacloud.com/blog/introduction-to-openanolis-and-anolis-os_600645
-    official_docs: https://openanolis.cn/sig/Cloud-Kernel/doc/721476209221304399
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

@@ -12,15 +12,15 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://developer.wordpress.org/advanced-administration/before-install/howto-install/
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/wordpress/wordpress/
     partner_content:
-      - display_name: Ampere
-        url: https://amperecomputing.com/tutorials/deploy-wordpress-and-mysql
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/compute/improving-performance-of-php-for-arm64-and-impact-on-amazon-ec2-m6g-instances/
+      - display_name: Ampere
+        url: https://amperecomputing.com/tutorials/deploy-wordpress-and-mysql
       - display_name: Oracle OCI
         url: https://docs.oracle.com/en/solutions/wordpress-arm-based-oci/index.html#GUID-4DA601F8-912D-41FE-9C92-057AF1A20E35
-    official_docs: https://developer.wordpress.org/advanced-administration/before-install/howto-install/
   arm_recommended_minimum_version:
     version_number: 6.8
     release_date: 2025/04/15

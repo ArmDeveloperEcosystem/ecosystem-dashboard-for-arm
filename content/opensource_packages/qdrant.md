@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/qdrant/qdrant/blob/master/QUICK_START.md
         arm_content:
         partner_content:
-        official_docs: https://github.com/qdrant/qdrant/blob/master/QUICK_START.md
     arm_recommended_minimum_version:
         version_number: 1.13.0
         release_date: 2025/01/23

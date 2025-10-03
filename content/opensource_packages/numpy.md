@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://numpy.org/doc/stable/
         arm_content: https://learn.arm.com/learning-paths/laptops-and-desktops/win_python/how-to-1/
         partner_content:
-        official_docs: https://numpy.org/doc/stable/
     arm_recommended_minimum_version:
         version_number:
         release_date:

@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/improve-clickhouse-performance-up-to-26-by-using-aws-graviton3
-        partner_content: 
         official_docs: https://github.com/jemalloc/jemalloc/blob/dev/INSTALL.md
+        arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/improve-clickhouse-performance-up-to-26-by-using-aws-graviton3
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 5.3.0
         release_date: 2022/05/07

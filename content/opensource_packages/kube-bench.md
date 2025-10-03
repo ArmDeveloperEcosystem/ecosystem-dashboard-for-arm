@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://aquasecurity.github.io/kube-bench/dev/installation/
         arm_content:
         partner_content:
-        official_docs: https://aquasecurity.github.io/kube-bench/dev/installation/
     arm_recommended_minimum_version:
         version_number: 0.6.6
         release_date: 2022/01/12

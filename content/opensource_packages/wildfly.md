@@ -14,9 +14,9 @@ optional_info:
     support_caveats: As a Java-based platform, this package will run on top of an Arm compatible JVM.
     alternative_options:
     getting_started_resources:
-        arm_content:  
-        partner_content: 
         official_docs: https://github.com/wildfly/wildfly/blob/main/README.md
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 26.1.1.Final-2
         release_date: 2022/11/10

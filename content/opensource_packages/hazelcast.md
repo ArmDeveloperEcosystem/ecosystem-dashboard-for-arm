@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.hazelcast.com/hazelcast/5.4/getting-started/install-hazelcast
         arm_content:
         partner_content:
-        official_docs: https://docs.hazelcast.com/hazelcast/5.4/getting-started/install-hazelcast
     arm_recommended_minimum_version:
         version_number: 5.5.0
         release_date: 2024/07/26

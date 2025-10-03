@@ -13,9 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/google/snappy/blob/main/docs/README.md
         arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/comparing-data-compression-algorithm-performance-on-aws-graviton2-342166113
         partner_content:
-        official_docs: https://github.com/google/snappy/blob/main/docs/README.md
     arm_recommended_minimum_version:
         version_number: 1.2.0
         release_date: 2024/04/05

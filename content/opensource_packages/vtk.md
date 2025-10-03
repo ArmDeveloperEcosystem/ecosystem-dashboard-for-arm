@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/Kitware/VTK/blob/master/Documentation/docs/build_instructions/build.md
         arm_content:
         partner_content:
-        official_docs: https://github.com/Kitware/VTK/blob/master/Documentation/docs/build_instructions/build.md
     arm_recommended_minimum_version:
         version_number: 9.4.1
         release_date: 2024/11/22

@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://nodejs.org/en/learn/getting-started/introduction-to-nodejs
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/compute/migrating-aws-lambda-functions-to-arm-based-aws-graviton2-processors/
-    official_docs: https://nodejs.org/en/learn/getting-started/introduction-to-nodejs
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

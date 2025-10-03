@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://opendataplane.org/index.php/services/get-started/
         arm_content: https://community.arm.com/cfs-file/__key/telligent-evolution-components-attachments/01-1996-00-00-00-00-62-45/ODP-White-Paper_5F00_Final.pdf
         partner_content:
-        official_docs: https://opendataplane.org/index.php/services/get-started/
     arm_recommended_minimum_version:
         version_number: 1.42.1.0
         release_date: 2023/10/23

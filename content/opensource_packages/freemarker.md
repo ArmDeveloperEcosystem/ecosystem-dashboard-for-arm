@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://freemarker.apache.org/docs/index.html
         arm_content:
         partner_content:
-        official_docs: https://freemarker.apache.org/docs/index.html
     arm_recommended_minimum_version:
         version_number: 2.3.33
         release_date: 2024/06/01

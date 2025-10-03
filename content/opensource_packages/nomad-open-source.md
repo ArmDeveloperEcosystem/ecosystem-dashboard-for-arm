@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://developer.hashicorp.com/nomad/tutorials/get-started/gs-install
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 1.6.1
         release_date: 2023/07/21

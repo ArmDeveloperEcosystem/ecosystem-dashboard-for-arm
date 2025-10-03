@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://github.com/log4cplus/log4cplus?tab=readme-ov-file#installation-instruction
+    arm_content:
     partner_content:
       - display_name: Alibaba Cloud
         url: https://topic.alibabacloud.com/a/installation-and-use-of-log4cplus-under-linux-__linux_1_16_20277870.html
-    official_docs: https://github.com/log4cplus/log4cplus?tab=readme-ov-file#installation-instruction
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

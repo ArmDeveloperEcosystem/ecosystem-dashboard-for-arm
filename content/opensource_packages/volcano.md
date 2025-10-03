@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://volcano.sh/en/docs/installation/#install-with-yaml-files
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://docs.aws.amazon.com/emr/latest/EMR-on-EKS-DevelopmentGuide/tutorial-volcano.html
-    official_docs: https://volcano.sh/en/docs/installation/#install-with-yaml-files
   arm_recommended_minimum_version:
     version_number: 1.7.0
     release_date: 2023/01/08

@@ -14,9 +14,9 @@ optional_info:
     support_caveats: RKE is reaching EOL with the final release of version 1.8. It is recommended to migrate to RKE2. Kindly refer [here](https://github.com/rancher/rke#-important-notice-rke-end-of-life-announcement).
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/rancher/rke#building
         arm_content:
         partner_content:
-        official_docs: https://github.com/rancher/rke#building
     arm_recommended_minimum_version:
         version_number:
         release_date:

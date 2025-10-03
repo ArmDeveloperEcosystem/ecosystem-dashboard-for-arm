@@ -12,13 +12,13 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs:
+    arm_content:
     partner_content:
       - display_name: Microsoft Azure
         url: https://techcommunity.microsoft.com/t5/internet-of-things-blog/bridge-building-mosquitto-mqtt-to-azure-iot-using-paho-mqtt-and/ba-p/2999643
       - display_name: Oracle OCI
         url: https://blogs.oracle.com/developers/post/installing-securing-mosquitto-for-encrypted-mqtt-messaging-in-the-oracle-cloud
-    official_docs: null
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

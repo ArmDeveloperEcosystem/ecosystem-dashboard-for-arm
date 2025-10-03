@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://uxlfoundation.github.io/oneDNN/
     arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/machine-learning-inference-on-aws-graviton3
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/machine-learning/run-machine-learning-inference-workloads-on-aws-graviton-based-instances-with-amazon-sagemaker/
-    official_docs: https://uxlfoundation.github.io/oneDNN/
   arm_recommended_minimum_version:
     version_number: 3.7
     release_date: 2025/02/19

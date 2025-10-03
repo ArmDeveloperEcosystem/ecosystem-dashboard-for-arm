@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://docs.alpinelinux.org/user-handbook/0.1a/index.html
     arm_content: https://learn.arm.com/learning-paths/laptops-and-desktops/wsl2/import/
     partner_content:
-    official_docs: https://docs.alpinelinux.org/user-handbook/0.1a/index.html
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

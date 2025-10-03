@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.ceph.com/en/latest/cephadm/install/#install-cephadm
         arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/arm-demonstrates-leading-performance-on-ceph-storage-cluster
         partner_content:
-        official_docs: https://docs.ceph.com/en/latest/cephadm/install/#install-cephadm
     arm_recommended_minimum_version:
         version_number: Quincy 17.2.5
         release_date: 2023/02/22

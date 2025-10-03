@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://sourceware.org/glibc/started.html
+    arm_content:
     partner_content:
       - display_name: Oracle OCI
         url: https://blogs.oracle.com/linux/post/tuning-glibc-malloc-on-arm-a-case-study
-    official_docs: https://sourceware.org/glibc/started.html
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

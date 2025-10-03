@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://github.com/redis/redis/#readme
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/redis/
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/elasticache/redis/
-    official_docs: https://github.com/redis/redis/#readme
   arm_recommended_minimum_version:
     version_number: 6.0.9
     release_date: 2022/12/07

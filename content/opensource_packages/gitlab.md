@@ -12,13 +12,13 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://about.gitlab.com/blog/2021/08/05/achieving-23-cost-savings-and-36-performance-gain-using-gitlab-and-gitlab-runner-on-arm-neoverse-based-aws-graviton2-processor/
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/devops/unlock-the-power-of-ec2-graviton-with-gitlab-ci-cd-and-eks-runners/
       - display_name: Oracle OCI
         url: https://blogs.oracle.com/cloud-infrastructure/post/announcing-gitlab-arm-runner-support-for-the-arm-compute-platform-on-oracle-cloud-infrastructure
-    official_docs: https://about.gitlab.com/blog/2021/08/05/achieving-23-cost-savings-and-36-performance-gain-using-gitlab-and-gitlab-runner-on-arm-neoverse-based-aws-graviton2-processor/
   arm_recommended_minimum_version:
     version_number: 18.2
     release_date: 2025/07/07

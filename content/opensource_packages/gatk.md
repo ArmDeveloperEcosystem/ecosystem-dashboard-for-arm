@@ -13,9 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://gatk.broadinstitute.org/hc/en-us/articles/360036194592-Getting-started-with-GATK4
         arm_content:
         partner_content:
-        official_docs: https://gatk.broadinstitute.org/hc/en-us/articles/360036194592-Getting-started-with-GATK4
     arm_recommended_minimum_version:
         version_number:
         release_date:

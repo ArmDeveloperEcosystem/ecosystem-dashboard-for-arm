@@ -14,9 +14,9 @@ optional_info:
     support_caveats: As of version 6.0.0, OpenGauss supports the Arm architecture (AArch64) on the OpenEuler OS only - not CentOS.
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs-opengauss.osinfra.cn/en/docs/latest/docs/GettingStarted/container-based-installation-on-a-single-node.html
         arm_content:
         partner_content:
-        official_docs: https://docs-opengauss.osinfra.cn/en/docs/latest/docs/GettingStarted/container-based-installation-on-a-single-node.html
     arm_recommended_minimum_version:
         version_number:
         release_date:

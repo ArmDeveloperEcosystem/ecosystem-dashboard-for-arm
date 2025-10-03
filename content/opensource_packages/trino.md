@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://trino.io/docs/current/installation.html
         arm_content:
         partner_content:
-        official_docs: https://trino.io/docs/current/installation.html
     arm_recommended_minimum_version:
         version_number: 381
         release_date: 2022/05/16

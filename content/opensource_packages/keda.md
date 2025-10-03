@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://keda.sh/docs/2.13/deploy/
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/compute/mixing-aws-graviton-with-x86-cpus-to-optimize-cost-and-resilience-using-amazon-eks/
-    official_docs: https://keda.sh/docs/2.13/deploy/
   arm_recommended_minimum_version:
     version_number: 2.8.0
     release_date: 2022/08/10

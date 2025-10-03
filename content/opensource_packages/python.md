@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://speed.python.org/comparison/
+    arm_content:
     partner_content:
       - display_name: Oracle OCI
         url: https://blogs.oracle.com/linux/post/connect-from-an-arm-based-a1-compute-shape-to-autonomous-database-two-ways
-    official_docs: https://speed.python.org/comparison/
   arm_recommended_minimum_version:
     version_number: 3.11.0
     release_date: 2022/10/24

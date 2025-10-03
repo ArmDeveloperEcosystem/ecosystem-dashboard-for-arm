@@ -9,10 +9,10 @@ supported_minimum_version:
     release_date: 2024/02/15
 optional_info:    
   support_caveats:
-  getting_started_resources:        
+  getting_started_resources:
+    official_docs: https://github.com/astral-sh/uv
     arm_content:
     partner_content:
-    official_docs: https://github.com/astral-sh/uv
   arm_recommended_minimum_version: 
     version_number: 
     release_date: 

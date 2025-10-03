@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://ubuntu.com/server/docs/installation
     arm_content: https://community.arm.com/oss-platforms/w/docs/457/n1sdp-getting-started-guide
     partner_content:
-    official_docs: https://ubuntu.com/server/docs/installation
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

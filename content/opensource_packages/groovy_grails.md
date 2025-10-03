@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://grails.org/download.html
         arm_content:
         partner_content:
-        official_docs: https://grails.org/download.html
     arm_recommended_minimum_version:
         version_number: 6.2.2
         release_date: 2024/11/20

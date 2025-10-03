@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.open-mpi.org/en/v5.0.x/installing-open-mpi/quickstart.html
         arm_content:
         partner_content:
-        official_docs: https://docs.open-mpi.org/en/v5.0.x/installing-open-mpi/quickstart.html
     arm_recommended_minimum_version:
         version_number: 5.0.4
         release_date: 2024/07/19

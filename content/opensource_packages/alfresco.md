@@ -14,9 +14,9 @@ optional_info:
     support_caveats: PDF renderer is not supported on Arm64; use alternatives or build manually. LibreOffice and ImageMagick must be installed separately as they are not bundled for Arm64.
     alternative_options:
     getting_started_resources:
-        arm_content:
-        partner_content: 
         official_docs: https://docs.alfresco.com/content-services/latest/
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:

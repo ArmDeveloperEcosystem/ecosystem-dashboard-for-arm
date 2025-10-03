@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://github.com/pmem/pmdk#building-and-installing
     arm_content: https://developer.arm.com/documentation/101136/22-1-3/DDT/Memory-debugging/PMDK-memory-debugging
     partner_content:
       - display_name: Linaro
         url: https://ecosystemdashboard.linaro.org/projects/pmdk
-    official_docs: https://github.com/pmem/pmdk#building-and-installing
   arm_recommended_minimum_version:
     version_number: 2.1.1
     release_date: 2025/02/21
