@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.progress.com/marklogic/documentation
         arm_content:
         vendor_announcement:
-        official_docs: https://www.progress.com/marklogic/documentation
-
-
 optional_hidden_info:
     other_info: It's mentioned in the FAQ section that "MarkLogic does not currently support ARM based processors, so AWS Graviton instances are also not supported". Kindly find the same in the 5th question of faq section [here](https://help.marklogic.com/Knowledgebase/Article/View/marklogic-on-aws-faq).
 

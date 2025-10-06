@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://documentation.suse.com/cloudnative/virtualization/v1.5/en/introduction/overview.html
         arm_content:
         vendor_announcement: https://www.suse.com/c/suse-virtualization-1-5-prime-more-value-less-lock-in/
-        official_docs: https://documentation.suse.com/cloudnative/virtualization/v1.5/en/introduction/overview.html
-
-
 optional_hidden_info:
     other_info: 
 

@@ -14,14 +14,14 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://gmplib.org/manual/Installing-GMP
         arm_content:
         partner_content:
-        official_docs: https://gmplib.org/manual/Installing-GMP
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 6.3.0
+        release_date: 2023/07/30
+        reference_content: https://gmplib.org/gmp6.3
+        rationale: This version improved the assembly for 64-bit Arm.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://gmplib.org/list-archives/gmp-announce/2013-February/000038.html

@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/optimizations-for-arm
-        partner_content: 
         official_docs: https://github.com/madler/pigz/blob/master/README
+        arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/optimizations-for-arm
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:

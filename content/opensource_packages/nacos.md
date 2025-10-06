@@ -13,9 +13,9 @@ optional_info:
     support_caveats: For Nacos to run on ARM servers, Java 8 or above must be installed. Lower versions do not support Nacos on ARM64.
     alternative_options: 
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://nacos.io/en-us/docs/quick-start.html
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 
         release_date:

@@ -14,9 +14,9 @@ optional_info:
     support_caveats: The minimum version of avahi v0.6.31 corresponds to ubuntu:14.04 and v0.7 to ubuntu:18.04.
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/avahi/avahi/blob/master/docs/INSTALL
         arm_content:
         partner_content:
-        official_docs: https://github.com/avahi/avahi/blob/master/docs/INSTALL
     arm_recommended_minimum_version:
         version_number:
         release_date:

@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.sophos.com/central/Customer/help/en-us/PeopleAndDevices/ProtectDevices/ServerProtection/SophosProtectionLinux/index.html
         arm_content:
         vendor_announcement: https://docs.sophos.com/releasenotes/index.html?productGroupID=esg&productID=linux_protection&versionID=Agent
-        official_docs: https://docs.sophos.com/central/Customer/help/en-us/PeopleAndDevices/ProtectDevices/ServerProtection/SophosProtectionLinux/index.html
-
 optional_hidden_info:
     other_info: The announcement regarding Linux ARM64 support for Sophos Protection for Linux is detailed in the "Version 2023.4" release notes, as mentioned in the Vendor Announcement.
 ---

@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/sqlite/sqlite?tab=readme-ov-file#compiling-for-unix-like-systems
         arm_content:
         partner_content:
-        official_docs: https://github.com/sqlite/sqlite?tab=readme-ov-file#compiling-for-unix-like-systems
     arm_recommended_minimum_version:
         version_number:
         release_date:

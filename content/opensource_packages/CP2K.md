@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/cp2k/cp2k/blob/master/INSTALL.md
         arm_content:
         partner_content:
-        official_docs: https://github.com/cp2k/cp2k/blob/master/INSTALL.md
     arm_recommended_minimum_version:
         version_number: 2023.1
         release_date: 2023/01/01

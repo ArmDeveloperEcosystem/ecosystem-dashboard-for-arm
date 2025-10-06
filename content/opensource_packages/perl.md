@@ -14,9 +14,11 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/Perl/perl5?tab=readme-ov-file#installation
         arm_content:
         partner_content:
-        official_docs: https://github.com/Perl/perl5?tab=readme-ov-file#installation
+            - display_name: Oracle OCI
+                url:https://blogs.oracle.com/linux/post/announcing-the-release-of-oracle-linux-8-update-6
     arm_recommended_minimum_version:
         version_number:
         release_date:

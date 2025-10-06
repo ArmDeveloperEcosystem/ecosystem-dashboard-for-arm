@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.rapid7.com/insightvm/insightvm-quick-start-guide
         arm_content:
         vendor_announcement: https://aws.amazon.com/blogs/apn/how-to-deploy-a-rapid7-insightvm-scan-engine-for-aws-graviton2-based-ec2-instances/
-        official_docs: https://docs.rapid7.com/insightvm/insightvm-quick-start-guide
-
-
 optional_hidden_info:
     other_info:
 

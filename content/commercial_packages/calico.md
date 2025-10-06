@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement:  https://docs.projectcalico.org/archive/v3.2/releases#multiple-architectures
         official_docs: https://docs.tigera.io/
-
+        arm_content:
+        vendor_announcement: https://docs.projectcalico.org/archive/v3.2/releases#multiple-architectures
 optional_hidden_info:
     other_info:
 

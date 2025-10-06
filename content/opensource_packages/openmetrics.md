@@ -13,10 +13,10 @@ optional_info:
     homepage_url: https://openmetrics.io
     support_caveats: 
     alternative_options: 
-    getting_started_resources: 
+    getting_started_resources:
+        official_docs: https://github.com/OpenObservability/OpenMetrics/blob/main/specification/OpenMetrics.md
         arm_content:
         partner_content:
-        official_docs: https://github.com/OpenObservability/OpenMetrics/blob/main/specification/OpenMetrics.md
     arm_recommended_minimum_version: 
         version_number:
         release_date:

@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://doc.zeroc.com/ice/latest
         arm_content:
         partner_content:
-        official_docs: https://doc.zeroc.com/ice/latest
     arm_recommended_minimum_version:
         version_number: 3.7.10
         release_date: 2023/11/07

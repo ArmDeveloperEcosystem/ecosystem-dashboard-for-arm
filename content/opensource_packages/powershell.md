@@ -14,8 +14,9 @@ optional_info:
     support_caveats: Linux package managers do not include Arm support. Refer to the Arm guide below.
     alternative_options:
     getting_started_resources:
-        arm_content: https://learn.arm.com/install-guides/powershell/
         official_docs: https://learn.microsoft.com/en-us/powershell/
+        arm_content: https://learn.arm.com/install-guides/powershell/
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:

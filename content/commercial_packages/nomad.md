@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: 
         official_docs: https://developer.hashicorp.com/nomad/tutorials/enterprise/hashicorp-enterprise-license?ajs_aid=897c4292-0b49-4743-bdb8-3ac2d5db38df&product_intent=nomad
-
+        arm_content:
+        vendor_announcement:
 optional_hidden_info:
     other_info: Nomad has both enterprise and open source packages. Link here - releases.hashicorp.com/nomad/    supports Arm when building from source, as indicated here- https://gist.github.com/GusAntoniassi/5ad2046324d009a9aaf89b662a0ebf79     support verified here - https://archlinuxarm.org/packages/aarch64/nomad
 

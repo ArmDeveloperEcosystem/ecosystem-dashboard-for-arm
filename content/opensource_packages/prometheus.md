@@ -13,10 +13,10 @@ optional_info:
     homepage_url: https://prometheus.io/ 
     support_caveats: 
     alternative_options: 
-    getting_started_resources: 
-        arm_content: 
-        partner_content:  
+    getting_started_resources:
         official_docs: https://prometheus.io/docs/introduction/overview/
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version: 
         version_number: 
         release_date: 

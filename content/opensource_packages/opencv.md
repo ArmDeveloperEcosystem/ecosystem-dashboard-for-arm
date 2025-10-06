@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options: 
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://docs.opencv.org/4.x/d7/d9f/tutorial_linux_install.html
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 4.11
         release_date: 2025/02/18

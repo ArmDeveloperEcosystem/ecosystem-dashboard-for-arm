@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.gradle.org/current/userguide/installation.html
         arm_content:
         partner_content:
-        official_docs: https://docs.gradle.org/current/userguide/installation.html
     arm_recommended_minimum_version:
         version_number: 8.11
         release_date: 2024/11/11

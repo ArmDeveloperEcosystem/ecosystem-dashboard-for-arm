@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://dasher.wustl.edu/tinker/distribution/doc/sphinx/tinker/_build/html/text/installation.html#building-your-own-executables
         arm_content:
         partner_content:
-        official_docs: https://dasher.wustl.edu/tinker/distribution/doc/sphinx/tinker/_build/html/text/installation.html#building-your-own-executables
     arm_recommended_minimum_version:
         version_number:
         release_date:

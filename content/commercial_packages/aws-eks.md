@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.aws.amazon.com/eks/latest/userguide/what-is-eks.html
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/eks/cluster_deployment/
         vendor_announcement: https://aws.amazon.com/blogs/containers/eks-on-graviton-generally-available/
-        official_docs: https://docs.aws.amazon.com/eks/latest/userguide/what-is-eks.html
-
-
 optional_hidden_info:
     other_info:
 

@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.hazelcast.com/hazelcast/5.4/getting-started/install-hazelcast
         arm_content:
         vendor_announcement: https://docs.hazelcast.com/hazelcast/5.3/release-notes/5-3-0
-        official_docs: https://docs.hazelcast.com/hazelcast/5.4/getting-started/install-hazelcast
-
-
 optional_hidden_info:
     other_info: 
 

@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.yambo-code.eu/wiki/index.php/Install_Yambo_on_Ubuntu/LinuxMint
         arm_content:
         partner_content:
-        official_docs: https://www.yambo-code.eu/wiki/index.php/Install_Yambo_on_Ubuntu/LinuxMint
     arm_recommended_minimum_version:
         version_number:
         release_date:

@@ -14,14 +14,14 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.percona.com/percona-xtrabackup/8.0/installation.html
         arm_content:
         partner_content:
-        official_docs: https://docs.percona.com/percona-xtrabackup/8.0/installation.html
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 8.0.35.31
+        release_date: 2024/09/20
+        reference_content: https://docs.percona.com/percona-xtrabackup/8.0/release-notes/8.0/8.0.35-31.0.upd.html
+        rationale: In this version, Percona XtraBackup includes the addition of arm64.deb packages in Percona Software Downloads.
 
 
 optional_hidden_info:

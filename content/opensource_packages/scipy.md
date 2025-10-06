@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://scipy.org/install/
         arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/aarch64-docker-images-for-tensorflow-and-pytorch
         partner_content:
-        official_docs: https://scipy.org/install/
     arm_recommended_minimum_version:
         version_number:
         release_date:

@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.appdynamics.com/appd/22.x/22.2/en/infrastructure-visibility/machine-agent/install-the-machine-agent
         arm_content:
         vendor_announcement: https://docs.appdynamics.com/appd/22.x/22.2/en/infrastructure-visibility/machine-agent/machine-agent-requirements-and-supported-environments
-        official_docs: https://docs.appdynamics.com/appd/22.x/22.2/en/infrastructure-visibility/machine-agent/install-the-machine-agent
-
 optional_hidden_info:
     other_info:
 ---

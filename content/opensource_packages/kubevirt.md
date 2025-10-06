@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content:  https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/empowering-software-development-with-works-on-arm-initiative
-        partner_content:
         official_docs: https://kubevirt.io/user-guide/operations/installation/#arm64-developer-builds
+        arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/empowering-software-development-with-works-on-arm-initiative
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 1.5.1
         release_date: 2025/05/06

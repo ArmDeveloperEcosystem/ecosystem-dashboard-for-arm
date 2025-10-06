@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.nats.io/running-a-nats-service/introduction/installation
         arm_content:
         partner_content:
-        official_docs: https://docs.nats.io/running-a-nats-service/introduction/installation
     arm_recommended_minimum_version:
         version_number:
         release_date: 

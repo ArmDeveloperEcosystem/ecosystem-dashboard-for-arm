@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement:
         official_docs: https://help.okta.com/asa/en-us/content/topics/adv_server_access/docs/start-here.htm
-
+        arm_content:
+        vendor_announcement:
 optional_hidden_info:
     other_info:
 

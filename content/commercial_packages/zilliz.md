@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.zilliz.com/docs/quick-start
         arm_content:
         vendor_announcement: https://zilliz.com/blog/whats-new-in-milvus-2-3
-        official_docs: https://docs.zilliz.com/docs/quick-start
-
 optional_hidden_info:
     other_info: There isn’t a specific announcement regarding Zilliz Cloud support for Linux/ARM64, but its underlying vector database milvus does support Linux/ARM64. Zilliz Cloud is a fully managed service for the Milvus vector database, which is its foundation. For smaller-scale needs, Milvus can be used, while for larger-scale requirements, Zilliz Cloud is the preferred option. Additionally, Zilliz cloud and Milvus offers enterprise enhancements as discussed in this [blog](https://zilliz.com/blog/milvus-2-3-beta-and-enterprise-upgrades-on-zilliz-cloud).
 

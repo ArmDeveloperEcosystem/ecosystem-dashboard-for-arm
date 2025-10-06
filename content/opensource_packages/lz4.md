@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content:
-        partner_content:  
         official_docs: https://github.com/lz4/lz4/blob/dev/README.md
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 1.9.4
         release_date: 2022/08/16

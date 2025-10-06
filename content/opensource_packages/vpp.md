@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/mellanox-card-on-arm-server-installing-mlnx-ofed  
-        partner_content: 
-        official_docs: https://github.com/contiv/vpp/blob/master/docs/arm64/MANUAL_INSTALL_ARM64.md 
+        official_docs: https://github.com/contiv/vpp/blob/master/docs/arm64/MANUAL_INSTALL_ARM64.md
+        arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/mellanox-card-on-arm-server-installing-mlnx-ofed
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 
         release_date:

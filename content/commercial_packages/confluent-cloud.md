@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement:  https://www.confluent.io/blog/introducing-confluent-platform-7-6/#arm64-support 
         official_docs: https://docs.confluent.io/cloud/current/overview.html
-
+        arm_content:
+        vendor_announcement: https://www.confluent.io/blog/introducing-confluent-platform-7-6/#arm64-support
 optional_hidden_info:
     other_info:
 

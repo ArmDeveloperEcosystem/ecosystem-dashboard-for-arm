@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://avro.apache.org/docs/1.12.0/getting-started-python/
         arm_content:
         partner_content:
-        official_docs: https://avro.apache.org/docs/1.12.0/getting-started-python/
     arm_recommended_minimum_version:
         version_number: 1.12.0
         release_date: 2024/08/05

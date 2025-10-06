@@ -14,9 +14,9 @@ optional_info:
     support_caveats: There are also other versions of BiSheng-JDK which have minimum ARM64/AARCH64 support, i.e. BiSheng-JDK11(jdk-11.0.8-ga), BiSheng-JDK17(jdk-17.0.3-ga), BiSheng-JDK21(jdk-21.0.1-ga-b013).
     alternative_options: 
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://github.com/openeuler-mirror/bishengjdk-8/blob/master/README-builds.md
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:

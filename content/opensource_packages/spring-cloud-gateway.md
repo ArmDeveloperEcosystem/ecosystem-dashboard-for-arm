@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://cloud.spring.io/spring-cloud-gateway/reference/html/
         arm_content:
         partner_content:
-        official_docs: https://cloud.spring.io/spring-cloud-gateway/reference/html/
     arm_recommended_minimum_version:
         version_number: 4.1.2
         release_date: 2024/03/27

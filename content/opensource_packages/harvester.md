@@ -5,27 +5,25 @@ description: Harvester is an open-source, Kubernetes-based hyperconverged infras
 download_url: https://github.com/harvester/harvester/releases
 works_on_arm: true
 supported_minimum_version:
-    version_number: 1.3.0
-    release_date: 2024/03/15
- 
- 
+  version_number: 1.3.0
+  release_date: 2024/03/15
 optional_info:
-    homepage_url: https://harvesterhci.io/
-    support_caveats:
-    alternative_options:
-    getting_started_resources:
-        arm_content:
-        partner_content: https://www.suse.com/c/how-to-easily-deploy-harvester-on-arm-based-servers/
-        official_docs: https://docs.harvesterhci.io/
-    arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
- 
+  homepage_url: https://harvesterhci.io/
+  support_caveats: null
+  alternative_options: null
+  getting_started_resources:
+    official_docs: https://docs.harvesterhci.io/
+    arm_content:
+    partner_content:
+      - display_name: SUSE
+        url: https://www.suse.com/c/how-to-easily-deploy-harvester-on-arm-based-servers/
+  arm_recommended_minimum_version:
+    version_number: null
+    release_date: null
+    reference_content: null
+    rationale: null
 optional_hidden_info:
-    release_notes__supported_minimum: https://github.com/harvester/harvester/releases/tag/v1.3.0
-    release_notes__recommended_minimum:
-    other_info:
- 
+  release_notes__supported_minimum: https://github.com/harvester/harvester/releases/tag/v1.3.0
+  release_notes__recommended_minimum: null
+  other_info: null
 ---

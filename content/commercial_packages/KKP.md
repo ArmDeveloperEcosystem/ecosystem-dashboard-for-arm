@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://www.kubermatic.com/blog/kubermatic-kubernetes-platform-2-16-is-here/
         official_docs: https://docs.kubermatic.com/kubermatic/v2.25/installation/
-
+        arm_content:
+        vendor_announcement: https://www.kubermatic.com/blog/kubermatic-kubernetes-platform-2-16-is-here/
 optional_hidden_info:
     other_info: 
 

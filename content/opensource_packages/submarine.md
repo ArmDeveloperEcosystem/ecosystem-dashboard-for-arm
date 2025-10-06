@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/FyraLabs/submarine/tree/v0.1.0?tab=readme-ov-file#%EF%B8%8F-building
         arm_content:
         partner_content:
-        official_docs: https://github.com/FyraLabs/submarine/tree/v0.1.0?tab=readme-ov-file#%EF%B8%8F-building
     arm_recommended_minimum_version:
         version_number:
         release_date:

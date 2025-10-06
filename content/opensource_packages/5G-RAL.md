@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://developer.arm.com/documentation/102249/2410/Tutorials/Use-Arm-RAN-Acceleration-Library?lang=en
         arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/introducing-arm-ran-acceleration-library
         partner_content:
-        official_docs: https://developer.arm.com/documentation/102249/2410/Tutorials/Use-Arm-RAN-Acceleration-Library?lang=en
     arm_recommended_minimum_version:
         version_number:
         release_date:

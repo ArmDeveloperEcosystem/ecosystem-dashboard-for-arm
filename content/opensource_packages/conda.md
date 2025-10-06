@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.conda.io/projects/conda/en/stable/user-guide/install/linux.html
         arm_content: https://learn.arm.com/install-guides/anaconda/
         partner_content:
-        official_docs: https://docs.conda.io/projects/conda/en/stable/user-guide/install/linux.html
     arm_recommended_minimum_version:
         version_number:
         release_date:

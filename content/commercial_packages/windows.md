@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://learn.microsoft.com/en-us/windows/arm/overview
         arm_content: https://community.arm.com/arm-community-blogs/b/announcements/posts/build-windows-on-arm-developers
         vendor_announcement: https://blogs.windows.com/windowsdeveloper/2018/11/15/official-support-for-windows-10-on-arm-development/
-        official_docs: https://learn.microsoft.com/en-us/windows/arm/overview
-
-
 optional_hidden_info:
     other_info:
 

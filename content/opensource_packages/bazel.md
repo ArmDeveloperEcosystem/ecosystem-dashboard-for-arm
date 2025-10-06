@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://bazel.build/install/ubuntu
         arm_content: https://community.arm.com/arm-community-blogs/b/ai-and-ml-blog/posts/building-bazel-and-tensorflow-2-x-on-aarch64
         partner_content:
-        official_docs: https://bazel.build/install/ubuntu
     arm_recommended_minimum_version:
         version_number:
         release_date:

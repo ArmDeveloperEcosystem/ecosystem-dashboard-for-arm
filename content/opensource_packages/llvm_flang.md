@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/llvm/llvm-project/blob/main/flang/docs/GettingStarted.md#building-flang
         arm_content: https://developer.arm.com/documentation/101380/2404/Compiler-options?lang=en
         partner_content:
-        official_docs: https://github.com/llvm/llvm-project/blob/main/flang/docs/GettingStarted.md#building-flang
     arm_recommended_minimum_version:
         version_number:
         release_date:

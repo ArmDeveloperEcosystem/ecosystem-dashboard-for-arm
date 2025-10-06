@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content:  
-        partner_content: 
         official_docs: https://github.com/apache/hadoop/blob/trunk/BUILDING.txt
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 3.3.6
         release_date: 2023/06/23

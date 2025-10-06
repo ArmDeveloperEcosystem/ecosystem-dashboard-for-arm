@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.rabbitmq.com/documentation.html
         arm_content:
         partner_content:
-        official_docs: https://www.rabbitmq.com/documentation.html
     arm_recommended_minimum_version:
         version_number: 3.11.0
         release_date: 2024/05/01

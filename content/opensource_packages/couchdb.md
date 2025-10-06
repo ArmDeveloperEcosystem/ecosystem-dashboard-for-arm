@@ -14,9 +14,9 @@ optional_info:
     support_caveats:   Ensure an Arm64-compatible Erlang is installed when building from source. Docker is recommended for easier setup.
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.couchdb.org/en/stable/install/unix.html
         arm_content:
         partner_content:
-        official_docs: https://docs.couchdb.org/en/stable/install/unix.html
     arm_recommended_minimum_version:
         version_number:
         release_date:

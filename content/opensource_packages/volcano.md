@@ -5,27 +5,25 @@ description: Volcano is a Cloud Native Batch System. It provides a suite of mech
 download_url: https://hub.docker.com/u/volcanosh
 works_on_arm: true
 supported_minimum_version:
-    version_number: 1.1.0
-    release_date: 2020/10/30
-
-
+  version_number: 1.1.0
+  release_date: 2020/10/30
 optional_info:
-    homepage_url: https://volcano.sh/
-    support_caveats:
-    alternative_options:
-    getting_started_resources:
-        arm_content:
-        partner_content: https://docs.aws.amazon.com/emr/latest/EMR-on-EKS-DevelopmentGuide/tutorial-volcano.html
-        official_docs: https://volcano.sh/en/docs/installation/#install-with-yaml-files
-    arm_recommended_minimum_version:
-        version_number: 1.7.0
-        release_date: 2023/01/08
-        reference_content: https://github.com/volcano-sh/volcano/releases/tag/v1.7.0
-        rationale: This release starts supporting multi-arch docker images for Volcano.
-
+  homepage_url: https://volcano.sh/
+  support_caveats: null
+  alternative_options: null
+  getting_started_resources:
+    official_docs: https://volcano.sh/en/docs/installation/#install-with-yaml-files
+    arm_content:
+    partner_content:
+      - display_name: Amazon AWS
+        url: https://docs.aws.amazon.com/emr/latest/EMR-on-EKS-DevelopmentGuide/tutorial-volcano.html
+  arm_recommended_minimum_version:
+    version_number: 1.7.0
+    release_date: 2023/01/08
+    reference_content: https://github.com/volcano-sh/volcano/releases/tag/v1.7.0
+    rationale: This release starts supporting multi-arch docker images for Volcano.
 optional_hidden_info:
-    release_notes__supported_minimum: https://github.com/volcano-sh/volcano/releases/tag/v1.1.0
-    release_notes__recommended_minimum:
-    other_info: Volcano does not release architecture specific binaries. The docker images are available for linux/arm64 [here](https://hub.docker.com/u/volcanosh).
-
+  release_notes__supported_minimum: https://github.com/volcano-sh/volcano/releases/tag/v1.1.0
+  release_notes__recommended_minimum: null
+  other_info: Volcano does not release architecture specific binaries. The docker images are available for linux/arm64 [here](https://hub.docker.com/u/volcanosh).
 ---

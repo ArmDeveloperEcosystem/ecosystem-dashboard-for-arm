@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://docs.starburst.io/latest/release/release-360-e.html
         official_docs: https://docs.starburst.io/latest/installation.html
-
-
+        arm_content:
+        vendor_announcement: https://docs.starburst.io/latest/release/release-360-e.html
 optional_hidden_info:
     other_info: 
 

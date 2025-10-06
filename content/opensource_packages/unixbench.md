@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options: 
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://github.com/kdlucas/byte-unixbench/blob/master/UnixBench/README
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 6.0.0
         release_date: 2025/05/22

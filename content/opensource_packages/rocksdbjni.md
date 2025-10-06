@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/facebook/rocksdb/wiki/rocksjava-basics
         arm_content:
         partner_content:
-        official_docs: https://github.com/facebook/rocksdb/wiki/rocksjava-basics
     arm_recommended_minimum_version:
         version_number:
         release_date:

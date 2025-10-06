@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://documentation.suse.com/sle-micro/6.1/
         arm_content:
         vendor_announcement: https://www.suse.com/releasenotes/aarch64/SL-Micro/6.0/index.html#v60-supported-architectures
-        official_docs: https://documentation.suse.com/sle-micro/6.1/
-
-
 optional_hidden_info:
     other_info: 
 

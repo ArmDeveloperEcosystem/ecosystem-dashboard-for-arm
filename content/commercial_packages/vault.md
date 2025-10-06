@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://developer.hashicorp.com/vault/install#linux
         arm_content:
         vendor_announcement: https://github.com/hashicorp/vault/commit/7bce60290f2103365c4fedd9e28fbb28c0930fa1
-        official_docs: https://developer.hashicorp.com/vault/install#linux
-
-
 optional_hidden_info:
     other_info: ARM64 zip archive is included in version 0.7.1 [here](https://releases.hashicorp.com/vault/0.7.1/).
 

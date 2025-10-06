@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.tuxcare.com/live-patching-services/#installation
         arm_content:
         vendor_announcement: https://aws.amazon.com/blogs/apn/live-patching-linux-without-downtime-on-aws-graviton2-instances/
-        official_docs: https://docs.tuxcare.com/live-patching-services/#installation
-
 optional_hidden_info:
     other_info:
 

@@ -13,9 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://openzfs.github.io/openzfs-docs/Getting%20Started/Ubuntu/index.html
         arm_content:
         partner_content:
-        official_docs: https://openzfs.github.io/openzfs-docs/Getting%20Started/Ubuntu/index.html
     arm_recommended_minimum_version:
         version_number: 2.2.4
         release_date: 2024/05/03

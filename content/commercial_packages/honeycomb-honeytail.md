@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.honeycomb.io/getting-data-in/logs/honeytail/#installation
         arm_content:
         vendor_announcement: https://github.com/honeycombio/honeytail/releases/tag/v1.1.0
-        official_docs: https://docs.honeycomb.io/getting-data-in/logs/honeytail/#installation
-
-
 optional_hidden_info:
     other_info: The first release at GitHub, i.e. v1.1.0 contains arm64 deb package. Kindly consider [here](https://github.com/honeycombio/honeytail/releases/tag/v1.1.0).
 

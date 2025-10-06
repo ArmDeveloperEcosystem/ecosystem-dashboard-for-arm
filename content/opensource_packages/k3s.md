@@ -1,11 +1,11 @@
 ---
-name: K3S
+name: K3s - Developed by Rancher (now part of SUSE)
 category: Containers and Orchestration
-description: K3S is a lightweight, certified Kubernetes distribution optimized for IoT, edge computing, and resource-constrained environments.
+description: K3s is a lightweight, fully compliant Kubernetes distribution packaged as a single binary, designed for resource-constrained and edge environments with simplified operations and minimal dependencies.
 download_url: https://github.com/k3s-io/k3s/releases
 works_on_arm: true
 supported_minimum_version:
-    version_number: v0.1.0
+    version_number: 0.1.0
     release_date: 2019/02/26
  
  
@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.k3s.io/quick-start
         arm_content:
         partner_content:
-        official_docs: https://docs.k3s.io/quick-start
     arm_recommended_minimum_version:
         version_number:
         release_date:
@@ -26,6 +26,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum: 
     release_notes__recommended_minimum:
-    other_info: Release notes for Linux/ARM64 are not available, but the Linux/ARM64 binaries are rolled out from version 0.1.0 onwards. The README.md in version 0.1.0 confirms the Linux/ARM64 support.
+    other_info: Release notes for Linux/Arm64 are not available, but the Linux/Arm64 binaries are rolled out from version 0.1.0 onwards. The README.md in version 0.1.0 confirms the Linux/Arm64 support.
  
 ---

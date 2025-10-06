@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/openssh/openssh-portable/tree/master#building-from-git
         arm_content:
         partner_content:
-        official_docs: https://github.com/openssh/openssh-portable/tree/master#building-from-git
     arm_recommended_minimum_version:
         version_number: 9.9p2
         release_date: 2025/02/18

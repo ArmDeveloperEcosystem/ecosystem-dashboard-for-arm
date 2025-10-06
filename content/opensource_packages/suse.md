@@ -14,9 +14,9 @@ optional_info:
     support_caveats: There are minimum hardware requirements to install SUSE on Arm hardware. For all details, read [this install guide from SUSE](https://documentation.suse.com/sles/15-SP1/html/SLES-all/cha-aarch64.html). SUSE SLES is built on an open-source codebase, meaning its core is freely available and modifiable. However, access to official updates, patches, maintenance, and enterprise support requires a paid subscription after the initial free trial.
     alternative_options:
     getting_started_resources:
+        official_docs: https://documentation.suse.com/sles/15-SP5/
         arm_content:
         partner_content:
-        official_docs: https://documentation.suse.com/sles/15-SP5/
     arm_recommended_minimum_version:
         version_number: 15 SP5
         release_date: 2025/07/18

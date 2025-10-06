@@ -14,9 +14,9 @@ optional_info:
     support_caveats: Earlier versions such as 0.0.1 build successfully on Linux/Arm64, but only 0.3.1 and later are officially released.
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/FyraLabs/tiffin#readme
         arm_content:
         partner_content:
-        official_docs: https://github.com/FyraLabs/tiffin#readme
     arm_recommended_minimum_version:
         version_number:
         release_date:

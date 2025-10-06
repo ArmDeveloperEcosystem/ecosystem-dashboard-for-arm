@@ -1,7 +1,7 @@
 ---
 name: Filebeat
 category: DevOps
-description: Filebeat is a lightweight log shipper that monitors and forwards log files to a central data processing system.
+description: Filebeat, developed and maintained by Elastic, is a lightweight log shipper that monitors and forwards log files to a central data processing system.
 download_url: https://www.elastic.co/downloads/past-releases#filebeat
 works_on_arm: true
 supported_minimum_version:
@@ -14,9 +14,9 @@ optional_info:
     support_caveats: 
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.elastic.co/guide/en/beats/filebeat/current/filebeat-installation-configuration.html
         arm_content:
         partner_content:
-        official_docs: https://www.elastic.co/guide/en/beats/filebeat/current/filebeat-installation-configuration.html
     arm_recommended_minimum_version:
         version_number:
         release_date:
@@ -26,7 +26,7 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: Linux/ARM64 release notes are not available. Though it started releaseing filbeat for linux aarch64 since version 7.12.0.
+    other_info: There are no release notes for the initial Arm64 support. Version 7.12.0 rolls out Linux Aarch64 artifacts. Please see [this](https://www.elastic.co/downloads/past-releases/filebeat-7-12-0).
 
  
 ---

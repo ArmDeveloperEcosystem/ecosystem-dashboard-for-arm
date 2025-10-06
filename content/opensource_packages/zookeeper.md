@@ -14,9 +14,9 @@ optional_info:
     support_caveats: As a Java-based platform, this package will run on top of an Arm compatible JVM.
     alternative_options:
     getting_started_resources:
-        arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/kafka/zookeeper_cluster/
-        partner_content: 
         official_docs: https://github.com/apache/zookeeper/blob/master/README.md
+        arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/kafka/zookeeper_cluster/
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:

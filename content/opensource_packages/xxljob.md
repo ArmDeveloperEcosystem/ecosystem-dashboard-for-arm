@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.xuxueli.com/xxl-job/#2.2%20%E7%BC%96%E8%AF%91%E6%BA%90%E7%A0%81
         arm_content:
         partner_content:
-        official_docs: https://www.xuxueli.com/xxl-job/#2.2%20%E7%BC%96%E8%AF%91%E6%BA%90%E7%A0%81
     arm_recommended_minimum_version:
         version_number:
         release_date:

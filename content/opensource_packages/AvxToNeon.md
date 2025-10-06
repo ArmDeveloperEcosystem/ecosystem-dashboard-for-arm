@@ -5,29 +5,25 @@ description: AvxToNeon is an open-source project that provides a solution for po
 download_url: https://github.com/kunpengcompute/AvxToNeon/releases
 works_on_arm: true
 supported_minimum_version:
-    version_number: v1.0.0
-    release_date: 2020/03/04
-
-
+  version_number: v1.0.0
+  release_date: 2020/03/04
 optional_info:
-    homepage_url: https://github.com/kunpengcompute/AvxToNeon
-    support_caveats:
-    alternative_options:
-    getting_started_resources:
-        arm_content:
-        partner_content: https://ecosystemdashboard.linaro.org/projects/avxtoneon
-        official_docs: https://github.com/kunpengcompute/AvxToNeon#test
-    arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
-
-
+  homepage_url: https://github.com/kunpengcompute/AvxToNeon
+  support_caveats: null
+  alternative_options: null
+  getting_started_resources:
+    official_docs: https://github.com/kunpengcompute/AvxToNeon#test
+    arm_content:
+    partner_content:
+      - display_name: Linaro
+        url: https://ecosystemdashboard.linaro.org/projects/avxtoneon
+  arm_recommended_minimum_version:
+    version_number: null
+    release_date: null
+    reference_content: null
+    rationale: null
 optional_hidden_info:
-    release_notes__supported_minimum:
-    release_notes__recommended_minimum:
-    other_info: Linux/ARM64 release notes are not available. Installation and testing are done via the [tar archive](https://github.com/kunpengcompute/AvxToNeon/releases/tag/v1.0.0).
-
+  release_notes__supported_minimum: null
+  release_notes__recommended_minimum: null
+  other_info: Linux/ARM64 release notes are not available. Installation and testing are done via the [tar archive](https://github.com/kunpengcompute/AvxToNeon/releases/tag/v1.0.0).
 ---
-

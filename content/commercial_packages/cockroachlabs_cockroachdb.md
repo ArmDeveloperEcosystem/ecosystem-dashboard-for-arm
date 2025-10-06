@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.cockroachlabs.com/docs/v24.1/install-cockroachdb-linux
         arm_content:
         vendor_announcement: https://www.cockroachlabs.com/docs/releases/v22.2#v22-2-0-alpha-1-build-changes
-        official_docs: https://www.cockroachlabs.com/docs/v24.1/install-cockroachdb-linux
- 
 optional_hidden_info:
     other_info: CockroachDB distributes a single binary that contains both core and Enterprise features. The first experimental Linux/ARM64 release is rolled out in version v22.2.0-alpha.1.
 

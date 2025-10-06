@@ -5,27 +5,25 @@ description: Cmake is a de-facto standard for building code, especially C and C+
 download_url: https://cmake.org/download/
 works_on_arm: true
 supported_minimum_version:
-    version_number: 3.19.3
-    release_date: 2021/01/13
-
-
+  version_number: 3.19.3
+  release_date: 2021/01/13
 optional_info:
-    homepage_url: https://cmake.org/
-    support_caveats:
-    alternative_options:
-    getting_started_resources:
-        arm_content: https://learn.arm.com/install-guides/cmake/
-        partner_content:
-        official_docs: https://cmake.org/getting-started/
-    arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
-
+  homepage_url: https://cmake.org/
+  support_caveats: null
+  alternative_options: null
+  getting_started_resources:
+    official_docs: https://cmake.org/getting-started/
+    arm_content: https://learn.arm.com/install-guides/cmake/
+    partner_content:
+      - display_name: Amazon AWS
+        url: https://docs.aws.amazon.com/ja_jp/sdk-for-cpp/v1/developer-guide/cmake-params.html
+  arm_recommended_minimum_version:
+    version_number: null
+    release_date: null
+    reference_content: null
+    rationale: null
 optional_hidden_info:
-    release_notes__supported_minimum: https://cmake.org/cmake/help/latest/release/3.19.html#id3
-    release_notes__recommended_minimum:
-    other_info:
-
+  release_notes__supported_minimum: https://cmake.org/cmake/help/latest/release/3.19.html#id3
+  release_notes__recommended_minimum: null
+  other_info: null
 ---

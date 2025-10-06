@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://www.puppet.com/docs/puppet/8/puppet_index.html
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 8.8.1
         release_date: 2024/07/01
