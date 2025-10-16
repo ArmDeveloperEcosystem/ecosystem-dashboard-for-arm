@@ -18,10 +18,10 @@ optional_info:
         arm_content: https://developer.arm.com/documentation/101458/2404/Supporting-reference-information/Clang-and-LLVM-documentation
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 20.1.0
+        release_date: 2025/03/04
+        reference_content: https://releases.llvm.org/20.1.0/tools/clang/docs/ReleaseNotes.html
+        rationale: In this release, support for SVE2.1 and SME2.1 has been implemented in compliance with the Arm C Language Extensions (ACLE).
 
 optional_hidden_info:
     release_notes__supported_minimum: https://releases.llvm.org/19.1.0/tools/clang/docs/ReleaseNotes.html#arm-and-aarch64-support
