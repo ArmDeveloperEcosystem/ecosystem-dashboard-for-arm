@@ -1,21 +1,21 @@
 ---
-name: Anbox Cloud
+name: Canonical Anbox Cloud
 vendor: Canonical
 category: Containers and Orchestration
-description: Anbox Cloud is the mobile cloud computing platform delivered by Canonical.
-product_url: https://anbox-cloud.io/
+description: Canonical Anbox Cloud is a cloud-native platform for running Android at scale in secure containers. It simplifies large-scale Android workflows, automates testing, reduces hardware requirements, and delivers low-latency performance across thousands of instances.
+product_url: https://canonical.com/anbox-cloud
 works_on_arm: true
-release_date_on_arm: 2021/11/29
+release_date_on_arm: 2020/01/21
 
 
 optional_info:
-    homepage_url: https://anbox-cloud.io/
+    homepage_url: https://canonical.com/anbox-cloud
     support_caveats:
     alternative_options:
     getting_started_resources:
-        official_docs: https://anbox-cloud.io/docs/tutorial/landing
+        official_docs: https://documentation.ubuntu.com/anbox-cloud/howto/install-appliance/
         arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/canonical-android-anbox-cloud-on-arm
-        vendor_announcement: https://ubuntu.com/blog/canonical-achieves-aws-graviton-ready-designation
+        vendor_announcement: https://canonical.com/blog/canonical-introduces-anbox-cloud-scalable-android-in-the-cloud
 optional_hidden_info:
-    other_info:
+    other_info: The vendor announcement discusses the collaboration with Ampere to deliver a flexible, high-performance, and secure infrastructure for developers, enabling better user experiences for consumers.
 ---
