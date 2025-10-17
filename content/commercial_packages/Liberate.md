@@ -5,7 +5,7 @@ category: EDA
 description: The Cadence Liberate Trio Characterization Suite is a unified platform for standard cell, custom cell, and I/O library characterization, variation modeling, and validation. It delivers fast, accurate results through patented stimulus optimization, parallel processing, and cloud scalability.
 product_url: https://www.cadence.com/en_US/home/tools/custom-ic-analog-rf-design/library-characterization/liberate-trio-characterization-suite.html
 works_on_arm: true
-release_date_on_arm: 2021/02/21
+release_date_on_arm: 2020/02/21
 
 optional_info:
     homepage_url: https://www.cadence.com/en_US/home/tools/custom-ic-analog-rf-design/library-characterization/liberate-trio-characterization-suite.html
