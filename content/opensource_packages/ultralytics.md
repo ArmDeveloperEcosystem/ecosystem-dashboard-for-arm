@@ -18,10 +18,10 @@ optional_info:
         arm_content: https://community.arm.com/arm-research/b/articles/posts/ensuring-your-ai-is-sure
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 8.3.87
+        release_date: 2025/03/11
+        reference_content: https://github.com/ultralytics/ultralytics/releases/tag/v8.3.87
+        rationale: In this release, support for Ubuntu Arm CI runners were added and QEMU emulator for Arm64 Docker builds was removed.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/ultralytics/ultralytics/releases/tag/v8.2.55
