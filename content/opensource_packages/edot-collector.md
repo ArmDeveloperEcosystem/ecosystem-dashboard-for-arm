@@ -14,9 +14,9 @@ optional_info:
     support_caveats: The Elastic Distribution of OpenTelemetry (EDOT) Collector is embedded in the Elastic Agent package as a separate binary that invokes OpenTelemetry Collector components.
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.elastic.co/docs/reference/opentelemetry/edot-collector/config/
         arm_content:
         partner_content:
-        official_docs: https://www.elastic.co/docs/reference/opentelemetry/edot-collector/config/
     arm_recommended_minimum_version:
         version_number:
         release_date:

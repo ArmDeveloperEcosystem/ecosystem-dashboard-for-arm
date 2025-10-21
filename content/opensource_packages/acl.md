@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://github.com/acl-dev/acl/tree/master?tab=readme-ov-file#31-compiling-acl-on-different-platforms
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:

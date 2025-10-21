@@ -12,13 +12,13 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://cassandra.apache.org/doc/latest/cassandra/getting-started/index.html
     arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/increase-price_2d00_performance-by-deploying-cassandra-on-aws-graviton2
     partner_content:
       - display_name: Ampere
         url: https://amperecomputing.com/solution/cassandra
       - display_name: Oracle OCI
         url: https://blogs.oracle.com/cloud-infrastructure/post/30-better-tco-cassandra-oci-ampere-a1-compute
-    official_docs: https://cassandra.apache.org/doc/latest/cassandra/getting-started/index.html
   arm_recommended_minimum_version:
     version_number: 5.0.0
     release_date: 2024/09/05

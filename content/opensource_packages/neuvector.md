@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://open-docs.neuvector.com/basics/installation
         arm_content:
         partner_content:
-        official_docs: https://open-docs.neuvector.com/basics/installation
     arm_recommended_minimum_version:
         version_number:
         release_date:

@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://github.com/istio/istio/wiki
     arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/deploying-tetrate-istio-distribution-for-arm-neoverse-based-aws-graviton-processors
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/opensource/getting-started-with-istio-on-amazon-eks/
-    official_docs: https://github.com/istio/istio/wiki
   arm_recommended_minimum_version:
     version_number: 1.15
     release_date: 2022/10/27

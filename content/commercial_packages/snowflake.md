@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://docs.snowflake.com/en/release-notes/clients-drivers/odbc-2022#version-2-25-3-june-21-2022
         official_docs: https://docs.snowflake.com/en/developer-guide/odbc/odbc-linux
-
-
+        arm_content:
+        vendor_announcement: https://docs.snowflake.com/en/release-notes/clients-drivers/odbc-2022#version-2-25-3-june-21-2022
 optional_hidden_info:
     other_info:
 

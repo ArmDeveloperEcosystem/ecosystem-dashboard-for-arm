@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://www.cni.dev/docs/
     arm_content: https://community.arm.com/arm-research/b/articles/posts/a-smarter_2d00_cni-for-kubernetes-on-the-edge
     partner_content:
       - display_name: Linaro
         url: https://static.linaro.org/connect/lvc20/presentations/LVC20-115-0.pdf
-    official_docs: https://www.cni.dev/docs/
   arm_recommended_minimum_version:
     version_number: 1.2.0
     release_date: 2024/04/16

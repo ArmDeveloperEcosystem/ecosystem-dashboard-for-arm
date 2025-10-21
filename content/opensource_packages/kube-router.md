@@ -14,9 +14,9 @@ optional_info:
     support_caveats: Official prebuilt linux-arm64 binaries were introduced in version 1.0.0-rc4, improving accessibility and eliminating the need for manual builds on Arm systems.
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.kube-router.io/docs/
         arm_content:
         partner_content:
-        official_docs: https://www.kube-router.io/docs/
     arm_recommended_minimum_version:
         version_number:
         release_date:

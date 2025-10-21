@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://github.com/kubermatic/kubeone/blob/release/v1.0/CHANGELOG.md
         official_docs: https://docs.kubermatic.com/kubeone/v1.0/getting_kubeone/
-
+        arm_content:
+        vendor_announcement: https://github.com/kubermatic/kubeone/blob/release/v1.0/CHANGELOG.md
 optional_hidden_info:
     other_info: For ISVs, stable announcements are being published, so subversion announcements are not available. However, the subversion documentation can be found in the CHANGELOG.md file on GitHub.
 

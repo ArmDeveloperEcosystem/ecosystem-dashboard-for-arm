@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://gdal.org/download.html#linux
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://repost.aws/articles/ARJV3lAJE0TcWZMrxqpQ5D3Q/installing-python-package-geopandas-on-amazon-linux-2023-for-graviton
-    official_docs: https://gdal.org/download.html#linux
   arm_recommended_minimum_version:
     version_number: 3.11.0
     release_date: 2025/05/09

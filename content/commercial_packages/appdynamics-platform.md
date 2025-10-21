@@ -13,9 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.appdynamics.com/appd/21.x/latest/en/appdynamics-essentials/getting-started
         arm_content:
         vendor_announcement: https://docs.appdynamics.com/appd/22.x/22.2/ja/product-and-release-announcements/past-releases/past-agent-releases#PastAgentReleases-Version22.2.0-February24,2022.1
-        official_docs: https://docs.appdynamics.com/appd/21.x/latest/en/appdynamics-essentials/getting-started
 optional_hidden_info:
     other_info:
 

@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://github.com/openai/whisper?tab=readme-ov-file#setup
+    arm_content:
     partner_content:
       - display_name: Microsoft Azure
         url: https://techcommunity.microsoft.com/blog/educatordeveloperblog/onnx-and-npu-acceleration-for-speech-on-arm/4278969
-    official_docs: https://github.com/openai/whisper?tab=readme-ov-file#setup
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

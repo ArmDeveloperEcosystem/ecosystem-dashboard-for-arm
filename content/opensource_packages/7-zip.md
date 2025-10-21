@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://github.com/ip7z/7zip/tree/main/DOC#readme
+    arm_content:
     partner_content:
       - display_name: Red Hat
         url: https://www.redhat.com/sysadmin/encrypting-decrypting-7zip
-    official_docs: https://github.com/ip7z/7zip/tree/main/DOC#readme
   arm_recommended_minimum_version:
     version_number: 23.01
     release_date: 2023/12/17

@@ -12,11 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.genymotion.com/desktop/041_Deploying_an_app/#applications-for-arm
         arm_content:
         vendor_announcement: https://www.genymotion.com/blog/just-launched-arm-native-android-in-the-cloud-environment-on-aws/
-        official_docs: https://docs.genymotion.com/desktop/041_Deploying_an_app/#applications-for-arm
-
-
 optional_hidden_info:
     other_info:
 

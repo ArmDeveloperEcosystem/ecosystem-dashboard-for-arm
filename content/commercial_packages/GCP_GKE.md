@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://cloud.google.com/kubernetes-engine/docs/concepts/arm-on-gke
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/gke/
         vendor_announcement: https://cloud.google.com/kubernetes-engine/docs/concepts/arm-on-gke#arm-requirements-limitations
-        official_docs: https://cloud.google.com/kubernetes-engine/docs/concepts/arm-on-gke
-
-
 optional_hidden_info:
     other_info: GCP GKE is a Kubernetes service which can be accessed via the gcloud CLI. "gcloud" can be downloaded from [here](https://console.cloud.google.com/storage/browser/cloud-sdk-release;tab=objects?_ga=2.118271305.1562148867.1713173610-257887511.1712659499&prefix=&forceOnObjectsSortingFiltering=true).
 

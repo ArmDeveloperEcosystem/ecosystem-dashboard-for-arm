@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options: 
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://xenproject.org/developers/getting-started-devs/
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 4.20.0
         release_date: 2025/03/05

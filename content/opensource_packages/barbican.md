@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.openstack.org/barbican/latest/install/install-ubuntu.html#install-and-configure-components
         arm_content:
         partner_content:
-        official_docs: https://docs.openstack.org/barbican/latest/install/install-ubuntu.html#install-and-configure-components
     arm_recommended_minimum_version:
         version_number:
         release_date:

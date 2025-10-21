@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://cdn2.qualys.com/docs/release-notes/qualys-container-security-1.13.0-release-notes.pdf
         official_docs: https://cdn2.qualys.com/docs/qualys-container-security-user-guide.pdf
-
+        arm_content:
+        vendor_announcement: https://cdn2.qualys.com/docs/release-notes/qualys-container-security-1.13.0-release-notes.pdf
 optional_hidden_info:
     other_info:
 ---

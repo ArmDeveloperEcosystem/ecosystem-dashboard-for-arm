@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/ifduyue/python-xxhash#installation
         arm_content:
         partner_content:
-        official_docs: https://github.com/ifduyue/python-xxhash#installation
     arm_recommended_minimum_version:
         version_number: 3.1.0
         release_date: 2022/10/19

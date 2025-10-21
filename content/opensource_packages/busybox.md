@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.busybox.net/FAQ.html#getting_started
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/refinfra-quick-start/build-2/
         partner_content:
-        official_docs: https://www.busybox.net/FAQ.html#getting_started
     arm_recommended_minimum_version:
         version_number:
         release_date:

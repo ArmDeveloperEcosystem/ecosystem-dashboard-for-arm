@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.scala-lang.org/download/
         arm_content:
         partner_content:
-        official_docs: https://www.scala-lang.org/download/
     arm_recommended_minimum_version:
         version_number: 3.6
         release_date: 2025/02/06

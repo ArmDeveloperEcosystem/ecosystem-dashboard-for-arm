@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/oVirt/ovirt-engine?tab=readme-ov-file#build
         arm_content:
         partner_content:
-        official_docs: https://github.com/oVirt/ovirt-engine?tab=readme-ov-file#build
     arm_recommended_minimum_version:
         version_number:
         release_date:

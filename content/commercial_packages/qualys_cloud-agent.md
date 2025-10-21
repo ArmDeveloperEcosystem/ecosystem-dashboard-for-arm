@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://notifications.qualys.com/product/2020/05/26/qualys-adds-cloud-agent-linux-support-for-aws-arm-based-ec2-instances
         official_docs: https://cdn2.qualys.com/docs/qualys-cloud-agent-getting-started-guide.pdf
-
-
+        arm_content:
+        vendor_announcement: https://notifications.qualys.com/product/2020/05/26/qualys-adds-cloud-agent-linux-support-for-aws-arm-based-ec2-instances
 optional_hidden_info:
     other_info: 
 

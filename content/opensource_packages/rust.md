@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://www.rust-lang.org/tools/install
     arm_content: https://learn.arm.com/install-guides/rust/
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/devops/building-an-arm64-rust-development-environment-using-aws-graviton2-and-aws-cdk/
-    official_docs: https://www.rust-lang.org/tools/install
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

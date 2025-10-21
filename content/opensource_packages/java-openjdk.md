@@ -12,15 +12,15 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://docs.oracle.com/en/java/
     arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/performance-of-specjbb2015-on-oci-ampere-a1-compute-instances
     partner_content:
-      - display_name: Oracle OCI
-        url: https://blogs.oracle.com/javamagazine/post/java-arm-runtime-switches-benchmarks
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/compute/running-java-applications-on-amazon-ec2-a1-instances-with-amazon-corretto/
       - display_name: Microsoft Azure
         url: https://techcommunity.microsoft.com/blog/azurecompute/scaling-azure-arm64-vms-with-microsoft%E2%80%99s-build-of-openjdk-a-performance-testing-/3820435
-    official_docs: https://docs.oracle.com/en/java/
+      - display_name: Oracle OCI
+        url: https://blogs.oracle.com/javamagazine/post/java-arm-runtime-switches-benchmarks
   arm_recommended_minimum_version:
     version_number: 11.0.9
     release_date: 2023/06/07

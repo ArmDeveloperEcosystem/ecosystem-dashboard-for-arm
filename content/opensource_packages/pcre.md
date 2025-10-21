@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.pcre.org/original/doc/html/pcrebuild.html#TOC1
         arm_content: https://community.arm.com/support-forums/f/architectures-and-processors-forum/8510/accelerating-pcre-regex-matching-with-data-prefetch-on-arm-cortex-a7
         partner_content:
-        official_docs: https://www.pcre.org/original/doc/html/pcrebuild.html#TOC1
     arm_recommended_minimum_version:
         version_number:
         release_date:

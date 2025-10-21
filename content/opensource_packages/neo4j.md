@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://neo4j.com/docs/operations-manual/current/installation/linux/
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/apn/give-your-graph-workload-a-cost-performance-boost-with-neo4j-and-aws-graviton/
-    official_docs: https://neo4j.com/docs/operations-manual/current/installation/linux/
   arm_recommended_minimum_version:
     version_number: 5.5
     release_date: 2023/09/27

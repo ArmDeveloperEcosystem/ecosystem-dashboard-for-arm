@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/qiniu/qshell?tab=readme-ov-file#%E5%AE%89%E8%A3%85
         arm_content:
         partner_content:
-        official_docs: https://github.com/qiniu/qshell?tab=readme-ov-file#%E5%AE%89%E8%A3%85
     arm_recommended_minimum_version:
         version_number:
         release_date:

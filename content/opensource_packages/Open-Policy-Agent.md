@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://www.openpolicyagent.org/docs/latest/
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/opensource/deploying-open-policy-agent-opa-as-a-sidecar-on-amazon-elastic-container-service-amazon-ecs/
-    official_docs: https://www.openpolicyagent.org/docs/latest/
   arm_recommended_minimum_version:
     version_number: 1.0.0
     release_date: 2024/12/21

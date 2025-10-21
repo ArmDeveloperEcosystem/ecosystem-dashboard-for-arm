@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://containerd.io/docs/getting-started/
     arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/container-runtimes-wasmedge-arm
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/containers/all-you-need-to-know-about-moving-to-containerd-on-amazon-eks/
-    official_docs: https://containerd.io/docs/getting-started/
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

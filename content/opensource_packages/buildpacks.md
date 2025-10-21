@@ -13,10 +13,10 @@ optional_info:
     homepage_url: https://buildpacks.io/
     support_caveats: 
     alternative_options: 
-    getting_started_resources: 
+    getting_started_resources:
+        official_docs: https://buildpacks.io/docs/app-developer-guide/build-an-arm-app/
         arm_content:
         partner_content:
-        official_docs: https://buildpacks.io/docs/app-developer-guide/build-an-arm-app/
     arm_recommended_minimum_version: 
         version_number: 0.36.1
         release_date: 2024/12/17

@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://fluxcd.io/flux/
+    arm_content:
     partner_content:
       - display_name: Microsoft Azure
         url: https://learn.microsoft.com/en-us/azure/azure-arc/kubernetes/tutorial-use-gitops-flux2?tabs=azure-cli
-    official_docs: https://fluxcd.io/flux/
   arm_recommended_minimum_version:
     version_number: 2.4.0
     release_date: 2024/09/30

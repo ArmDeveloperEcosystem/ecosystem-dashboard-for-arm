@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.rapid7.com/insight-agent/linux-installation
         arm_content:
         vendor_announcement: https://www.rapid7.com/blog/post/2022/12/09/aws-graviton-processor-support-on-insight-agent/
-        official_docs: https://docs.rapid7.com/insight-agent/linux-installation
-
-
 optional_hidden_info:
     other_info: 
 

@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://docs.harvesterhci.io/
+    arm_content:
     partner_content:
       - display_name: SUSE
         url: https://www.suse.com/c/how-to-easily-deploy-harvester-on-arm-based-servers/
-    official_docs: https://docs.harvesterhci.io/
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://hadoop.apache.org/docs/current/
+    arm_content:
     partner_content:
       - display_name: Ampere
         url: https://amperecomputing.com/tuning-guides/hadoop-tuning-guide-on-bare-metal
-    official_docs: https://hadoop.apache.org/docs/current/
   arm_recommended_minimum_version:
     version_number: 3.3.6
     release_date: 2023/06/23

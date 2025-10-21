@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://docs.newrelic.com/docs/apm/agents/php-agent/installation/php-agent-installation-arm64/
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/compute/improving-performance-of-php-for-arm64-and-impact-on-amazon-ec2-m6g-instances/
-    official_docs: https://docs.newrelic.com/docs/apm/agents/php-agent/installation/php-agent-installation-arm64/
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://zulip.readthedocs.io/en/latest/overview/readme.html
         arm_content:
         partner_content:
-        official_docs: https://zulip.readthedocs.io/en/latest/overview/readme.html
     arm_recommended_minimum_version:
         version_number: 5.0
         release_date: 2022/03/29

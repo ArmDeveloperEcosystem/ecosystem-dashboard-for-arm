@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options: 
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://github.com/gperftools/gperftools/blob/master/INSTALL
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 2.10.80
         release_date: 2023/08/01

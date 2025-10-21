@@ -14,9 +14,9 @@ optional_info:
     support_caveats: Note that a more optimized Apache Doris across architectures is available from version 2.1.6, released 2024/09/10, and 3.0.
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://doris.apache.org/docs/gettingStarted/quick-start
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 3.0.0
         release_date: 2024/07/22

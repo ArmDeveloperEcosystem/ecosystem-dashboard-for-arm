@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://docs.yoctoproject.org/brief-yoctoprojectqs/index.html
     arm_content: https://learn.arm.com/learning-paths/embedded-systems/yocto_qemu/yocto_build/
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/industries/building-an-automotive-embedded-linux-image-for-edge-using-arm-graviton-yocto-project-soafee/
-    official_docs: https://docs.yoctoproject.org/brief-yoctoprojectqs/index.html
   arm_recommended_minimum_version:
     version_number: v5.0 (scarthgap)
     release_date: 2024/04/01

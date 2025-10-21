@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://timber.github.io/docs/v2/installation/installation/
         arm_content:
         partner_content:
-        official_docs: https://timber.github.io/docs/v2/installation/installation/
     arm_recommended_minimum_version:
         version_number: 2.0.0
         release_date: 2023/11/09

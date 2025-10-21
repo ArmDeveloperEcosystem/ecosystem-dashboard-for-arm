@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://github.com/conda-forge/miniforge?tab=readme-ov-file#install
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/hpc/optimizing-compute-intensive-tasks-on-aws/
-    official_docs: https://github.com/conda-forge/miniforge?tab=readme-ov-file#install
   arm_recommended_minimum_version:
     version_number: 23.3.1-0
     release_date: 2023/08/21

@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://github.com/google/brotli?tab=readme-ov-file#python
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://blog.cloudflare.com/arms-race-ampere-altra-takes-on-aws-graviton2/
-    official_docs: https://github.com/google/brotli?tab=readme-ov-file#python
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

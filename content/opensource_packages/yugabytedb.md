@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://download.yugabyte.com/#linux
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/apn/yugabytedb-on-aws-graviton-the-winning-combination-for-distributed-sql-developers/
-    official_docs: https://download.yugabyte.com/#linux
   arm_recommended_minimum_version:
     version_number: v2025.1.0.1 
     release_date: 2025/08/05

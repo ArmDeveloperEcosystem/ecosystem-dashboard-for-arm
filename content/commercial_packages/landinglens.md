@@ -12,10 +12,9 @@ optional_info:
     support_caveats: Arm installation is currently supported only when deploying LandingLens via Docker.
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: 
         official_docs: https://support.landing.ai/docs/docker-deploy
-
+        arm_content:
+        vendor_announcement:
 optional_hidden_info:
     other_info: Linux/ARM64-specific announcements are not available. However, in the [documentation](https://support.landing.ai/docs/docker-deploy), it is mentioned that ARM64 architecture is supported. For the minimum version of the Docker image available for ARM64, please refer [here](https://gallery.ecr.aws/landing-ai/deploy).
 

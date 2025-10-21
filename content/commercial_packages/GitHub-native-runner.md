@@ -11,9 +11,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
-    vendor_announcement: https://github.blog/news-insights/product-news/arm64-on-github-actions-powering-faster-more-efficient-build-systems/
     official_docs: https://docs.github.com/en/actions/using-github-hosted-runners/using-larger-runners/about-larger-runners
+    arm_content:
+    vendor_announcement: https://github.blog/news-insights/product-news/arm64-on-github-actions-powering-faster-more-efficient-build-systems/
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/compute/building-arm64-applications-on-aws-graviton2-using-the-aws-cdk-and-self-hosted-runners-for-github-actions/?utm_source=ch

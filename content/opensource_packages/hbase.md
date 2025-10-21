@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://hbase.apache.org/book.html#build.on.linux.aarch64
+    arm_content:
     partner_content:
       - display_name: Ampere
         url: https://amperecomputing.com/assets/Hadoop_on_Ampere_Arm_Processors_Ref_Architecture_0_75_20231024_f5784a93f6.pdf
-    official_docs: https://hbase.apache.org/book.html#build.on.linux.aarch64
   arm_recommended_minimum_version:
     version_number: 2.5.11
     release_date: 2025/03/30

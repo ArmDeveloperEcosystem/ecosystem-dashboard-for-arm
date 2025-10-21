@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://docs.openshift.com/container-platform/4.9/installing/installing_sno/install-sno-installing-sno.html
     arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/software-innovations-with-red-hat-and-arm
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/ibm-redhat/installing-red-hat-openshift-on-aws-in-a-restricted-network-using-aws-secure-token-service/
-    official_docs: https://docs.openshift.com/container-platform/4.9/installing/installing_sno/install-sno-installing-sno.html
   arm_recommended_minimum_version:
     version_number: 4.18
     release_date: 2024/12/03

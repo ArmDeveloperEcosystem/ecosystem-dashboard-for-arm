@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.openvswitch.org/en/latest/intro/install/general/
         arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/open-vswitch-with-dpdk-on-arm-build-and-install-from-source
         partner_content:
-        official_docs: https://docs.openvswitch.org/en/latest/intro/install/general/
     arm_recommended_minimum_version:
         version_number:
         release_date:

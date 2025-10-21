@@ -14,9 +14,9 @@ optional_info:
     support_caveats: OpenSearch project is a community-driven, open source fork of Elasticsearch and Kibana, which ensures that the users continue to have a secure, high-quality, fully open source search and analytics suite with a rich roadmap of new and innovative functionality.
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.opensearch.org/latest/getting-started/quickstart/
         arm_content:
         partner_content:
-        official_docs: https://docs.opensearch.org/latest/getting-started/quickstart/
     arm_recommended_minimum_version:
         version_number:
         release_date:

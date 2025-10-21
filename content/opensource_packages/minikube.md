@@ -14,9 +14,9 @@ optional_info:
     support_caveats: Starting with K3s v1.24.14+k3s1, support for ARM64 systems with 64KB page sizes was introduced. Earlier versions required a 4KB page size. For compatibility with 64KB page size systems, use v1.24.14+k3s1 or newer.
     alternative_options:
     getting_started_resources:
-        arm_content: https://learn.arm.com/learning-paths/embedded-and-microcontrollers/cloud-native-deployment-on-hybrid-edge-systems/k3s/
-        partner_content: 
         official_docs: https://minikube.sigs.k8s.io/docs/start/
+        arm_content: https://learn.arm.com/learning-paths/embedded-and-microcontrollers/cloud-native-deployment-on-hybrid-edge-systems/k3s/
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:

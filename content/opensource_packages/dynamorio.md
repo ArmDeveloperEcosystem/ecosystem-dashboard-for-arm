@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://dynamorio.org/page_user_docs.html
         arm_content: https://community.arm.com/arm-community-blogs/b/high-performance-computing-blog/posts/emulating-sve-on-armv8-using-dynamorio-and-armie
         partner_content:
-        official_docs: https://dynamorio.org/page_user_docs.html
     arm_recommended_minimum_version:
         version_number: 9.0.1
         release_date: 2022/02/15

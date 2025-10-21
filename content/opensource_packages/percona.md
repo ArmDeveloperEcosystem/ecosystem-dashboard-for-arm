@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://docs.percona.com/percona-server/8.0/docker.html#percona-server-for-mysql-arm64
+    arm_content:
     partner_content:
       - display_name: Google GCP
         url: https://cloud.google.com/database-migration/docs/mysql/migrate-with-physical-xtrabackup
-    official_docs: https://docs.percona.com/percona-server/8.0/docker.html#percona-server-for-mysql-arm64
   arm_recommended_minimum_version:
     version_number: 8.0.33-25
     release_date: 2023/06/05

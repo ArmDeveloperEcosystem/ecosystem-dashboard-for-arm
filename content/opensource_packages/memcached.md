@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://github.com/memcached/memcached/wiki
     arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/memcached-benchmarking-aws-graviton2-50-p-p-gains
     partner_content:
       - display_name: Ampere
         url: https://amperecomputing.com/tuning-guides/memcached-tuning-guide
-    official_docs: https://github.com/memcached/memcached/wiki
   arm_recommended_minimum_version:
     version_number: 1.6.28
     release_date: 2024/05/31

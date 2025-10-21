@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://nextjs.org/docs/getting-started/installation#manual-installation
         arm_content:
         partner_content:
-        official_docs: https://nextjs.org/docs/getting-started/installation#manual-installation
     arm_recommended_minimum_version:
         version_number:
         release_date:

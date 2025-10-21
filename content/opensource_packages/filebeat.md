@@ -14,9 +14,9 @@ optional_info:
     support_caveats: 
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.elastic.co/guide/en/beats/filebeat/current/filebeat-installation-configuration.html
         arm_content:
         partner_content:
-        official_docs: https://www.elastic.co/guide/en/beats/filebeat/current/filebeat-installation-configuration.html
     arm_recommended_minimum_version:
         version_number:
         release_date:

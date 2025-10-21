@@ -14,14 +14,14 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://libjpeg-turbo.org/Downloads/YUM
         arm_content:
         partner_content:
-        official_docs: https://libjpeg-turbo.org/Downloads/YUM
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.1.3
+        release_date: 2022/02/26
+        reference_content: https://github.com/libjpeg-turbo/libjpeg-turbo/releases/tag/2.1.3
+        rationale: In this release, the build system now enables the intrinsics implementation of the Aarch64 NEON SIMD extensions by default when using GCC 12 or later.
 
 optional_hidden_info:
     release_notes__supported_minimum:

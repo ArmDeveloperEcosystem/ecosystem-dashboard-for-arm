@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.seqera.io/platform/24.1/getting-started/quickstart-demo/comm-showcase
         arm_content:
         vendor_announcement: https://docs.seqera.io/platform/23.3/compute-envs/aws-batch
-        official_docs: https://docs.seqera.io/platform/24.1/getting-started/quickstart-demo/comm-showcase
- 
- 
 optional_hidden_info:
     other_info: There is no information related to Arm64/linux in release notes.
  

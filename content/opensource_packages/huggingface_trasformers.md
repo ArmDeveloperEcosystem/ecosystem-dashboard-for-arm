@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://huggingface.co/docs/transformers/installation
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/benchmark-nlp/benchmark-nlp-hf/
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/machine-learning/accelerated-pytorch-inference-with-torch-compile-on-aws-graviton-processors/
-    official_docs: https://huggingface.co/docs/transformers/installation
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

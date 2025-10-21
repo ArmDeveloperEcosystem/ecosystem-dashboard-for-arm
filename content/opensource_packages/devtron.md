@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://docs.devtron.ai/resources/graviton
+    arm_content:
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/apn/enhancing-devops-efficiency-on-amazon-eks-with-devtron/
-    official_docs: https://docs.devtron.ai/resources/graviton
   arm_recommended_minimum_version:
     version_number: 0.6.2
     release_date: 2022/10/13

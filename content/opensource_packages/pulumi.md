@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.pulumi.com/docs/get-started/
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/from-iot-to-the-cloud-part4/how-to-2/
         partner_content:
-        official_docs: https://www.pulumi.com/docs/get-started/
     arm_recommended_minimum_version:
         version_number:
         release_date:

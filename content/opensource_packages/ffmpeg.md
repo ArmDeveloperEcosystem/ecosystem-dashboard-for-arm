@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://ffmpeg.org/ffmpeg.html
     arm_content: https://community.arm.com/arm-community-blogs/b/graphics-gaming-and-vr-blog/posts/quick-tips-use-ffmpeg-to-convert-pictures-to-raw-rgb565
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/opensource/optimized-video-encoding-with-ffmpeg-on-aws-graviton-processors/
-    official_docs: https://ffmpeg.org/ffmpeg.html
   arm_recommended_minimum_version:
     version_number: 5.2
     release_date: 2022/11/15

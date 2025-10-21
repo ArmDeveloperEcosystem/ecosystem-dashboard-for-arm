@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://kyverno.io/docs/installation/methods/
         arm_content:
         partner_content:
-        official_docs: https://kyverno.io/docs/installation/methods/
     arm_recommended_minimum_version:
         version_number: 1.10.0
         release_date: 2023/05/30

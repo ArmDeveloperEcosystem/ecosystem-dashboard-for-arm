@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.gatsbyjs.com/docs/tutorial/getting-started/part-0/#installation-guide
         arm_content:
         partner_content:
-        official_docs: https://www.gatsbyjs.com/docs/tutorial/getting-started/part-0/#installation-guide
     arm_recommended_minimum_version:
         version_number: 5.0.0
         release_date: 2022/11/01

@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://wiki.openssl.org/index.php/Compilation_and_Installation
     arm_content: https://developer.arm.com/Tools%20and%20Software/Security%20Library%20Projects
     partner_content:
-    official_docs: https://wiki.openssl.org/index.php/Compilation_and_Installation
   arm_recommended_minimum_version:
     version_number: 3.3.0
     release_date: 2024/04/09

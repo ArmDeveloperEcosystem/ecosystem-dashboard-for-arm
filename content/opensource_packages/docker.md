@@ -12,13 +12,13 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://www.docker.com/blog/getting-started-with-docker-for-arm-on-linux/
     arm_content: https://learn.arm.com/install-guides/docker/
     partner_content:
       - display_name: Alibaba Cloud
         url: https://www.alibabacloud.com/blog/arm-container-applications-accelerating-development-and-testing_595802
       - display_name: Oracle OCI
         url: https://blogs.oracle.com/linux/post/oracle-container-runtime-for-docker-on-oracle-linux-for-arm
-    official_docs: https://www.docker.com/blog/getting-started-with-docker-for-arm-on-linux/
   arm_recommended_minimum_version:
     version_number: 24.0.3
     release_date: 2023/07/06

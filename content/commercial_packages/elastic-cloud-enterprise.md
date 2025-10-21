@@ -13,11 +13,9 @@ optional_info:
     support_caveats: The use of Elastic Cloud Enterprise requires a valid license, which can be obtained from Elastic and add to the installation. When we first install ECE, Elastic automatically activates ECE with a trial license that is valid for 30 days. Please see [this](https://www.elastic.co/docs/deploy-manage/license/manage-your-license-in-ece).
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.elastic.co/docs/deploy-manage/deploy/cloud-enterprise/install
         arm_content:
         vendor_announcement: https://www.elastic.co/support/matrix
-        official_docs: https://www.elastic.co/docs/deploy-manage/deploy/cloud-enterprise/install
-
-
 optional_hidden_info:
     other_info: Elastic Cloud Enterprise 3.5.1 and newer versions are supported on the Arm-based hardwares, as mentioned in the [support matrix](https://www.elastic.co/support/matrix).
 

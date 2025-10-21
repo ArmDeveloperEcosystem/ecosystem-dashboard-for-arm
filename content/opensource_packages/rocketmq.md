@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://rocketmq.apache.org/docs/4.x/quickstart/01quickstart
+    arm_content:
     partner_content:
       - display_name: Alibaba Cloud
         url: https://www.alibabacloud.com/blog/exploring-the-new-high-availability-design-of-rocketmq-5-0_600514
-    official_docs: https://rocketmq.apache.org/docs/4.x/quickstart/01quickstart
   arm_recommended_minimum_version:
     version_number: 5.3.2
     release_date: 2025/03/08

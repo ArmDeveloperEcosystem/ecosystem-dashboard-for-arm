@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://gitlab.inria.fr/mpfr/mpfr/-/blob/master/INSTALL?ref_type=heads
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 4.2.2
         release_date: 2025/03/20

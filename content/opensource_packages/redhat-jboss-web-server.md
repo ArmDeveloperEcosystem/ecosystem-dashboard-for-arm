@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://access.redhat.com/documentation/en-us/red_hat_jboss_web_server/6.0/html/installation_guide/assembly_installing-jws-on-rhel-from-archive-files_jboss_web_server_installation_guide
         arm_content:
         partner_content:
-        official_docs: https://access.redhat.com/documentation/en-us/red_hat_jboss_web_server/6.0/html/installation_guide/assembly_installing-jws-on-rhel-from-archive-files_jboss_web_server_installation_guide
     arm_recommended_minimum_version:
         version_number:
         release_date:

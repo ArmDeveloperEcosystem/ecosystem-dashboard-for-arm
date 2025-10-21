@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options: 
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://www.netgate.com/blog/netgate-releases-tnsr-software-version-24.06
         official_docs: https://docs.netgate.com/tnsr/en/latest/index.html
-
+        arm_content:
+        vendor_announcement: https://www.netgate.com/blog/netgate-releases-tnsr-software-version-24.06
 optional_hidden_info:
     other_info: 
 ---

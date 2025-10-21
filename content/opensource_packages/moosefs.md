@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/moosefs/moosefs?tab=readme-ov-file#getting-started
         arm_content:
         partner_content:
-        official_docs: https://github.com/moosefs/moosefs?tab=readme-ov-file#getting-started
     arm_recommended_minimum_version:
         version_number: 3.0.118
         release_date: 2024/08/13

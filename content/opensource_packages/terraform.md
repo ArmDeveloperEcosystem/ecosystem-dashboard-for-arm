@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://developer.hashicorp.com/terraform/tutorials/aws-get-started/install-cli
     arm_content: https://learn.arm.com/install-guides/terraform/
     partner_content:
       - display_name: Microsoft Azure
         url: https://amperecomputing.com/tutorials/getting-started-on-azure-ampere-VMs-with-Debian-using-Terraform
-    official_docs: https://developer.hashicorp.com/terraform/tutorials/aws-get-started/install-cli
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

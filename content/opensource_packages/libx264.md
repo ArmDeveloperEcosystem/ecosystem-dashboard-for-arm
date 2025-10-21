@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://artifacts.videolan.org/x264/release-debian-aarch64/
     arm_content: https://community.arm.com/arm-community-blogs/b/infrastructure-solutions-blog/posts/oracle-cloud-infrastructure-arm-based-a1
     partner_content:
       - display_name: Amazon AWS
         url: https://aws.amazon.com/blogs/opensource/video-encoding-on-graviton-in-2025/
-    official_docs: https://artifacts.videolan.org/x264/release-debian-aarch64/
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

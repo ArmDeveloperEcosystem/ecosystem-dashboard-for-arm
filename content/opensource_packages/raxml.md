@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        partner_content: 
         official_docs: https://github.com/stamatak/standard-RAxML#quick-start-under-linux
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 8.2.13
         release_date: 2023/10/04

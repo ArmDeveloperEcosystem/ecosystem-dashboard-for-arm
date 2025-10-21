@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.geoserver.org/latest/en/user/gettingstarted/index.html
         arm_content:
         partner_content:
-        official_docs: https://docs.geoserver.org/latest/en/user/gettingstarted/index.html
     arm_recommended_minimum_version:
         version_number: 2.27.1
         release_date: 2025/05/14

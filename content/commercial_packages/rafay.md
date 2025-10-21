@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://docs.rafay.co/releasenotes/2021/#v153
         official_docs: https://docs.rafay.co/learn/quickstart/eks/graviton/workload/
-
-
+        arm_content:
+        vendor_announcement: https://docs.rafay.co/releasenotes/2021/#v153
 optional_hidden_info:
     other_info: 
 

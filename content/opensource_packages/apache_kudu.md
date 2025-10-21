@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://kudu.apache.org/docs/installation.html
         arm_content:
         partner_content:
-        official_docs: https://kudu.apache.org/docs/installation.html
     arm_recommended_minimum_version:
         version_number: 1.17.1
         release_date: 2024/12/06

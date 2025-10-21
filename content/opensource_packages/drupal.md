@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://www.drupal.org/docs/official_docs/evaluator-guide
     arm_content: https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/how-to-run-lamp-and-drupal-on-a-pandaboard-in-seven-simple-steps
     partner_content:
       - display_name: Oracle OCI
         url: https://blogs.oracle.com/mysql/post/deploy-wordpress-joomla-and-drupal-with-heatwave-always-free-db-system-in-oracle-cloud-infrastructure
-    official_docs: https://www.drupal.org/docs/official_docs/evaluator-guide
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

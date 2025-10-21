@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/protocolbuffers/protobuf/blob/main/src/README.md
         arm_content: https://developer.arm.com/documentation/ka002171/latest/
-        partner_content: 
-        official_docs: https://github.com/protocolbuffers/protobuf/blob/main/src/README.md 
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 4.21.0
         release_date: 2022/05/06

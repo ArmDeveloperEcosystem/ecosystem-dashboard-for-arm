@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.pantsbuild.org/2.22/docs/getting-started
         arm_content:
         partner_content:
-        official_docs: https://www.pantsbuild.org/2.22/docs/getting-started
     arm_recommended_minimum_version:
         version_number: 2.23.0.dev6
         release_date: 2024/08/08

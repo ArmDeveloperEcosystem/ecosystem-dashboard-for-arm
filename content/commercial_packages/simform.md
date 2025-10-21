@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
+        official_docs:
+        arm_content:
         vendor_announcement: https://www.simform.com/blog/aws-graviton-service-delivery/
-        official_docs: 
-
 optional_hidden_info:
     other_info: 
 

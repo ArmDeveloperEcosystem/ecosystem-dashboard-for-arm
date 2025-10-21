@@ -14,9 +14,9 @@ optional_info:
     support_caveats: Official Arm64 support in version 2.4.0 is community-driven and marked experimental. Users must build from source as no prebuilt Arm binaries are provided.
     alternative_options:
     getting_started_resources:
+        official_docs: https://rethinkdb.com/docs/build/
         arm_content:
         partner_content:
-        official_docs: https://rethinkdb.com/docs/build/
     arm_recommended_minimum_version:
         version_number:
         release_date:

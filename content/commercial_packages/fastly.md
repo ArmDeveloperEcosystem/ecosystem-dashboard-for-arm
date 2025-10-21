@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://docs.fastly.com/en/ngwaf/agent-release-notes#4300-2022-06-21
         official_docs: https://docs.fastly.com/en/ngwaf/installing-the-agent-on-ubuntu
-
+        arm_content:
+        vendor_announcement: https://docs.fastly.com/en/ngwaf/agent-release-notes#4300-2022-06-21
 optional_hidden_info:
     other_info:
 ---

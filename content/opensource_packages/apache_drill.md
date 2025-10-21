@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://drill.apache.org/docs/starting-drill-on-linux-and-mac-os-x/
         arm_content:
         partner_content:
-        official_docs: https://drill.apache.org/docs/starting-drill-on-linux-and-mac-os-x/
     arm_recommended_minimum_version:
         version_number: 1.21.2
         release_date: 2024/06/23

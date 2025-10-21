@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.pingcap.com/tidb-in-kubernetes/stable/deploy-cluster-on-arm64
         arm_content:
         vendor_announcement: https://docs.pingcap.com/tidb/stable/release-3.0.1
-        official_docs: https://docs.pingcap.com/tidb-in-kubernetes/stable/deploy-cluster-on-arm64
-
 optional_hidden_info:
     other_info: TiDB has been ported to ARM64 under [this](https://www.pingcap.com/blog/porting-tidb-to-arm64-for-greater-flexibility/) blog.
 

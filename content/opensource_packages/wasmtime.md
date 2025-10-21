@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    official_docs: https://docs.wasmtime.dev/cli-install.html
+    arm_content:
     partner_content:
       - display_name: Microsoft Azure
         url: https://opensource.microsoft.com/blog/2025/03/26/hyperlight-wasm-fast-secure-and-os-free/
-    official_docs: https://docs.wasmtime.dev/cli-install.html
   arm_recommended_minimum_version:
     version_number: 14.0.0
     release_date: 2023/10/20

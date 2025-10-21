@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://jitsi.github.io/handbook/docs/devops-guide/devops-guide-docker/#quick-start
         arm_content:
         partner_content:
-        official_docs: https://jitsi.github.io/handbook/docs/devops-guide/devops-guide-docker/#quick-start
     arm_recommended_minimum_version:
         version_number: stable-7830
         release_date: 2022/09/08

@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://community.arm.com/arm-research/b/articles/posts/scalable-hyperparameter-tuning-for-automl
-        partner_content:  
         official_docs: https://docs.celeryq.dev/en/stable/getting-started/index.html
+        arm_content: https://community.arm.com/arm-research/b/articles/posts/scalable-hyperparameter-tuning-for-automl
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 
         release_date:

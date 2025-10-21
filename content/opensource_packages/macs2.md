@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        partner_content:
         official_docs: https://macs3-project.github.io/MACS/docs/INSTALL.html
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number: 2.2.8
         release_date: 2023/05/15

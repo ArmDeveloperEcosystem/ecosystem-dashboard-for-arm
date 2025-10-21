@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.lacework.net/onboarding/agent-installation-prerequisites
         arm_content:
         vendor_announcement: https://www.lacework.com/blog/lacework-security-for-aws-graviton2-arm-based-infrastructure-why-it-matters/
-        official_docs: https://docs.lacework.net/onboarding/agent-installation-prerequisites
-
-
 optional_hidden_info:
     other_info: The official arm64 release is prior to vendor announcement blog in version 3.3.5. Kindly refer [here](https://docs.lacework.net/releases/2020-11-01_november-2020-agent-release).
 

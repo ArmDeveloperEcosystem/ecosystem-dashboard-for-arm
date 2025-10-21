@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://cwiki.apache.org/confluence/display/Hive/GettingStarted
     arm_content: https://community.arm.com/arm-community-blogs/b/ai-and-ml-blog/posts/how-to-build-scalable-next-best-action-solution-in-pure-sql-with-hivemall
     partner_content:
-    official_docs: https://cwiki.apache.org/confluence/display/Hive/GettingStarted
   arm_recommended_minimum_version:
     version_number: 4.0.0
     release_date: 2024/04/30

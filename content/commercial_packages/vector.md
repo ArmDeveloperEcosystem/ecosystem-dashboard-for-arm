@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://vector.dev/docs/setup/installation/manual/from-source/
         arm_content:
         vendor_announcement: https://vector.dev/highlights/2019-11-19-arm-support-on-linux/
-        official_docs: https://vector.dev/docs/setup/installation/manual/from-source/
-
 optional_hidden_info:
     other_info: Linux/ARM64 support has been highlighed in the vector v0.6.0 release notes [here](https://vector.dev/releases/0.6.0/). AArch64 tar can be downloaded from [here](https://vector.dev/releases/0.6.0/#download-version-0.6.0).
 

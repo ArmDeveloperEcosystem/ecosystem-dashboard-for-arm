@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs:
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/vectorscan/install/
         partner_content:
-        official_docs:
     arm_recommended_minimum_version:
         version_number: 5.4.8
         release_date: 2022/09/13

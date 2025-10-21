@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs:
         arm_content:
         vendor_announcement: https://blogs.sw.siemens.com/simcenter/simcenter-star-ccm-2302-released/
-        official_docs: 
-
-
 optional_hidden_info:
     other_info:
 

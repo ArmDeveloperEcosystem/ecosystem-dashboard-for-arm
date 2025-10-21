@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs:
         arm_content:
         vendor_announcement: https://www.paloaltonetworks.com/blog/prisma-cloud/aws-graviton/
-        official_docs:
-
 optional_hidden_info:
     other_info:
 

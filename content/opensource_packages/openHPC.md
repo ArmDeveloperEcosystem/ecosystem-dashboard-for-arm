@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://github.com/openhpc/ohpc/wiki/
     arm_content: https://developer.arm.com/documentation/102841/0100/Get-started-with-the-OpenHPC-software-stack
     partner_content:
       - display_name: Oracle OCI
         url: https://blogs.oracle.com/linux/post/unlock-the-potential-of-arm-for-hpc
-    official_docs: https://github.com/openhpc/ohpc/wiki/
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

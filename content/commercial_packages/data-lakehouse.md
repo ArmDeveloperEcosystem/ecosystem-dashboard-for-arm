@@ -13,11 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: 
-        vendor_announcement: https://www.databricks.com/blog/2022/04/18/announcing-databricks-support-for-aws-graviton2-with-up-to-3x-better-price-performance.html
         official_docs: https://docs.databricks.com/en/compute/graviton.html
-
-
+        arm_content:
+        vendor_announcement: https://www.databricks.com/blog/2022/04/18/announcing-databricks-support-for-aws-graviton2-with-up-to-3x-better-price-performance.html
 optional_hidden_info:
     other_info: 
 

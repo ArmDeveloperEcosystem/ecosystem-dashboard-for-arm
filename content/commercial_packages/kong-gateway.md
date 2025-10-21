@@ -12,11 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.konghq.com/gateway/3.2.x/get-started/
         arm_content:
         vendor_announcement: https://konghq.com/blog/engineering/validated-aws-graviton3-al2023
-        official_docs: https://docs.konghq.com/gateway/3.2.x/get-started/
-
-
 optional_hidden_info:
     other_info: The official arm64 release is prior to vendor announcement blog. Please refer this [link] (https://legacy-gateway--kongdocs.netlify.app/enterprise/changelog/#13).
 

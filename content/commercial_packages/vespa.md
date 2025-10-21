@@ -13,10 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://cloud.vespa.ai/en/getting-started
         arm_content:
         vendor_announcement: https://blog.vespa.ai/preview-of-vespa-on-arm64/
-        official_docs: https://cloud.vespa.ai/en/getting-started
-
 optional_hidden_info:
     other_info:
 

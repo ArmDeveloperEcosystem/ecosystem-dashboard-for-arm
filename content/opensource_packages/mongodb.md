@@ -12,11 +12,11 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://www.mongodb.com/docs/manual/tutorial/install-mongodb-enterprise-on-ubuntu/
     arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/mongodb/
     partner_content:
       - display_name: Ampere
         url: https://amperecomputing.com/tuning-guides/mongoDB-tuning-guide
-    official_docs: https://www.mongodb.com/docs/manual/tutorial/install-mongodb-enterprise-on-ubuntu/
   arm_recommended_minimum_version:
     version_number: null
     release_date: null

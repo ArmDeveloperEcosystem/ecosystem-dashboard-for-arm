@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://nightlies.apache.org/flink/flink-docs-stable/docs/try-flink/local_installation/
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/flink/setup_flink/
         partner_content:
-        official_docs: https://nightlies.apache.org/flink/flink-docs-stable/docs/try-flink/local_installation/
     arm_recommended_minimum_version:
         version_number: 2.0.0
         release_date: 2025/03/24

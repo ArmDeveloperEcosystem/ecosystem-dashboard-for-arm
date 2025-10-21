@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://vitess.io/docs/contributing/build-on-ubuntu/
         arm_content: https://community.arm.com/arm-community-blogs/b/tools-software-ides-blog/posts/enabling-cloud-native-experience-across-a-diverse-and-secure-edge-ecosystem
         partner_content:
-        official_docs: https://vitess.io/docs/contributing/build-on-ubuntu/
     arm_recommended_minimum_version:
         version_number: 19
         release_date: 2024/03/06

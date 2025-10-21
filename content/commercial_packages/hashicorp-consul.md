@@ -12,11 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://developer.hashicorp.com/consul/docs
         arm_content:
         vendor_announcement: https://github.com/hashicorp/consul/blob/v0.8.4/CHANGELOG.md#084-june-9-2017
-        official_docs: https://developer.hashicorp.com/consul/docs
-
-
 optional_hidden_info:
     other_info:
 

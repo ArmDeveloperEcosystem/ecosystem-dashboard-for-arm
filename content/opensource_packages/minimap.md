@@ -15,9 +15,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://github.com/lh3/minimap2#started
         arm_content: https://community.arm.com/arm-community-blogs/b/high-performance-computing-blog/posts/aws-graviton3-reduces-time-and-cost-for-genomics
         partner_content:
-        official_docs: https://github.com/lh3/minimap2#started
     arm_recommended_minimum_version:
         version_number:
         release_date:

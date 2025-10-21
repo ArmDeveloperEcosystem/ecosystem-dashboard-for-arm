@@ -12,10 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://docs.anaconda.com/free/anaconda/install/index.html
         arm_content: https://learn.arm.com/install-guides/anaconda/
         vendor_announcement: https://www.anaconda.com/blog/anaconda-aws-graviton2
-        official_docs: https://docs.anaconda.com/free/anaconda/install/index.html
-
 optional_hidden_info:
     other_info:
 

@@ -12,11 +12,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://supportal.bloombase.com
         arm_content:
         vendor_announcement: https://www.bloombase.com/interoperability/arm.html
-        official_docs: https://supportal.bloombase.com
-
-
 optional_hidden_info:
     other_info:
 

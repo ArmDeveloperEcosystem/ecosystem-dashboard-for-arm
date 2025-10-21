@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs: https://www.jaegertracing.io/docs/1.54/getting-started/
         arm_content: https://community.arm.com/arm-research/b/articles/posts/an-approach-to-edge-compute-observability-and-performance-monitoring
         partner_content:
-        official_docs: https://www.jaegertracing.io/docs/1.54/getting-started/
     arm_recommended_minimum_version:
         version_number: 2.0.0
         release_date: 2024/11/12

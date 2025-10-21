@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content: https://developer.arm.com/documentation/dui0102/g/using-the-dhcp-utility
-        partner_content: 
         official_docs: https://gitlab.isc.org/isc-projects/dhcp/-/blob/master/README?ref_type=heads
+        arm_content: https://developer.arm.com/documentation/dui0102/g/using-the-dhcp-utility
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:
