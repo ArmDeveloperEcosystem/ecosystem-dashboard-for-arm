@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 14.0.0
+        release_date: 2022/05/18
+        reference_content: https://docs.openstack.org/releasenotes/kolla/yoga.html#relnotes-14-0-0-unmaintained-yoga
+        rationale: In this release, Aarch64 ubuntu ironic-python-agent images UEFI PXE booting failure issue was fixed.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://docs.openstack.org/releasenotes/kolla/queens.html#relnotes-6-0-0-stable-queens
