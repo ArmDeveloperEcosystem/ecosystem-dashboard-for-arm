@@ -18,9 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 2.6.0
+        release_date: 2025/02/15
+        reference_content: https://camel.apache.org/releases/k-2.6.0/
+        rationale: In this elease, Arm64 support is explicitly being tested and integrated into the CI pipeline, which gives a stronger baseline for Arm-optimized and Arm-validated builds.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/apache/camel-k/releases/tag/v2.0.0

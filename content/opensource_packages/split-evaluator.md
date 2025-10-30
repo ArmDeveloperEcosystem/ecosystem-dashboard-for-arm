@@ -18,9 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 2.7.0
+        release_date: 2024/12/20
+        reference_content: https://github.com/splitio/split-evaluator/blob/main/CHANGES.txt
+        rationale: In this release, support to Arm64 docker images were added.
 
 optional_hidden_info:
     release_notes__supported_minimum:

@@ -18,9 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
+        version_number: 3.3.0
+        release_date: 2023/01/03
+        reference_content: https://groups.google.com/g/couchdb-user-archive/c/Fnoc6GhWCT4
+        rationale: This release adds support for Erlang 25 with enhanced JIT optimizations for Arm64.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://docs.couchdb.org/en/stable/whatsnew/3.0.html#version-3-0-0
