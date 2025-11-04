@@ -27,3 +27,5 @@ optional_hidden_info:
   release_notes__recommended_minimum: null
   other_info: The minimum supported version(1.7.7) is part of the NGINX Plus Release 5(R5).
 ---
+
+{{< test-badge package="nginx" >}}
