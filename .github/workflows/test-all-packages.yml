@@ -1,0 +1,112 @@
+name: Test All Packages on ARM64
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:  # Allow manual triggering
+  push:
+    branches:
+      - main
+      - smoke_tests
+    paths:
+      - 'content/opensource_packages/*.md'
+      - 'content/commercial_packages/*.md'
+      - '.github/workflows/test-all-packages.yml'
+      - '.github/workflows/test-*.yml'
+
+jobs:
+  # Test nginx using its dedicated workflow
+  test-nginx:
+    uses: ./.github/workflows/test-nginx.yml
+  
+  # Test envoy using the reusable workflow
+  test-envoy:
+    uses: ./.github/workflows/reusable-package-test.yml
+    with:
+      package_name: "Envoy"
+      package_slug: "envoy"
+      package_category: "Proxy"
+      package_language: "c++"
+      install_commands: |
+        [
+          "sudo apt-get update",
+          "sudo apt-get install -y curl gnupg2 ca-certificates lsb-release",
+          "curl -sL 'https://deb.dl.getenvoy.io/public/gpg.8115BA8E629CC074.key' | sudo gpg --dearmor -o /usr/share/keyrings/getenvoy-keyring.gpg",
+          "echo \"deb [arch=arm64 signed-by=/usr/share/keyrings/getenvoy-keyring.gpg] https://deb.dl.getenvoy.io/public/deb/ubuntu $(lsb_release -cs) main\" | sudo tee /etc/apt/sources.list.d/getenvoy.list",
+          "sudo apt-get update",
+          "sudo apt-get install -y getenvoy-envoy || echo 'Trying alternative installation...'",
+          "if ! command -v envoy &> /dev/null; then sudo apt-get install -y envoy || (wget -q https://github.com/envoyproxy/envoy/releases/download/v1.28.0/envoy-1.28.0-linux-aarch64 -O /tmp/envoy && sudo mv /tmp/envoy /usr/local/bin/envoy && sudo chmod +x /usr/local/bin/envoy); fi"
+        ]
+      version_command: "envoy --version 2>&1 | grep -oP 'version: \\K[0-9.]+' || echo 'unknown'"
+      test_commands: |
+        [
+          {
+            "name": "Check envoy binary",
+            "command": "command -v envoy"
+          },
+          {
+            "name": "Check envoy version output",
+            "command": "envoy --version"
+          },
+          {
+            "name": "Validate envoy help",
+            "command": "envoy --help | grep -q 'USAGE'"
+          },
+          {
+            "name": "Check envoy config validation",
+            "command": "echo 'admin: { address: { socket_address: { address: 127.0.0.1, port_value: 9901 } } }' > /tmp/envoy-test.yaml && envoy --mode validate -c /tmp/envoy-test.yaml"
+          }
+        ]
+  
+  # Summary job that runs after all tests
+  summary:
+    needs: [test-nginx, test-envoy]
+    runs-on: ubuntu-24.04-arm
+    if: always()
+    steps:
+      - name: Download all test results
+        uses: actions/download-artifact@v4
+        with:
+          path: test-results
+      
+      - name: Create summary
+        run: |
+          echo "# 📊 Package Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          TOTAL_PACKAGES=0
+          PASSED_PACKAGES=0
+          FAILED_PACKAGES=0
+          
+          for result_dir in test-results/*/; do
+            if [ -d "$result_dir" ]; then
+              TOTAL_PACKAGES=$((TOTAL_PACKAGES + 1))
+              
+              for json_file in "$result_dir"*.json; do
+                if [ -f "$json_file" ]; then
+                  PKG_NAME=$(jq -r '.package.name' "$json_file")
+                  STATUS=$(jq -r '.run.status' "$json_file")
+                  TESTS_PASSED=$(jq -r '.tests.passed' "$json_file")
+                  TESTS_FAILED=$(jq -r '.tests.failed' "$json_file")
+                  VERSION=$(jq -r '.package.version' "$json_file")
+                  
+                  if [ "$STATUS" = "success" ]; then
+                    PASSED_PACKAGES=$((PASSED_PACKAGES + 1))
+                    echo "✅ **$PKG_NAME** (v$VERSION): $TESTS_PASSED tests passed" >> $GITHUB_STEP_SUMMARY
+                  else
+                    FAILED_PACKAGES=$((FAILED_PACKAGES + 1))
+                    echo "❌ **$PKG_NAME** (v$VERSION): $TESTS_FAILED tests failed" >> $GITHUB_STEP_SUMMARY
+                  fi
+                fi
+              done
+            fi
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Overall Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Packages Tested:** $TOTAL_PACKAGES" >> $GITHUB_STEP_SUMMARY
+          echo "- **Passed:** $PASSED_PACKAGES ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **Failed:** $FAILED_PACKAGES ❌" >> $GITHUB_STEP_SUMMARY

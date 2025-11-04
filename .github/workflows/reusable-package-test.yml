@@ -1,0 +1,200 @@
+name: Reusable Package Test
+
+on:
+  workflow_call:
+    inputs:
+      package_name:
+        description: 'Name of the package to test'
+        required: true
+        type: string
+      package_slug:
+        description: 'Slug for the package (filename without .md)'
+        required: true
+        type: string
+      package_category:
+        description: 'Package category'
+        required: true
+        type: string
+      package_language:
+        description: 'Programming language'
+        required: true
+        type: string
+      install_commands:
+        description: 'Commands to install the package (JSON array as string)'
+        required: true
+        type: string
+      test_commands:
+        description: 'Test commands configuration (JSON object as string)'
+        required: true
+        type: string
+      version_command:
+        description: 'Command to get package version'
+        required: true
+        type: string
+
+jobs:
+  test-package:
+    runs-on: ubuntu-24.04-arm
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "package_slug=${{ inputs.package_slug }}" >> $GITHUB_OUTPUT
+          echo "dashboard_link=/opensource_packages/${{ inputs.package_slug }}" >> $GITHUB_OUTPUT
+      
+      - name: Install ${{ inputs.package_name }}
+        id: install
+        run: |
+          echo "Installing ${{ inputs.package_name }}..."
+          
+          # Parse and execute install commands
+          INSTALL_CMDS='${{ inputs.install_commands }}'
+          echo "$INSTALL_CMDS" | jq -r '.[]' | while read -r cmd; do
+            echo "Executing: $cmd"
+            eval "$cmd"
+          done
+          
+          echo "install_status=success" >> $GITHUB_OUTPUT
+      
+      - name: Get ${{ inputs.package_name }} version
+        id: version
+        run: |
+          VERSION=$(${{ inputs.version_command }} || echo "unknown")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected ${{ inputs.package_name }} version: $VERSION"
+      
+      - name: Run tests
+        id: run_tests
+        run: |
+          # Parse test commands JSON
+          TEST_CONFIG='${{ inputs.test_commands }}'
+          
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+          TEST_DETAILS='[]'
+          
+          # Get number of tests
+          NUM_TESTS=$(echo "$TEST_CONFIG" | jq '. | length')
+          
+          # Run each test
+          for i in $(seq 0 $((NUM_TESTS - 1))); do
+            TEST_NAME=$(echo "$TEST_CONFIG" | jq -r ".[$i].name")
+            TEST_CMD=$(echo "$TEST_CONFIG" | jq -r ".[$i].command")
+            
+            echo "Running test: $TEST_NAME"
+            START_TIME=$(date +%s)
+            
+            if eval "$TEST_CMD"; then
+              echo "✓ $TEST_NAME passed"
+              PASSED=$((PASSED + 1))
+              STATUS="passed"
+            else
+              echo "✗ $TEST_NAME failed"
+              FAILED=$((FAILED + 1))
+              STATUS="failed"
+            fi
+            
+            END_TIME=$(date +%s)
+            DURATION=$((END_TIME - START_TIME))
+            TOTAL_DURATION=$((TOTAL_DURATION + DURATION))
+            
+            # Add test detail to array
+            TEST_DETAILS=$(echo "$TEST_DETAILS" | jq --arg name "$TEST_NAME" --arg status "$STATUS" --arg dur "$DURATION" \
+              '. += [{"name": $name, "status": $status, "duration_seconds": ($dur | tonumber)}]')
+          done
+          
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          echo "test_details<<EOF" >> $GITHUB_OUTPUT
+          echo "$TEST_DETAILS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          if [ $FAILED -eq 0 ]; then
+            echo "overall_status=success" >> $GITHUB_OUTPUT
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
+            echo "overall_status=failure" >> $GITHUB_OUTPUT
+            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+      
+      - name: Generate test results JSON
+        if: always()
+        run: |
+          mkdir -p test-results
+          
+          cat > test-results/${{ inputs.package_slug }}.json << 'EOF'
+          {
+            "schema_version": "1.0",
+            "package": {
+              "name": "${{ inputs.package_name }}",
+              "version": "${{ steps.version.outputs.version }}",
+              "language": "${{ inputs.package_language }}",
+              "category": "${{ inputs.package_category }}"
+            },
+            "run": {
+              "id": "${{ github.run_id }}",
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "timestamp": "${{ steps.metadata.outputs.timestamp }}",
+              "status": "${{ steps.run_tests.outputs.overall_status }}",
+              "runner": {
+                "os": "ubuntu-24.04",
+                "arch": "arm64"
+              }
+            },
+            "tests": {
+              "passed": ${{ steps.run_tests.outputs.passed }},
+              "failed": ${{ steps.run_tests.outputs.failed }},
+              "skipped": 0,
+              "duration_seconds": ${{ steps.run_tests.outputs.duration }},
+              "details": ${{ steps.run_tests.outputs.test_details }}
+            },
+            "metadata": {
+              "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
+              "badge_status": "${{ steps.run_tests.outputs.badge_status }}"
+            }
+          }
+          EOF
+          
+          echo "Generated test results:"
+          cat test-results/${{ inputs.package_slug }}.json
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.package_slug }}-test-results
+          path: test-results/${{ inputs.package_slug }}.json
+          retention-days: 90
+      
+      - name: Commit test results to repository
+        if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/smoke_tests')
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          mkdir -p data/test-results
+          cp test-results/${{ inputs.package_slug }}.json data/test-results/${{ inputs.package_slug }}.json
+          
+          git add data/test-results/${{ inputs.package_slug }}.json
+          git diff --staged --quiet || git commit -m "Update ${{ inputs.package_slug }} test results [skip ci]"
+          git push || echo "Nothing to commit or push failed"
+      
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## ${{ inputs.package_name }} Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ steps.run_tests.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Passed:** ${{ steps.run_tests.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Failed:** ${{ steps.run_tests.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration:** ${{ steps.run_tests.outputs.duration }}s" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
