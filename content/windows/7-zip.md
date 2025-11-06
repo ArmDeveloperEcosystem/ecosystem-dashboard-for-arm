@@ -7,12 +7,13 @@ works_on_arm: true
 supported_minimum_version:
   version_number: 22.00
   release_date: 2022/06/27
+  rationale: https://www.ghacks.net/2022/06/20/7-zip-22-00-final-is-now-available/#:~:text=7%2DZip%20is%20a%20popular,versions%2C%20are%20supported%20as%20well.
 optional_info:
   homepage_url: https://www.7-zip.org/
-  support_caveats: null
-  alternative_options: null
+  support_caveats:
+  alternative_options:
   getting_started_resources:
-    arm_content: null
+    arm_content:
     partner_content:
     official_docs: https://github.com/ip7z/7zip/tree/main/DOC#readme
   arm_recommended_minimum_version:
