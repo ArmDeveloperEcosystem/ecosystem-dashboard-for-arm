@@ -24,7 +24,7 @@ optional_info:
         rationale:
 
 optional_hidden_info:
-    release_notes__supported_minimum:
+    release_notes__supported_minimum: https://github.com/junit-team/junit-framework/releases/tag/r5.0.0-M1
     release_notes__recommended_minimum:
     other_info: There are no release notes. Version 5.9.0 can be built on Neoverse N1 using "gradlew clean assemble" command. Prior versions are failing to build collectively on both ARM64 and AMD64.
 

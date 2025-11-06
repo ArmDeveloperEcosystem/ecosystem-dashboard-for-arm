@@ -11,7 +11,7 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    arm_content: null
+    arm_content: https://developer.arm.com/community/arm-community-blogs/b/servers-and-cloud-computing-blog/posts/automate-windows-on-arm-builds-with-github-arm-hosted-runners
     vendor_announcement: https://blogs.windows.com/windowsdeveloper/2025/04/14/github-actions-now-supports-windows-on-arm-runners-for-all-public-repos/
     official_docs: https://docs.github.com/en/actions/using-github-hosted-runners/using-larger-runners/about-larger-runners
     partner_content:

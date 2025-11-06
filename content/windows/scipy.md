@@ -16,7 +16,7 @@ optional_info:
     getting_started_resources:
         arm_content:
         partner_content:
-        official_docs:
+        official_docs: https://projects.scipy.org/getting-started.html
     arm_recommended_minimum_version:
         version_number:
         release_date:
@@ -24,7 +24,7 @@ optional_info:
         rationale:
 
 optional_hidden_info:
-    release_notes__supported_minimum: https://github.com/scipy/scipy/releases/tag/v1.5.3
+    release_notes__supported_minimum: https://github.com/scipy/scipy/releases/tag/v1.16.2
     release_notes__recommended_minimum:
     other_info: Linux ARM64 wheels are available from version 1.5.3 onwards.
 

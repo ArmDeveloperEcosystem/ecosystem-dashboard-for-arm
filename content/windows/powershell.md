@@ -5,8 +5,8 @@ description: PowerShell is a cross-platform task automation solution made up of 
 download_url: https://github.com/PowerShell/PowerShell/releases/
 works_on_arm: true
 supported_minimum_version:
-    version_number: 7.0.0
-    release_date: 2020/04/03
+    version_number: 6.0.0-rc.2
+    release_date: 2017/12/14
 
 
 optional_info:
@@ -24,7 +24,7 @@ optional_info:
 
 
 optional_hidden_info:
-    release_notes__supported_minimum: 
+    release_notes__supported_minimum: https://github.com/PowerShell/PowerShell/releases/tag/v6.0.0-rc.2
     release_notes__recommended_minimum:
     other_info: 
 ---

@@ -15,8 +15,8 @@ optional_info:
     alternative_options:
     getting_started_resources:
         arm_content:
-        partner_content: 
-        official_docs:
+        partner_content:
+        official_docs: https://beta.boost.org/doc/
     arm_recommended_minimum_version:
         version_number: 1.82.0
         release_date: 2023/04/14

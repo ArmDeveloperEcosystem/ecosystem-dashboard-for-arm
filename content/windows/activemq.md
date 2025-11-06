@@ -23,7 +23,7 @@ optional_info:
         rationale: 
 
 optional_hidden_info:
-    release_notes__supported_minimum:
+    release_notes__supported_minimum: https://activemq.apache.org/components/classic/download/classic-05-16-00
     release_notes__recommended_minimum:
     other_info:
 
