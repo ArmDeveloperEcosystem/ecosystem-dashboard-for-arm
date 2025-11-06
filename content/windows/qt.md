@@ -7,8 +7,7 @@ works_on_arm: true
 supported_minimum_version:
     version_number: 6.8.0
     release_date: 2024/10/08
-    rationale: https://www.qt.io/blog/qt-6.8-released#:~:text=Deploy%20to%20new%20Platforms%2C%20Architectures,increasingly%20popular%20RISC%2DV%20platform.
- 
+    
  
 optional_info:
     homepage_url: https://www.qt.io/
@@ -25,8 +24,8 @@ optional_info:
         rationale:
  
 optional_hidden_info:
-    release_notes__supported_minimum: https://www.qt.io/blog/qt-6.7-released
+    release_notes__supported_minimum: https://www.qt.io/blog/qt-6.8-released#:~:text=Deploy%20to%20new%20Platforms%2C%20Architectures,increasingly%20popular%20RISC%2DV%20platform.
     release_notes__recommended_minimum:
-    other_info: Prebuild binaries for Linux on ARM are available as technology review in version 6.7.0.
+    other_info:
  
 ---

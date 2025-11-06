@@ -7,7 +7,6 @@ works_on_arm: true
 supported_minimum_version:
     version_number: 8.13.0
     release_date: 2025/04/02
-    rationale: https://curl.se/windows/microsoft.html#:~:text=The%20Microsoft%20provided%20version%20is,SSL%20SSPI%20threadsafe%20Unicode%20UnixSockets
 
 
 optional_info:
@@ -25,8 +24,8 @@ optional_info:
         rationale: 
 
 optional_hidden_info:
-    release_notes__supported_minimum:
+    release_notes__supported_minimum: https://curl.se/windows/microsoft.html#:~:text=The%20Microsoft%20provided%20version%20is,SSL%20SSPI%20threadsafe%20Unicode%20UnixSockets
     release_notes__recommended_minimum:
-    other_info: Linux/ARM64 release notes are not available. Installation and testing were done using first released tar files [here](https://github.com/curl/curl/releases/tag/curl-7_43_0).
+    other_info:
 
 ---
