@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.5.2
+        release_date: 2025/01/14
+        reference_content: https://github.com/containers/ramalama/releases/tag/v0.5.2
+        rationale: In this release, default GPU acceleration was turned on for Arm platforms.
  
 optional_hidden_info:
     release_notes__supported_minimum: https://pypi.org/project/ramalama/0.0.1/

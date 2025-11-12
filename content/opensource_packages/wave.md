@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.25.2
+        release_date: 2025/09/25
+        reference_content: https://github.com/seqeralabs/wave/releases/tag/v1.25.2
+        rationale: In this release, support to container build for Arm64 platform was added.
  
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/seqeralabs/wave/releases/tag/v1.1.0

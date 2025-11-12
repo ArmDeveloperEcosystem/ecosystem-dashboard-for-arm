@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: v1.26.13+rke2r1
+        release_date: 2024/02/07
+        reference_content: https://github.com/rancher/rke2/releases/tag/v1.26.13%2Brke2r1
+        rationale: In this release, Arm64 based images for calico, multus and harvester were enabled.
  
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/rancher/rke2/releases/tag/v1.27.3%2Brke2r1
