@@ -38,15 +38,14 @@ A fully automated testing system for Arm Ecosystem Dashboard packages that:
 - `reusable-package-test.yml` - **Template for any package**
 - `test-all-packages.yml` - **Orchestrator** (runs all tests)
 
-### Utilities
-- `generate_test_badge.py` - Badge generation CLI tool
-
 ### Data
 - `data/test-results/nginx.json` - Auto-generated test results
 - `data/test-results/envoy.json` - Auto-generated test results
 
-### Documentation (8 guides)
-- Complete setup, scaling, and troubleshooting guides
+### Documentation (3 guides)
+- `tests/README.md` - Navigation hub and quick start
+- `tests/COMPLETE_GUIDE.md` - Comprehensive documentation
+- `tests/PIPELINE_REFERENCE.md` - Advanced technical reference
 
 ---
 

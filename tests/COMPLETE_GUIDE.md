@@ -662,27 +662,6 @@ When you need more control than the reusable template provides:
 3. Detailed error handling
 4. Service lifecycle management
 
-### Badge Generation Utility
-
-**Tool:** `build_steps/generate_test_badge.py`
-
-**Usage:**
-```bash
-# Generate SVG badge
-python build_steps/generate_test_badge.py nginx --format svg
-
-# Generate text summary
-python build_steps/generate_test_badge.py nginx --format text
-```
-
-**Output:**
-```
-Package: nginx
-Version: 1.24.0
-Status: passing
-Tests: 5 passed, 0 failed
-```
-
 ### Matrix Testing (Future)
 
 Test multiple versions of the same package:
@@ -714,9 +693,6 @@ steps:
 data/test-results/
 ├── nginx.json                  # nginx results
 └── envoy.json                  # Envoy results
-
-build_steps/
-└── generate_test_badge.py      # Badge utility
 
 themes/arm-design-system-hugo-theme/layouts/
 └── partials/package-display/row-sub.html   # Badge display template
