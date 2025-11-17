@@ -23,9 +23,6 @@ For advanced users and maintainers:
 - Complex debugging scenarios
 - Edge cases and special configurations
 
-### **[archived/](./archived/)** - Historical Documentation
-Previous documentation versions preserved for reference.
-
 ---
 
 ## 🚀 Quick Start (5 Minutes)
@@ -158,7 +155,6 @@ The badge will automatically appear on your package page in the Hugo dashboard!
 - **Need to add a package?** → Jump to the "Adding New Packages" section in [COMPLETE_GUIDE.md](./COMPLETE_GUIDE.md)
 - **Debugging an issue?** → Check the "Troubleshooting" section in [COMPLETE_GUIDE.md](./COMPLETE_GUIDE.md)
 - **Want to customize workflows?** → See [PIPELINE_REFERENCE.md](./PIPELINE_REFERENCE.md)
-- **Looking for old docs?** → Browse [archived/](./archived/)
 
 ---
 
