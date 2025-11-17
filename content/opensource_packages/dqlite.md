@@ -5,13 +5,13 @@ description: Canonical Dqlite (Distributed SQLite) is a lightweight, high-availa
 download_url: https://github.com/canonical/dqlite/releases
 works_on_arm: true
 supported_minimum_version:
-    version_number: 1.18.2
-    release_date: 2025/07/14
+    version_number: 1.17.2
+    release_date: 2025/02/25
  
  
 optional_info:
     homepage_url: https://canonical.com/dqlite
-    support_caveats:
+    support_caveats: The 1.17.2 Long Term release used Launchpad to fully validate Linux/Arm64 support. Since version 1.18.2, dqlite has introduced GitHub Actions for a faster release process.
     alternative_options:
     getting_started_resources:
         official_docs: https://canonical.com/dqlite/docs
@@ -26,6 +26,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/canonical/dqlite/releases/tag/v1.18.2
     release_notes__recommended_minimum:
-    other_info: Version 1.18.2 introduced Arm64 build testing via GitHub Actions, marking the initial validation of Linux/Arm64 support.
+    other_info:
  
 ---

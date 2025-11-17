@@ -5,8 +5,8 @@ description: Juju, developed and maintained by Canonical, is an open source orch
 download_url: https://github.com/juju/juju/releases
 works_on_arm: true
 supported_minimum_version:
-    version_number: 2.8.10
-    release_date: 2021/03/25
+    version_number: 2.2.0
+    release_date: 2017/06/15
  
  
 optional_info:
@@ -24,8 +24,8 @@ optional_info:
         rationale:
  
 optional_hidden_info:
-    release_notes__supported_minimum:
+    release_notes__supported_minimum: https://ubuntu.com/blog/juju-2-2-0
     release_notes__recommended_minimum:
-    other_info: There are no release notes for the initial Linux/Arm64 support. Version 2.8.10 rolls out Linux/Arm64 artifacts at the Launchpad. Please see [this](https://launchpad.net/juju/2.8/2.8.10).
+    other_info: Juju 2.2.0 introduced new support for KVM containers on Arm64. However, version 2.8.10 rolls out Linux/Arm64 artifacts at the Launchpad. Please see [this](https://launchpad.net/juju/2.8/2.8.10).
  
 ---

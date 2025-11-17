@@ -5,8 +5,8 @@ description: Ubuntu Core is an immutable, snap-based Linux OS optimized for IoT 
 download_url: https://ubuntu.com/download/core
 works_on_arm: true
 supported_minimum_version:
-    version_number: 20
-    release_date: 2021/02/02
+    version_number: 16
+    release_date: 2016/11/03
  
  
 optional_info:
@@ -24,8 +24,8 @@ optional_info:
         rationale:
  
 optional_hidden_info:
-    release_notes__supported_minimum: https://documentation.ubuntu.com/core/reference/release-notes/
+    release_notes__supported_minimum: https://canonical.com/blog/ubuntu-core-16-delivers-foundation-for-secure-iot
     release_notes__recommended_minimum:
-    other_info: The Ubuntu Core Arm64 images for RPi are available starting from version 20. Please see [here](https://documentation.ubuntu.com/core/reference/testing-platforms/index.html).
+    other_info: Ubuntu Core images are available for RPi and other IoT silicon platforms from version 16. Please see [here](https://documentation.ubuntu.com/core/reference/testing-platforms/index.html) for latest releases.
  
 ---
