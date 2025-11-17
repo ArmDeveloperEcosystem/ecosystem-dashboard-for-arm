@@ -1,8 +1,8 @@
 ---
-name: Red Hat Jboss Web Server
+name: Red Hat JBoss Web Server
 vendor: Red Hat
 category: Web Server
-description: Red Hat Jboss Web Server is a commercial, enterprise-grade platform that combines Apache HTTP Server and Apache Tomcat to host and manage large-scale websites and lightweight Java web applications with enhanced stability, security, and Red Hat’s enterprise support.
+description: Red Hat JBoss Web Server is a commercial, enterprise-grade platform combining Apache HTTP Server and Apache Tomcat to deliver secure, stable, and supported web application hosting on Red Hat platforms.
 product_url: https://www.redhat.com/en/technologies/jboss-middleware/web-server
 works_on_arm: true
 release_date_on_arm: 2023/11/01
