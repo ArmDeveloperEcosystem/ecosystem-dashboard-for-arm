@@ -243,6 +243,65 @@ When multiple workflows run concurrently:
 5. Successfully push results
 ```
 
+### Badge Generation and Display
+
+**How Badges Appear on the Dashboard:**
+
+The badge system uses **direct template integration** rather than Hugo shortcodes:
+
+1. **Data Source:**
+   - Workflows generate JSON files in `data/test-results/<package>.json`
+   - JSON follows schema v1.0 (see Test Results JSON Schema section)
+
+2. **Template Integration:**
+   - File: `themes/arm-design-system-hugo-theme/layouts/partials/package-display/row-sub.html`
+   - This template renders the expanded package details when users click a package card
+   - It automatically reads test data from the JSON files
+
+3. **Badge Rendering Logic:**
+   ```go-html-template
+   {{- $packageSlug := .metadata.File.ContentBaseName -}}
+   {{- $testData := index $.metadata.Site.Data "test-results" $packageSlug -}}
+   {{- if $testData -}}
+     <!-- Badge HTML rendered here -->
+   {{- end -}}
+   ```
+
+4. **Badge Features:**
+   - **Color-coded status**: Green (#28a745) for passing, Red (#dc3545) for failing
+   - **Test summary**: "🔧 Arm64 Tests: X passing/failing"
+   - **Clickable link**: Links to GitHub Actions run URL
+   - **Metadata display**: Shows last tested timestamp and version
+   - **Expandable details**: 
+     - Individual test results with ✅/❌ indicators
+     - Test duration for each test
+     - Total duration and runner information
+
+5. **Automatic Display:**
+   - No manual configuration needed
+   - Badge appears automatically when:
+     - JSON file exists in `data/test-results/`
+     - Package slug matches (e.g., `nginx.md` → `nginx.json`)
+     - Hugo build succeeds
+   - Badge only visible in **expanded package view** (click package to expand)
+
+**Important Notes:**
+
+- **Shortcode not used**: A `test-badge.html` shortcode exists but is NOT used because the dashboard doesn't render individual package pages
+- **No manual setup**: Don't add `{{< test-badge >}}` to package markdown files - it won't work
+- **Template-based**: Badge integration is handled entirely in the `row-sub.html` template
+
+**Viewing Badges:**
+
+1. Start Hugo: `hugo server -D`
+2. Open: http://localhost:1313/
+3. Search for or scroll to the package (e.g., "nginx")
+4. Click the package card to expand it
+5. Badge appears in the expanded section with test details
+
+**Direct Link Pattern:**
+- http://localhost:1313/?package=nginx (auto-expands nginx)
+
 ---
 
 ## Adding Packages
