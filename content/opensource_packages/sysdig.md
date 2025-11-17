@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.40.0
+        release_date: 2025/02/22
+        reference_content: https://github.com/draios/sysdig/releases/tag/0.40.0
+        rationale: In this release, Arm64 github runner was integrated.
 
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/draios/sysdig/releases/tag/0.30.0
