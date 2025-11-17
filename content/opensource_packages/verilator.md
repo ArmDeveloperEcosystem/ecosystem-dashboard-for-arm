@@ -10,7 +10,7 @@ supported_minimum_version:
  
  
 optional_info:
-    homepage_url: https://www.veripool.org/verilator/
+    homepage_url: https://verilator.org/
     support_caveats:
     alternative_options:
     getting_started_resources:
