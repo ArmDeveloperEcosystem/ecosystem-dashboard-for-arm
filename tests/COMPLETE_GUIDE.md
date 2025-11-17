@@ -247,7 +247,7 @@ When multiple workflows run concurrently:
 
 **How Badges Appear on the Dashboard:**
 
-The badge system uses **direct template integration** rather than Hugo shortcodes:
+The badge system uses **direct template integration** in the Hugo theme:
 
 1. **Data Source:**
    - Workflows generate JSON files in `data/test-results/<package>.json`
@@ -287,9 +287,9 @@ The badge system uses **direct template integration** rather than Hugo shortcode
 
 **Important Notes:**
 
-- **Shortcode not used**: A `test-badge.html` shortcode exists but is NOT used because the dashboard doesn't render individual package pages
-- **No manual setup**: Don't add `{{< test-badge >}}` to package markdown files - it won't work
 - **Template-based**: Badge integration is handled entirely in the `row-sub.html` template
+- **No shortcodes used**: The dashboard doesn't use Hugo shortcodes for badges because it doesn't render individual package pages
+- **No manual setup**: Badges appear automatically when JSON test results exist - no changes needed to package markdown files
 
 **Viewing Badges:**
 
@@ -719,8 +719,7 @@ build_steps/
 └── generate_test_badge.py      # Badge utility
 
 themes/arm-design-system-hugo-theme/layouts/
-├── shortcodes/test-badge.html              # Shortcode (not used)
-└── partials/package-display/row-sub.html   # Badge integration
+└── partials/package-display/row-sub.html   # Badge display template
 ```
 
 ### Workflow Triggers
