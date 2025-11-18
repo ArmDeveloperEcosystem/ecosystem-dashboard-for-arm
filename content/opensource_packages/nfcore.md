@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 3.4.0
+        release_date: 2025/10/15
+        reference_content: https://github.com/nf-core/tools/releases/tag/3.4.0
+        rationale: In this release, improvements for Arm64 architecture handling were done.
  
 optional_hidden_info:
     release_notes__supported_minimum:

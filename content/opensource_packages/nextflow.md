@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 25.04.1
+        release_date: 2025/05/12
+        reference_content: https://github.com/nextflow-io/nextflow/releases/tag/v25.04.1
+        rationale: In this release, support for Snapshots on Arm architecture was added.
  
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/nextflow-io/nextflow/releases/tag/v23.07.0-edge

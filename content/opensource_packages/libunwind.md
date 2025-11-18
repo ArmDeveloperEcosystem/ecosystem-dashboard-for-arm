@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.8.0
+        release_date: 2024/01/14
+        reference_content: https://github.com/libunwind/libunwind/releases/tag/v1.8.0
+        rationale: In this release, Arm64 support has been enhanced with improved stack unwinding validation, better PLT detection, refined register handling, more robust fallback logic, and expanded test coverage.
 
 optional_hidden_info:
     release_notes__supported_minimum:
