@@ -29,8 +29,8 @@ An automated functional testing system for packages in the Arm Ecosystem Dashboa
 - Envoy (4 tests) ✅
 
 **Infrastructure:**
-- 4 GitHub Actions workflows
-- Reusable workflow template for rapid scaling
+- 3 GitHub Actions workflows (test-nginx, test-envoy, test-all-packages)
+- Template file for creating new package tests
 - Auto-conflict resolution with retry logic
 - Badge integration in dashboard UI
 
@@ -48,68 +48,105 @@ An automated functional testing system for packages in the Arm Ecosystem Dashboa
 
 ## Quick Start
 
-### Adding a New Package (10 minutes)
+### Adding a New Package (15-20 minutes)
 
-**Step 1:** Create workflow file `.github/workflows/test-<package>.yml`
-
-```yaml
-name: Test <Package> on Arm64
-
-on:
-  workflow_dispatch:
-  push:
-    branches: [main, smoke_tests]
-    paths:
-      - 'content/opensource_packages/<package>.md'
-      - '.github/workflows/test-<package>.yml'
-  workflow_call:
-
-jobs:
-  test-package:
-    uses: ./.github/workflows/reusable-package-test.yml
-    with:
-      package_name: "<Package Display Name>"
-      package_slug: "<package>"
-      package_category: "<Category>"
-      package_language: "<language>"
-      install_commands: |
-        [
-          "sudo apt-get update",
-          "sudo apt-get install -y <package>"
-        ]
-      version_command: "<package> --version | grep -oP '[0-9.]+'"
-      test_commands: |
-        [
-          {"name": "Check binary exists", "command": "command -v <package>"},
-          {"name": "Get version", "command": "<package> --version"},
-          {"name": "Run help", "command": "<package> --help"}
-        ]
-```
-
-**Step 2:** Add to orchestrator `.github/workflows/test-all-packages.yml`
-
-```yaml
-jobs:
-  # ... existing jobs ...
-  
-  test-<package>:
-    uses: ./.github/workflows/test-<package>.yml
-  
-  summary:
-    needs: [test-nginx, test-envoy, test-<package>]  # Add to list
-```
-
-**Step 3:** Commit and run
+**Step 1:** Copy the template
 
 ```bash
-git add .github/workflows/test-<package>.yml .github/workflows/test-all-packages.yml
-git commit -m "Add <package> functional tests"
+cp .github/workflows/template-package-test.yml .github/workflows/test-redis.yml
+```
+
+**Step 2:** Customize `test-redis.yml`
+
+Replace all placeholders:
+- `<PACKAGE>` → `Redis` (display name)
+- `<package>` → `redis` (lowercase, matches .md filename)
+
+Update the install section:
+```yaml
+- name: Install Redis
+  run: |
+    echo "Installing Redis..."
+    sudo apt-get update
+    sudo apt-get install -y redis-server
+    
+    if command -v redis-server &> /dev/null; then
+      echo "Redis installed successfully"
+      echo "install_status=success" >> $GITHUB_OUTPUT
+    else
+      echo "Redis installation failed"
+      echo "install_status=failed" >> $GITHUB_OUTPUT
+      exit 1
+    fi
+```
+
+Update version detection:
+```yaml
+- name: Get Redis version
+  id: version
+  run: |
+    VERSION=$(redis-server --version | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+    echo "version=$VERSION" >> $GITHUB_OUTPUT
+    echo "Detected Redis version: $VERSION"
+```
+
+Add/modify tests as needed (the template has 3 basic tests to start with).
+
+**Step 3:** Add to orchestrator
+
+Edit `.github/workflows/test-all-packages.yml`:
+
+```yaml
+jobs:
+  test-nginx:
+    uses: ./.github/workflows/test-nginx.yml
+  
+  test-envoy:
+    uses: ./.github/workflows/test-envoy.yml
+  
+  test-redis:  # Add this
+    uses: ./.github/workflows/test-redis.yml
+  
+  summary:
+    needs: [test-nginx, test-envoy, test-redis]  # Update this list
+```
+
+**Step 4:** Commit and run
+
+```bash
+git add .github/workflows/test-redis.yml .github/workflows/test-all-packages.yml
+git commit -m "Add Redis functional tests"
 git push
 ```
 
-**Step 4:** Trigger test in GitHub Actions
+**Step 5:** Trigger test in GitHub Actions
 
-- Go to Actions → "Test <Package> on Arm64" → Run workflow
+- Go to Actions → "Test Redis on Arm64" → Run workflow
+- Or wait for daily scheduled run (2 AM UTC)
+
+**Step 6:** Verify badge appears
+
+The badge will automatically appear on the Redis package page after the first successful run!
+
+**💡 Pro Tips:**
+- Look at `test-nginx.yml` or `test-envoy.yml` for real working examples
+- Start with 3-4 basic tests, add more complex ones later
+- Template has extensive comments to guide you
+- All workflows follow the same pattern - easy to understand and debug
+
+---
+
+## Architecture
+
+### System Components
+
+**Workflows:**
+- `template-package-test.yml` - Template for new packages (copy this!)
+- `test-nginx.yml` - nginx tests (5 tests, example of complex testing)
+- `test-envoy.yml` - Envoy tests (4 tests, example of binary download)
+- `test-all-packages.yml` - Orchestrator (runs all tests in parallel)
+
+**Data:
 - Or wait for scheduled run (daily 2 AM UTC)
 
 **Step 5:** Verify
@@ -203,24 +240,30 @@ node -p "require('./package.json').version"
          └───────────────────────────┘
 ```
 
-### Workflow Patterns
+```
 
-**Pattern 1: Reusable Workflow** (Recommended - 10 min to add)
-```
-test-<package>.yml (config) → reusable-package-test.yml (template) → Results
-```
-- Minimal configuration
-- JSON-based setup
-- Fast to add new packages
-- Example: Envoy
+### Workflow Pattern
 
-**Pattern 2: Custom Workflow** (Advanced - 2 hours to create)
+**Single Pattern:** Copy the template and customize
+
 ```
-test-<package>.yml (full implementation) → Results
+template-package-test.yml  →  Copy to test-<package>.yml  →  Customize  →  Results
 ```
-- Full control over test logic
-- Complex scenarios (service management, HTTP testing)
-- Example: nginx
+
+All workflows follow the same structure:
+1. **Install** - Download/install the package
+2. **Version** - Detect package version
+3. **Test** - Run functional tests (3-10 tests typical)
+4. **JSON** - Generate test results in schema v1.0
+5. **Commit** - Auto-commit results with conflict resolution
+6. **Summary** - Display results in GitHub Actions
+
+**Examples:**
+- `test-nginx.yml` - Comprehensive example with 5 tests, service management, HTTP testing
+- `test-envoy.yml` - Binary download example with 4 tests
+- `template-package-test.yml` - Heavily commented template to copy
+
+**Time to add:** 15-20 minutes per package
 
 ### Data Flow
 
@@ -304,67 +347,300 @@ The badge system uses **direct template integration** in the Hugo theme:
 
 ---
 
-## Adding Packages
+## Adding New Packages
 
-### Method 1: Simple Packages (Recommended)
+### The Template Approach
 
-Use the reusable workflow template for packages with straightforward tests.
+All packages follow the same pattern: **copy the template and customize**.
 
-**Example: Adding Redis**
+**Step-by-Step Example: Adding Redis**
 
-1. Create `.github/workflows/test-redis.yml`:
+**1. Copy the template:**
 
+```bash
+cp .github/workflows/template-package-test.yml .github/workflows/test-redis.yml
+```
+
+**2. Customize the workflow:**
+
+Open `test-redis.yml` and make these changes:
+
+a) **Update the header:**
 ```yaml
-name: Test Redis on Arm64
+name: Test Redis on Arm64  # Change from <PACKAGE>
 
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     branches: [main, smoke_tests]
     paths:
-      - 'content/opensource_packages/redis.md'
-      - '.github/workflows/test-redis.yml'
-  workflow_call:
+      - 'content/opensource_packages/redis.md'  # Change from <package>
+      - '.github/workflows/test-redis.yml'       # Change from <package>
 
 jobs:
-  test-redis:
-    uses: ./.github/workflows/reusable-package-test.yml
-    with:
-      package_name: "Redis"
-      package_slug: "redis"
-      package_category: "Database"
-      package_language: "c"
-      install_commands: |
-        [
-          "sudo apt-get update",
-          "sudo apt-get install -y redis-server"
-        ]
-      version_command: "redis-server --version | grep -oP '[0-9.]+' | head -1"
-      test_commands: |
-        [
-          {"name": "Check redis-server binary", "command": "command -v redis-server"},
-          {"name": "Check redis-cli binary", "command": "command -v redis-cli"},
-          {"name": "Get version", "command": "redis-server --version"},
-          {"name": "Start server", "command": "timeout 2 redis-server --daemonize yes"}
-        ]
+  test-redis:  # Change from test-<package>
+    runs-on: ubuntu-24.04-arm
 ```
 
-2. Add to `test-all-packages.yml`
-3. Commit and run
+b) **Update metadata:**
+```yaml
+- name: Set test metadata
+  id: metadata
+  run: |
+    echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+    echo "package_slug=redis" >> $GITHUB_OUTPUT  # Change from <package>
+    echo "dashboard_link=/opensource_packages/redis" >> $GITHUB_OUTPUT
+```
 
-**Time:** ~10 minutes
+c) **Customize installation:**
+```yaml
+- name: Install Redis  # Change from <PACKAGE>
+  id: install
+  run: |
+    echo "Installing Redis..."
+    sudo apt-get update
+    sudo apt-get install -y redis-server
+    
+    if command -v redis-server &> /dev/null; then
+      echo "Redis installed successfully"
+      echo "install_status=success" >> $GITHUB_OUTPUT
+    else
+      echo "Redis installation failed"
+      echo "install_status=failed" >> $GITHUB_OUTPUT
+      exit 1
+    fi
+```
 
-### Method 2: Complex Packages (Advanced)
+d) **Update version detection:**
+```yaml
+- name: Get Redis version
+  id: version
+  run: |
+    VERSION=$(redis-server --version | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+    echo "version=$VERSION" >> $GITHUB_OUTPUT
+    echo "Detected Redis version: $VERSION"
+```
 
-Use custom workflow for packages requiring:
-- Service management (systemctl, etc.)
-- HTTP/network testing
-- Complex multi-step setup
-- Performance benchmarking
+e) **Customize tests** (the template has 3 basic tests - modify as needed):
+```yaml
+- name: Test 1 - Check redis-server binary exists
+  id: test1
+  run: |
+    START_TIME=$(date +%s)
+    
+    if command -v redis-server &> /dev/null; then
+      echo "✓ redis-server binary found"
+      echo "status=passed" >> $GITHUB_OUTPUT
+    else
+      echo "✗ redis-server binary not found"
+      echo "status=failed" >> $GITHUB_OUTPUT
+      exit 1
+    fi
+    
+    END_TIME=$(date +%s)
+    echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-**Example:** See `.github/workflows/test-nginx.yml`
+- name: Test 2 - Check redis-cli binary exists
+  id: test2
+  run: |
+    START_TIME=$(date +%s)
+    
+    if command -v redis-cli &> /dev/null; then
+      echo "✓ redis-cli binary found"
+      echo "status=passed" >> $GITHUB_OUTPUT
+    else
+      echo "✗ redis-cli binary not found"
+      echo "status=failed" >> $GITHUB_OUTPUT
+      exit 1
+    fi
+    
+    END_TIME=$(date +%s)
+    echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-**Time:** ~2 hours
+# Add more tests as needed (test3, test4, etc.)
+```
+
+f) **Update JSON generation** (update package metadata and test details list):
+```yaml
+- name: Generate test results JSON
+  if: always()
+  run: |
+    mkdir -p test-results
+    
+    cat > test-results/redis.json << EOF
+    {
+      "schema_version": "1.0",
+      "package": {
+        "name": "Redis",
+        "version": "${{ steps.version.outputs.version }}",
+        "language": "c",
+        "category": "Database"
+      },
+      "run": {
+        ...
+      },
+      "tests": {
+        "passed": ${{ steps.summary.outputs.passed }},
+        "failed": ${{ steps.summary.outputs.failed }},
+        "skipped": 0,
+        "duration_seconds": ${{ steps.summary.outputs.duration }},
+        "details": [
+          {
+            "name": "Check redis-server binary exists",
+            "status": "${{ steps.test1.outputs.status }}",
+            "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
+          },
+          {
+            "name": "Check redis-cli binary exists",
+            "status": "${{ steps.test2.outputs.status }}",
+            "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
+          }
+        ]
+      },
+      ...
+    }
+    EOF
+```
+
+**3. Add to orchestrator:**
+
+Edit `.github/workflows/test-all-packages.yml`:
+
+```yaml
+jobs:
+  test-nginx:
+    uses: ./.github/workflows/test-nginx.yml
+  
+  test-envoy:
+    uses: ./.github/workflows/test-envoy.yml
+  
+  test-redis:  # Add this
+    uses: ./.github/workflows/test-redis.yml
+  
+  summary:
+    needs: [test-nginx, test-envoy, test-redis]  # Add redis to the list
+```
+
+**4. Commit and test:**
+
+```bash
+git add .github/workflows/test-redis.yml .github/workflows/test-all-packages.yml
+git commit -m "Add Redis functional tests"
+git push
+```
+
+**5. Run the test:**
+- GitHub Actions → "Test Redis on Arm64" → Run workflow
+- Or wait for daily scheduled run
+
+**Time:** 15-20 minutes
+
+### Examples to Learn From
+
+**Simple package (apt install):**
+- Look at `test-nginx.yml` - Shows comprehensive testing with 5 tests
+- Includes service management, HTTP testing, systemctl
+
+**Binary download:**
+- Look at `test-envoy.yml` - Shows how to download and install a binary
+- 4 simple tests checking binary functionality
+
+**Template:**
+- `template-package-test.yml` - Heavily commented, shows all the patterns
+
+### Common Customizations
+
+**For services (like nginx, redis):**
+```yaml
+- name: Test - Start Redis service
+  id: test3
+  run: |
+    START_TIME=$(date +%s)
+    
+    sudo systemctl start redis-server
+    sleep 2
+    
+    if sudo systemctl is-active redis-server; then
+      echo "✓ Redis service is active"
+      echo "status=passed" >> $GITHUB_OUTPUT
+    else
+      echo "✗ Redis service failed to start"
+      echo "status=failed" >> $GITHUB_OUTPUT
+      exit 1
+    fi
+    
+    END_TIME=$(date +%s)
+    echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+```
+
+**For network testing:**
+```yaml
+- name: Test - HTTP response
+  id: test4
+  run: |
+    START_TIME=$(date +%s)
+    
+    # Start redis-server in background
+    redis-server --port 6379 --daemonize yes
+    sleep 2
+    
+    # Test connection
+    if redis-cli ping | grep -q "PONG"; then
+      echo "✓ Redis responding to ping"
+      echo "status=passed" >> $GITHUB_OUTPUT
+    else
+      echo "✗ Redis not responding"
+      echo "status=failed" >> $GITHUB_OUTPUT
+      exit 1
+    fi
+    
+    END_TIME=$(date +%s)
+    echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+```
+
+**For binary downloads (like Envoy):**
+```yaml
+- name: Install Envoy
+  id: install
+  run: |
+    echo "Installing Envoy..."
+    
+    # Download official ARM64 binary
+    ENVOY_VERSION="v1.32.3"
+    wget https://github.com/envoyproxy/envoy/releases/download/${ENVOY_VERSION}/envoy-${ENVOY_VERSION}-linux-aarch64
+    
+    # Install to /usr/local/bin
+    sudo mv envoy-${ENVOY_VERSION}-linux-aarch64 /usr/local/bin/envoy
+    sudo chmod +x /usr/local/bin/envoy
+    
+    if command -v envoy &> /dev/null; then
+      echo "Envoy installed successfully"
+      echo "install_status=success" >> $GITHUB_OUTPUT
+    else
+      echo "Envoy installation failed"
+      echo "install_status=failed" >> $GITHUB_OUTPUT
+      exit 1
+    fi
+```
+
+**For complex version detection:**
+```yaml
+- name: Get package version
+  id: version
+  run: |
+    # Try multiple methods
+    VERSION=$(nginx -v 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+    
+    # Or parse from config
+    VERSION=$(python3 --version 2>&1 | awk '{print $2}' || echo "unknown")
+    
+    # Or from package manager
+    VERSION=$(dpkg -s nginx | grep '^Version:' | awk '{print $2}' || echo "unknown")
+    
+    echo "version=$VERSION" >> $GITHUB_OUTPUT
+    echo "Detected version: $VERSION"
+```
 
 ### Test Command Best Practices
 
@@ -574,7 +850,7 @@ package --version | head -1 | awk '{print $2}'
 **Files to Review:**
 - `.github/workflows/test-nginx.yml`
 - `.github/workflows/test-envoy.yml`
-- `.github/workflows/reusable-package-test.yml`
+- `.github/workflows/template-package-test.yml`
 - `.github/workflows/test-all-packages.yml`
 - `themes/.../layouts/partials/package-display/row-sub.html`
 - `data/test-results/*.json`
@@ -644,23 +920,21 @@ on:
 
 ## Advanced Topics
 
-### Custom Workflow Pattern
+### Customizing the Template
 
-When you need more control than the reusable template provides:
+The template provides a flexible starting point for all package types:
 
-**Use cases:**
-- Service management (systemd, supervisord)
-- HTTP/network testing
-- Performance benchmarking
-- Multi-step complex scenarios
+**Common customizations:**
+- **Service management:** systemd, supervisord, etc.
+- **HTTP/network testing:** curl, wget, connection tests
+- **Performance benchmarking:** timing tests, load tests
+- **Multi-step scenarios:** Complex setup/teardown
 
-**Example:** `.github/workflows/test-nginx.yml` (341 lines)
-
-**Structure:**
-1. Dedicated steps for each test
-2. Custom result tracking
-3. Detailed error handling
-4. Service lifecycle management
+**Example of comprehensive testing:** See `.github/workflows/test-nginx.yml` (370 lines)
+- Shows 5 different test types
+- Service lifecycle management
+- HTTP response testing
+- Detailed error handling
 
 ### Matrix Testing (Future)
 
@@ -685,10 +959,10 @@ steps:
 
 ```
 .github/workflows/
-├── test-nginx.yml              # nginx tests (custom)
-├── test-envoy.yml              # Envoy tests (reusable)
-├── reusable-package-test.yml   # Template workflow
-└── test-all-packages.yml       # Orchestrator
+├── test-nginx.yml              # nginx tests (370 lines, 5 tests)
+├── test-envoy.yml              # Envoy tests (295 lines, 4 tests)
+├── template-package-test.yml   # Template file for new packages
+└── test-all-packages.yml       # Orchestrator (runs all tests daily)
 
 data/test-results/
 ├── nginx.json                  # nginx results
@@ -737,10 +1011,10 @@ themes/arm-design-system-hugo-theme/layouts/
 - `EXECUTIVE_SUMMARY.md` (quick management summary)
 - `ARCHITECTURE_DIAGRAMS.md` (visual diagrams)
 
-**Examples:**
-- nginx: Complex custom workflow
-- Envoy: Simple reusable workflow
-- Both in `.github/workflows/`
+**Example Workflows:**
+- `test-nginx.yml` - Comprehensive testing with 5 tests, service management
+- `test-envoy.yml` - Binary download and basic functionality tests
+- `template-package-test.yml` - Copy this template for new packages
 
 **Common Commands:**
 ```bash
