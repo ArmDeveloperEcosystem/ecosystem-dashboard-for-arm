@@ -197,7 +197,7 @@ jobs:
       - name: Commit results
         if: always()
         run: |
-          # Use same git automation as reusable workflow
+          # Use git automation pattern from existing workflows
           git config --global user.name 'github-actions[bot]'
           git add test-results/package.json
           git commit -m "Update package test results [skip ci]"
@@ -621,15 +621,15 @@ package -v
 package version
 ```
 
-**Common patterns:**
+**Common version detection patterns:**
 ```yaml
-# Pattern 1: Clean version string
+# Pattern: Clean version string
 "package --version | grep -oP '[0-9.]+'"
 
-# Pattern 2: Multiple formats
+# Pattern: Multiple fallback methods
 "package --version 2>&1 | grep -oP 'v\K[0-9.]+' || package -v 2>&1 | awk '{print $2}'"
 
-# Pattern 3: From file
+# Pattern: From file
 "cat /usr/share/package/VERSION"
 ```
 
