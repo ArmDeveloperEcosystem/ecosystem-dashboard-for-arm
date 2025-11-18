@@ -1,0 +1,448 @@
+name: Test Spark on Arm64
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - smoke_tests
+    paths:
+      - 'content/opensource_packages/spark.md'
+      - '.github/workflows/test-spark.yml'
+
+jobs:
+  test-spark:
+    runs-on: ubuntu-24.04-arm
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "package_slug=spark" >> $GITHUB_OUTPUT
+          echo "dashboard_link=/opensource_packages/spark" >> $GITHUB_OUTPUT
+      
+      # ============================================================
+      # Install Apache Spark and dependencies
+      # ============================================================
+      - name: Install Java (Spark dependency)
+        id: install_java
+        run: |
+          echo "Installing Java 17..."
+          sudo apt-get update
+          sudo apt-get install -y openjdk-17-jdk
+          
+          java -version
+          echo "JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))" >> $GITHUB_ENV
+      
+      - name: Install Apache Spark
+        id: install
+        run: |
+          echo "Installing Apache Spark..."
+          
+          # Download Spark 3.5.3 (latest stable)
+          SPARK_VERSION="3.5.3"
+          HADOOP_VERSION="3"
+          
+          cd /tmp
+          wget -q https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz
+          
+          # Extract to /opt
+          sudo tar -xzf spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz -C /opt/
+          sudo ln -s /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} /opt/spark
+          
+          # Set environment variables
+          echo "SPARK_HOME=/opt/spark" >> $GITHUB_ENV
+          echo "/opt/spark/bin" >> $GITHUB_PATH
+          
+          # Verify installation
+          if [ -d "/opt/spark" ]; then
+            echo "Spark installed successfully"
+            echo "install_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "Spark installation failed"
+            echo "install_status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+      
+      # ============================================================
+      # Detect version
+      # ============================================================
+      - name: Detect Spark version
+        id: version
+        run: |
+          # Spark doesn't have a --version flag, so we read from the installation directory
+          if [ -f /opt/spark/RELEASE ]; then
+            VERSION=$(cat /opt/spark/RELEASE | grep "Spark" | head -n 1 | sed 's/.*Spark \([0-9.]*\).*/\1/')
+          else
+            # Fallback: check directory name
+            VERSION=$(basename $(readlink -f /opt/spark) | grep -oP '(?<=spark-)[0-9.]+')
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected Spark version: $VERSION"
+      
+      # ============================================================
+      # Run tests
+      # ============================================================
+      - name: Test 1 - Check spark-submit exists
+        id: test1
+        run: |
+          START_TIME=$(date +%s)
+          
+          if command -v spark-submit &> /dev/null; then
+            echo "✓ spark-submit command found"
+            which spark-submit
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ spark-submit command not found"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 2 - Check spark-shell exists
+        id: test2
+        run: |
+          START_TIME=$(date +%s)
+          
+          if command -v spark-shell &> /dev/null; then
+            echo "✓ spark-shell command found"
+            which spark-shell
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ spark-shell command not found"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 3 - Check pyspark exists
+        id: test3
+        run: |
+          START_TIME=$(date +%s)
+          
+          if command -v pyspark &> /dev/null; then
+            echo "✓ pyspark command found"
+            which pyspark
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ pyspark command not found"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 4 - Verify Java dependency
+        id: test4
+        run: |
+          START_TIME=$(date +%s)
+          
+          if java -version 2>&1 | grep -q "openjdk"; then
+            echo "✓ Java is installed and accessible"
+            java -version
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ Java check failed"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 5 - Run simple Spark application
+        id: test5
+        run: |
+          START_TIME=$(date +%s)
+          
+          # Create a simple Spark application (Scala)
+          cat > /tmp/SparkTest.scala << 'EOF'
+          import org.apache.spark.sql.SparkSession
+
+          object SparkTest {
+            def main(args: Array[String]): Unit = {
+              val spark = SparkSession.builder()
+                .appName("ARM64 Test")
+                .master("local[1]")
+                .getOrCreate()
+              
+              val data = Seq(("ARM64", 1), ("Spark", 2), ("Test", 3))
+              val df = spark.createDataFrame(data).toDF("name", "value")
+              
+              println("DataFrame created successfully:")
+              df.show()
+              
+              spark.stop()
+            }
+          }
+          EOF
+          
+          # Run the Spark example that comes with the distribution
+          # Use the SparkPi example as it's simple and requires no external dependencies
+          if /opt/spark/bin/run-example SparkPi 10 2>&1 | grep -q "Pi is roughly"; then
+            echo "✓ Spark application executed successfully"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ Spark application failed to execute"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 6 - Run PySpark test
+        id: test6
+        run: |
+          START_TIME=$(date +%s)
+          
+          # Install Python if not present
+          sudo apt-get install -y python3 python3-pip
+          
+          # Create a simple PySpark script
+          cat > /tmp/pyspark_test.py << 'EOF'
+          from pyspark.sql import SparkSession
+
+          spark = SparkSession.builder \
+              .appName("ARM64 PySpark Test") \
+              .master("local[1]") \
+              .getOrCreate()
+
+          data = [("ARM64", 1), ("PySpark", 2), ("Test", 3)]
+          df = spark.createDataFrame(data, ["name", "value"])
+
+          print("PySpark DataFrame created successfully:")
+          df.show()
+
+          # Verify we can perform operations
+          count = df.count()
+          print(f"Row count: {count}")
+
+          spark.stop()
+
+          # Exit with success if we got here
+          if count == 3:
+              exit(0)
+          else:
+              exit(1)
+          EOF
+          
+          # Run the PySpark script
+          if /opt/spark/bin/spark-submit /tmp/pyspark_test.py 2>&1 | grep -q "PySpark DataFrame created successfully"; then
+            echo "✓ PySpark application executed successfully"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ PySpark application failed to execute"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      # ============================================================
+      # Calculate summary
+      # ============================================================
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+          
+          # Test 1
+          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          
+          # Test 2
+          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          
+          # Test 3
+          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
+          
+          # Test 4
+          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
+          
+          # Test 5
+          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
+          
+          # Test 6
+          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+          
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          
+          if [ $FAILED -eq 0 ]; then
+            echo "overall_status=success" >> $GITHUB_OUTPUT
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
+            echo "overall_status=failure" >> $GITHUB_OUTPUT
+            echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+      
+      # ============================================================
+      # Generate JSON with Spark metadata
+      # ============================================================
+      - name: Generate test results JSON
+        if: always()
+        run: |
+          mkdir -p test-results
+          
+          cat > test-results/spark.json << EOF
+          {
+            "schema_version": "1.0",
+            "package": {
+              "name": "Apache Spark",
+              "version": "${{ steps.version.outputs.version }}",
+              "language": "scala",
+              "category": "Databases - Big-data"
+            },
+            "run": {
+              "id": "${{ github.run_id }}",
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "timestamp": "${{ steps.metadata.outputs.timestamp }}",
+              "status": "${{ steps.summary.outputs.overall_status }}",
+              "runner": {
+                "os": "ubuntu-24.04",
+                "arch": "arm64"
+              }
+            },
+            "tests": {
+              "passed": ${{ steps.summary.outputs.passed }},
+              "failed": ${{ steps.summary.outputs.failed }},
+              "skipped": 0,
+              "duration_seconds": ${{ steps.summary.outputs.duration }},
+              "details": [
+                {
+                  "name": "Check spark-submit exists",
+                  "status": "${{ steps.test1.outputs.status }}",
+                  "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check spark-shell exists",
+                  "status": "${{ steps.test2.outputs.status }}",
+                  "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check pyspark exists",
+                  "status": "${{ steps.test3.outputs.status }}",
+                  "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Verify Java dependency",
+                  "status": "${{ steps.test4.outputs.status }}",
+                  "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Run simple Spark application",
+                  "status": "${{ steps.test5.outputs.status }}",
+                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Run PySpark test",
+                  "status": "${{ steps.test6.outputs.status }}",
+                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}
+                }
+              ]
+            },
+            "metadata": {
+              "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
+              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+            }
+          }
+          EOF
+          
+          echo "Generated test results:"
+          cat test-results/spark.json
+      
+      # ============================================================
+      # STANDARD STEPS - Commit results to repository
+      # ============================================================
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spark-test-results
+          path: test-results/spark.json
+          retention-days: 90
+      
+      - name: Commit test results to repository
+        if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/smoke_tests')
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          mkdir -p data/test-results
+          cp test-results/spark.json data/test-results/spark.json
+          
+          git add data/test-results/spark.json
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "Update spark test results [skip ci]"
+            
+            # Retry logic for push
+            MAX_RETRIES=5
+            RETRY_COUNT=0
+            
+            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+              if git push origin ${{ github.ref_name }}; then
+                echo "Successfully pushed test results"
+                break
+              else
+                RETRY_COUNT=$((RETRY_COUNT + 1))
+                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                  echo "Push failed, attempt $RETRY_COUNT of $MAX_RETRIES. Retrying in 5 seconds..."
+                  sleep 5
+                  git pull --rebase origin ${{ github.ref_name }}
+                else
+                  echo "Failed to push after $MAX_RETRIES attempts"
+                  exit 1
+                fi
+              fi
+            done
+          else
+            echo "No changes to commit"
+          fi
