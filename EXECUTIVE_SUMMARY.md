@@ -32,11 +32,11 @@ A fully automated testing system for Arm Ecosystem Dashboard packages that:
 
 ## Key Files Added
 
-### Infrastructure (4 workflows)
-- `test-nginx.yml` - nginx testing workflow
-- `test-envoy.yml` - Envoy testing workflow  
-- `reusable-package-test.yml` - **Template for any package**
-- `test-all-packages.yml` - **Orchestrator** (runs all tests)
+### Infrastructure (3 workflows)
+- `test-nginx.yml` - nginx testing workflow (370 lines, 5 tests)
+- `test-envoy.yml` - Envoy testing workflow (295 lines, 4 tests)
+- `template-package-test.yml` - **Template file to copy for new packages**
+- `test-all-packages.yml` - **Orchestrator** (runs all tests daily)
 
 ### Data
 - `data/test-results/nginx.json` - Auto-generated test results
@@ -52,7 +52,7 @@ A fully automated testing system for Arm Ecosystem Dashboard packages that:
 ## How It Works
 
 ```
-1. GitHub Actions (Arm64 runner) runs daily at 2 AM UTC
+1. GitHub Actions (ubuntu-24.04-arm runner) runs daily at 2 AM UTC
 2. Installs package and runs tests
 3. Generates JSON results  
 4. Auto-commits to repository
@@ -65,42 +65,51 @@ A fully automated testing system for Arm Ecosystem Dashboard packages that:
 
 ## Adding More Packages
 
-**Time required**: ~10 minutes per package
+**Time required**: 15-20 minutes per package
 
 **Steps**:
-1. Create `.github/workflows/test-<package>.yml` (copy template)
-2. Configure: package name, install commands, test commands
-3. Add to `test-all-packages.yml`
-4. Run workflow → badge appears automatically
+1. Copy `template-package-test.yml` → `test-<package>.yml`
+2. Search/replace `<PACKAGE>` and `<package>` placeholders
+3. Customize: installation, version detection, tests
+4. Add to `test-all-packages.yml` orchestrator
+5. Commit and run → badge appears automatically
 
-**Example**: Adding Redis
+**Example**: Adding Redis (simplified from template)
 ```yaml
-install_commands: ["sudo apt-get install -y redis-server"]
-version_command: "redis-server --version | grep -oP '[0-9.]+'"
-test_commands: [
-  {"name": "Check binary", "command": "command -v redis-server"},
-  {"name": "Start service", "command": "redis-server --version"}
-]
+- name: Install Redis
+  run: |
+    sudo apt-get update
+    sudo apt-get install -y redis-server
+
+- name: Get Redis version
+  run: |
+    VERSION=$(redis-server --version | grep -oP '[0-9.]+' | head -1)
+    
+- name: Test - Check redis-server binary exists
+  run: command -v redis-server
+  
+- name: Test - Check redis-cli binary exists  
+  run: command -v redis-cli
 ```
 
 ---
 
 ## Architecture Highlights
 
-### Scalable Design
-- ✅ Reusable workflow template
-- ✅ JSON-based configuration
-- ✅ Parallel execution
-- ✅ Auto-conflict resolution
+### Simple and Scalable Design
+- ✅ Template-based workflow creation
+- ✅ Copy/customize pattern - no unnecessary abstraction
+- ✅ Parallel execution of all tests
+- ✅ Auto-conflict resolution for concurrent runs
 
 ### Robust Implementation  
 - ✅ 5 retry attempts with exponential backoff
-- ✅ Automatic git conflict resolution
+- ✅ Automatic git conflict resolution (--ours strategy)
 - ✅ Graceful failure handling
 - ✅ No breaking changes to existing code
 
 ### Quality Assurance
-- ✅ 36 commits of refinement
+- ✅ Multiple refinement iterations
 - ✅ All tests passing
 - ✅ Hugo builds successfully
 - ✅ Documentation complete
@@ -195,9 +204,9 @@ Projected (20 packages):
 This branch delivers production-ready infrastructure that:
 1. Adds significant value (automated testing + visibility)
 2. Requires zero maintenance (fully automated)
-3. Scales easily (10 min to add each package)
+3. Scales easily (15-20 min to add each package using template)
 4. Has zero breaking changes (purely additive)
-5. Is thoroughly documented (8 comprehensive guides)
+5. Is thoroughly documented (3 comprehensive guides)
 
 **Next steps**:
 1. Merge `smoke_tests` → `main`

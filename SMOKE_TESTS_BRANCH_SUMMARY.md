@@ -28,29 +28,28 @@ This branch adds a comprehensive automated testing infrastructure to the Arm Eco
 
 ### GitHub Actions Workflows (`.github/workflows/`)
 
-1. **`test-nginx.yml`** (341 lines)
+1. **`test-nginx.yml`** (370 lines)
    - Dedicated workflow for nginx testing
    - 5 comprehensive tests (binary, version, config, service, HTTP)
-   - Custom implementation showing full flexibility
+   - Direct implementation showing full flexibility
    - Auto-commits results to `data/test-results/nginx.json`
 
-2. **`test-envoy.yml`** (36 lines)
+2. **`test-envoy.yml`** (295 lines)
    - Workflow for Envoy proxy testing
-   - 4 tests using reusable workflow pattern
+   - 4 tests (binary exists, version, help, admin address)
    - Downloads official Arm64 binary from GitHub releases
-   - Demonstrates reusable workflow usage
+   - Direct implementation matching nginx pattern
 
-3. **`reusable-package-test.yml`** (229 lines)
-   - **Core component** - Generic reusable workflow template
-   - Accepts JSON configuration for any package
-   - Handles: install, version detection, test execution, results generation
-   - Auto-resolves git conflicts when workflows run concurrently
-   - Retry logic with exponential backoff (5 attempts)
+3. **`template-package-test.yml`** (340 lines)
+   - **Template file** for creating new package workflows
+   - Heavily commented with placeholder markers (<PACKAGE>, <package>)
+   - Copy this file and customize for new packages
+   - Shows best practices: installation, version detection, testing, JSON generation
+   - Includes git automation with conflict resolution
 
-4. **`test-all-packages.yml`** (109 lines)
-   - Parent orchestrator workflow
+4. **`test-all-packages.yml`** (70 lines)
+   - Orchestrator workflow
    - Runs all package tests in parallel
-   - Aggregates results into unified summary
    - Scheduled daily at 2 AM UTC
    - Manual trigger support
 
@@ -104,34 +103,36 @@ This branch adds a comprehensive automated testing infrastructure to the Arm Eco
 
 ### Workflow Patterns
 
-**Pattern 1: Custom Workflow** (nginx example)
-```
-Individual workflow file → Native test implementation → Direct results generation
-```
-- Full control over test logic
-- Best for complex testing scenarios
-- Example: nginx with service management, HTTP testing
+### Workflow Architecture
 
-**Pattern 2: Reusable Workflow** (envoy example)
+**Workflow Pattern: Copy and Customize**
 ```
-Package config → Reusable template → Automated test execution
+1. Copy template-package-test.yml
+   ↓
+2. Customize for your package (search/replace <PACKAGE>, <package>)
+   ↓
+3. Update install steps, version detection, tests
+   ↓
+4. Add to test-all-packages.yml orchestrator
 ```
-- Minimal configuration (JSON format)
-- Rapid addition of new packages
-- Example: envoy with 4 simple tests
 
-**Pattern 3: Parent Orchestrator**
+- All workflows follow the same pattern (see nginx and envoy examples)
+- Time to add new package: 15-20 minutes
+- Template file heavily commented with inline guidance
+- No complexity layers - direct implementation
+
+**Orchestrator Pattern:**
 ```
-test-all-packages.yml → Calls individual workflows → Unified summary
+test-all-packages.yml → Calls all individual workflows in parallel
 ```
-- Runs all tests in parallel
-- Scheduled daily execution
-- Aggregated test reporting
+- Scheduled daily at 2 AM UTC
+- Manual trigger support
+- Each workflow runs independently
 
 ### Data Flow
 
 ```
-1. GitHub Actions (Arm64 runner)
+1. GitHub Actions (ubuntu-24.04-arm runner)
    ↓
 2. Install package & run tests
    ↓
@@ -150,7 +151,7 @@ When multiple workflows run concurrently:
 1. Each workflow commits its own JSON file
 2. Git pull with rebase before push
 3. Auto-resolve conflicts with `--ours` strategy
-4. Retry up to 5 times with exponential backoff
+4. Retry up to 5 times with exponential backoff (2, 4, 6, 8, 10 seconds)
 5. Successfully push results
 
 ---
@@ -250,63 +251,46 @@ When multiple workflows run concurrently:
 
 ## 🚀 How to Add a New Package
 
-### Quick Method (using reusable workflow)
+### Template-Based Method (15-20 minutes per package)
 
-1. **Create workflow file**: `.github/workflows/test-<package>.yml`
-
-```yaml
-name: Test <Package> on Arm64
-
-on:
-  workflow_dispatch:
-  push:
-    branches: [main, smoke_tests]
-    paths:
-      - 'content/opensource_packages/<package>.md'
-      - '.github/workflows/test-<package>.yml'
-  workflow_call:
-
-jobs:
-  test-package:
-    uses: ./.github/workflows/reusable-package-test.yml
-    with:
-      package_name: "<Package>"
-      package_slug: "<package>"
-      package_category: "Category"
-      package_language: "python"
-      install_commands: |
-        [
-          "sudo apt-get update",
-          "sudo apt-get install -y <package>"
-        ]
-      version_command: "<package> --version | grep -oP '[0-9.]+'"
-      test_commands: |
-        [
-          {"name": "Check binary", "command": "command -v <package>"},
-          {"name": "Get version", "command": "<package> --version"},
-          {"name": "Run help", "command": "<package> --help"}
-        ]
+1. **Copy the template**:
+```bash
+cp .github/workflows/template-package-test.yml .github/workflows/test-<package>.yml
 ```
 
-2. **Add to orchestrator**: Edit `.github/workflows/test-all-packages.yml`
+2. **Customize the workflow** - Open `test-<package>.yml` and replace:
+   - All `<PACKAGE>` with package display name (e.g., "Redis")
+   - All `<package>` with lowercase slug (e.g., "redis")
+   - Update installation commands
+   - Update version detection logic
+   - Customize tests (add/remove/modify test steps)
+   - Update JSON metadata (language, category)
 
+3. **Add to orchestrator** - Edit `.github/workflows/test-all-packages.yml`:
 ```yaml
 jobs:
   test-<package>:
     uses: ./.github/workflows/test-<package>.yml
+  
+  summary:
+    needs: [test-nginx, test-envoy, test-<package>]  # Add to needs list
 ```
 
-3. **Update summary job**:
-```yaml
-summary:
-  needs: [test-nginx, test-envoy, test-<package>]
+4. **Test it**:
+```bash
+git add .github/workflows/test-<package>.yml .github/workflows/test-all-packages.yml
+git commit -m "Add <package> functional tests"
+git push
 ```
 
-4. **Trigger workflow**: GitHub Actions → "Test <Package> on Arm64" → Run
+5. **Run manually**: GitHub Actions → "Test <Package> on Arm64" → Run workflow
 
-5. **Verify**: Check `data/test-results/<package>.json` created
+6. **Verify**: Check `data/test-results/<package>.json` created and badge appears
 
-**Time to add**: ~10 minutes per package
+**Examples to copy from:**
+- **nginx** (370 lines, 5 tests) - Service management, HTTP testing
+- **envoy** (295 lines, 4 tests) - Binary download, simple checks
+- **template** (340 lines, 3 tests) - Heavily commented with guidance
 
 ---
 
@@ -326,7 +310,6 @@ summary:
 - Test result commits automatically include `[skip ci]`
 
 ---
-
 ## 🛠️ Technical Details
 
 ### GitHub Runners
@@ -336,17 +319,17 @@ summary:
 
 ### Version Parsing Strategies
 
-**Pattern 1**: Simple grep
+**Simple grep pattern:**
 ```bash
 nginx -v 2>&1 | grep -oP 'nginx/\K[0-9.]+'
 ```
 
-**Pattern 2**: With fallback
+**With fallback methods:**
 ```bash
 envoy --version 2>&1 | grep -oP 'version: [^/]+/\K[^/]+' || envoy --version 2>&1 | awk '{print $3}' | cut -d'/' -f2
 ```
 
-**Pattern 3**: Python/Node packages
+**Python/Node packages:**
 ```bash
 python -c "import package; print(package.__version__)"
 node -p "require('./package.json').version"
@@ -376,8 +359,7 @@ node -p "require('./package.json').version"
 3. **Phase 3** (3 months): Cover all compatible packages
 
 ### Effort to Scale
-- **Per package** (using reusable workflow): ~10 minutes
-- **Per package** (custom workflow): ~2 hours
+- **Per package** (using template): 15-20 minutes
 - **Documentation**: Already complete
 - **Infrastructure**: Already supports unlimited packages
 
@@ -533,8 +515,8 @@ This branch delivers a **production-ready, scalable testing infrastructure** for
 
 - ✅ Automated functional testing on native Arm64 runners
 - ✅ Visual test result badges on the dashboard
-- ✅ Easy addition of new packages (10 minutes each)
-- ✅ Comprehensive documentation (8 guides)
+- ✅ Easy addition of new packages (15-20 minutes each using template)
+- ✅ Comprehensive documentation (3 guides)
 - ✅ Robust conflict resolution and retry logic
 - ✅ Zero maintenance overhead (fully automated)
 
