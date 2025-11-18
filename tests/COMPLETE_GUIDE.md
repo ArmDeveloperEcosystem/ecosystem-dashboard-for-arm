@@ -53,7 +53,7 @@ An automated functional testing system for packages in the Arm Ecosystem Dashboa
 **Step 1:** Copy the template
 
 ```bash
-cp .github/workflows/template-package-test.yml .github/workflows/test-redis.yml
+cp tests/template-package-test.yml .github/workflows/test-redis.yml
 ```
 
 **Step 2:** Customize `test-redis.yml`
@@ -141,7 +141,7 @@ The badge will automatically appear on the Redis package page after the first su
 ### System Components
 
 **Workflows:**
-- `template-package-test.yml` - Template for new packages (copy this!)
+- `tests/template-package-test.yml` - Template for new packages (copy this!)
 - `test-nginx.yml` - nginx tests (5 tests, example of complex testing)
 - `test-envoy.yml` - Envoy tests (4 tests, example of binary download)
 - `test-all-packages.yml` - Orchestrator (runs all tests in parallel)
@@ -358,7 +358,7 @@ All packages follow the same pattern: **copy the template and customize**.
 **1. Copy the template:**
 
 ```bash
-cp .github/workflows/template-package-test.yml .github/workflows/test-redis.yml
+cp tests/template-package-test.yml .github/workflows/test-redis.yml
 ```
 
 **2. Customize the workflow:**
@@ -547,7 +547,7 @@ git push
 - 4 simple tests checking binary functionality
 
 **Template:**
-- `template-package-test.yml` - Heavily commented, shows all the patterns
+- `tests/template-package-test.yml` - Heavily commented, shows all the patterns
 
 ### Common Customizations
 
@@ -961,8 +961,10 @@ steps:
 .github/workflows/
 ├── test-nginx.yml              # nginx tests (370 lines, 5 tests)
 ├── test-envoy.yml              # Envoy tests (295 lines, 4 tests)
-├── template-package-test.yml   # Template file for new packages
 └── test-all-packages.yml       # Orchestrator (runs all tests daily)
+
+tests/
+└── template-package-test.yml   # Template file for new packages
 
 data/test-results/
 ├── nginx.json                  # nginx results
@@ -1014,7 +1016,7 @@ themes/arm-design-system-hugo-theme/layouts/
 **Example Workflows:**
 - `test-nginx.yml` - Comprehensive testing with 5 tests, service management
 - `test-envoy.yml` - Binary download and basic functionality tests
-- `template-package-test.yml` - Copy this template for new packages
+- `tests/template-package-test.yml` - Copy this template for new packages
 
 **Common Commands:**
 ```bash

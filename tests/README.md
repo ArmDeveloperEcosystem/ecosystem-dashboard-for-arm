@@ -37,7 +37,7 @@ For advanced users and maintainers:
 Start with our template file:
 
 ```bash
-cp .github/workflows/template-package-test.yml .github/workflows/test-redis.yml
+cp tests/template-package-test.yml .github/workflows/test-redis.yml
 ```
 
 ### 3. **Customize for Your Package**
@@ -142,9 +142,7 @@ The badge will automatically appear on the Redis package page in the Hugo dashbo
 
 ## 🔧 Key Files
 
-## 🔧 Key Files
-
-- **`.github/workflows/template-package-test.yml`** - Template for new package tests
+- **`tests/template-package-test.yml`** - Template for new package tests (copy this!)
 - **`.github/workflows/test-nginx.yml`** - nginx example (5 tests)
 - **`.github/workflows/test-envoy.yml`** - Envoy example (4 tests)
 - **`.github/workflows/test-all-packages.yml`** - Orchestrator
