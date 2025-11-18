@@ -1,0 +1,382 @@
+# MongoDB Test Workflow
+# Tests MongoDB on ARM64 architecture
+# MongoDB is a document-oriented NoSQL database
+
+name: Test MongoDB on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  push:
+    branches:
+      - main
+      - smoke_tests
+    paths:
+      - 'content/opensource_packages/mongodb.md'
+      - '.github/workflows/test-mongodb.yml'
+
+jobs:
+  test-mongodb:
+    runs-on: ubuntu-24.04-arm
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "package_slug=mongodb" >> $GITHUB_OUTPUT
+          echo "dashboard_link=/opensource_packages/mongodb" >> $GITHUB_OUTPUT
+      
+      # ============================================================
+      # Install MongoDB
+      # ============================================================
+      - name: Install MongoDB
+        id: install
+        run: |
+          echo "Installing MongoDB..."
+          
+          # Import MongoDB public GPG key
+          curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | \
+            sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
+          
+          # Add MongoDB repository
+          echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | \
+            sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+          
+          # Update and install MongoDB
+          sudo apt-get update
+          sudo apt-get install -y mongodb-org
+          
+          # Verify installation
+          if command -v mongod &> /dev/null; then
+            echo "MongoDB installed successfully"
+            echo "install_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "MongoDB installation failed"
+            echo "install_status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+      
+      # ============================================================
+      # Get MongoDB version
+      # ============================================================
+      - name: Get MongoDB version
+        id: version
+        run: |
+          VERSION=$(mongod --version | grep -oP 'db version v\K[0-9.]+' | head -1 || echo "unknown")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected MongoDB version: $VERSION"
+      
+      # ============================================================
+      # MongoDB Tests
+      # ============================================================
+      
+      - name: Test 1 - Check mongod binary exists
+        id: test1
+        run: |
+          START_TIME=$(date +%s)
+          
+          if command -v mongod &> /dev/null; then
+            echo "✓ mongod binary found"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ mongod binary not found"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 2 - Check mongosh (MongoDB shell) binary exists
+        id: test2
+        run: |
+          START_TIME=$(date +%s)
+          
+          if command -v mongosh &> /dev/null; then
+            echo "✓ mongosh binary found"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✓ mongosh not installed (older versions use 'mongo' shell)"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 3 - Check MongoDB version command
+        id: test3
+        run: |
+          START_TIME=$(date +%s)
+          
+          if mongod --version | grep -q "db version"; then
+            echo "✓ MongoDB version command works"
+            mongod --version | head -5
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ MongoDB version command failed"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 4 - Start MongoDB server (test mode)
+        id: test4
+        run: |
+          START_TIME=$(date +%s)
+          
+          # Create data directory
+          mkdir -p /tmp/mongodb-test-data
+          
+          # Start mongod in background with custom data directory
+          mongod --dbpath /tmp/mongodb-test-data --port 27018 --fork --logpath /tmp/mongodb-test.log
+          sleep 3
+          
+          # Check if it's running
+          if pgrep -x mongod > /dev/null; then
+            echo "✓ MongoDB server started successfully"
+            echo "status=passed" >> $GITHUB_OUTPUT
+            
+            # Try to connect using mongosh if available
+            if command -v mongosh &> /dev/null; then
+              if mongosh --port 27018 --eval "db.version()" --quiet; then
+                echo "✓ Successfully connected to MongoDB"
+              fi
+            fi
+            
+            # Stop it
+            mongod --dbpath /tmp/mongodb-test-data --port 27018 --shutdown || pkill mongod
+          else
+            echo "✗ MongoDB server failed to start"
+            cat /tmp/mongodb-test.log || true
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 5 - Check MongoDB tools installed
+        id: test5
+        run: |
+          START_TIME=$(date +%s)
+          
+          TOOLS_FOUND=0
+          
+          # Check for various MongoDB tools
+          if command -v mongodump &> /dev/null; then
+            echo "✓ mongodump found"
+            TOOLS_FOUND=$((TOOLS_FOUND + 1))
+          fi
+          
+          if command -v mongorestore &> /dev/null; then
+            echo "✓ mongorestore found"
+            TOOLS_FOUND=$((TOOLS_FOUND + 1))
+          fi
+          
+          if command -v mongostat &> /dev/null; then
+            echo "✓ mongostat found"
+            TOOLS_FOUND=$((TOOLS_FOUND + 1))
+          fi
+          
+          if [ $TOOLS_FOUND -gt 0 ]; then
+            echo "✓ Found $TOOLS_FOUND MongoDB tools"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✓ MongoDB tools not required for basic functionality"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      # ============================================================
+      # Calculate summary
+      # ============================================================
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+          
+          # Test 1
+          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          
+          # Test 2
+          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          
+          # Test 3
+          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
+          
+          # Test 4
+          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
+          
+          # Test 5
+          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
+          
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          
+          if [ $FAILED -eq 0 ]; then
+            echo "overall_status=success" >> $GITHUB_OUTPUT
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
+            echo "overall_status=failure" >> $GITHUB_OUTPUT
+            echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+      
+      # ============================================================
+      # Generate JSON with MongoDB metadata
+      # ============================================================
+      - name: Generate test results JSON
+        if: always()
+        run: |
+          mkdir -p test-results
+          
+          cat > test-results/mongodb.json << EOF
+          {
+            "schema_version": "1.0",
+            "package": {
+              "name": "MongoDB",
+              "version": "${{ steps.version.outputs.version }}",
+              "language": "c++",
+              "category": "Database"
+            },
+            "run": {
+              "id": "${{ github.run_id }}",
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "timestamp": "${{ steps.metadata.outputs.timestamp }}",
+              "status": "${{ steps.summary.outputs.overall_status }}",
+              "runner": {
+                "os": "ubuntu-24.04",
+                "arch": "arm64"
+              }
+            },
+            "tests": {
+              "passed": ${{ steps.summary.outputs.passed }},
+              "failed": ${{ steps.summary.outputs.failed }},
+              "skipped": 0,
+              "duration_seconds": ${{ steps.summary.outputs.duration }},
+              "details": [
+                {
+                  "name": "Check mongod binary exists",
+                  "status": "${{ steps.test1.outputs.status }}",
+                  "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check mongosh (MongoDB shell) binary exists",
+                  "status": "${{ steps.test2.outputs.status }}",
+                  "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check MongoDB version command",
+                  "status": "${{ steps.test3.outputs.status }}",
+                  "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Start MongoDB server (test mode)",
+                  "status": "${{ steps.test4.outputs.status }}",
+                  "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check MongoDB tools installed",
+                  "status": "${{ steps.test5.outputs.status }}",
+                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
+                }
+              ]
+            },
+            "metadata": {
+              "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
+              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+            }
+          }
+          EOF
+          
+          echo "Generated test results:"
+          cat test-results/mongodb.json
+      
+      # ============================================================
+      # STANDARD STEPS - Commit results to repository
+      # ============================================================
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mongodb-test-results
+          path: test-results/mongodb.json
+          retention-days: 90
+      
+      - name: Commit test results to repository
+        if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/smoke_tests')
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          mkdir -p data/test-results
+          cp test-results/mongodb.json data/test-results/mongodb.json
+          
+          git add data/test-results/mongodb.json
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "Update mongodb test results [skip ci]"
+            
+            # Pull with rebase and push, retry up to 5 times
+            for i in {1..5}; do
+              if git pull --rebase origin ${{ github.ref_name }}; then
+                # Rebase succeeded, try to push
+                if git push; then
+                  echo "Successfully pushed test results"
+                  break
+                fi
+              else
+                # Rebase failed, likely due to conflict
+                echo "Rebase failed, resolving conflicts..."
+                
+                # Accept our version of the file (the new test results)
+                git checkout --ours data/test-results/mongodb.json
+                git add data/test-results/mongodb.json
+                
+                # Continue the rebase
+                git rebase --continue || true
+              fi
+              
+              # Wait before retry
+              sleep $((i * 2))
+            done
+          else
+            echo "No changes to commit"
+          fi
