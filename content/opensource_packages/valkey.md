@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 8.0
+        release_date: 2024/09/16
+        reference_content: https://www.linuxfoundation.org/press/valkey-8-0
+        rationale: In this release, AWS R7g instances achieved 3× higher throughput, reaching 1.2M requests/sec through intelligent multi-core and async I/O optimizations.
  
 optional_hidden_info:
     release_notes__supported_minimum:

@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 6.8
+        release_date: 2024/10/08
+        reference_content: https://www.qt.io/blog/qt-6.8-released
+        rationale: In this release, Qt treats Linux on ARM desktops (and implicitly server/Arm-64) as fully supported.
  
 optional_hidden_info:
     release_notes__supported_minimum: https://www.qt.io/blog/qt-6.7-released
