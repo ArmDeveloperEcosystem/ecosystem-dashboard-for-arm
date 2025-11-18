@@ -14,9 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
+        official_docs:
         arm_content: https://developer.arm.com/documentation/101458/2404/Supporting-reference-information/Clang-and-LLVM-documentation
         partner_content:
-        official_docs:
     arm_recommended_minimum_version:
         version_number:
         release_date:

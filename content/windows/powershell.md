@@ -14,8 +14,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        arm_content:
         official_docs: https://learn.microsoft.com/en-us/powershell/
+        arm_content:
+        partner_content:
     arm_recommended_minimum_version:
         version_number:
         release_date:

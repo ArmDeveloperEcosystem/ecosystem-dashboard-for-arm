@@ -12,9 +12,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs: https://speed.python.org/comparison/
     arm_content: null
     partner_content:
-    official_docs: https://speed.python.org/comparison/
   arm_recommended_minimum_version:
     version_number:
     release_date:

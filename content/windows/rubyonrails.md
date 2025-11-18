@@ -1,5 +1,5 @@
 ---
-name: Ruby/Rails
+name: Ruby on Rails
 category: Languages and Frameworks
 description: Ruby on Rails (RoR) is a popular web framework written in the Ruby programming language.
 download_url: https://github.com/rails/rails/tags
@@ -13,9 +13,9 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
+    official_docs:
     arm_content: null
     partner_content:
-    official_docs:
   arm_recommended_minimum_version:
     version_number: null
     release_date: null
