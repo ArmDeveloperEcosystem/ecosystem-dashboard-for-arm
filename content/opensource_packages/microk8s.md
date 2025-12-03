@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.28.0
+        release_date: 2023/08/06
+        reference_content: https://github.com/canonical/microk8s/releases/tag/v1.28
+        rationale: In this release, ArgoCD was upgraded to v2.7.2 and goppadle to v4.2.9, with both components now providing official Arm64 support, enhancing overall efficiency and compatibility for MicroK8s Arm64 clusters.
  
 optional_hidden_info:
     release_notes__supported_minimum: https://microk8s.io/docs/release-notes#p-19989-microk8s-113-14-february-2019

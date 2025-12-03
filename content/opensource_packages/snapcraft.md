@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 8.4.0
+        release_date: 2024/09/12
+        reference_content: https://github.com/canonical/snapcraft/releases/tag/8.4.0
+        rationale: In this release, jazzy content sharing Arm64 spread test was enabled.
  
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/canonical/snapcraft/releases/tag/2.26

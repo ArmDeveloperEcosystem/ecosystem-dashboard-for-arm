@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.23.0
+        release_date: 2022/06/27
+        reference_content: https://github.com/microsoft/playwright/releases/tag/v1.23.0
+        rationale: In this release, playright support was added for Ubuntu 22 Arm64.
  
 optional_hidden_info:
     release_notes__supported_minimum: https://playwright.dev/docs/release-notes#ubuntu-arm64-support--more
