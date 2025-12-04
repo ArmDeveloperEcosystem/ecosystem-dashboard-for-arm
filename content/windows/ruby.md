@@ -21,8 +21,8 @@ optional_info:
     official_docs: "https://www.ruby-lang.org/en/documentation/installation/"
     arm_content:
     partner_content:
-      display_name: Ruby Installer Announcement
-      url: "https://rubyinstaller.org/2025/01/19/rubyinstaller-3.4.1-2-released.html"
+      - display_name: Ruby Installer Announcement
+        url: "https://rubyinstaller.org/2025/01/19/rubyinstaller-3.4.1-2-released.html"
 optional_hidden_info:
   release_notes__supported_minimum: null
   release_notes__recommended_minimum: null
