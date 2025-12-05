@@ -24,6 +24,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/bazelbuild/bazel/releases/tag/3.4.0
     release_notes__recommended_minimum:
-    other_info: Linux/ARM64 release notes are not available. The first Linux/ARM64 binary is available in version 3.4.0.
+    other_info: Linux/Arm64 release notes are not available. The first Linux/Arm64 binary is available in version 3.4.0.
 
 ---

@@ -24,5 +24,5 @@ getting_started_resources:
 optional_hidden_info:
   release_notes__supported_minimum: null
   release_notes__recommended_minimum: null
-  other_info: No ARM64 release notes are available. Installation and testing is done using released source code tar.
+  other_info: No Arm64 release notes are available. Installation and testing is done using released source code tar.
 ---

@@ -1,7 +1,7 @@
 ---
 name: Numpy
 category: AI/ML
-description: NumPy is the fundamental package for array computing with Python.
+description: Numpy is the fundamental package for array computing with Python.
 download_url: https://pypi.org/project/numpy/#files
 works_on_arm: true
 supported_minimum_version:
@@ -24,6 +24,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: No Linux/ARM64 release notes found. However, the first AArch64 wheels are present at pypi from version 1.19.0 onwards. Kindly refer [here](https://pypi.org/project/numpy/1.19.0/#files).
+    other_info: No Linux/Arm64 release notes found. However, the first AArch64 wheels are present at pypi from version 1.19.0 onwards. Kindly refer [here](https://pypi.org/project/numpy/1.19.0/#files).
 
 ---

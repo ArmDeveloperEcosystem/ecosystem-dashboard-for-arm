@@ -1,7 +1,7 @@
 ---
 name: PyTorch
 category: AI/ML
-description: PyTorch is a Python package that provides two high-level features, first is Tensor computation (like NumPy) with strong GPU acceleration and the second is Deep neural networks built on a tape-based autograd system.
+description: PyTorch is a Python package that provides two high-level features, first is Tensor computation (like Numpy) with strong GPU acceleration and the second is Deep neural networks built on a tape-based autograd system.
 download_url: https://pypi.org/project/torch/#files
 works_on_arm: true
 supported_minimum_version:
@@ -26,5 +26,5 @@ optional_info:
 optional_hidden_info:
   release_notes__supported_minimum: https://pypi.org/project/torch/1.8.0/#files
   release_notes__recommended_minimum: null
-  other_info: ARM64 support is not mentioned in the release notes. AArch64 wheels are released from version 1.8.0.
+  other_info: Arm64 support is not mentioned in the release notes. AArch64 wheels are released from version 1.8.0.
 ---

@@ -24,5 +24,5 @@ optional_info:
 optional_hidden_info:
   release_notes__supported_minimum: null
   release_notes__recommended_minimum: null
-  other_info: There are no release notes or binaries present for Linux/ARM64. ONNX version 1.13.0 is installed and tested on the Neoverse N1, using steps mentioned in [README.md](https://github.com/onnx/onnx/blob/v1.13.0/README.md).
+  other_info: There are no release notes or binaries present for Linux/Arm64. ONNX version 1.13.0 is installed and tested on the Neoverse N1, using steps mentioned in [README.md](https://github.com/onnx/onnx/blob/v1.13.0/README.md).
 ---

@@ -26,5 +26,5 @@ optional_info:
 optional_hidden_info:
   release_notes__supported_minimum: null
   release_notes__recommended_minimum: null
-  other_info: Linux/ARM64 release notes are not available. Installation and testing were done using released tar files.
+  other_info: Linux/Arm64 release notes are not available. Installation and testing were done using released tar files.
 ---
