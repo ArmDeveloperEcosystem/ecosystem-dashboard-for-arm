@@ -26,4 +26,3 @@ This site is built on the [Hugo](https://gohugo.io/) web framework, ideal for ge
     * where the html elements are defined to render /content into stylized HTML
   * LICENSE files
     * where the license information is contained
-<!-- test push from Rani, will be removed -->
