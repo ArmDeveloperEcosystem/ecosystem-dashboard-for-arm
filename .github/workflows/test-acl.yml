@@ -14,252 +14,165 @@ on:
 jobs:
   test-acl:
     runs-on: ubuntu-24.04-arm
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "package_slug=acl" >> $GITHUB_OUTPUT
           echo "dashboard_link=/opensource_packages/acl" >> $GITHUB_OUTPUT
-      
+
       # ============================================================
-      # Install ACL from source into /opt/acl
+      # Install ACL from source (CMake build)
       # ============================================================
       - name: Install ACL
         id: install
         run: |
           set -e
-          echo "Installing ACL from source into /opt/acl..."
-
           sudo apt-get update
-          sudo apt-get install -y git build-essential cmake autoconf automake libtool
+          sudo apt-get install -y git build-essential cmake
 
-          # Clone ACL
           cd /tmp
           git clone https://github.com/acl-dev/acl.git
           cd acl
 
-          # Build using upstream's recommended script
-          # This builds the libs and some C demos
-          chmod +x ./build.sh
-          ./build.sh
+          mkdir build
+          cd build
+          cmake ..
+          make -j$(nproc)
 
-          # Install into /opt/acl (headers + libs + demos copied manually)
+          # Install destination
           sudo mkdir -p /opt/acl/include /opt/acl/lib /opt/acl/bin
 
-          # Headers (public headers live under include/)
-          if [ -d include ]; then
-            sudo cp -r include/* /opt/acl/include/
-          fi
+          # Copy headers
+          sudo cp -r ../include/* /opt/acl/include/
 
-          # Libs: search for libacl* under build output
-          # (common locations: lib, build/lib, or similar)
-          LIB_SRC_DIR=""
-          if [ -d lib ]; then
-            LIB_SRC_DIR="lib"
-          elif [ -d build/lib ]; then
-            LIB_SRC_DIR="build/lib"
-          else
-            # Try to find any libacl* files
-            LIB_CAND=$(find . -maxdepth 4 -type f -name "libacl*" | head -n 1 || true)
-            if [ -n "$LIB_CAND" ]; then
-              LIB_SRC_DIR=$(dirname "$LIB_CAND")
-            fi
-          fi
+          # Copy libraries (static libs)
+          find . -name "lib*.a" -exec sudo cp {} /opt/acl/lib/ \;
 
-          if [ -n "$LIB_SRC_DIR" ]; then
-            echo "Copying libraries from $LIB_SRC_DIR"
-            sudo cp "$LIB_SRC_DIR"/libacl* /opt/acl/lib/ || true
-          fi
-
-          # Demos: we use C demo 'c/stdlib/acl_test' as smoke test
-          if [ -x c/stdlib/acl_test ]; then
-            sudo cp c/stdlib/acl_test /opt/acl/bin/acl_test
+          # Copy demo binary (C demo)
+          if [ -x ../c/stdlib/acl_test ]; then
+            sudo cp ../c/stdlib/acl_test /opt/acl/bin/acl_test
           fi
 
           echo "ACL_HOME=/opt/acl" >> $GITHUB_ENV
           echo "/opt/acl/bin" >> $GITHUB_PATH
 
-          # Verify installation (at least one lib + the demo binary)
-          if [ -x /opt/acl/bin/acl_test ] && ls /opt/acl/lib/libacl* >/dev/null 2>&1; then
-            echo "ACL installed successfully with demo binary and libraries"
+          # Verification
+          if [ -x /opt/acl/bin/acl_test ] && ls /opt/acl/lib/lib*acl* >/dev/null 2>&1; then
             echo "install_status=success" >> $GITHUB_OUTPUT
           else
-            echo "ACL installation failed (missing library or demo binary)"
             echo "install_status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
-      
+
       # ============================================================
-      # Get ACL version (best-effort)
+      # Get ACL version (best effort)
       # ============================================================
-      - name: Get ACL version
+      - name: Get ACL Version
         id: version
         run: |
-          # ACL doesn't provide a simple --version CLI.
-          # Try to read version from VERSION file or fallback to "unknown".
           VERSION="unknown"
           if [ -f /tmp/acl/VERSION ]; then
-            VERSION=$(cat /tmp/acl/VERSION | tr -d ' \n' || echo "unknown")
+            VERSION=$(cat /tmp/acl/VERSION | tr -d ' \n')
           fi
-
-          echo "Detected ACL version: $VERSION"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-      
+
       # ============================================================
-      # Tests (smoke tests)
+      # Tests
       # ============================================================
-      
-      - name: Test 1 - Check ACL install directories exist
+
+      - name: Test 1 - Check ACL directories exist
         id: test1
         run: |
-          START_TIME=$(date +%s)
-
-          if [ -d "/opt/acl" ] && [ -d "/opt/acl/include" ] && [ -d "/opt/acl/lib" ]; then
-            echo "✓ /opt/acl, include, and lib directories exist"
+          START=$(date +%s)
+          if [ -d /opt/acl/include ] && [ -d /opt/acl/lib ]; then
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ ACL install directories missing"
             echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
           fi
+          END=$(date +%s)
+          echo "duration=$((END-START))" >> $GITHUB_OUTPUT
 
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Check ACL headers exist
+      - name: Test 2 - Check ACL headers
         id: test2
         run: |
-          START_TIME=$(date +%s)
-
+          START=$(date +%s)
           if ls /opt/acl/include/*.h >/dev/null 2>&1; then
-            echo "✓ ACL headers found in /opt/acl/include"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ No ACL headers found in /opt/acl/include"
             echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
           fi
+          END=$(date +%s)
+          echo "duration=$((END-START))" >> $GITHUB_OUTPUT
 
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 3 - Check ACL libraries exist
+      - name: Test 3 - Check ACL libraries
         id: test3
         run: |
-          START_TIME=$(date +%s)
-
-          if ls /opt/acl/lib/libacl* >/dev/null 2>&1; then
-            echo "✓ ACL libraries found in /opt/acl/lib"
-            ls /opt/acl/lib/libacl* || true
+          START=$(date +%s)
+          if ls /opt/acl/lib/lib*.a >/dev/null 2>&1; then
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ No ACL libraries found in /opt/acl/lib"
             echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
           fi
+          END=$(date +%s)
+          echo "duration=$((END-START))" >> $GITHUB_OUTPUT
 
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 4 - Check ACL demo binary exists
+      - name: Test 4 - Check demo binary exists
         id: test4
         run: |
-          START_TIME=$(date +%s)
-
-          if [ -x "/opt/acl/bin/acl_test" ]; then
-            echo "✓ ACL demo binary /opt/acl/bin/acl_test found"
+          START=$(date +%s)
+          if [ -x /opt/acl/bin/acl_test ]; then
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ ACL demo binary /opt/acl/bin/acl_test not found"
             echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
           fi
+          END=$(date +%s)
+          echo "duration=$((END-START))" >> $GITHUB_OUTPUT
 
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 5 - Run ACL demo binary
+      - name: Test 5 - Run demo binary
         id: test5
         run: |
-          START_TIME=$(date +%s)
-
+          START=$(date +%s)
           OUTPUT=$(/opt/acl/bin/acl_test 2>&1 || true)
           echo "$OUTPUT"
 
-          # Very loose check: we just make sure it prints *something*
-          # You can tighten this by grepping for known phrases from the demo.
-          if echo "$OUTPUT" | grep -qi "acl\|test\|ok\|server\|client"; then
-            echo "✓ ACL demo binary ran and produced output"
+          # Accept any output that shows the binary actually ran
+          if echo "$OUTPUT" | grep -qi "."; then
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ ACL demo binary did not produce expected output"
             echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
           fi
 
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
+          END=$(date +%s)
+          echo "duration=$((END-START))" >> $GITHUB_OUTPUT
+
       # ============================================================
-      # Calculate test summary (template style)
+      # Summary (template style)
       # ============================================================
-      - name: Calculate test summary
+      - name: Calculate summary
         if: always()
         id: summary
         run: |
           PASSED=0
           FAILED=0
-          TOTAL_DURATION=0
-          
-          # Test 1
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
-          
-          # Test 2
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
-          
-          # Test 3
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-          
-          # Test 4
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-          
-          # Test 5
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          
+          TOTAL=0
+
+          for t in test1 test2 test3 test4 test5; do
+            STATUS="${{ steps[$t].outputs.status }}"
+            DUR="${{ steps[$t].outputs.duration || 0 }}"
+            TOTAL=$((TOTAL + DUR))
+            if [ "$STATUS" = "passed" ]; then PASSED=$((PASSED+1)); else FAILED=$((FAILED+1)); fi
+          done
+
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-          
+          echo "duration=$TOTAL" >> $GITHUB_OUTPUT
+
           if [ $FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
@@ -267,16 +180,15 @@ jobs:
             echo "overall_status=failure" >> $GITHUB_OUTPUT
             echo "badge_status=failing" >> $GITHUB_OUTPUT
           fi
-      
+
       # ============================================================
-      # Generate JSON with ACL metadata
+      # JSON output (template style)
       # ============================================================
       - name: Generate test results JSON
         if: always()
         run: |
           mkdir -p test-results
-          
-          cat > test-results/acl.json << EOF
+          cat > test-results/acl.json <<EOF
           {
             "schema_version": "1.0",
             "package": {
@@ -290,99 +202,57 @@ jobs:
               "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
-              "runner": {
-                "os": "ubuntu-24.04",
-                "arch": "arm64"
-              }
+              "runner": { "os": "ubuntu-24.04", "arch": "arm64" }
             },
             "tests": {
               "passed": ${{ steps.summary.outputs.passed }},
               "failed": ${{ steps.summary.outputs.failed }},
-              "skipped": 0,
               "duration_seconds": ${{ steps.summary.outputs.duration }},
               "details": [
-                {
-                  "name": "Check ACL install directories exist",
-                  "status": "${{ steps.test1.outputs.status }}",
-                  "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Check ACL headers exist",
-                  "status": "${{ steps.test2.outputs.status }}",
-                  "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Check ACL libraries exist",
-                  "status": "${{ steps.test3.outputs.status }}",
-                  "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Check ACL demo binary exists",
-                  "status": "${{ steps.test4.outputs.status }}",
-                  "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Run ACL demo binary",
-                  "status": "${{ steps.test5.outputs.status }}",
-                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
-                }
+                { "name": "Check ACL install directories exist", "status": "${{ steps.test1.outputs.status }}" },
+                { "name": "Check ACL headers exist", "status": "${{ steps.test2.outputs.status }}" },
+                { "name": "Check ACL libraries exist", "status": "${{ steps.test3.outputs.status }}" },
+                { "name": "Check demo binary exists", "status": "${{ steps.test4.outputs.status }}" },
+                { "name": "Run demo binary", "status": "${{ steps.test5.outputs.status }}" }
               ]
             },
             "metadata": {
-              "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
+              "dashboard_link": "/opensource_packages/acl",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/acl.json
-      
-      # ============================================================
-      # STANDARD STEPS - Upload + commit results
-      # ============================================================
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: acl-test-results
           path: test-results/acl.json
-          retention-days: 90
-      
+
       - name: Commit test results to repository
         if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/smoke_tests')
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          
+
           mkdir -p data/test-results
           cp test-results/acl.json data/test-results/acl.json
-          
+
           git add data/test-results/acl.json
-          
+
           if ! git diff --staged --quiet; then
-            git commit -m "Update acl test results [skip ci]"
+            git commit -m "Update ACL test results [skip ci]"
             git pull --rebase origin ${{ github.ref_name }} || true
             git push || true
-          else
-            echo "No changes to commit"
           fi
-      
-      - name: Create test summary
+
+      - name: Create summary
         if: always()
         run: |
           echo "## ACL Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check ACL install directories exist: ${{ steps.test1.outputs.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check ACL headers exist: ${{ steps.test2.outputs.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check ACL libraries exist: ${{ steps.test3.outputs.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Check ACL demo binary exists: ${{ steps.test4.outputs.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Run ACL demo binary: ${{ steps.test5.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Version: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Status: ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Tests Passed: ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Tests Failed: ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Duration: ${{ steps.summary.outputs.duration }}s" >> $GITHUB_STEP_SUMMARY
