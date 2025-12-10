@@ -1,0 +1,307 @@
+name: Test Apache Kudu on Arm64
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - smoke_tests
+    paths:
+      - 'content/opensource_packages/apache_kudu.md'
+      - '.github/workflows/test-kudu.yml'
+
+jobs:
+  test-kudu:
+    runs-on: ubuntu-24.04-arm
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "package_slug=apache_kudu" >> $GITHUB_OUTPUT
+          echo "dashboard_link=/opensource_packages/apache_kudu" >> $GITHUB_OUTPUT
+      
+      - name: Install Apache Kudu
+        id: install
+        run: |
+          echo "Installing Apache Kudu via Docker..."
+          
+          # Using version 1.17.0 (released Sep 2023)
+          # Note: Official Kudu images might be multi-arch or x86 only.
+          # Metadata says it works on Arm.
+          
+          # Start Master
+          docker run -d --name kudu-master \
+            --network host \
+            -e KUDU_MASTERS=localhost:7051 \
+            apache/kudu:1.17.0 master
+            
+          # Start Tablet Server
+          docker run -d --name kudu-tserver \
+            --network host \
+            -e KUDU_MASTERS=localhost:7051 \
+            apache/kudu:1.17.0 tserver
+            
+          # Wait for startup
+          sleep 15
+          
+          echo "install_status=success" >> $GITHUB_OUTPUT
+      
+      - name: Get Kudu version
+        id: version
+        run: |
+          # Hard to get version without CLI if container isn't healthy
+          VERSION="1.17.0"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected Kudu version: $VERSION"
+      
+      - name: Test 1 - Check containers running
+        id: test1
+        run: |
+          START_TIME=$(date +%s)
+          
+          if docker ps | grep -q "kudu-master" && docker ps | grep -q "kudu-tserver"; then
+            echo "✓ kudu containers running"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ kudu containers not running"
+            docker ps
+            docker logs kudu-master || true
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 2 - Check Master UI
+        id: test2
+        run: |
+          START_TIME=$(date +%s)
+          
+          # Master UI is on 8051
+          if curl -s http://localhost:8051/ | grep -q "Kudu Master"; then
+            echo "✓ master ui reachable"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ master ui unreachable"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 3 - Check Tablet Server UI
+        id: test3
+        run: |
+          START_TIME=$(date +%s)
+          
+          # TServer UI is on 8050
+          if curl -s http://localhost:8050/ | grep -q "Kudu Tablet Server"; then
+             echo "✓ tserver ui reachable"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ tserver ui unreachable"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 4 - Run CLI Command (via Docker)
+        id: test4
+        run: |
+          START_TIME=$(date +%s)
+          
+          # We can run kudu CLI inside the master container
+          if docker exec kudu-master kudu master list localhost:7051 | grep -q "uuid"; then
+             echo "✓ kudu cli works"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ kudu cli failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 5 - Check Metrics
+        id: test5
+        run: |
+          START_TIME=$(date +%s)
+          
+          if curl -s http://localhost:8051/metrics | grep -q "server_uptime_us"; then
+             echo "✓ metrics endpoint works"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ metrics endpoint failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+          
+          # Helper function to process test results
+          process_test() {
+            local status=$1
+            local duration=$2
+            if [ "$status" == "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$status" == "failed" ]; then
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+          
+          process_test "${{ steps.test1.outputs.status }}" "${{ steps.test1.outputs.duration || 0 }}"
+          process_test "${{ steps.test2.outputs.status }}" "${{ steps.test2.outputs.duration || 0 }}"
+          process_test "${{ steps.test3.outputs.status }}" "${{ steps.test3.outputs.duration || 0 }}"
+          process_test "${{ steps.test4.outputs.status }}" "${{ steps.test4.outputs.duration || 0 }}"
+          process_test "${{ steps.test5.outputs.status }}" "${{ steps.test5.outputs.duration || 0 }}"
+          
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          
+          if [ $FAILED -eq 0 ]; then
+            echo "overall_status=success" >> $GITHUB_OUTPUT
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
+            echo "overall_status=failure" >> $GITHUB_OUTPUT
+            echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Generate test results JSON
+        if: always()
+        run: |
+          mkdir -p test-results
+          
+          cat > test-results/apache_kudu.json << EOF
+          {
+            "schema_version": "1.0",
+            "package": {
+              "name": "Apache Kudu",
+              "version": "${{ steps.version.outputs.version }}",
+              "language": "C++",
+              "category": "Databases - Big-data"
+            },
+            "run": {
+              "id": "${{ github.run_id }}",
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "timestamp": "${{ steps.metadata.outputs.timestamp }}",
+              "status": "${{ steps.summary.outputs.overall_status }}",
+              "runner": {
+                "os": "ubuntu-24.04",
+                "arch": "arm64"
+              }
+            },
+            "tests": {
+              "passed": ${{ steps.summary.outputs.passed }},
+              "failed": ${{ steps.summary.outputs.failed }},
+              "skipped": 0,
+              "duration_seconds": ${{ steps.summary.outputs.duration }},
+              "details": [
+                {
+                  "name": "Check containers running",
+                  "status": "${{ steps.test1.outputs.status }}",
+                  "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check Master UI",
+                  "status": "${{ steps.test2.outputs.status }}",
+                  "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check Tablet Server UI",
+                  "status": "${{ steps.test3.outputs.status }}",
+                  "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Run CLI Command (via Docker)",
+                  "status": "${{ steps.test4.outputs.status }}",
+                  "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check Metrics",
+                  "status": "${{ steps.test5.outputs.status }}",
+                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
+                }
+              ]
+            },
+            "metadata": {
+              "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
+              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+            }
+          }
+          EOF
+          
+          echo "Generated test results:"
+          cat test-results/apache_kudu.json
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apache_kudu-test-results
+          path: test-results/apache_kudu.json
+          retention-days: 90
+      
+      - name: Commit test results to repository
+        if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/smoke_tests')
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          mkdir -p data/test-results
+          cp test-results/apache_kudu.json data/test-results/apache_kudu.json
+          
+          git add data/test-results/apache_kudu.json
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "Update Apache Kudu test results [skip ci]"
+            for i in {1..5}; do
+              if git pull --rebase origin ${{ github.ref_name }}; then
+                if git push; then
+                  echo "Successfully pushed test results"
+                  break
+                fi
+              else
+                echo "Rebase failed, resolving conflicts..."
+                git checkout --ours data/test-results/apache_kudu.json
+                git add data/test-results/apache_kudu.json
+                git rebase --continue || true
+              fi
+              sleep $((i * 2))
+            done
+          else
+            echo "No changes to commit"
+          fi
+      
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## Apache Kudu Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration:** ${{ steps.summary.outputs.duration }}s" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
