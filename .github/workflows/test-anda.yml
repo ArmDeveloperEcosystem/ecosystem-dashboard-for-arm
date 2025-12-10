@@ -1,0 +1,297 @@
+name: Test Anda on Arm64
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - smoke_tests
+    paths:
+      - 'content/opensource_packages/anda.md'
+      - '.github/workflows/test-anda.yml'
+
+jobs:
+  test-anda:
+    runs-on: ubuntu-24.04-arm
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "package_slug=anda" >> $GITHUB_OUTPUT
+          echo "dashboard_link=/opensource_packages/anda" >> $GITHUB_OUTPUT
+      
+      - name: Install Anda
+        id: install
+        run: |
+          echo "Installing Anda..."
+          
+          # Install dependencies (Rust/Cargo)
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl libssl-dev pkg-config
+          
+          # Install Rust
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source $HOME/.cargo/env
+          
+          # Install Anda using Cargo
+          # This might take a while, but it's the standard way if no binary is available
+          # Metadata says 0.1.5 is supported
+          if cargo install anda; then
+            echo "Anda installed successfully"
+            echo "install_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "Anda installation failed"
+            echo "install_status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Add cargo bin to path for subsequent steps
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      
+      - name: Get Anda version
+        id: version
+        run: |
+          VERSION=$(anda --version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected Anda version: $VERSION"
+      
+      - name: Test 1 - Check binary exists
+        id: test1
+        run: |
+          START_TIME=$(date +%s)
+          
+          if command -v anda &> /dev/null; then
+            echo "✓ anda binary found"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ anda binary not found"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 2 - Check version command
+        id: test2
+        run: |
+          START_TIME=$(date +%s)
+          
+          if anda --version 2>&1 | grep -q "anda"; then
+            echo "✓ version command works"
+            anda --version
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ version command failed"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 3 - Check help output
+        id: test3
+        run: |
+          START_TIME=$(date +%s)
+          
+          if anda --help 2>&1 | grep -qi "usage"; then
+            echo "✓ help command works"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ help command failed"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 4 - Check 'build' subcommand availability
+        id: test4
+        run: |
+          START_TIME=$(date +%s)
+          
+          # Just checking if it recognizes the subcommand, even if it fails due to no config
+          if anda build --help 2>&1 | grep -qi "usage"; then
+             echo "✓ build subcommand verified"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ build subcommand verification failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+          
+          # Test 1
+          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          
+          # Test 2
+          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          
+          # Test 3
+          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
+          
+          # Test 4
+          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
+          
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          
+          if [ $FAILED -eq 0 ]; then
+            echo "overall_status=success" >> $GITHUB_OUTPUT
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
+            echo "overall_status=failure" >> $GITHUB_OUTPUT
+            echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Generate test results JSON
+        if: always()
+        run: |
+          mkdir -p test-results
+          
+          cat > test-results/anda.json << EOF
+          {
+            "schema_version": "1.0",
+            "package": {
+              "name": "Anda",
+              "version": "${{ steps.version.outputs.version }}",
+              "language": "Rust",
+              "category": "Compilers/Tools"
+            },
+            "run": {
+              "id": "${{ github.run_id }}",
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "timestamp": "${{ steps.metadata.outputs.timestamp }}",
+              "status": "${{ steps.summary.outputs.overall_status }}",
+              "runner": {
+                "os": "ubuntu-24.04",
+                "arch": "arm64"
+              }
+            },
+            "tests": {
+              "passed": ${{ steps.summary.outputs.passed }},
+              "failed": ${{ steps.summary.outputs.failed }},
+              "skipped": 0,
+              "duration_seconds": ${{ steps.summary.outputs.duration }},
+              "details": [
+                {
+                  "name": "Check binary exists",
+                  "status": "${{ steps.test1.outputs.status }}",
+                  "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check version command",
+                  "status": "${{ steps.test2.outputs.status }}",
+                  "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check help output",
+                  "status": "${{ steps.test3.outputs.status }}",
+                  "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check 'build' subcommand availability",
+                  "status": "${{ steps.test4.outputs.status }}",
+                  "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
+                }
+              ]
+            },
+            "metadata": {
+              "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
+              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+            }
+          }
+          EOF
+          
+          echo "Generated test results:"
+          cat test-results/anda.json
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: anda-test-results
+          path: test-results/anda.json
+          retention-days: 90
+      
+      - name: Commit test results to repository
+        if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/smoke_tests')
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          mkdir -p data/test-results
+          cp test-results/anda.json data/test-results/anda.json
+          
+          git add data/test-results/anda.json
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "Update Anda test results [skip ci]"
+            for i in {1..5}; do
+              if git pull --rebase origin ${{ github.ref_name }}; then
+                if git push; then
+                  echo "Successfully pushed test results"
+                  break
+                fi
+              else
+                echo "Rebase failed, resolving conflicts..."
+                git checkout --ours data/test-results/anda.json
+                git add data/test-results/anda.json
+                git rebase --continue || true
+              fi
+              sleep $((i * 2))
+            done
+          else
+            echo "No changes to commit"
+          fi
+      
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## Anda Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration:** ${{ steps.summary.outputs.duration }}s" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
