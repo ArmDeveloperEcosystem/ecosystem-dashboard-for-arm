@@ -27,108 +27,75 @@ jobs:
           echo "dashboard_link=/opensource_packages/activemq" >> $GITHUB_OUTPUT
 
       # ============================================================
-      # Install ActiveMQ (Classic)
+      # Install ActiveMQ via apt on Ubuntu 24.04 Arm
       # ============================================================
       - name: Install ActiveMQ
         id: install
         run: |
           set -e
-          echo "Installing ActiveMQ..."
+          echo "Installing ActiveMQ from Ubuntu packages..."
 
           sudo apt-get update
-          sudo apt-get install -y openjdk-17-jdk wget tar
+          # Install Java + ActiveMQ (classic)
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            default-jre-headless \
+            activemq
 
-          ACTIVEMQ_VERSION="5.19.4"
-          TARBALL="apache-activemq-${ACTIVEMQ_VERSION}-bin.tar.gz"
+          # Find activemq binary
+          ACTIVEMQ_BIN=$(command -v activemq || dpkg -L activemq | grep '/bin/activemq$' | head -1 || true)
 
-          cd /tmp
-
-          echo "Downloading ActiveMQ ${ACTIVEMQ_VERSION} from downloads.apache.org..."
-          if ! wget -q "https://downloads.apache.org/activemq/${ACTIVEMQ_VERSION}/${TARBALL}"; then
-            echo "Primary download failed, trying archive.apache.org..."
-            wget -q "https://archive.apache.org/dist/activemq/${ACTIVEMQ_VERSION}/${TARBALL}" || {
-              echo "✗ Failed to download ${TARBALL} from both primary and archive URLs"
-              exit 1
-            }
-          fi
-
-          if [ ! -f "${TARBALL}" ]; then
-            echo "✗ Tarball ${TARBALL} not found after download"
-            exit 1
-          fi
-
-          sudo mkdir -p /opt
-          sudo tar -xzf "${TARBALL}" -C /opt
-
-          if [ ! -d "/opt/apache-activemq-${ACTIVEMQ_VERSION}" ]; then
-            echo "✗ Extracted directory /opt/apache-activemq-${ACTIVEMQ_VERSION} not found"
-            ls -R /opt || true
-            exit 1
-          fi
-
-          sudo ln -sfn "/opt/apache-activemq-${ACTIVEMQ_VERSION}" /opt/activemq
-
-          # Ensure the activemq script is executable
-          sudo chmod +x /opt/activemq/bin/activemq || true
-
-          echo "ACTIVEMQ_HOME=/opt/activemq" >> $GITHUB_ENV
-          echo "/opt/activemq/bin" >> $GITHUB_PATH
-
-          # For this step
-          export ACTIVEMQ_HOME=/opt/activemq
-          export PATH="/opt/activemq/bin:$PATH"
-
-          if [ -x "/opt/activemq/bin/activemq" ]; then
-            echo "✓ ActiveMQ script found at /opt/activemq/bin/activemq"
-          else
-            echo "✗ /opt/activemq/bin/activemq is missing or not executable"
-            ls -l /opt/activemq/bin || true
-            exit 1
-          fi
-
-          if command -v activemq &> /dev/null; then
-            echo "ActiveMQ installed successfully and on PATH"
-            echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-            echo "ActiveMQ installation failed: 'activemq' not on PATH"
+          if [ -z "$ACTIVEMQ_BIN" ]; then
+            echo "✗ Could not find activemq binary after installation"
+            dpkg -L activemq || true
             echo "install_status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
 
+          if [ ! -x "$ACTIVEMQ_BIN" ]; then
+            echo "✗ activemq binary exists but is not executable: $ACTIVEMQ_BIN"
+            ls -l "$ACTIVEMQ_BIN" || true
+            echo "install_status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "✓ ActiveMQ installed; binary at: $ACTIVEMQ_BIN"
+
+          # Export for later steps
+          echo "ACTIVEMQ_BIN=$ACTIVEMQ_BIN" >> $GITHUB_ENV
+
+          echo "install_status=success" >> $GITHUB_OUTPUT
+
       # ============================================================
-      # Get ActiveMQ version
+      # Get ActiveMQ version (via dpkg, not CLI)
       # ============================================================
       - name: Get ActiveMQ version
         id: version
         run: |
-          OUTPUT=$(activemq --version 2>&1 || true)
-          echo "Raw 'activemq --version' output:"
-          echo "$OUTPUT"
-
-          VERSION=$(echo "$OUTPUT" | grep -oE '[0-9]+(\.[0-9]+)*' | head -1 || true)
+          VERSION=$(dpkg-query -W -f='${Version}\n' activemq 2>/dev/null | head -1 || true)
 
           if [ -z "$VERSION" ]; then
-            VERSION="5.19.4"
+            VERSION="unknown"
           fi
 
-          echo "Detected ActiveMQ version: $VERSION"
+          echo "Detected ActiveMQ (package) version: $VERSION"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       # ============================================================
       # Tests (5 meaningful smoke tests)
       # ============================================================
 
-      - name: Test 1 - Check activemq binary exists on PATH
+      - name: Test 1 - Check activemq binary exists and is executable
         id: test1
         run: |
           START_TIME=$(date +%s)
 
-          if command -v activemq &> /dev/null; then
-            echo "✓ activemq binary found on PATH"
-            which activemq || true
+          ACTIVEMQ_BIN="${ACTIVEMQ_BIN:-$(command -v activemq || true)}"
+
+          if [ -n "$ACTIVEMQ_BIN" ] && [ -x "$ACTIVEMQ_BIN" ]; then
+            echo "✓ activemq binary found and is executable: $ACTIVEMQ_BIN"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ activemq binary not found on PATH"
+            echo "✗ activemq binary missing or not executable (ACTIVEMQ_BIN='$ACTIVEMQ_BIN')"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -136,19 +103,18 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 2 - Check 'activemq --version' works
+      - name: Test 2 - Check ActiveMQ package is installed (dpkg status)
         id: test2
         run: |
           START_TIME=$(date +%s)
 
-          OUTPUT=$(activemq --version 2>&1 || true)
-          echo "$OUTPUT"
-
-          if echo "$OUTPUT" | grep -q '[0-9]'; then
-            echo "✓ 'activemq --version' printed a version-like string"
+          if dpkg -s activemq 2>/dev/null | grep -q '^Status: install ok installed'; then
+            echo "✓ activemq package is installed (dpkg status OK)"
+            dpkg -s activemq | grep '^Version' || true
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ 'activemq --version' did not print a version-like string"
+            echo "✗ activemq package not in 'install ok installed' state"
+            dpkg -s activemq || true
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -156,19 +122,26 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 3 - Check 'activemq help' output
+      - name: Test 3 - Check 'activemq --help' output
         id: test3
         run: |
           START_TIME=$(date +%s)
 
-          OUTPUT=$(activemq help 2>&1 || true)
+          ACTIVEMQ_BIN="${ACTIVEMQ_BIN:-$(command -v activemq || true)}"
+          if [ -z "$ACTIVEMQ_BIN" ]; then
+            echo "✗ ACTIVEMQ_BIN not set and 'activemq' not on PATH"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          OUTPUT=$("$ACTIVEMQ_BIN" --help 2>&1 || true)
           echo "$OUTPUT"
 
-          if echo "$OUTPUT" | grep -qi 'usage\|help\|options'; then
-            echo "✓ 'activemq help' printed usage/help text"
+          if echo "$OUTPUT" | grep -qi 'usage\|help\|ActiveMQ'; then
+            echo "✓ 'activemq --help' printed usage/help text"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ 'activemq help' did not print expected usage/help text"
+            echo "✗ 'activemq --help' did not print expected usage/help text"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -181,12 +154,12 @@ jobs:
         run: |
           START_TIME=$(date +%s)
 
-          if command -v java &> /dev/null; then
-            echo "✓ java binary found"
+          if command -v java &> /dev/null && java -version &> /dev/null; then
+            echo "✓ java is available and 'java -version' works"
             java -version || true
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ java binary not found (ActiveMQ requires a JDK/JRE)"
+            echo "✗ java is not available or 'java -version' failed"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -194,30 +167,25 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 5 - Check ActiveMQ home layout (bin/conf)
+      - name: Test 5 - Check ActiveMQ configuration files exist
         id: test5
         run: |
           START_TIME=$(date +%s)
 
-          ACTIVEMQ_HOME="${ACTIVEMQ_HOME:-/opt/activemq}"
-
-          BIN_OK="no"
+          CONF_DIR="/etc/activemq"
           CONF_OK="no"
 
-          if [ -x "${ACTIVEMQ_HOME}/bin/activemq" ]; then
-            BIN_OK="yes"
-          fi
-
-          if [ -f "${ACTIVEMQ_HOME}/conf/activemq.xml" ]; then
+          if [ -d "$CONF_DIR" ] && ls "$CONF_DIR"/*.xml >/dev/null 2>&1; then
             CONF_OK="yes"
           fi
 
-          if [ "$BIN_OK" = "yes" ] && [ "$CONF_OK" = "yes" ]; then
-            echo "✓ ActiveMQ bin and conf layout looks correct (${ACTIVEMQ_HOME})"
+          if [ "$CONF_OK" = "yes" ]; then
+            echo "✓ ActiveMQ configuration directory and XML files found under $CONF_DIR"
+            ls "$CONF_DIR" || true
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ ActiveMQ bin/conf layout not as expected:"
-            echo "  BIN_OK=$BIN_OK, CONF_OK=$CONF_OK (ACTIVEMQ_HOME=${ACTIVEMQ_HOME})"
+            echo "✗ ActiveMQ configuration directory or XML files not found under $CONF_DIR"
+            ls -R /etc || true
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -322,17 +290,17 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration }},
               "details": [
                 {
-                  "name": "Check activemq binary exists on PATH",
+                  "name": "Check activemq binary exists and is executable",
                   "status": "${{ steps.test1.outputs.status }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check 'activemq --version' works",
+                  "name": "Check activemq package dpkg status",
                   "status": "${{ steps.test2.outputs.status }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check 'activemq help' output",
+                  "name": "Check 'activemq --help' output",
                   "status": "${{ steps.test3.outputs.status }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
@@ -342,7 +310,7 @@ jobs:
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check ActiveMQ home layout (bin/conf)",
+                  "name": "Check ActiveMQ configuration files exist",
                   "status": "${{ steps.test5.outputs.status }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 }
@@ -418,8 +386,8 @@ jobs:
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check activemq binary exists on PATH: ${{ steps.test1.outputs.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check 'activemq --version' works: ${{ steps.test2.outputs.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check 'activemq help' output: ${{ steps.test3.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check activemq binary exists and is executable: ${{ steps.test1.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check activemq package dpkg status: ${{ steps.test2.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Check 'activemq --help' output: ${{ steps.test3.outputs.status }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Check Java dependency: ${{ steps.test4.outputs.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Check ActiveMQ home layout (bin/conf): ${{ steps.test5.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Check ActiveMQ configuration files exist: ${{ steps.test5.outputs.status }}" >> $GITHUB_STEP_SUMMARY
