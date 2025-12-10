@@ -31,38 +31,49 @@ jobs:
         run: |
           echo "Installing Apache APISIX via Docker..."
           
-          # Using version 3.8.0 (released late 2023)
-          # We also need etcd as a dependency
+          # Using APISIX 3.8.0 (late 2023)
+          # etcd is required as a dependency
           
           docker network create apisix-net
           
-          # Start etcd
+          echo "Starting etcd..."
           docker run -d --name etcd \
             --network apisix-net \
             -p 2379:2379 \
-            -e ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379 \
-            -e ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379 \
-            -e ETCD_ADVERTISE_PEER_URLS=http://etcd:2380 \
-            -e ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380 \
-            -e ETCD_INITIAL_CLUSTER_TOKEN=etcd-cluster-1 \
-            -e ETCD_INITIAL_CLUSTER=etcd=http://etcd:2380 \
-            -e ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd:2380 \
-            -e ETCD_INITIAL_CLUSTER_STATE=new \
-            -e ALLOW_NONE_AUTHENTICATION=yes \
-            bitnami/etcd:3.5.16
-            
-          # Wait for etcd
-          sleep 10
+            gcr.io/etcd-development/etcd:v3.5.10 \
+            /usr/local/bin/etcd \
+              --name s1 \
+              --data-dir=/etcd-data \
+              --listen-client-urls=http://0.0.0.0:2379 \
+              --advertise-client-urls=http://etcd:2379 \
+              --listen-peer-urls=http://0.0.0.0:2380 \
+              --initial-advertise-peer-urls=http://etcd:2380 \
+              --initial-cluster=s1=http://etcd:2380 \
+              --initial-cluster-state=new
           
-          # Start APISIX
+          # Wait for etcd to be ready
+          echo "Waiting for etcd to become ready..."
+          for i in {1..15}; do
+            if docker exec etcd /usr/local/bin/etcdctl \
+              --endpoints=http://127.0.0.1:2379 endpoint health >/dev/null 2>&1; then
+              echo "etcd is healthy"
+              break
+            fi
+            echo "etcd not ready yet, retrying..."
+            sleep 2
+          done
+          
+          echo "Starting APISIX..."
           docker run -d --name apisix \
             --network apisix-net \
             -p 9080:9080 -p 9091:9091 -p 9443:9443 -p 9180:9180 \
-            -e APISIX_STAND_ALONE=true \
+            -e APISIX_STAND_ALONE=false \
+            -e ETCD_HOST="http://etcd:2379" \
             apache/apisix:3.8.0-debian
-            
+          
           # Wait for APISIX
-          sleep 15
+          echo "Waiting for APISIX to start..."
+          sleep 20
           
           echo "install_status=success" >> $GITHUB_OUTPUT
       
@@ -84,6 +95,8 @@ jobs:
             echo "status=passed" >> $GITHUB_OUTPUT
           else
             echo "✗ apisix container not running"
+            docker ps
+            docker logs apisix || true
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -97,12 +110,13 @@ jobs:
           START_TIME=$(date +%s)
           
           # Default admin key is edd1c9f034335f136f87ad84b625c8f1
-          if curl -s -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" http://127.0.0.1:9180/apisix/admin/routes | grep -q "list"; then
+          if curl -s -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" \
+               http://127.0.0.1:9180/apisix/admin/routes | grep -q "list"; then
             echo "✓ admin api works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
             echo "✗ admin api failed"
-            docker logs apisix
+            docker logs apisix || true
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -115,8 +129,9 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          # Create a route that forwards /anything to httpbin.org
-          RESPONSE=$(curl -s -X PUT -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" \
+          # Create a route that forwards /get to httpbin.org
+          RESPONSE=$(curl -s -X PUT \
+            -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" \
             http://127.0.0.1:9180/apisix/admin/routes/1 \
             -d '{
               "uri": "/get",
@@ -147,7 +162,7 @@ jobs:
           START_TIME=$(date +%s)
           
           # Give it a moment to sync
-          sleep 2
+          sleep 3
           
           if curl -s http://127.0.0.1:9080/get | grep -q "httpbin.org"; then
              echo "✓ route access works"
@@ -167,11 +182,14 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if curl -s -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" http://127.0.0.1:9180/apisix/admin/system/info | grep -q "version"; then
+          if curl -s -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" \
+               http://127.0.0.1:9180/apisix/admin/system/info | grep -q "version"; then
              echo "✓ system info endpoint works"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
              echo "✗ system info endpoint failed"
+             curl -s -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" \
+                  http://127.0.0.1:9180/apisix/admin/system/info || true
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
           fi
@@ -187,13 +205,12 @@ jobs:
           FAILED=0
           TOTAL_DURATION=0
           
-          # Helper function to process test results
           process_test() {
             local status=$1
             local duration=$2
-            if [ "$status" == "passed" ]; then
+            if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
-            elif [ "$status" == "failed" ]; then
+            elif [ "$status" = "failed" ]; then
               FAILED=$((FAILED + 1))
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
@@ -209,7 +226,7 @@ jobs:
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
           
-          if [ $FAILED -eq 0 ]; then
+          if [ "$FAILED" -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else

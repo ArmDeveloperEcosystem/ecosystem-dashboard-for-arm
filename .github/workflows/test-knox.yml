@@ -14,80 +14,84 @@ on:
 jobs:
   test-knox:
     runs-on: ubuntu-24.04-arm
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "package_slug=apache_knox" >> $GITHUB_OUTPUT
           echo "dashboard_link=/opensource_packages/apache_knox" >> $GITHUB_OUTPUT
-      
+
       - name: Install Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '11'
-      
+
       - name: Install Apache Knox
         id: install
         run: |
           echo "Installing Apache Knox..."
-          
+
           # Using version 2.0.0 (released Feb 2023)
           KNOX_VERSION=2.0.0
-          # The binary distribution is a zip file, not tar.gz
           wget https://archive.apache.org/dist/knox/${KNOX_VERSION}/knox-${KNOX_VERSION}.zip
           unzip knox-${KNOX_VERSION}.zip
-          
-          # Set KNOX_HOME dynamically by finding the bin directory
-          # Knox uses "knoxcli.sh" (no dash) in bin/
-          KNOX_BIN=$(find . -name "knoxcli.sh" | head -n 1)
-          if [ -z "$KNOX_BIN" ]; then
-            echo "::error::knoxcli.sh not found after extraction"
-            find . -maxdepth 3
+
+          # Knox extracts into knox-${KNOX_VERSION}
+          KNOX_HOME="$PWD/knox-${KNOX_VERSION}"
+          if [ ! -d "$KNOX_HOME" ]; then
+            echo "::error::Expected directory $KNOX_HOME not found after unzip"
+            ls -R .
             exit 1
           fi
-          KNOX_HOME=$(dirname "$(dirname "$KNOX_BIN")")
+
+          # Make sure scripts are executable
+          chmod +x "$KNOX_HOME"/bin/*.sh || true
+
           echo "KNOX_HOME=$KNOX_HOME" >> $GITHUB_ENV
-          
+
           echo "install_status=success" >> $GITHUB_OUTPUT
-      
+
       - name: Get Knox version
         id: version
         run: |
           VERSION="2.0.0"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Knox version: $VERSION"
-      
+
       - name: Test 1 - Check scripts exist
         id: test1
         run: |
           START_TIME=$(date +%s)
-          
+
           if [ -f "$KNOX_HOME/bin/knoxcli.sh" ]; then
             echo "✓ knoxcli.sh found"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ knoxcli.sh not found"
+            echo "✗ knoxcli.sh not found at $KNOX_HOME/bin/knoxcli.sh"
+            ls -R "$KNOX_HOME"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
-          
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
+
       - name: Test 2 - Create Master Secret
         id: test2
         run: |
           START_TIME=$(date +%s)
-          
-          # Knox requires a master secret to start
-          $KNOX_HOME/bin/knoxcli.sh create-master --force --master "knox"
-          
+
+          export JAVA_HOME="$JAVA_HOME"
+          export KNOX_HOME="$KNOX_HOME"
+
+          "$KNOX_HOME/bin/knoxcli.sh" create-master --force --master "knox"
+
           if [ $? -eq 0 ]; then
              echo "✓ master secret created"
              echo "status=passed" >> $GITHUB_OUTPUT
@@ -96,7 +100,7 @@ jobs:
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
           fi
-          
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
@@ -104,22 +108,26 @@ jobs:
         id: test3
         run: |
           START_TIME=$(date +%s)
-          
-          $KNOX_HOME/bin/gateway.sh start
-          
+
+          export JAVA_HOME="$JAVA_HOME"
+          export KNOX_HOME="$KNOX_HOME"
+
+          "$KNOX_HOME/bin/gateway.sh" start
+
           # Wait for startup
-          sleep 15
-          
-          if $KNOX_HOME/bin/gateway.sh status | grep -q "running"; then
+          sleep 20
+
+          if "$KNOX_HOME/bin/gateway.sh" status | grep -qi "running"; then
              echo "✓ gateway started"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
              echo "✗ gateway start failed"
-             cat $KNOX_HOME/logs/gateway.log || true
+             echo "Gateway log:"
+             cat "$KNOX_HOME/logs/gateway.log" || true
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
           fi
-          
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
@@ -127,10 +135,8 @@ jobs:
         id: test4
         run: |
           START_TIME=$(date +%s)
-          
-          # Default port 8443 (https)
-          # We need to ignore cert errors
-          
+
+          # Default port 8443 (https), ignore cert errors
           if curl -k -s https://localhost:8443/gateway/admin/api/v1/version | grep -q "ServerVersion"; then
              echo "✓ version endpoint reachable"
              echo "status=passed" >> $GITHUB_OUTPUT
@@ -140,7 +146,7 @@ jobs:
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
           fi
-          
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
@@ -148,12 +154,15 @@ jobs:
         id: test5
         run: |
           START_TIME=$(date +%s)
-          
-          $KNOX_HOME/bin/gateway.sh stop
-          
+
+          export JAVA_HOME="$JAVA_HOME"
+          export KNOX_HOME="$KNOX_HOME"
+
+          "$KNOX_HOME/bin/gateway.sh" stop
+
           sleep 5
-          
-          if $KNOX_HOME/bin/gateway.sh status | grep -q "not running"; then
+
+          if "$KNOX_HOME/bin/gateway.sh" status | grep -qi "not running"; then
              echo "✓ gateway stopped"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -161,7 +170,7 @@ jobs:
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
           fi
-          
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
@@ -172,8 +181,7 @@ jobs:
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
-          
-          # Helper function to process test results
+
           process_test() {
             local status=$1
             local duration=$2
@@ -184,17 +192,17 @@ jobs:
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
-          
+
           process_test "${{ steps.test1.outputs.status }}" "${{ steps.test1.outputs.duration || 0 }}"
           process_test "${{ steps.test2.outputs.status }}" "${{ steps.test2.outputs.duration || 0 }}"
           process_test "${{ steps.test3.outputs.status }}" "${{ steps.test3.outputs.duration || 0 }}"
           process_test "${{ steps.test4.outputs.status }}" "${{ steps.test4.outputs.duration || 0 }}"
           process_test "${{ steps.test5.outputs.status }}" "${{ steps.test5.outputs.duration || 0 }}"
-          
+
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-          
+
           if [ $FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
@@ -202,12 +210,12 @@ jobs:
             echo "overall_status=failure" >> $GITHUB_OUTPUT
             echo "badge_status=failing" >> $GITHUB_OUTPUT
           fi
-      
+
       - name: Generate test results JSON
         if: always()
         run: |
           mkdir -p test-results
-          
+
           cat > test-results/apache_knox.json << EOF
           {
             "schema_version": "1.0",
@@ -266,10 +274,10 @@ jobs:
             }
           }
           EOF
-          
+
           echo "Generated test results:"
           cat test-results/apache_knox.json
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -277,18 +285,18 @@ jobs:
           name: apache_knox-test-results
           path: test-results/apache_knox.json
           retention-days: 90
-      
+
       - name: Commit test results to repository
         if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/smoke_tests')
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          
+
           mkdir -p data/test-results
           cp test-results/apache_knox.json data/test-results/apache_knox.json
-          
+
           git add data/test-results/apache_knox.json
-          
+
           if ! git diff --staged --quiet; then
             git commit -m "Update Apache Knox test results [skip ci]"
             for i in {1..5}; do
@@ -308,7 +316,7 @@ jobs:
           else
             echo "No changes to commit"
           fi
-      
+
       - name: Create test summary
         if: always()
         run: |
