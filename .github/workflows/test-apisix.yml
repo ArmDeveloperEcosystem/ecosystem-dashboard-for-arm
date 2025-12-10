@@ -32,8 +32,11 @@ jobs:
           echo "Installing Apache APISIX via Docker..."
 
           # Clean up any old containers from previous runs
-          docker rm -f apisix etcd 2>/dev/null || true
+          docker rm -f apisix etcd httpbin 2>/dev/null || true
 
+          ######################################################
+          # 1) Start etcd on host network so 127.0.0.1:2379 works
+          ######################################################
           echo "Starting etcd (gcr.io/etcd-development/etcd:v3.5.10) on host network..."
           docker run -d --name etcd \
             --network host \
@@ -48,17 +51,29 @@ jobs:
               --initial-cluster=s1=http://127.0.0.1:2380 \
               --initial-cluster-state=new
 
-          # Give etcd time to start
           echo "Waiting for etcd to start..."
           sleep 25
 
+          ######################################################
+          # 2) Start a LOCAL upstream instead of real httpbin.org
+          ######################################################
+          echo "Starting local httpbin upstream (mccutchen/go-httpbin) on host network..."
+          docker run -d --name httpbin \
+            --network host \
+            mccutchen/go-httpbin
+
+          echo "Waiting for httpbin upstream to start..."
+          sleep 10
+
+          ######################################################
+          # 3) Start APISIX on host network
+          ######################################################
           echo "Starting APISIX (apache/apisix:3.8.0-debian) on host network..."
           docker run -d --name apisix \
             --network host \
             -e APISIX_STAND_ALONE=false \
             apache/apisix:3.8.0-debian
 
-          # Wait for APISIX
           echo "Waiting for APISIX to start..."
           sleep 25
 
@@ -88,6 +103,8 @@ jobs:
             docker logs apisix || true
             echo "=== etcd logs ==="
             docker logs etcd || true
+            echo "=== httpbin logs ==="
+            docker logs httpbin || true
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -120,7 +137,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
 
-          # Create a route that forwards /get to httpbin.org
+          # Create a route that forwards /get to LOCAL httpbin upstream on 127.0.0.1:8080
           RESPONSE=$(curl -s -X PUT \
             -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" \
             http://127.0.0.1:9180/apisix/admin/routes/1 \
@@ -129,7 +146,7 @@ jobs:
               "upstream": {
                 "type": "roundrobin",
                 "nodes": {
-                  "httpbin.org:80": 1
+                  "127.0.0.1:8080": 1
                 }
               }
             }')
@@ -155,12 +172,17 @@ jobs:
           # Give it a moment to sync
           sleep 3
 
-          if curl -s http://127.0.0.1:9080/get | grep -q "httpbin.org"; then
-             echo "✓ route access works"
+          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9080/get)
+
+          if [ "$STATUS_CODE" = "200" ]; then
+             echo "✓ route access works (HTTP 200)"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ route access failed"
-             curl -v http://127.0.0.1:9080/get || true
+             echo "✗ route access failed (status: $STATUS_CODE)"
+             echo "=== APISIX logs ==="
+             docker logs apisix || true
+             echo "=== httpbin logs ==="
+             docker logs httpbin || true
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
           fi
