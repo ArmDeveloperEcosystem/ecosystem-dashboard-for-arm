@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.23.0
+        release_date: 2023/02/07
+        reference_content: https://github.com/cloudfoundry/garden-runc-release/releases/tag/v1.23.0
+        rationale: In this release, gdn-arm64 was build with musl.
  
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/cloudfoundry/garden-runc-release/releases/tag/v1.22.9
