@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.8.14
+        release_date: 2022/06/22
+        reference_content: https://github.com/rancher/elemental-toolkit/releases/tag/v0.8.14
+        rationale: In this release, teal Arm64 kernel was linked to /boot/vmlinuz.
  
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/rancher/elemental-toolkit/releases/tag/v0.7.0
