@@ -25,6 +25,8 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "package_slug=alfresco" >> $GITHUB_OUTPUT
           echo "dashboard_link=/opensource_packages/alfresco" >> $GITHUB_OUTPUT
+          # Stable GA tag with multi-arch (amd64 + arm64)
+          echo "alfresco_tag=25.3.0" >> $GITHUB_OUTPUT
       
       - name: Install Alfresco (Docker)
         id: install
@@ -38,9 +40,8 @@ jobs:
             sudo apt-get install -y docker.io
           fi
           
-          # Pull the Alfresco Content Repository image
-          # Using 7.3.0 as specified in metadata (supported minimum 7.3)
-          ALFRESCO_TAG="7.3.0"
+          # Pull the Alfresco Content Repository image (stable GA, multi-arch)
+          ALFRESCO_TAG="${{ steps.metadata.outputs.alfresco_tag }}"
           
           if sudo docker pull alfresco/alfresco-content-repository-community:${ALFRESCO_TAG}; then
             echo "Alfresco image pulled successfully"
@@ -54,7 +55,7 @@ jobs:
       - name: Get Alfresco version
         id: version
         run: |
-          VERSION="7.3.0"
+          VERSION="${{ steps.metadata.outputs.alfresco_tag }}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Alfresco version: $VERSION"
       
@@ -79,20 +80,21 @@ jobs:
         id: test2
         run: |
           START_TIME=$(date +%s)
+
+          ALFRESCO_TAG="${{ steps.metadata.outputs.alfresco_tag }}"
           
           # This test verifies if the pulled image explicitly supports Arm64.
-          # If this fails, it indicates that an Arm64 specific image is not available on Docker Hub.
-          ARCH=$(sudo docker inspect --format='{{.Architecture}}' alfresco/alfresco-content-repository-community:7.3.0)
-          if [ "$ARCH" == "arm64" ]; then
-            echo "✓ Image architecture is arm64"
+          ARCH=$(sudo docker inspect --format='{{.Architecture}}' alfresco/alfresco-content-repository-community:${ALFRESCO_TAG})
+          if echo "$ARCH" | grep -qE "arm64|aarch64"; then
+            echo "✓ Image architecture is $ARCH"
             echo "status=passed" >> $GITHUB_OUTPUT
             echo "arch_supported=true" >> $GITHUB_OUTPUT
           else
-            echo "! Image architecture is $ARCH (expected arm64)"
-            echo "Arm64 image not available. Skipping runtime tests."
-            echo "status=skipped" >> $GITHUB_OUTPUT
+            echo "✗ Image architecture is $ARCH (expected arm64/aarch64)"
+            echo "status=failed" >> $GITHUB_OUTPUT
             echo "arch_supported=false" >> $GITHUB_OUTPUT
-            # Do not exit 1, just mark as skipped/unsupported for the dashboard
+            # Hard fail: image is not arm64, so this package is not OK on Arm
+            exit 1
           fi
           
           END_TIME=$(date +%s)
@@ -103,9 +105,11 @@ jobs:
         if: steps.test2.outputs.arch_supported == 'true'
         run: |
           START_TIME=$(date +%s)
+
+          ALFRESCO_TAG="${{ steps.metadata.outputs.alfresco_tag }}"
           
           # Check for a known environment variable or label in the image
-          if sudo docker inspect alfresco/alfresco-content-repository-community:7.3.0 | grep -q "JAVA_HOME"; then
+          if sudo docker inspect alfresco/alfresco-content-repository-community:${ALFRESCO_TAG} | grep -q "JAVA_HOME"; then
             echo "✓ Image configuration verified (JAVA_HOME found)"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -122,12 +126,11 @@ jobs:
         if: steps.test2.outputs.arch_supported == 'true'
         run: |
           START_TIME=$(date +%s)
+
+          ALFRESCO_TAG="${{ steps.metadata.outputs.alfresco_tag }}"
           
-          # Try to start the container and check if it stays up for a few seconds or exits with a specific code
-          # We don't want to wait for full startup as it takes a long time and requires DB
-          # Just checking if the entrypoint executes
-          
-          CONTAINER_ID=$(sudo docker run -d --entrypoint sh alfresco/alfresco-content-repository-community:7.3.0 -c "echo 'Alfresco Entrypoint Check'; sleep 5")
+          # Try to start the container and check if it stays up for a few seconds
+          CONTAINER_ID=$(sudo docker run -d --entrypoint sh alfresco/alfresco-content-repository-community:${ALFRESCO_TAG} -c "echo 'Alfresco Entrypoint Check'; sleep 5")
           
           sleep 2
           if sudo docker ps | grep -q "$CONTAINER_ID"; then
@@ -172,7 +175,7 @@ jobs:
           # Test 3
           if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
-          else
+          elif [ -n "${{ steps.test3.outputs.status }}" ]; then
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
@@ -180,7 +183,7 @@ jobs:
           # Test 4
           if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
-          else
+          elif [ -n "${{ steps.test4.outputs.status }}" ]; then
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
