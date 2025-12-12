@@ -10,7 +10,7 @@ release_date_on_arm: 2023/09/30
 
 optional_info:
     homepage_url: https://www.cadence.com/en_US/home/tools/system-design-and-verification/formal-and-static-verification/jasper-verification-platform.html
-    support_caveats:
+    support_caveats: If you are a new customer interested in this product, please contact Cadence for access at arm-ecosystem@cadence.com.
     alternative_options:
     getting_started_resources:
         official_docs: https://www.cadence.com/en_US/home/tools/system-design-and-verification/formal-and-static-verification.html
