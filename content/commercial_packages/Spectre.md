@@ -9,7 +9,7 @@ release_date_on_arm: 2024/09/30
 
 optional_info:
     homepage_url: https://www.cadence.com/en_US/home/tools/custom-ic-analog-rf-design/circuit-simulation/spectre-x-simulator.html
-    support_caveats: If you are a new customer interested in this product, please contact Cadence for access at arm-ecosystem@cadence.com.
+    support_caveats: New customers interested in this product should contact Cadence at arm-ecosystem@cadence.com to request access.
     alternative_options:
     getting_started_resources:
         official_docs: https://www.cadence.com/en_US/home/resources/white-papers/revolution-by-evolution-getting-to-the-next-technology-breakthrough-in-analog-simulation-wp.html
