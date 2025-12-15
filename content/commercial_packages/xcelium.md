@@ -10,7 +10,7 @@ release_date_on_arm: 2018/10/25
 
 optional_info:
     homepage_url: https://www.cadence.com/en_US/home/tools/system-design-and-verification/simulation-and-testbench-verification/xcelium-simulator.html
-    support_caveats: If you are a new customer interested in this product, please contact Cadence for access at arm-ecosystem@cadence.com.
+    support_caveats: New customers interested in this product should contact Cadence at arm-ecosystem@cadence.com to request access.
     alternative_options:
     getting_started_resources:
         official_docs: https://www.cadence.com/content/dam/cadence-www/global/en_US/documents/tools/system-design-verification/secured/xcelium-logic-simulator-ds.pdf
