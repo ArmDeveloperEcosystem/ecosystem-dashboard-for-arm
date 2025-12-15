@@ -10,7 +10,7 @@ release_date_on_arm: 2025/02/28
 
 optional_info:
     homepage_url: https://www.cadence.com/en_US/home/tools/system-design-and-verification/helium-virtual-and-hybrid-studio.html
-    support_caveats: If you are a new customer interested in this product, please contact Cadence for access at arm-ecosystem@cadence.com.
+    support_caveats: New customers interested in this product should contact Cadence at arm-ecosystem@cadence.com to request access.
     alternative_options:
     getting_started_resources:
         official_docs: https://www.cadence.com/en_US/home/multimedia.html/content/dam/cadence-www/global/en_US/videos/tools/system_design_verification/helium-virtual-hybrid-studio.mp4
