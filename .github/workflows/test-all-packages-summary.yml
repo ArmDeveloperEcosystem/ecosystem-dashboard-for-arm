@@ -1,94 +1,92 @@
-name: Nightly All Packages + Global Summary (Arm64)
+name: Global Test Summary (All Batches)
 
 on:
-  # Single scheduled entrypoint that runs EVERYTHING
-  schedule:
-    - cron: '0 2 * * *'
+  # Auto-trigger after BOTH batches complete
+  workflow_run:
+    workflows:
+      - "Test All Packages (Batch 1) on Arm64"
+      - "Test All Packages (Batch 2) on Arm64"
+    types:
+      - completed
 
-  # Also run orchestrator when code or JSON changes
-  push:
-    branches: [ main, smoke_tests ]
-    paths:
-      - 'content/opensource_packages/*.md'
-      - 'content/commercial_packages/*.md'
-      - 'data/test-results/*.json'
-      - '.github/workflows/test-all-packages-batch1.yml'
-      - '.github/workflows/test-all-packages-batch2.yml'
-      - '.github/workflows/test-all-packages-summary.yml'
-
-  # Manual trigger
+  # Manual trigger for ad-hoc summaries
   workflow_dispatch:
 
 jobs:
-  # -------- BATCH 1 ----------
-  batch1:
-    name: Run Batch 1
-    uses: ./.github/workflows/test-all-packages-batch1.yml
-
-  # -------- BATCH 2 ----------
-  batch2:
-    name: Run Batch 2
-    uses: ./.github/workflows/test-all-packages-batch2.yml
-
-  # -------- GLOBAL SUMMARY ---------
   global-summary:
-    name: Global Summary after ALL batches
-    needs: [batch1, batch2]
+    name: Generate Global Summary
     runs-on: ubuntu-24.04-arm
+    # Run even if batches fail
+    if: always()
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.ref_name }}
+          # Use the branch that triggered the workflow_run
+          ref: ${{ github.event.workflow_run.head_branch || github.ref_name }}
 
-      - name: Pull latest JSON from batch commits
+      - name: Pull latest test results from repo
         run: |
-          git pull origin "${{ github.ref_name }}" || true
+          echo "Pulling latest commits with test results..."
+          git pull origin "${{ github.event.workflow_run.head_branch || github.ref_name }}" || true
 
-      - name: Build local test-results structure
+      - name: Build test-results structure from committed JSON
         run: |
           mkdir -p test-results
+          
+          # Recreate artifact-like structure for compatibility
           for f in data/test-results/*.json; do
             [ -f "$f" ] || continue
             base=$(basename "$f" .json)
             mkdir -p "test-results/${base}-test-results"
             cp "$f" "test-results/${base}-test-results/${base}.json"
           done
+          
+          echo "✅ Prepared $(find test-results -name '*.json' | wc -l) test result files"
 
-      - name: Create big global summary
+      - name: Generate global summary
         run: |
-          echo "# 📊 GLOBAL PACKAGE TEST SUMMARY" >> $GITHUB_STEP_SUMMARY
+          echo "# 📊 Global Package Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "_Last updated: $(date -u +'%Y-%m-%d %H:%M:%S UTC')_" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           TOTAL=0
           PASS=0
           FAIL=0
 
-          for d in test-results/*/; do
-            for j in "$d"/*.json; do
-              [ -f "$j" ] || continue
+          # Process all JSON files
+          for result_dir in test-results/*/; do
+            for json_file in "$result_dir"*.json; do
+              [ -f "$json_file" ] || continue
 
-              TOTAL=$((TOTAL+1))
-              NAME=$(jq -r '.package.name' "$j")
-              VERSION=$(jq -r '.package.version' "$j")
-              STATUS=$(jq -r '.run.status' "$j")
-              PASSED=$(jq -r '.tests.passed' "$j")
-              FAILED=$(jq -r '.tests.failed' "$j")
+              TOTAL=$((TOTAL + 1))
+              
+              NAME=$(jq -r '.package.name' "$json_file")
+              VERSION=$(jq -r '.package.version' "$json_file")
+              STATUS=$(jq -r '.run.status' "$json_file")
+              PASSED=$(jq -r '.tests.passed' "$json_file")
+              FAILED=$(jq -r '.tests.failed' "$json_file")
 
               if [ "$STATUS" = "success" ]; then
-                PASS=$((PASS+1))
+                PASS=$((PASS + 1))
                 echo "✅ **$NAME** (v$VERSION): $PASSED tests passed" >> $GITHUB_STEP_SUMMARY
               else
-                FAIL=$((FAIL+1))
+                FAIL=$((FAIL + 1))
                 echo "❌ **$NAME** (v$VERSION): $FAILED tests failed" >> $GITHUB_STEP_SUMMARY
               fi
             done
           done
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## OVERALL" >> $GITHUB_STEP_SUMMARY
-          echo "- Total Packages: **$TOTAL**" >> $GITHUB_STEP_SUMMARY
-          echo "- Passed: **$PASS** ✅" >> $GITHUB_STEP_SUMMARY
-          echo "- Failed: **$FAIL** ❌" >> $GITHUB_STEP_SUMMARY
+          echo "## Overall Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Packages:** $TOTAL" >> $GITHUB_STEP_SUMMARY
+          echo "- **Passed:** $PASS ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **Failed:** $FAIL ❌" >> $GITHUB_STEP_SUMMARY
+          
+          if [ $TOTAL -eq 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **Warning:** No test results found. Batches may still be running." >> $GITHUB_STEP_SUMMARY
+          fi
