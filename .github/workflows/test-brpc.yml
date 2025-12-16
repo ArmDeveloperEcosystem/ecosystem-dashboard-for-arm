@@ -1,0 +1,298 @@
+name: Test BRPC on Arm64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - smoke_tests
+    paths:
+      - 'content/opensource_packages/brpc.md'
+      - '.github/workflows/test-brpc.yml'
+
+jobs:
+  test-brpc:
+    runs-on: ubuntu-24.04-arm
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "package_slug=brpc" >> $GITHUB_OUTPUT
+          echo "dashboard_link=/opensource_packages/brpc" >> $GITHUB_OUTPUT
+      
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git g++ make cmake libssl-dev libgflags-dev libprotobuf-dev libprotoc-dev protobuf-compiler libleveldb-dev libgoogle-perftools-dev
+      
+      - name: Install BRPC
+        id: install
+        run: |
+          echo "Installing BRPC..."
+          
+          # Clone stable version (v1.7.0 is recent)
+          git clone --branch 1.7.0 --depth 1 https://github.com/apache/brpc.git
+          
+          cd brpc
+          mkdir build && cd build
+          cmake .. -DWITH_GLOG=OFF
+          make -j$(nproc)
+          
+          # Install headers and libs
+          sudo make install
+          
+          if [ -f "/usr/local/lib/libbrpc.a" ] || [ -f "/usr/local/lib/libbrpc.so" ]; then
+             echo "BRPC installed successfully"
+             echo "install_status=success" >> $GITHUB_OUTPUT
+          else
+             echo "BRPC installation failed"
+             echo "install_status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+      
+      - name: Get BRPC version
+        id: version
+        run: |
+          echo "version=1.7.0" >> $GITHUB_OUTPUT
+          echo "Detected BRPC version: 1.7.0"
+      
+      - name: Test 1 - Check Headers
+        id: test1
+        run: |
+          START_TIME=$(date +%s)
+          
+          if [ -d "/usr/local/include/brpc" ]; then
+            echo "✓ brpc headers found"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ brpc headers not found"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 2 - Check Static Library
+        id: test2
+        run: |
+          START_TIME=$(date +%s)
+          
+          if [ -f "/usr/local/lib/libbrpc.a" ]; then
+            echo "✓ libbrpc.a found"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ libbrpc.a not found"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 3 - Compile Simple Example
+        id: test3
+        run: |
+          START_TIME=$(date +%s)
+          
+          # Create a minimal file that includes brpc header
+          cat > test_brpc.cpp << EOF
+          #include <brpc/server.h>
+          #include <brpc/channel.h>
+          
+          int main() {
+              brpc::Server server;
+              return 0;
+          }
+          EOF
+          
+          # Compile linking against brpc and deps
+          # Note: linking order matters.
+          if g++ test_brpc.cpp -std=c++11 -I/usr/local/include -L/usr/local/lib -lbrpc -lgflags -lprotobuf -lleveldb -lssl -lcrypto -ldl -lpthread -o test_brpc; then
+             echo "✓ Compilation passed"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ Compilation failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 4 - Run Simple Example
+        id: test4
+        run: |
+          START_TIME=$(date +%s)
+          
+          if ./test_brpc; then
+             echo "✓ Example ran successfully"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ Example execution failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+          
+          process_test() {
+            local status=$1
+            local duration=$2
+            if [ "$status" == "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$status" == "failed" ]; then
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+          
+          process_test "${{ steps.test1.outputs.status }}" "${{ steps.test1.outputs.duration || 0 }}"
+          process_test "${{ steps.test2.outputs.status }}" "${{ steps.test2.outputs.duration || 0 }}"
+          process_test "${{ steps.test3.outputs.status }}" "${{ steps.test3.outputs.duration || 0 }}"
+          process_test "${{ steps.test4.outputs.status }}" "${{ steps.test4.outputs.duration || 0 }}"
+          
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          
+          if [ $FAILED -eq 0 ]; then
+            echo "overall_status=success" >> $GITHUB_OUTPUT
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
+            echo "overall_status=failure" >> $GITHUB_OUTPUT
+            echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Generate test results JSON
+        if: always()
+        run: |
+          mkdir -p test-results
+          
+          cat > test-results/brpc.json << EOF
+          {
+            "schema_version": "1.0",
+            "package": {
+              "name": "BRPC",
+              "version": "${{ steps.version.outputs.version }}",
+              "language": "C++",
+              "category": "RPC Framework"
+            },
+            "run": {
+              "id": "${{ github.run_id }}",
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "timestamp": "${{ steps.metadata.outputs.timestamp }}",
+              "status": "${{ steps.summary.outputs.overall_status }}",
+              "runner": {
+                "os": "ubuntu-24.04",
+                "arch": "arm64"
+              }
+            },
+            "tests": {
+              "passed": ${{ steps.summary.outputs.passed }},
+              "failed": ${{ steps.summary.outputs.failed }},
+              "skipped": 0,
+              "duration_seconds": ${{ steps.summary.outputs.duration }},
+              "details": [
+                {
+                  "name": "Check Headers",
+                  "status": "${{ steps.test1.outputs.status }}",
+                  "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check Static Library",
+                  "status": "${{ steps.test2.outputs.status }}",
+                  "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Compile Simple Example",
+                  "status": "${{ steps.test3.outputs.status }}",
+                  "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Run Simple Example",
+                  "status": "${{ steps.test4.outputs.status }}",
+                  "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
+                }
+              ]
+            },
+            "metadata": {
+              "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
+              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+            }
+          }
+          EOF
+          
+          echo "Generated test results:"
+          cat test-results/brpc.json
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: brpc-test-results
+          path: test-results/brpc.json
+          retention-days: 90
+      
+      - name: Commit test results to repository
+        if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/smoke_tests')
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          mkdir -p data/test-results
+          cp test-results/brpc.json data/test-results/brpc.json
+          
+          git add data/test-results/brpc.json
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "Update BRPC test results [skip ci]"
+            for i in {1..5}; do
+              if git pull --rebase origin ${{ github.ref_name }}; then
+                if git push; then
+                  echo "Successfully pushed test results"
+                  break
+                fi
+              else
+                echo "Rebase failed, resolving conflicts..."
+                git checkout --ours data/test-results/brpc.json
+                git add data/test-results/brpc.json
+                git rebase --continue || true
+              fi
+              sleep $((i * 2))
+            done
+          else
+            echo "No changes to commit"
+          fi
+      
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## BRPC Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration:** ${{ steps.summary.outputs.duration }}s" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check Headers: ${{ steps.test1.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check Static Library: ${{ steps.test2.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Compile Simple Example: ${{ steps.test3.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "4. Run Simple Example: ${{ steps.test4.outputs.status }}" >> $GITHUB_STEP_SUMMARY
