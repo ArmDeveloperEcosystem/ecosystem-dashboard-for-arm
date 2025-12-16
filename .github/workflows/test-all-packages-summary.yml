@@ -6,17 +6,6 @@ on:
     workflows:
       - "Test All Packages (Batch 1) on Arm64"
       - "Test All Packages (Batch 2) on Arm64"
-    types:
-      - completed
-
-  # Run on push to main/smoke_tests for testing
-  push:
-    branches:
-      - main
-      - smoke_tests
-    paths:
-      - '.github/workflows/test-all-packages-summary.yml'
-
   # Manual trigger for ad-hoc summaries
   workflow_dispatch:
 
@@ -28,7 +17,60 @@ jobs:
     if: always()
 
     steps:
+      - name: Check if other batches are still running
+        id: check-batches
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Get the workflow run that triggered this
+            const triggeringRun = context.payload.workflow_run;
+            const triggeringWorkflowName = triggeringRun.name;
+            
+            console.log(`Triggered by: ${triggeringWorkflowName}`);
+            
+            // Define the batches we care about
+            const batch1Name = "Test All Packages (Batch 1) on Arm64";
+            const batch2Name = "Test All Packages (Batch 2) on Arm64";
+            
+            // Determine which one is the "other" batch
+            let otherBatchName = "";
+            if (triggeringWorkflowName === batch1Name) {
+              otherBatchName = batch2Name;
+            } else if (triggeringWorkflowName === batch2Name) {
+              otherBatchName = batch1Name;
+            } else {
+              console.log("Triggered manually or by unknown workflow. Proceeding.");
+              return true; // Proceed if manual trigger
+            }
+            
+            console.log(`Checking status of other batch: ${otherBatchName}`);
+            
+            // Find the latest run of the OTHER batch
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: otherBatchName === batch1Name ? "test-all-packages-batch1.yml" : "test-all-packages-batch2.yml",
+              branch: triggeringRun.head_branch,
+              status: "in_progress"
+            });
+            
+            if (runs.data.total_count > 0) {
+              console.log(`⚠️ ${otherBatchName} is still running (${runs.data.total_count} active runs).`);
+              console.log("Skipping summary generation until the last batch completes.");
+              core.setOutput("skip", "true");
+            } else {
+              console.log(`✅ ${otherBatchName} is NOT running. We are the last one!`);
+              core.setOutput("skip", "false");
+            }
+
+      - name: Exit if other batches are running
+        if: steps.check-batches.outputs.skip == 'true'
+        run: |
+          echo "Other batch is still running. Exiting to avoid duplicate summary."
+          exit 0
+
       - name: Checkout repository
+        if: steps.check-batches.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
