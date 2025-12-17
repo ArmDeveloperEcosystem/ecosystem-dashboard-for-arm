@@ -1,0 +1,210 @@
+name: Test Cashpack on Arm64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - smoke_tests
+    paths:
+      - 'content/opensource_packages/cashpack.md'
+      - '.github/workflows/test-cashpack.yml'
+
+jobs:
+  test-cashpack:
+    runs-on: ubuntu-24.04-arm
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "package_slug=cashpack" >> $GITHUB_OUTPUT
+          echo "dashboard_link=/opensource_packages/cashpack" >> $GITHUB_OUTPUT
+      
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config
+      
+      - name: Clone Cashpack
+        run: |
+          git clone https://github.com/dridi/cashpack.git
+          cd cashpack
+          echo "Listing files to determine build system:"
+          ls -F
+      
+      - name: Build Cashpack
+        id: build
+        run: |
+          cd cashpack
+          
+          # Attempt Autotools build
+          if [ -f "configure.ac" ] || [ -f "configure.in" ]; then
+             echo "Detected Autotools project"
+             autoreconf -fi
+             ./configure
+             make
+             echo "build_status=success" >> $GITHUB_OUTPUT
+          elif [ -f "CMakeLists.txt" ]; then
+             echo "Detected CMake project"
+             mkdir build && cd build
+             cmake ..
+             make
+             echo "build_status=success" >> $GITHUB_OUTPUT
+          elif [ -f "Makefile" ]; then
+             echo "Detected Makefile"
+             make
+             echo "build_status=success" >> $GITHUB_OUTPUT
+          else
+             echo "Unknown build system. Listing files:"
+             ls -R
+             echo "build_status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+      
+      - name: Test Cashpack
+        id: test
+        run: |
+          cd cashpack
+          
+          # Check if there are tests
+          if [ -f "Makefile" ] && grep -q "check" Makefile; then
+             make check
+             echo "status=passed" >> $GITHUB_OUTPUT
+          elif [ -f "Makefile" ] && grep -q "test" Makefile; then
+             make test
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             # If no explicit test target, check if library was built
+             if find . -name "*.a" -o -name "*.so" | grep -q .; then
+                echo "✓ Library built successfully"
+                echo "status=passed" >> $GITHUB_OUTPUT
+             else
+                echo "✗ No library found and no tests run"
+                echo "status=failed" >> $GITHUB_OUTPUT
+                exit 1
+             fi
+          fi
+      
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+          
+          process_test() {
+            local status=$1
+            local duration=$2
+            if [ "$status" == "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$status" == "failed" ]; then
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+          
+          process_test "${{ steps.test.outputs.status }}" "0"
+          
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          
+          if [ $FAILED -eq 0 ]; then
+            echo "overall_status=success" >> $GITHUB_OUTPUT
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
+            echo "overall_status=failure" >> $GITHUB_OUTPUT
+            echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Generate test results JSON
+        if: always()
+        run: |
+          mkdir -p test-results
+          
+          cat > test-results/cashpack.json << EOF
+          {
+            "schema_version": "1.0",
+            "package": {
+              "name": "Cashpack",
+              "version": "HEAD",
+              "language": "C",
+              "category": "Miscellaneous"
+            },
+            "run": {
+              "id": "${{ github.run_id }}",
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "timestamp": "${{ steps.metadata.outputs.timestamp }}",
+              "status": "${{ steps.summary.outputs.overall_status }}",
+              "runner": {
+                "os": "ubuntu-24.04",
+                "arch": "arm64"
+              }
+            },
+            "tests": {
+              "passed": ${{ steps.summary.outputs.passed }},
+              "failed": ${{ steps.summary.outputs.failed }},
+              "skipped": 0,
+              "duration_seconds": ${{ steps.summary.outputs.duration }},
+              "details": [
+                {
+                  "name": "Build and Test",
+                  "status": "${{ steps.test.outputs.status }}",
+                  "duration_seconds": 0
+                }
+              ]
+            },
+            "metadata": {
+              "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
+              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+            }
+          }
+          EOF
+          
+          echo "Generated test results:"
+          cat test-results/cashpack.json
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cashpack-test-results
+          path: test-results/cashpack.json
+          retention-days: 90
+      
+      - name: Commit test results to repository
+        if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/smoke_tests')
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          mkdir -p data/test-results
+          cp test-results/cashpack.json data/test-results/cashpack.json
+          
+          git add data/test-results/cashpack.json
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "Update Cashpack test results [skip ci]"
+            for i in {1..5}; do
+              if git pull --rebase origin ${{ github.ref_name }}; then
+                if git push; then
+                  echo "Successfully pushed test results"
+                  break
+                fi
+              else
+                echo "Rebase failed, resolving conflicts..."
+                git checkout --ours data/test-results/cashpack.json
+                git add data/test-results/cashpack.json
+                git rebase --continue || true
+              fi
+              sleep $((i * 2))
+            done
+          else
+            echo "No changes to commit"
+          fi
