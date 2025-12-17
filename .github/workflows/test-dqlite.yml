@@ -25,21 +25,26 @@ jobs:
           echo "package_slug=canonical-dqlite" >> $GITHUB_OUTPUT
           echo "dashboard_link=/opensource_packages/canonical-dqlite" >> $GITHUB_OUTPUT
       
+      - name: Install Dependencies
+        run: |
+          echo "Installing dependencies..."
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common build-essential pkg-config libuv1-dev libsqlite3-dev git
+      
       - name: Install Dqlite
         id: install
         run: |
-          echo "Installing Dqlite..."
-          sudo apt-get update
-          sudo apt-get install -y software-properties-common build-essential pkg-config libuv1-dev libsqlite3-dev
-          
           # Try PPA first
           if sudo add-apt-repository -y ppa:dqlite/stable && sudo apt-get update && sudo apt-get install -y dqlite-tools libdqlite-dev; then
              echo "Dqlite installed from PPA"
              echo "install_status=success" >> $GITHUB_OUTPUT
           else
-             echo "PPA install failed. Attempting source build..."
+             echo "PPA install failed or package missing. Attempting source build..."
              
-             # Install Raft (dependency)
+             # Install Go for building the CLI tool
+             sudo apt-get install -y golang
+             
+             # Install Raft (dependency for libdqlite)
              git clone https://github.com/canonical/raft.git
              cd raft
              autoreconf -i
@@ -48,7 +53,7 @@ jobs:
              sudo make install
              cd ..
              
-             # Install Dqlite
+             # Install Libdqlite (C library)
              git clone https://github.com/canonical/dqlite.git
              cd dqlite
              autoreconf -i
@@ -58,7 +63,21 @@ jobs:
              sudo ldconfig
              cd ..
              
-             echo "Dqlite built from source"
+             # Install Dqlite CLI (from go-dqlite)
+             echo "Building dqlite CLI from go-dqlite..."
+             export CGO_LDFLAGS="-L/usr/local/lib"
+             export CGO_CFLAGS="-I/usr/local/include"
+             export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+             
+             # Clone go-dqlite to build the cmd/dqlite
+             git clone https://github.com/canonical/go-dqlite.git
+             cd go-dqlite
+             go mod tidy
+             go build -v -o dqlite ./cmd/dqlite
+             sudo cp dqlite /usr/local/bin/
+             cd ..
+             
+             echo "Dqlite built from source (C libs + Go CLI)"
              echo "install_status=success" >> $GITHUB_OUTPUT
           fi
       
@@ -66,8 +85,11 @@ jobs:
         id: version
         run: |
           if command -v dqlite >/dev/null; then
-             # Try to get version from binary if possible, or just say "source-build"
-             VERSION="source-build"
+             # Try to get version from binary if possible
+             # dqlite --version might not work, but let's try
+             VERSION=$(dqlite --version 2>&1 | awk '{print $1}' || echo "source-build")
+             if [ -z "$VERSION" ]; then VERSION="source-build"; fi
+             
              # If installed via apt, we can check dpkg
              if dpkg -s dqlite-tools >/dev/null 2>&1; then
                 VERSION=$(dpkg -s dqlite-tools | grep Version | awk '{print $2}')
@@ -99,6 +121,9 @@ jobs:
         id: test2
         run: |
           START_TIME=$(date +%s)
+          
+          # Ensure libs are found
+          export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
           
           if dqlite --help; then
              echo "✓ dqlite help works"
