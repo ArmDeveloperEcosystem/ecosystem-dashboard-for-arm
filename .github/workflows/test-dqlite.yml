@@ -30,27 +30,51 @@ jobs:
         run: |
           echo "Installing Dqlite..."
           sudo apt-get update
-          # PPA might be unstable or missing for arm64 on 24.04, try standard repo or skip if not found
-          if sudo apt-get install -y dqlite-tools libdqlite-dev; then
-             echo "Dqlite installed from standard repo"
+          sudo apt-get install -y software-properties-common build-essential pkg-config libuv1-dev libsqlite3-dev
+          
+          # Try PPA first
+          if sudo add-apt-repository -y ppa:dqlite/stable && sudo apt-get update && sudo apt-get install -y dqlite-tools libdqlite-dev; then
+             echo "Dqlite installed from PPA"
              echo "install_status=success" >> $GITHUB_OUTPUT
           else
-             echo "dqlite-tools not found in standard repo. Attempting snap..."
-             if sudo snap install dqlite; then
-                echo "Dqlite installed via Snap"
-                echo "install_status=success" >> $GITHUB_OUTPUT
-             else
-                echo "Failed to install dqlite"
-                echo "install_status=failed" >> $GITHUB_OUTPUT
-                exit 1
-             fi
+             echo "PPA install failed. Attempting source build..."
+             
+             # Install Raft (dependency)
+             git clone https://github.com/canonical/raft.git
+             cd raft
+             autoreconf -i
+             ./configure
+             make
+             sudo make install
+             cd ..
+             
+             # Install Dqlite
+             git clone https://github.com/canonical/dqlite.git
+             cd dqlite
+             autoreconf -i
+             ./configure
+             make
+             sudo make install
+             sudo ldconfig
+             cd ..
+             
+             echo "Dqlite built from source"
+             echo "install_status=success" >> $GITHUB_OUTPUT
           fi
       
       - name: Get Dqlite version
         id: version
         run: |
-          # dqlite binary usually doesn't have --version flag easily parsable, checking package version
-          VERSION=$(dpkg -s dqlite-tools | grep Version | awk '{print $2}')
+          if command -v dqlite >/dev/null; then
+             # Try to get version from binary if possible, or just say "source-build"
+             VERSION="source-build"
+             # If installed via apt, we can check dpkg
+             if dpkg -s dqlite-tools >/dev/null 2>&1; then
+                VERSION=$(dpkg -s dqlite-tools | grep Version | awk '{print $2}')
+             fi
+          else
+             VERSION="unknown"
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Dqlite version: $VERSION"
       
@@ -71,7 +95,7 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 2 - Run In-Memory DB
+      - name: Test 2 - Run Help
         id: test2
         run: |
           START_TIME=$(date +%s)
@@ -93,7 +117,8 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if [ -f "/usr/lib/aarch64-linux-gnu/libdqlite.so" ] || find /usr/lib -name "libdqlite.so*" | grep -q .; then
+          # Check standard paths and /usr/local/lib (for source build)
+          if find /usr/lib /usr/local/lib -name "libdqlite.so*" | grep -q .; then
              echo "✓ libdqlite.so found"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -109,6 +134,9 @@ jobs:
         id: test4
         run: |
           START_TIME=$(date +%s)
+          
+          # Ensure /usr/local/lib/pkgconfig is in path for source builds
+          export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:/usr/local/lib/pkgconfig
           
           if pkg-config --exists dqlite; then
              echo "✓ pkg-config finds dqlite"
@@ -194,7 +222,7 @@ jobs:
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Run In-Memory DB",
+                  "name": "Run Help",
                   "status": "${{ steps.test2.outputs.status }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
@@ -273,6 +301,6 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
           echo "1. Check Binary: ${{ steps.test1.outputs.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Run In-Memory DB: ${{ steps.test2.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "2. Run Help: ${{ steps.test2.outputs.status }}" >> $GITHUB_STEP_SUMMARY
           echo "3. Check Library File: ${{ steps.test3.outputs.status }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Check Pkg-Config: ${{ steps.test4.outputs.status }}" >> $GITHUB_STEP_SUMMARY
