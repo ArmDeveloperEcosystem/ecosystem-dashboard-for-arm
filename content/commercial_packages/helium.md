@@ -17,6 +17,6 @@ optional_info:
         arm_content:
         vendor_announcement:
 optional_hidden_info:
-    other_info: 
+    other_info: Arm support for Cadence Helium Virtual and Hybrid Studio has been available since February 2025. The [referenced](https://community.cadence.com/cadence_blogs_8/b/di/posts/enabling-end-to-end-eda-flow-on-arm-based-compute-for-infrastructure-flexibility) Cadence blog later makes this support publicly visible by describing an end-to-end EDA flow on Arm-based compute.
 
 ---
