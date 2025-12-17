@@ -1,0 +1,289 @@
+name: Test CircleCI-CLI on Arm64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - smoke_tests
+    paths:
+      - 'content/opensource_packages/circleci_cli.md'
+      - '.github/workflows/test-circleci-cli.yml'
+
+jobs:
+  test-circleci-cli:
+    runs-on: ubuntu-24.04-arm
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "package_slug=circleci-cli" >> $GITHUB_OUTPUT
+          echo "dashboard_link=/opensource_packages/circleci-cli" >> $GITHUB_OUTPUT
+      
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl
+      
+      - name: Install CircleCI CLI
+        id: install
+        run: |
+          echo "Installing CircleCI CLI..."
+          # Use official install script
+          if curl -fLSs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/master/install.sh | sudo bash; then
+             echo "CircleCI CLI installed successfully"
+             echo "install_status=success" >> $GITHUB_OUTPUT
+          else
+             echo "Failed to install CircleCI CLI"
+             echo "install_status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+      
+      - name: Get CircleCI CLI version
+        id: version
+        run: |
+          VERSION=$(circleci version 2>&1 | grep "version:" | awk '{print $2}' || echo "unknown")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected CircleCI CLI version: $VERSION"
+      
+      - name: Test 1 - Check Binary
+        id: test1
+        run: |
+          START_TIME=$(date +%s)
+          
+          if which circleci; then
+            echo "✓ circleci binary found"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ circleci binary not found"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 2 - Run Help
+        id: test2
+        run: |
+          START_TIME=$(date +%s)
+          
+          if circleci help; then
+             echo "✓ circleci help works"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ circleci help failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 3 - Validate Config (Dry Run)
+        id: test3
+        run: |
+          START_TIME=$(date +%s)
+          
+          # Create a dummy config.yml
+          mkdir -p .circleci
+          cat > .circleci/config.yml << EOF
+          version: 2.1
+          jobs:
+            build:
+              docker:
+                - image: cimg/base:stable
+              steps:
+                - checkout
+                - run: echo "Hello World"
+          EOF
+          
+          # Validate it
+          # Note: validate might require network or auth, let's see. 
+          # Usually local validation works without auth for syntax.
+          if circleci config validate .circleci/config.yml; then
+             echo "✓ circleci config validate works"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ circleci config validate failed"
+             # Don't fail the test if it's just auth, but warn
+             # Actually, validation usually works offline for syntax
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 4 - Check Update Command
+        id: test4
+        run: |
+          START_TIME=$(date +%s)
+          
+          # Check if update check runs (might say up to date)
+          if circleci update check; then
+             echo "✓ circleci update check works"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ circleci update check failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+          
+          process_test() {
+            local status=$1
+            local duration=$2
+            if [ "$status" == "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$status" == "failed" ]; then
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+          
+          process_test "${{ steps.test1.outputs.status }}" "${{ steps.test1.outputs.duration || 0 }}"
+          process_test "${{ steps.test2.outputs.status }}" "${{ steps.test2.outputs.duration || 0 }}"
+          process_test "${{ steps.test3.outputs.status }}" "${{ steps.test3.outputs.duration || 0 }}"
+          process_test "${{ steps.test4.outputs.status }}" "${{ steps.test4.outputs.duration || 0 }}"
+          
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          
+          if [ $FAILED -eq 0 ]; then
+            echo "overall_status=success" >> $GITHUB_OUTPUT
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
+            echo "overall_status=failure" >> $GITHUB_OUTPUT
+            echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Generate test results JSON
+        if: always()
+        run: |
+          mkdir -p test-results
+          
+          cat > test-results/circleci-cli.json << EOF
+          {
+            "schema_version": "1.0",
+            "package": {
+              "name": "CircleCI-CLI",
+              "version": "${{ steps.version.outputs.version }}",
+              "language": "Go",
+              "category": "DevOps"
+            },
+            "run": {
+              "id": "${{ github.run_id }}",
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "timestamp": "${{ steps.metadata.outputs.timestamp }}",
+              "status": "${{ steps.summary.outputs.overall_status }}",
+              "runner": {
+                "os": "ubuntu-24.04",
+                "arch": "arm64"
+              }
+            },
+            "tests": {
+              "passed": ${{ steps.summary.outputs.passed }},
+              "failed": ${{ steps.summary.outputs.failed }},
+              "skipped": 0,
+              "duration_seconds": ${{ steps.summary.outputs.duration }},
+              "details": [
+                {
+                  "name": "Check Binary",
+                  "status": "${{ steps.test1.outputs.status }}",
+                  "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Run Help",
+                  "status": "${{ steps.test2.outputs.status }}",
+                  "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Validate Config",
+                  "status": "${{ steps.test3.outputs.status }}",
+                  "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check Update Command",
+                  "status": "${{ steps.test4.outputs.status }}",
+                  "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
+                }
+              ]
+            },
+            "metadata": {
+              "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
+              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+            }
+          }
+          EOF
+          
+          echo "Generated test results:"
+          cat test-results/circleci-cli.json
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: circleci-cli-test-results
+          path: test-results/circleci-cli.json
+          retention-days: 90
+      
+      - name: Commit test results to repository
+        if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/smoke_tests')
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          mkdir -p data/test-results
+          cp test-results/circleci-cli.json data/test-results/circleci-cli.json
+          
+          git add data/test-results/circleci-cli.json
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "Update CircleCI-CLI test results [skip ci]"
+            for i in {1..5}; do
+              if git pull --rebase origin ${{ github.ref_name }}; then
+                if git push; then
+                  echo "Successfully pushed test results"
+                  break
+                fi
+              else
+                echo "Rebase failed, resolving conflicts..."
+                git checkout --ours data/test-results/circleci-cli.json
+                git add data/test-results/circleci-cli.json
+                git rebase --continue || true
+              fi
+              sleep $((i * 2))
+            done
+          else
+            echo "No changes to commit"
+          fi
+      
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## CircleCI-CLI Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration:** ${{ steps.summary.outputs.duration }}s" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
