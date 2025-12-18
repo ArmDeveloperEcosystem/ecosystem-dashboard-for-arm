@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 2.2.1.3_rc-latest
+        release_date: 2025/12/14
+        reference_content: https://github.com/LibreCAD/LibreCAD/releases/tag/2.2.1.3_rc-latest
+        rationale: In this release, GitHub Actions support was added for Aarch64 and scripts to produce Arm64 AppImage packages as part of CI/release artifacts was added.
  
 optional_hidden_info:
     release_notes__supported_minimum:
