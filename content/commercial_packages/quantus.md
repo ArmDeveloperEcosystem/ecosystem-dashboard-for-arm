@@ -15,7 +15,7 @@ optional_info:
     getting_started_resources:
         official_docs: https://www.cadence.com/en_US/home/resources/datasheets/quantus-insight-solution-ds.html
         arm_content:
-        vendor_announcement:
+        vendor_announcement: https://community.cadence.com/cadence_blogs_8/b/di/posts/enabling-end-to-end-eda-flow-on-arm-based-compute-for-infrastructure-flexibility
 optional_hidden_info:
     other_info:
 

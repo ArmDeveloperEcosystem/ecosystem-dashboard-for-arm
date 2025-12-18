@@ -1,5 +1,5 @@
 ---
-name: Cadence Joules
+name: Cadence Joules RTL Design Studio
 vendor: Cadence
 category: EDA
 description: Cadence Joules RTL Design Studio is an RTL analysis and optimization tool that enables designers to evaluate and improve power, performance, area, and congestion early in the design cycle, reducing iterations and accelerating implementation.
@@ -15,7 +15,7 @@ optional_info:
     getting_started_resources:
         official_docs: https://www.cadence.com/en_US/home/resources/datasheets/cadence-joules-rtl-design-studio-ds.html
         arm_content:
-        vendor_announcement:
+        vendor_announcement: https://community.cadence.com/cadence_blogs_8/b/di/posts/enabling-end-to-end-eda-flow-on-arm-based-compute-for-infrastructure-flexibility
 optional_hidden_info:
     other_info: 
 
