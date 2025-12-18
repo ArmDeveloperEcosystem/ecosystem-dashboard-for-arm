@@ -18,10 +18,10 @@ optional_info:
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/multiarch_ollama_on_gke/
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 0.3.9
+        release_date: 2024/09/01
+        reference_content: https://github.com/ollama/ollama/releases/tag/v0.3.9
+        rationale: In this release, error was fixed that would occur when running Ollama on Linux machines with the Arm architecture.
  
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/ollama/ollama/releases/tag/v0.1.0
