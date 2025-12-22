@@ -1,11 +1,11 @@
 ---
-name: Canonical's Distribution of Kubernetes (CDK)
+name: Canonical Kubernetes
 vendor: Canonical
 category: Containers and Orchestration
-description: Canonical's Distribution of Kubernetes (CDK) is Canonical’s fully upstream, secure, and automated Kubernetes distribution, designed for easy deployment and maintenance across bare metal, public clouds, and edge environments. It enables rapid access to upstream features, hassle-free cluster management, and long-term stability for production-grade container orchestration.
+description: Canonical Kubernetes is Canonical’s fully upstream, secure, and automated Kubernetes distribution, designed for easy deployment and maintenance across bare metal, public clouds, and edge environments. It enables rapid access to upstream features, hassle-free cluster management, and long-term stability for production-grade container orchestration.
 product_url: https://ubuntu.com/kubernetes
 works_on_arm: true
-release_date_on_arm: 2018/11/01
+release_date_on_arm: 2024/12/20
 
 
 optional_info:
@@ -13,9 +13,9 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        official_docs: https://ubuntu.com/kubernetes/install
+        official_docs: https://documentation.ubuntu.com/canonical-kubernetes/latest/
         arm_content:
-        vendor_announcement: https://canonical.com/blog/canonicals-distribution-of-kubernetes-supported-on-arm-architecture
+        vendor_announcement: https://documentation.ubuntu.com/canonical-kubernetes/release-1.32/charm/reference/versions/1.32/
 
 
 optional_hidden_info:
