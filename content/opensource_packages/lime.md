@@ -1,0 +1,31 @@
+---
+name: Lime
+category: AI/ML
+description: LIME (Local Interpretable Model-agnostic Explanations) is an open-source library for explaining individual predictions of black-box machine learning models by generating locally interpretable explanations for text, tabular, and image data.
+download_url: https://pypi.org/project/lime/#history
+works_on_arm: true
+supported_minimum_version:
+    version_number: 0.1.1.1
+    release_date: 2016/03/25
+ 
+ 
+optional_info:
+    homepage_url: https://github.com/marcotcr/lime
+    support_caveats:
+    alternative_options:
+    getting_started_resources:
+        official_docs: https://github.com/marcotcr/lime#installation
+        arm_content:
+        partner_content:
+    arm_recommended_minimum_version:
+        version_number:
+        release_date:
+        reference_content:
+        rationale:
+ 
+optional_hidden_info:
+    release_notes__supported_minimum:
+    release_notes__recommended_minimum:
+    other_info: The release notes for the initial Linux/Arm64 support isn't available. Lime version on Pypi, 0.1.1.1, can be installed for Arm with pip, and python version 3.7.
+ 
+---
