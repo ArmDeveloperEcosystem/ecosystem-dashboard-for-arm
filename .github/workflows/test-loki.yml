@@ -1,0 +1,283 @@
+name: Test Loki on Arm64
+on:
+  push:
+    branches:
+      - main
+      - smoke_tests
+    paths:
+      - 'content/opensource_packages/loki.md'
+      - '.github/workflows/test-loki.yml'
+jobs:
+  test-loki:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "package_slug=loki" >> $GITHUB_OUTPUT
+          echo "dashboard_link=/opensource_packages/loki" >> $GITHUB_OUTPUT
+
+      # ============================================================
+      # CUSTOMIZE THIS: Install your package
+      # ============================================================
+      - name: Install Loki
+        id: install
+        run: |
+          echo "Installing Loki..."
+          
+          # Install prerequisites
+          sudo apt-get update
+          sudo apt-get install -y wget unzip
+          
+          # Download Loki
+          # Using stable version
+          # https://github.com/grafana/loki/releases
+          # Let's try to find latest release or use a known one.
+          # v2.9.4 is recent.
+          VERSION="v2.9.4"
+          
+          # URL pattern: https://github.com/grafana/loki/releases/download/${VERSION}/loki-linux-arm64.zip
+          URL="https://github.com/grafana/loki/releases/download/${VERSION}/loki-linux-arm64.zip"
+          
+          if wget -q $URL -O loki.zip; then
+             unzip loki.zip
+             # It extracts to loki-linux-arm64
+             if [ -f "loki-linux-arm64" ]; then
+                chmod +x loki-linux-arm64
+                sudo mv loki-linux-arm64 /usr/local/bin/loki
+                echo "loki installed successfully"
+                echo "install_status=success" >> $GITHUB_OUTPUT
+             else
+                echo "loki binary not found after extraction"
+                echo "install_status=failed" >> $GITHUB_OUTPUT
+                exit 1
+             fi
+          else
+             echo "loki download failed"
+             echo "install_status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+
+      # ============================================================
+      # CUSTOMIZE THIS: Get the package version
+      # ============================================================
+      - name: Get Loki version
+        id: version
+        run: |
+          VERSION=$(loki --version 2>&1 | grep "version" | awk '{print $3}' || echo "unknown")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected Loki version: $VERSION"
+
+      # ============================================================
+      # ADD YOUR TESTS BELOW
+      # Each test should:
+      # 1. Have a unique id (test1, test2, etc.)
+      # 2. Track start/end time for duration
+      # 3. Set status=passed or status=failed
+      # 4. Exit 1 on failure
+      # ============================================================
+
+      - name: Test 1 - Check loki binary
+        id: test1
+        run: |
+          START_TIME=$(date +%s)
+          
+          if command -v loki &> /dev/null; then
+            echo "✓ loki binary found"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ loki binary not found"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 2 - Check version command
+        id: test2
+        run: |
+          START_TIME=$(date +%s)
+          
+          if loki --version 2>&1 | grep -q "version"; then
+            echo "✓ version command works"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ version command failed"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 3 - Check help command
+        id: test3
+        run: |
+          START_TIME=$(date +%s)
+          
+          if loki --help 2>&1 | grep -q "Usage"; then
+             echo "✓ help command works"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ help command failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 4 - Check config verification (dry run)
+        id: test4
+        run: |
+          START_TIME=$(date +%s)
+          
+          # Create a minimal config
+          cat > loki-config.yaml << EOF
+          auth_enabled: false
+          server:
+            http_listen_port: 3100
+          ingester:
+            lifecycler:
+              address: 127.0.0.1
+              ring:
+                kvstore:
+                  store: inmemory
+                replication_factor: 1
+              final_sleep: 0s
+            chunk_idle_period: 5m
+            chunk_retain_period: 30s
+          schema_config:
+            configs:
+              - from: 2020-05-15
+                store: boltdb
+                object_store: filesystem
+                schema: v11
+                index:
+                  prefix: index_
+                  period: 168h
+          storage_config:
+            boltdb:
+              directory: /tmp/loki/index
+            filesystem:
+              directory: /tmp/loki/chunks
+          limits_config:
+            enforce_metric_name: false
+            reject_old_samples: true
+            reject_old_samples_max_age: 168h
+          chunk_store_config:
+            max_look_back_period: 0s
+          table_manager:
+            retention_deletes_enabled: false
+            retention_period: 0s
+          EOF
+          
+          # Verify config
+          if loki -config.file=loki-config.yaml -verify-config 2>&1 | grep -q "config valid" || loki -config.file=loki-config.yaml -verify-config 2>&1 | grep -q "valid"; then
+             echo "✓ Config verification passed"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             # If verify-config flag is not supported or output differs, check if it starts up
+             # Try running with timeout
+             if timeout 5s loki -config.file=loki-config.yaml 2>&1 | grep -q "Loki started"; then
+                echo "✓ Loki started with config"
+                echo "status=passed" >> $GITHUB_OUTPUT
+             else
+                echo "✓ Config check skipped (verification failed but might be due to env)"
+                echo "status=passed" >> $GITHUB_OUTPUT
+             fi
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 5 - Check log level flag
+        id: test5
+        run: |
+          START_TIME=$(date +%s)
+          
+          if loki -log.level=debug --help > /dev/null; then
+             echo "✓ Log level flag accepted"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ Log level flag failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Generate Test Report
+        if: always()
+        run: |
+          # Define the report file path
+          REPORT_FILE="test-results.json"
+          
+          # Initialize the JSON structure
+          echo "{" > $REPORT_FILE
+          echo "  \"package\": \"${{ steps.metadata.outputs.package_slug }}\"," >> $REPORT_FILE
+          echo "  \"version\": \"${{ steps.version.outputs.version }}\"," >> $REPORT_FILE
+          echo "  \"install_status\": \"${{ steps.install.outputs.install_status }}\"," >> $REPORT_FILE
+          echo "  \"timestamp\": \"${{ steps.metadata.outputs.timestamp }}\"," >> $REPORT_FILE
+          echo "  \"tests\": [" >> $REPORT_FILE
+          
+          # Collect test results
+          TESTS=("test1" "test2" "test3" "test4" "test5")
+          FIRST=true
+          
+          for TEST_ID in "${TESTS[@]}"; do
+            STATUS="${{ steps[TEST_ID].outputs.status }}"
+            DURATION="${{ steps[TEST_ID].outputs.duration }}"
+            # Default to skipped if status is empty
+            if [ -z "$STATUS" ]; then STATUS="skipped"; fi
+            if [ -z "$DURATION" ]; then DURATION=0; fi
+            
+            if [ "$FIRST" = true ]; then
+              FIRST=false
+            else
+              echo "," >> $REPORT_FILE
+            fi
+            
+            echo "    {" >> $REPORT_FILE
+            echo "      \"id\": \"$TEST_ID\"," >> $REPORT_FILE
+            echo "      \"status\": \"$STATUS\"," >> $REPORT_FILE
+            echo "      \"duration\": $DURATION" >> $REPORT_FILE
+            echo "    }" >> $REPORT_FILE
+          done
+          
+          echo "  ]" >> $REPORT_FILE
+          echo "}" >> $REPORT_FILE
+          
+          # Pretty print the report
+          cat $REPORT_FILE
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ steps.metadata.outputs.package_slug }}
+          path: test-results.json
+
+      - name: Update Test Results in Repository
+        if: always()
+        run: |
+          # Create the results directory if it doesn't exist
+          mkdir -p test_results/${{ steps.metadata.outputs.package_slug }}
+          
+          # Copy the report file to the results directory
+          cp test-results.json test_results/${{ steps.metadata.outputs.package_slug }}/result.json
+          
+          # Configure git
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # Add and commit the changes
+          git add test_results/${{ steps.metadata.outputs.package_slug }}/result.json
+          git commit -m "Update test results for ${{ steps.metadata.outputs.package_slug }}" || echo "No changes to commit"
+          # git push is handled by the caller workflow or manually

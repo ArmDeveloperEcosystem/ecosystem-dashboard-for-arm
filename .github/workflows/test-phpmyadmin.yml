@@ -1,0 +1,188 @@
+name: Test phpMyAdmin on Arm64
+on:
+  push:
+    branches:
+      - main
+      - smoke_tests
+    paths:
+      - 'content/opensource_packages/phpmyadmin.md'
+      - '.github/workflows/test-phpmyadmin.yml'
+jobs:
+  test-phpmyadmin:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "package_slug=phpmyadmin" >> $GITHUB_OUTPUT
+          echo "dashboard_link=/opensource_packages/phpmyadmin" >> $GITHUB_OUTPUT
+
+      # ============================================================
+      # CUSTOMIZE THIS: Install your package
+      # ============================================================
+      - name: Install phpMyAdmin
+        id: install
+        run: |
+          echo "Installing phpMyAdmin..."
+          
+          # Install prerequisites
+          sudo apt-get update
+          
+          # Preconfigure debconf to avoid interactive prompts
+          echo "phpmyadmin phpmyadmin/dbconfig-install boolean false" | sudo debconf-set-selections
+          echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2" | sudo debconf-set-selections
+          
+          # Install phpmyadmin
+          # We also install apache2 and php to ensure dependencies are met, though phpmyadmin pulls them
+          if sudo apt-get install -y phpmyadmin apache2 php; then
+             echo "phpMyAdmin installed successfully"
+             echo "install_status=success" >> $GITHUB_OUTPUT
+          else
+             echo "phpMyAdmin installation failed"
+             echo "install_status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+
+      # ============================================================
+      # CUSTOMIZE THIS: Get the package version
+      # ============================================================
+      - name: Get package version
+        id: version
+        run: |
+          # Check package.json or similar file for version, or use dpkg
+          VERSION=$(dpkg -s phpmyadmin | grep Version | awk '{print $2}' || echo "unknown")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected phpMyAdmin version: $VERSION"
+
+      # ============================================================
+      # ADD YOUR TESTS BELOW
+      # Each test should:
+      # 1. Have a unique id (test1, test2, etc.)
+      # 2. Track start/end time for duration
+      # 3. Set status=passed or status=failed
+      # 4. Exit 1 on failure
+      # ============================================================
+
+      - name: Test 1 - Check Installation Directory
+        id: test1
+        run: |
+          START_TIME=$(date +%s)
+          
+          if [ -d "/usr/share/phpmyadmin" ]; then
+            echo "✓ phpMyAdmin directory found"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ phpMyAdmin directory not found"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 2 - Check Configuration File
+        id: test2
+        run: |
+          START_TIME=$(date +%s)
+          
+          if [ -f "/etc/phpmyadmin/config.inc.php" ]; then
+             echo "✓ phpMyAdmin configuration file found"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ phpMyAdmin configuration file not found"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 3 - Check Apache Config
+        id: test3
+        run: |
+          START_TIME=$(date +%s)
+          
+          if [ -f "/etc/apache2/conf-available/phpmyadmin.conf" ]; then
+             echo "✓ phpMyAdmin Apache configuration found"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ phpMyAdmin Apache configuration not found"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Generate Test Report
+        if: always()
+        run: |
+          # Define the report file path
+          REPORT_FILE="test-results.json"
+          
+          # Initialize the JSON structure
+          echo "{" > $REPORT_FILE
+          echo "  \"package\": \"${{ steps.metadata.outputs.package_slug }}\"," >> $REPORT_FILE
+          echo "  \"version\": \"${{ steps.version.outputs.version }}\"," >> $REPORT_FILE
+          echo "  \"install_status\": \"${{ steps.install.outputs.install_status }}\"," >> $REPORT_FILE
+          echo "  \"timestamp\": \"${{ steps.metadata.outputs.timestamp }}\"," >> $REPORT_FILE
+          echo "  \"tests\": [" >> $REPORT_FILE
+          
+          # Collect test results
+          TESTS=("test1" "test2" "test3")
+          FIRST=true
+          
+          for TEST_ID in "${TESTS[@]}"; do
+            STATUS="${{ steps[TEST_ID].outputs.status }}"
+            DURATION="${{ steps[TEST_ID].outputs.duration }}"
+            # Default to skipped if status is empty
+            if [ -z "$STATUS" ]; then STATUS="skipped"; fi
+            if [ -z "$DURATION" ]; then DURATION=0; fi
+            
+            if [ "$FIRST" = true ]; then
+              FIRST=false
+            else
+              echo "," >> $REPORT_FILE
+            fi
+            
+            echo "    {" >> $REPORT_FILE
+            echo "      \"id\": \"$TEST_ID\"," >> $REPORT_FILE
+            echo "      \"status\": \"$STATUS\"," >> $REPORT_FILE
+            echo "      \"duration\": $DURATION" >> $REPORT_FILE
+            echo "    }" >> $REPORT_FILE
+          done
+          
+          echo "  ]" >> $REPORT_FILE
+          echo "}" >> $REPORT_FILE
+          
+          # Pretty print the report
+          cat $REPORT_FILE
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ steps.metadata.outputs.package_slug }}
+          path: test-results.json
+
+      - name: Update Test Results in Repository
+        if: always()
+        run: |
+          # Create the results directory if it doesn't exist
+          mkdir -p test_results/${{ steps.metadata.outputs.package_slug }}
+          
+          # Copy the report file to the results directory
+          cp test-results.json test_results/${{ steps.metadata.outputs.package_slug }}/result.json
+          
+          # Configure git
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # Add and commit the changes
+          git add test_results/${{ steps.metadata.outputs.package_slug }}/result.json
+          git commit -m "Update test results for ${{ steps.metadata.outputs.package_slug }}" || echo "No changes to commit"
+          # git push is handled by the caller workflow or manually
