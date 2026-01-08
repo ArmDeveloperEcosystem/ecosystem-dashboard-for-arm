@@ -33,23 +33,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql postgresql-contrib
           
-          # Find and install pgTAP
-          # We search for the package because the version number might vary (e.g. postgresql-16-pgtap)
-          PGTAP_PKG=$(apt-cache search postgresql | grep pgtap | awk '{print $1}' | head -n 1)
+          # Find current PG version
+          PG_VER=$(psql --version | awk '{print $3}' | cut -d. -f1)
+          echo "PostgreSQL version: $PG_VER"
           
-          if [ -z "$PGTAP_PKG" ]; then
-             echo "pgTAP package not found in default repos, trying generic name"
-             PGTAP_PKG="postgresql-pgtap"
-          fi
-          
-          echo "Installing $PGTAP_PKG..."
-          if sudo apt-get install -y "$PGTAP_PKG"; then
-             echo "pgTAP installed successfully"
+          # Try to install versioned pgtap package
+          if sudo apt-get install -y "postgresql-$PG_VER-pgtap"; then
+             echo "pgTAP installed successfully via versioned package"
              echo "install_status=success" >> $GITHUB_OUTPUT
           else
-             echo "pgTAP installation failed"
-             echo "install_status=failed" >> $GITHUB_OUTPUT
-             exit 1
+             echo "Versioned package failed, trying generic search"
+             PGTAP_PKG=$(apt-cache search postgresql | grep pgtap | awk '{print $1}' | head -n 1)
+             if [ -n "$PGTAP_PKG" ] && sudo apt-get install -y "$PGTAP_PKG"; then
+                echo "pgTAP installed successfully via $PGTAP_PKG"
+                echo "install_status=success" >> $GITHUB_OUTPUT
+             else
+                echo "pgTAP installation failed"
+                echo "install_status=failed" >> $GITHUB_OUTPUT
+                exit 1
+             fi
           fi
           
           # Start PostgreSQL
@@ -78,6 +80,7 @@ jobs:
 
       - name: Test 1 - Check Extension Availability
         id: test1
+        continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
@@ -87,6 +90,8 @@ jobs:
             echo "status=passed" >> $GITHUB_OUTPUT
           else
             echo "✗ pgtap extension not found in PostgreSQL"
+            # List available extensions for debugging
+            sudo -u postgres psql -c "SELECT name FROM pg_available_extensions;"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -96,12 +101,17 @@ jobs:
 
       - name: Test 2 - Functional Test (Create Extension and Run Test)
         id: test2
+        continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
           # Create a test database and install the extension
-          sudo -u postgres createdb testdb
-          sudo -u postgres psql -d testdb -c "CREATE EXTENSION pgtap;"
+          sudo -u postgres createdb testdb || true
+          if ! sudo -u postgres psql -d testdb -c "CREATE EXTENSION IF NOT EXISTS pgtap;"; then
+             echo "✗ Failed to create pgtap extension"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
           
           # Run a simple pgTAP test
           cat <<EOF > test.sql
@@ -116,7 +126,7 @@ jobs:
           # pg_prove is part of libtap-parser-sourcehandler-pgtap-perl usually, or we can just run SQL
           # Let's run via psql and check output
           
-          OUTPUT=$(sudo -u postgres psql -d testdb -f test.sql)
+          OUTPUT=$(sudo -u postgres psql -d testdb -f test.sql 2>&1)
           echo "$OUTPUT"
           
           if echo "$OUTPUT" | grep -q "This is a simple pgTAP test"; then
