@@ -64,22 +64,18 @@ jobs:
         run: |
           echo "Installing Spdlog..."
           
-          # Example for apt packages:
+          # Install development headers and build tools
           sudo apt-get update
-          sudo apt-get install -y spdlog
-          
-          # Example for downloading binaries:
-          # sudo curl -L -o /usr/local/bin/spdlog https://github.com/org/repo/releases/download/v1.0.0/spdlog-linux-arm64
-          # sudo chmod +x /usr/local/bin/spdlog
+          sudo apt-get install -y libspdlog-dev build-essential
           
           # Verify installation
-          if command -v spdlog &> /dev/null; then
-            echo "Spdlog installed successfully"
+          if [ -d "/usr/include/spdlog" ]; then
+            echo "Spdlog headers found"
             echo "install_status=success" >> $GITHUB_OUTPUT
           else
-            echo "Spdlog installation failed"
+            echo "Spdlog headers not found"
             echo "install_status=failed" >> $GITHUB_OUTPUT
-          exit 1
+            exit 1
           fi
       
       # ============================================================
@@ -88,8 +84,16 @@ jobs:
       - name: Get Spdlog version
         id: version
         run: |
-          # Adjust this command based on how your package reports version
-          VERSION=$(spdlog --version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+          # Extract version from header file
+          if [ -f "/usr/include/spdlog/version.h" ]; then
+            MAJOR=$(grep "#define SPDLOG_VER_MAJOR" /usr/include/spdlog/version.h | awk '{print $3}')
+            MINOR=$(grep "#define SPDLOG_VER_MINOR" /usr/include/spdlog/version.h | awk '{print $3}')
+            PATCH=$(grep "#define SPDLOG_VER_PATCH" /usr/include/spdlog/version.h | awk '{print $3}')
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          else
+            VERSION="unknown"
+          fi
+          
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Spdlog version: $VERSION"
       
@@ -102,72 +106,79 @@ jobs:
       # 4. Exit 1 on failure
       # ============================================================
       
-      - name: Test 1 - Check spdlog binary exists
+      - name: Test 1 - Check header files exist
         id: test1
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          if command -v spdlog &> /dev/null; then
-            echo "✓ spdlog binary found"
+          if [ -f "/usr/include/spdlog/spdlog.h" ]; then
+            echo "✓ spdlog.h found"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ spdlog binary not found"
+            echo "✗ spdlog.h not found"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
-             fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 2 - Check spdlog version command
+      - name: Test 2 - Compile C++ example
         id: test2
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          if spdlog --version 2>&1 | grep -q "version\|[0-9]"; then
-            echo "✓ spdlog version command works"
-            spdlog --version
-            echo "status=passed" >> $GITHUB_OUTPUT
+          # Create a simple C++ program using spdlog
+          cat > test_spdlog.cpp << EOF
+          #include "spdlog/spdlog.h"
+          int main() {
+              spdlog::info("Welcome to spdlog!");
+              return 0;
+          }
+          EOF
+          
+          # Compile it
+          if g++ test_spdlog.cpp -o test_spdlog -lspdlog -fmt; then
+             echo "✓ Compilation successful"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          elif g++ test_spdlog.cpp -o test_spdlog -lspdlog; then
+             # Fallback without fmt if bundled
+             echo "✓ Compilation successful (without explicit fmt link)"
+             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ spdlog version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-             fi
+             echo "✗ Compilation failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 3 - Check spdlog help output
+      - name: Test 3 - Run compiled example
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          if spdlog --help 2>&1 | grep -qi "usage\|help\|options"; then
-            echo "✓ spdlog help command works"
+          if ./test_spdlog | grep -q "Welcome to spdlog"; then
+            echo "✓ Runtime check passed"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ spdlog help command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-             fi
+            echo "✗ Runtime check failed"
+            # It might print to stderr
+            if ./test_spdlog 2>&1 | grep -q "Welcome to spdlog"; then
+                echo "✓ Runtime check passed (stderr)"
+                echo "status=passed" >> $GITHUB_OUTPUT
+            else
+                echo "status=failed" >> $GITHUB_OUTPUT
+                exit 1
+            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      # Add more tests as needed (test4, test5, etc.)
-      # Examples:
-      # - Run a simple command
-      # - Check configuration files
-      # - Start/stop a service
-      # - Test basic functionality
-      
-      # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
-      # ============================================================
       
       - name: Test 4 - Architecture Verification
         id: test4
@@ -194,12 +205,12 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if spdlog --version > /dev/null 2>&1 || spdlog --help > /dev/null 2>&1; then
-            echo "✓ Basic functional check passed"
+          # Re-using the compiled binary for functional check
+          if [ -x "./test_spdlog" ]; then
+            echo "✓ Functional check passed (binary exists and is executable)"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ Basic functional check failed"
+            echo "✗ Functional check failed"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
