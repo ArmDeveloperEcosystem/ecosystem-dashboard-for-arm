@@ -1,0 +1,178 @@
+name: Test Dapr Serverless on Arm64
+
+on:
+  workflow_call:
+  push:
+    branches:
+      - main
+      - smoke_tests
+    paths:
+      - 'content/opensource_packages/dapr_serverless.md'
+      - '.github/workflows/test-dapr_serverless.yml'
+
+jobs:
+  test-dapr_serverless:
+    runs-on: ubuntu-24.04-arm
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "package_slug=dapr_serverless" >> $GITHUB_OUTPUT
+          echo "dashboard_link=/opensource_packages/dapr_serverless" >> $GITHUB_OUTPUT
+      
+      - name: Install Dapr Serverless
+        id: install
+        run: |
+          echo "Installing Dapr..."
+          wget -q https://raw.githubusercontent.com/dapr/cli/master/install/install.sh -O - | /bin/bash
+          
+          if command -v dapr &> /dev/null; then
+            echo "Dapr installed successfully"
+            echo "install_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "Dapr installation failed"
+            echo "install_status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+      
+      - name: Get Dapr version
+        id: version
+        run: |
+          VERSION=$(dapr --version 2>&1 | grep "CLI version" | awk '{print $3}' || echo "unknown")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected Dapr version: $VERSION"
+      
+      - name: Test 1 - Check dapr binary exists
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          
+          if command -v dapr &> /dev/null; then
+            echo "✓ dapr binary found"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ dapr binary not found"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+          
+          # Test 1
+          if [ "${{ steps.test1.outputs.status || 'skipped' }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          
+          if [ $FAILED -eq 0 ]; then
+            echo "overall_status=success" >> $GITHUB_OUTPUT
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
+            echo "overall_status=failure" >> $GITHUB_OUTPUT
+            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+      
+      - name: Generate test results JSON
+        if: always()
+        run: |
+          mkdir -p test-results
+          
+          cat > test-results/dapr_serverless.json << EOF
+          {
+            "schema_version": "1.0",
+            "package": {
+              "name": "Dapr Serverless",
+              "version": "${{ steps.version.outputs.version }}",
+              "language": "Go",
+              "category": "Serverless"
+            },
+            "run": {
+              "id": "${{ github.run_id }}",
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "timestamp": "${{ steps.metadata.outputs.timestamp }}",
+              "status": "${{ steps.summary.outputs.overall_status }}",
+              "runner": {
+                "os": "ubuntu-24.04",
+                "arch": "arm64"
+              }
+            },
+            "tests": {
+              "passed": ${{ steps.summary.outputs.passed }},
+              "failed": ${{ steps.summary.outputs.failed }},
+              "skipped": 0,
+              "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
+              "details": [
+                {
+                  "name": "Check dapr binary exists",
+                  "status": "${{ steps.test1.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
+                }
+              ]
+            },
+            "metadata": {
+              "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
+              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+            }
+          }
+          EOF
+          
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dapr_serverless-test-results
+          path: test-results/dapr_serverless.json
+          retention-days: 90
+      
+      - name: Commit test results to repository
+        if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/smoke_tests')
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          mkdir -p data/test-results
+          cp test-results/dapr_serverless.json data/test-results/dapr_serverless.json
+          
+          git add data/test-results/dapr_serverless.json
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "Update dapr_serverless test results [skip ci]"
+            for i in {1..5}; do
+              if git pull --rebase origin ${{ github.ref_name }}; then
+                if git push; then break; fi
+              else
+                git checkout --ours data/test-results/dapr_serverless.json
+                git add data/test-results/dapr_serverless.json
+                git rebase --continue || true
+              fi
+              sleep $((i * 2))
+            done
+          fi
+      
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## Dapr Serverless Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
