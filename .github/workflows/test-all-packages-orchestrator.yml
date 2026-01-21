@@ -1,0 +1,92 @@
+name: Test All Packages (Orchestrator) on Arm64
+
+concurrency:
+  group: orchestrator
+  cancel-in-progress: true
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - smoke_tests
+    paths:
+      - 'content/opensource_packages/*.md'
+
+jobs:
+  orchestrate-batches:
+    name: Trigger and Wait for All Batches
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Trigger all 19 batches
+        id: trigger
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          START_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "start_time=$START_TIME" >> $GITHUB_OUTPUT
+          
+          echo "🚀 Triggering all 19 batches..."
+          for i in {1..19}; do
+            echo "Triggering Batch $i..."
+            gh workflow run "test-all-packages-batch${i}.yml" --ref ${{ github.ref_name }}
+          done
+
+      - name: Wait for batches to complete
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          START_TIME="${{ steps.trigger.outputs.start_time }}"
+          echo "⏳ Waiting for batches triggered after $START_TIME..."
+          
+          # Initialize arrays for tracking
+          BATCH_RUN_IDS=()
+          
+          # 1. Identify the Run IDs for each batch
+          # We wait a few seconds to ensure the runs have registered in the API
+          sleep 15
+          
+          for i in {1..19}; do
+            WORKFLOW="test-all-packages-batch${i}.yml"
+            # Get the ID of the most recent run that started after our START_TIME
+            RUN_ID=$(gh run list --workflow "$WORKFLOW" --branch ${{ github.ref_name }} --json databaseId,createdAt --jq ".[] | select(.createdAt >= \"$START_TIME\") | .databaseId" | head -n 1)
+            
+            if [ -z "$RUN_ID" ]; then
+              echo "⚠️ Warning: Could not find Run ID for $WORKFLOW. It might still be queuing."
+              # Optional: retry logic if Run ID is missing
+            else
+              echo "✅ Tracking $WORKFLOW (Run ID: $RUN_ID)"
+              BATCH_RUN_IDS+=("$RUN_ID")
+            fi
+          done
+          
+          # 2. Monitor status until all are done
+          while true; do
+            STILL_RUNNING=0
+            for RID in "${BATCH_RUN_IDS[@]}"; do
+              STATUS=$(gh run view "$RID" --json status --jq .status)
+              if [[ "$STATUS" != "completed" ]]; then
+                STILL_RUNNING=$((STILL_RUNNING + 1))
+              fi
+            done
+            
+            if [ "$STILL_RUNNING" -eq 0 ]; then
+              echo "🎉 All batches completed!"
+              break
+            fi
+            
+            echo "⌛ $STILL_RUNNING batches still running. Checking again in 1 minute..."
+            sleep 60
+          done
+
+      - name: Trigger Global Summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🏁 All batches finished. Triggering Global Summary..."
+          gh workflow run test-all-packages-summary.yml --ref ${{ github.ref_name }}
