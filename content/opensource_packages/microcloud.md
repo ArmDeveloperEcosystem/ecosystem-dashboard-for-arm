@@ -6,7 +6,7 @@ download_url: https://github.com/canonical/microcloud/releases
 works_on_arm: true
 supported_minimum_version:
     version_number: 2.1.0
-    release_date: 2024/11/15
+    release_date: 2023/11/16
  
  
 optional_info:
@@ -26,6 +26,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info:
+    other_info: Arm64 support was introduced earlier to Microcloud, in November 2023. Please see the [referenced](https://www.theregister.com/2023/11/16/canonical_microcloud) blog.
  
 ---

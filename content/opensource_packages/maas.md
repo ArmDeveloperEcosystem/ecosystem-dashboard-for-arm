@@ -5,8 +5,8 @@ description: MAAS (Metal as a Service), developed and maintained by Canonical, i
 download_url: https://github.com/canonical/maas/tags
 works_on_arm: true
 supported_minimum_version:
-    version_number: 3.0
-    release_date: 2021/06/22
+    version_number: 2.7
+    release_date: 2018/02/26
  
  
 optional_info:
@@ -24,8 +24,8 @@ optional_info:
         rationale:
  
 optional_hidden_info:
-    release_notes__supported_minimum: https://canonical.com/maas/docs/reference-release-notes-maas-3-0
+    release_notes__supported_minimum: https://canonical.com/maas/docs/reference-release-notes-maas-2-7
     release_notes__recommended_minimum:
-    other_info:
+    other_info: Arm64 support was introduced earlier in MAAS as a deb v1.4 and the snap vesion is 2.7. Please see [referenced](https://canonical.com/maas/blog/deploying-ubuntu-openstack-to-arm64-servers) blog for the details.
  
 ---
