@@ -5,6 +5,7 @@ category: Monitoring/Observability
 description: The Datadog Agent is software that runs on the hosts. It collects events and metrics from hosts and sends them to Datadog, where the monitoring and performance data can be analyzed.
 product_url: https://docs.datadoghq.com/agent/supported_platforms/windows/
 works_on_arm: true
+release_date_on_arm: 2022/06/27
 supported_minimum_version:
   version_number: 7.37.0
   release_date: 2022/06/27
