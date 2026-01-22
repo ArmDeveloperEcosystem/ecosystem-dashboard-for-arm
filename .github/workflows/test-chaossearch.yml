@@ -94,9 +94,12 @@ jobs:
       - name: Get Terraform-provider-chaossearch version
         id: version
         run: |
-          # Providers often just print version on stderr or don't have standard flag, 
-          # but we can try --version or check the filename we installed
-          VERSION=$(terraform-provider-chaossearch --version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "0.12.0")
+          # Providers are plugins, find the version from the repository we just cloned
+          if [ -d "terraform-provider-chaossearch" ]; then
+             VERSION=$(grep -m 1 "version =" terraform-provider-chaossearch/version/version.go 2>/dev/null | grep -oP '[0-9.]+' || echo "0.12.0")
+          else
+             VERSION="0.12.0"
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Terraform-provider-chaossearch version: $VERSION"
       
@@ -127,43 +130,62 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 2 - Check binary execution
+      - name: Test 2 - Validate with Terraform Init
         id: test2
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          # Terraform providers generally expect to be run by TF, running directly might print help or error
-          if terraform-provider-chaossearch --help 2>&1 | grep -qi "usage\|help\|provider"; then
-            echo "✓ binary helps/runs"
+          # Install Terraform
+          sudo apt-get update && sudo apt-get install -y gnupg software-properties-common
+          wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+          sudo apt-get update && sudo apt-get install terraform -y
+
+          # Create provider setup for local filesystem provider
+          # We need to move the binary to a directory structure Terraform expects for a local provider
+          # OR just use a dev override. Dev override is easier for smoke tests.
+          mkdir -p ~/.terraform.d/plugins/registry.terraform.io/chaossearch/chaossearch/99.99.99/linux_arm64
+          cp /usr/local/bin/terraform-provider-chaossearch ~/.terraform.d/plugins/registry.terraform.io/chaossearch/chaossearch/99.99.99/linux_arm64/
+
+          cat > main.tf << EOF
+          terraform {
+            required_providers {
+              chaossearch = {
+                source = "chaossearch/chaossearch"
+                version = "99.99.99"
+              }
+            }
+          }
+          provider "chaossearch" {}
+          EOF
+
+          if terraform init; then
+            echo "✓ terraform init with chaossearch provider passed"
             echo "status=passed" >> $GITHUB_OUTPUT
-          # Or just check if it runs and exits
-          elif terraform-provider-chaossearch 2>&1; then
-             echo "✓ binary runs"
-             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ binary execution failed"
+            echo "✗ terraform init failed"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 3 - Check version command
+      - name: Test 3 - Check provider binary info
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          if terraform-provider-chaossearch --version 2>&1 | grep -q "version\|[0-9]"; then
-            echo "✓ version command works"
+          if file /usr/local/bin/terraform-provider-chaossearch | grep -q "ELF 64-bit LSB executable, ARM aarch64"; then
+            echo "✓ binary is valid ARM64 executable"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            # If --version isn't adding value, we can skip or consider it passed if binary exists
-            echo "Warning: version command might not be standard"
-            echo "status=passed" >> $GITHUB_OUTPUT
-            fi
+            echo "✗ binary info check failed"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -200,15 +222,17 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 5 - Functional Validation
+      - name: Test 5 - Provider Validation (Force run)
         id: test5
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          # Basic functional check: try to run with --version or --help and check exit code
-          if terraform-provider-chaossearch --version > /dev/null 2>&1 || terraform-provider-chaossearch --help > /dev/null 2>&1; then
-            echo "✓ Basic functional check passed"
+          # Even if direct execution is discouraged, it should still be a valid executable
+          # If we run it without arguments, it should typicaly wait for TF or print internal info
+          # We'll just verify it doesn't crash immediately with "exec format error"
+          if /usr/local/bin/terraform-provider-chaossearch 2>&1 | grep -qi "This binary is a plugin"; then
+            echo "✓ Basic functional check passed (plugin message detected)"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
             echo "✗ Basic functional check failed"
@@ -217,6 +241,7 @@ jobs:
           fi
 
           END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       - name: Calculate test summary
         if: always()
         id: summary
@@ -310,27 +335,27 @@ jobs:
                 {
                   "name": "Check chaossearch binary exists",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
+                  "duration_seconds": "${{ steps.test1.outputs.duration || 0 }}"
                 },
                 {
-                  "name": "Check chaossearch version command",
+                  "name": "Validate with Terraform Init",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
+                  "duration_seconds": "${{ steps.test2.outputs.duration || 0 }}"
                 },
                 {
-                  "name": "Check chaossearch help output",
+                  "name": "Check provider binary info",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
+                  "duration_seconds": "${{ steps.test3.outputs.duration || 0 }}"
                 },
                 {
                   "name": "Architecture Verification",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
+                  "duration_seconds": "${{ steps.test4.outputs.duration || 0 }}"
                 },
                 {
-                  "name": "Functional Validation",
+                  "name": "Provider Validation (Force run)",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
+                  "duration_seconds": "${{ steps.test5.outputs.duration || 0 }}"
                 }
               ]
             },
