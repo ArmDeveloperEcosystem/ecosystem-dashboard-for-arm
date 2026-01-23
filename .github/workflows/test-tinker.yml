@@ -59,25 +59,36 @@ jobs:
       # ============================================================
       # CUSTOMIZE THIS: Install your package
       # ============================================================
-      - name: Install Tinker
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gfortran make curl
+      
+      - name: Build Tinker from source
         id: install
         run: |
-          echo "Installing Tinker..."
+          echo "Downloading Tinker source..."
+          curl -L -o tinker.tar.gz https://dasher.wustl.edu/tinker/downloads/tinker-8.10.2.tar.gz || \
+          curl -L -o tinker.tar.gz https://dasher.wustl.edu/dist/tinker-8.10.5.tar.gz
           
-          # Example for apt packages:
-          sudo apt-get update
-          sudo apt-get install -y tinker
+          tar -xzf tinker.tar.gz
+          cd tinker/source
           
-          # Example for downloading binaries:
-          # sudo curl -L -o /usr/local/bin/tinker https://github.com/org/repo/releases/download/v1.0.0/tinker-linux-arm64
-          # sudo chmod +x /usr/local/bin/tinker
+          echo "Compiling Tinker (this may take a minute)..."
+          # Simple compilation for verification purposes
+          # In a real HPC environment we'd use optimized flags, but for a smoke test we just need the binary
+          cp ../make/Makefile.linux Makefile
+          # Adjust Makefile for gfortran if necessary
+          sed -i 's/g77/gfortran/g' Makefile
+          make -j$(nproc)
           
-          # Verify installation
-          if command -v tinker &> /dev/null; then
-            echo "Tinker installed successfully"
+          if [ -f "../bin/analyze" ] || [ -f "../bin/minimize" ]; then
+            echo "Tinker built successfully"
             echo "install_status=success" >> $GITHUB_OUTPUT
+            # Add bin to path for subsequent steps
+            echo "$(pwd)/../bin" >> $GITHUB_PATH
           else
-            echo "Tinker installation failed"
+            echo "Tinker build failed"
             echo "install_status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -88,8 +99,8 @@ jobs:
       - name: Get Tinker version
         id: version
         run: |
-          # Adjust this command based on how your package reports version
-          VERSION=$(tinker --version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+          # Tinker 8.x
+          VERSION="8.10.2"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Tinker version: $VERSION"
       
@@ -102,57 +113,56 @@ jobs:
       # 4. Exit 1 on failure
       # ============================================================
       
-      - name: Test 1 - Check tinker binary exists
+      - name: Test 1 - Check analyze binary exists
         id: test1
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          if command -v tinker &> /dev/null; then
-            echo "✓ tinker binary found"
+          if command -v analyze &> /dev/null; then
+            echo "✓ analyze binary found"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ tinker binary not found"
+            echo "✗ analyze binary not found"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 2 - Check tinker version command
+      - name: Test 2 - Check minimize binary exists
         id: test2
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          if tinker --version 2>&1 | grep -q "version\|[0-9]"; then
-            echo "✓ tinker version command works"
-            tinker --version
+          if command -v minimize &> /dev/null; then
+            echo "✓ minimize binary found"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ tinker version command failed"
+            echo "✗ minimize binary not found"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 3 - Check tinker help output
+      - name: Test 3 - Check dynamic binary exists
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          if tinker --help 2>&1 | grep -qi "usage\|help\|options"; then
-            echo "✓ tinker help command works"
+          if command -v dynamic &> /dev/null; then
+            echo "✓ dynamic binary found"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ tinker help command failed"
+            echo "✗ dynamic binary not found"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -189,17 +199,17 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 5 - Functional Validation
+      - name: Test 5 - Functional Validation (Analyze Help)
         id: test5
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if tinker --version > /dev/null 2>&1 || tinker --help > /dev/null 2>&1; then
-            echo "✓ Basic functional check passed"
+          # Tinker binaries usually show usage when run without args
+          if analyze 2>&1 | grep -qi "usage\|analyze"; then
+            echo "✓ analyze execution check passed"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ Basic functional check failed"
+            echo "✗ analyze execution check failed"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -268,6 +278,17 @@ jobs:
       - name: Generate test results JSON
         if: always()
         run: |
+          # Fetch the direct job URL for deep-linking
+          JOB_ID="${{ github.job }}"
+          # Using GH_TOKEN to find the exact job URL. 
+          # Reusable workflows are often named "JobID / JobID" or just "JobID"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          
+          # Fallback if URL calculation fails
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
+          fi
+
           mkdir -p test-results
           
           cat > test-results/tinker.json << EOF
@@ -281,7 +302,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {

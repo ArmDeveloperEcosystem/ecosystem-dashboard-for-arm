@@ -28,20 +28,18 @@ jobs:
       - name: Install Nextflow
         id: install
         run: |
-          echo "Installing Nextflow..."
-          
-          # Install prerequisites (Java)
+          echo "Installing Prerequisites (Java 17)..."
           sudo apt-get update
-          sudo apt-get install -y openjdk-17-jdk-headless curl
+          sudo apt-get install -y openjdk-17-jre-headless curl wget
           
-          # Install Nextflow
-          if curl -s https://get.nextflow.io | bash; then
+          echo "Downloading Nextflow..."
+          if wget -nv -O nextflow https://github.com/nextflow-io/nextflow/releases/latest/download/nextflow; then
              chmod +x nextflow
              sudo mv nextflow /usr/local/bin/
              echo "Nextflow installed successfully"
              echo "install_status=success" >> $GITHUB_OUTPUT
           else
-             echo "Nextflow installation failed"
+             echo "Nextflow download failed"
              echo "install_status=failed" >> $GITHUB_OUTPUT
              exit 1
           fi
@@ -124,14 +122,34 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 4 - Run Hello World pipeline
+      - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
+          echo "Checking system architecture..."
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "aarch64" ]; then
+            echo "✓ System architecture is ARM64 ($ARCH)"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ System architecture is NOT ARM64 ($ARCH)"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 5 - Run Hello World pipeline
+        id: test5
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          
           # Run the built-in hello pipeline
-          # This pulls from GitHub, so it needs internet (which we have)
+          # First run often involves self-update or capsule download
           if nextflow run hello; then
              echo "✓ Hello world pipeline ran successfully"
              echo "status=passed" >> $GITHUB_OUTPUT
@@ -139,7 +157,7 @@ jobs:
              echo "✗ Hello world pipeline failed"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -179,13 +197,21 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Run Hello World pipeline
+          # Architecture Verification
           if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
+
+          # Run Hello World pipeline
+          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
@@ -202,6 +228,17 @@ jobs:
       - name: Generate test results JSON
         if: always()
         run: |
+          # Fetch the direct job URL for deep-linking
+          JOB_ID="${{ github.job }}"
+          # Using GH_TOKEN to find the exact job URL. 
+          # Reusable workflows are often named "JobID / JobID" or just "JobID"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          
+          # Fallback if URL calculation fails
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
+          fi
+
           mkdir -p test-results
           
           cat > test-results/nextflow.json << EOF
@@ -215,7 +252,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
