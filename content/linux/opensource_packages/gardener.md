@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 1.52.0
+        release_date: 2022/07/31
+        reference_content: https://github.com/gardener/gardener/releases/tag/v1.52.0
+        rationale: In this release, downloading of several tools vial ./hack/tools.mk was fixed for Arm64 based Linux machines.
  
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/gardener/gardener/releases/tag/v1.46.0

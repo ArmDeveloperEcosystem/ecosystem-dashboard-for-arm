@@ -9,7 +9,7 @@ release_date_on_arm: 2020/02/21
 
 optional_info:
     homepage_url: https://www.cadence.com/en_US/home/tools/custom-ic-analog-rf-design/library-characterization/liberate-trio-characterization-suite.html
-    support_caveats:
+    support_caveats: New customers interested in this product should contact Cadence at arm-ecosystem@cadence.com to request access.
     alternative_options:
     getting_started_resources:
         official_docs: https://www.cadence.com/en_US/home/resources/datasheets/liberate-trio-characterization-suite-ds.html

@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
-        reference_content:
-        rationale:
+        version_number: 8.3.556
+        release_date: 2025/10/05
+        reference_content: https://github.com/RTimothyEdwards/magic/releases/tag/8.3.556
+        rationale: In this release, GitHub Actions support for Aarch64 was enabled.
  
 optional_hidden_info:
     release_notes__supported_minimum:
