@@ -15,7 +15,9 @@ optional_info:
   getting_started_resources:
     official_docs: https://learn.microsoft.com/en-us/visualstudio/windows/?view=visualstudio
     arm_content:
-    partner_content: https://devblogs.microsoft.com/visualstudio/arm64-visual-studio-is-officially-here/#:~:text=Table%20of%20contents,that%20run%20natively%20on%20Arm64.
+    partner_content:
+      - display_name: Microsoft
+        url: https://devblogs.microsoft.com/visualstudio/arm64-visual-studio-is-officially-here/
   arm_recommended_minimum_version:
     version_number:
     release_date:
