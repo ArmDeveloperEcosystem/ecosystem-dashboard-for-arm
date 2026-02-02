@@ -18,7 +18,7 @@ arm_recommended_minimum_version:
   reference_content: null
   rationale: null
 getting_started_resources:
-  official_docs: "https://www.rust-lang.org/tools/install"
+  official_docs: https://www.rust-lang.org/tools/install
   arm_content:
   partner_content:
 optional_hidden_info:
