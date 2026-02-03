@@ -18,7 +18,7 @@ arm_recommended_minimum_version:
   reference_content:
   rationale:
 getting_started_resources:
-  official_docs: "https://github.com/sqlite/sqlite?tab=readme-ov-file#compiling-for-windows-using-msvc"
+  official_docs: https://github.com/sqlite/sqlite?tab=readme-ov-file#compiling-for-windows-using-msvc
   arm_content:
   partner_content:
 optional_hidden_info:

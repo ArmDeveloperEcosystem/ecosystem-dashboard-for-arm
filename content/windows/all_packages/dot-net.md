@@ -13,7 +13,7 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    official_docs:
+    official_docs: https://learn.microsoft.com/en-us/dotnet/?WT.mc_id=dotnet-35129-website
     arm_content:
     partner_content:
   arm_recommended_minimum_version:

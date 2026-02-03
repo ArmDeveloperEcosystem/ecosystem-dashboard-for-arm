@@ -2,7 +2,7 @@
 name: OpenSSL
 category: Crypto
 description: OpenSSL is a robust, full-featured open-source toolkit for TLS (formerly SSL), DTLS and QUIC (currently client side only) protocols.
-download_url:
+download_url: https://kb.firedaemon.com/support/solutions/articles/4000121705-openssl-binary-distributions-for-microsoft-windows
 works_on_arm: true
 supported_minimum_version:
   version_number: 3.0.0
@@ -13,7 +13,7 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    official_docs:
+    official_docs: https://docs.openssl.org/master/
     arm_content:
     partner_content:
   arm_recommended_minimum_version:

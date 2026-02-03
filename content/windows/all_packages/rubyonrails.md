@@ -13,7 +13,7 @@ optional_info:
   support_caveats: null
   alternative_options: null
   getting_started_resources:
-    official_docs:
+    official_docs: https://rubyonrails.org/docs
     arm_content: null
     partner_content:
   arm_recommended_minimum_version:

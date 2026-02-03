@@ -18,7 +18,7 @@ optional_info:
     reference_content: "https://aws.amazon.com/blogs/compute/making-your-go-workloads-up-to-20-faster-with-go-1-18-and-aws-graviton/"
     rationale: These enhancements resulted in up to a 20% increase in performance for Go workloads on Arm-based servers.
   getting_started_resources:
-    official_docs:
+    official_docs: https://go.dev/doc/
     arm_content:
     partner_content:
       - display_name: Amazon AWS
