@@ -1,7 +1,7 @@
 ---
 name: PyPI
 category: Database
-description: Decentralized, open-source (MIT) package manager for C and C++ developers.
+description: Central package index for software written in and used in Python development environments.
 download_url: https://packaging.python.org/en/latest/tutorials/installing-packages/
 works_on_arm: true
 supported_minimum_version:
