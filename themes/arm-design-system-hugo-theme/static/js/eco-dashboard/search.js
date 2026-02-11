@@ -231,11 +231,6 @@ function hideElements(all_path_cards,results_to_hide) {
             card.setAttribute('hidden',true);
             // Remove 'clicked' attribute
             card.classList.remove("main-sw-row--clicked");
-            // Reset caret state to closed when row is hidden
-            const caret_icon = card.querySelector('.caret-spin');
-            if (caret_icon) {
-                caret_icon.classList.remove('rotated');
-            }
 
             if (card.nextElementSibling){   // temp to enable card view too
                 card.nextElementSibling.setAttribute('hidden',true);

@@ -8,10 +8,10 @@ from datetime import datetime
 script_dir = Path(__file__).parent.absolute()
 
 # Relative path to content from script, then tet absolute path to content by combining, and use Resolve to handle backwards".."
-opensource_relative_path = Path('../content/linux/opensource_packages')
+opensource_relative_path = Path('../content/opensource_packages')
 opensource_absolute_path = (script_dir / opensource_relative_path).resolve()
 
-commercial_relative_path = Path('../content/linux/commercial_packages')
+commercial_relative_path = Path('../content/commercial_packages')
 commercial_absolute_path = (script_dir / commercial_relative_path).resolve()
 
 # Same process for the YAML data file:
@@ -29,8 +29,8 @@ def get_all_package_metadata(package_path):
         metadata_dic = yaml.safe_load(metadata)
         # Add another dictionary key in addition to Params that is the File path to support GitHub editing functionality
         unused, file_name = os.path.split(package_path)
-        content_root = (script_dir / "../content").resolve()
-        file_path = str(Path(package_path).resolve().relative_to(content_root)).replace("\\", "/")
+        last_directory_name = os.path.basename(os.path.dirname(package_path))
+        file_path = os.path.join(last_directory_name,file_name).replace("\\", "/")
         metadata_mirror_hugo_page = {
             "Params": metadata_dic,
             "File": {"Path": file_path}
