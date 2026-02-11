@@ -13,14 +13,6 @@ function showAdditionalData(row) {
     row.parentNode.insertBefore(newRow, row.nextSibling);
 }
 
-function toggleCaret(element) {
-    /// get caret icon within row element
-    const icon = element.querySelector('.caret-spin');
-    if (!icon) return;
-    icon.classList.toggle('rotated');
-  }
-  
-
 
 function rowClickHandler(row) {
 
@@ -29,9 +21,11 @@ function rowClickHandler(row) {
         // remove highlighting
         row.classList.remove("main-sw-row--clicked");
         // hide sub-DOM
+   
         if (row.nextElementSibling) {
             row.nextElementSibling.setAttribute('hidden',true);
-        }        
+        }
+        
 
     } 
     // Not highlighted
@@ -45,7 +39,6 @@ function rowClickHandler(row) {
         
             // showAdditionalData(row) // needed when async grabbing data in round two. 
     }
-    toggleCaret(row);
 
 }
 

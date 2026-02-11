@@ -6,7 +6,7 @@ download_url: https://github.com/jeffhammond/STREAM.git
 works_on_arm: true
 supported_minimum_version:
     version_number: 
-    release_date: 2023/07/28
+    release_date: Master branch (2023/07/28)
 
 
 optional_info:
