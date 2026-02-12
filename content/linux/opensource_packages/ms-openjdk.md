@@ -17,6 +17,8 @@ optional_info:
         official_docs: https://learn.microsoft.com/en-us/java/openjdk/install#install-on-ubuntu
         arm_content: https://learn.arm.com/install-guides/java/
         partner_content:
+          - display_name: Microsoft Azure
+            url: https://techcommunity.microsoft.com/blog/azurecompute/scaling-azure-arm64-vms-with-microsoft%E2%80%99s-build-of-openjdk-a-performance-testing-/3820435
     arm_recommended_minimum_version:
         version_number:
         release_date:
