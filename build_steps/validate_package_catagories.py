@@ -23,10 +23,10 @@ if __name__ == "__main__":
 
 
     # content dirs
-    opensource_relative_path = Path('../content/opensource_packages')
+    opensource_relative_path = Path('../content/linux/opensource_packages')
     opensource_absolute_path = (script_dir / opensource_relative_path).resolve()
 
-    commercial_relative_path = Path('../content/commercial_packages')
+    commercial_relative_path = Path('../content/linux/commercial_packages')
     commercial_absolute_path = (script_dir / commercial_relative_path).resolve()
     
     content_directories = [opensource_absolute_path, commercial_absolute_path]
