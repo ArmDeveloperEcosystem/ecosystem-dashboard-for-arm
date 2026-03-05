@@ -1,6 +1,6 @@
 ---
 name: Brave
-category: Web
+category: Web Server
 description: Brave is a free and open-source web browser which is privacy-focused and includes features such as built-in advertisement blocking, protections against browser fingerprinting and a private browsing mode that integrates the Tor anonymity network.
 download_url: https://brave.com/download/
 works_on_arm: true
