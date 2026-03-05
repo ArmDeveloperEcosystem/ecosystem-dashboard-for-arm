@@ -1,6 +1,6 @@
 ---
 name: VLC Media Player
-category: Media
+category: Video
 description: VLC Media Player (previously the VideoLAN Client), sometimes abbreviated as VMP, is a free and open-source, portable, cross-platform media player software and streaming media server developed by the VideoLAN project.
 download_url: https://www.videolan.org/vlc/
 works_on_arm: true
