@@ -1,6 +1,6 @@
 ---
 name: 7-Zip
-category: Compression
+category: Storage
 description: 7-Zip is a file archiver known for its high compression ratio, supports various formats including ZIP, 7z, TAR, and RAR, and offers strong AES-256 encryption.
 download_url: https://github.com/ip7z/7zip/releases
 works_on_arm: true
