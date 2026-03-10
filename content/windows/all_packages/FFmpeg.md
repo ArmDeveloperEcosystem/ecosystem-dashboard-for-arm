@@ -1,6 +1,7 @@
 ---
 name: FFmpeg
 category: Video
+OS: Windows
 description: FFmpeg is a multimedia framework that supports decoding, encoding, transcoding, muxing, demuxing, streaming, filtering, and playing a range of audio formats old and new.
 download_url: https://ffmpeg.org/download.html
 works_on_arm: true

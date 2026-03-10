@@ -1,6 +1,7 @@
 ---
 name: Arm Performance Libraries
-category: AI/ML
+category: AI/ML Tools
+OS: Windows
 description: Arm® Performance Libraries is a set of numerical routines tuned specifically for Arm processors.
 download_url: https://developer.arm.com/Tools%20and%20Software/Arm%20Performance%20Libraries#Downloads
 works_on_arm: true

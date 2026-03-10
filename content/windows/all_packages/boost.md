@@ -1,6 +1,7 @@
 ---
 name: Boost
 category: Compilers/Tools
+OS: Windows
 description: Boost is a set of portable, peer-reviewed C++ libraries that enhance functionality in areas like threading, data structures, and networking, offering valuable resources for C++ development and standardization.
 download_url: https://www.boost.org/users/download/
 works_on_arm: true

@@ -1,6 +1,7 @@
 ---
 name: Caddy
 category: Web Server
+OS: Windows
 description: Caddy is an open-source web server that automatically handles HTTPS, simplifying web deployment with its easy configuration and built-in security features.
 download_url: https://github.com/caddyserver/caddy/releases
 works_on_arm: true

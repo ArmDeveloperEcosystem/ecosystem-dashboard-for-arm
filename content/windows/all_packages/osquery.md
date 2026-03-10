@@ -1,6 +1,7 @@
 ---
 name: osquery
 category: Database
+OS: Windows
 description: osquery is a SQL powered operating system instrumentation, monitoring, and analytics framework. Available for Linux, macOS, and Windows.
 download_url: osquery.io/downloads
 works_on_arm: true

@@ -1,6 +1,7 @@
 ---
 name: vcpkg
 category: Database
+OS: Windows
 description: vcpkg is a free C/C++ package manager for acquiring and managing libraries. Choose from 2764 open source libraries to download and build in a single step or add your own private libraries to simplify your build process. Maintained by the Microsoft C++ team and open source contributors.
 download_url: https://vcpkg.io/en/packages?query=
 works_on_arm: true

@@ -1,6 +1,7 @@
 ---
 name: DPDK
 category: Networking
+OS: Windows
 description: DPDK is a set of libraries and drivers for fast packet processing.
 download_url: https://core.dpdk.org/download/
 works_on_arm: true

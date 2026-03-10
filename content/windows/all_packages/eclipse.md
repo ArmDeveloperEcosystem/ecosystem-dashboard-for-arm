@@ -1,6 +1,7 @@
 ---
 name: Eclipse
 category: Miscellaneous
+OS: Windows
 description: Eclipse is an integrated development environment (IDE) used in developing Java applications, although it may be used with other programming languages via plugins.
 download_url: https://www.eclipse.org/downloads/packages/
 works_on_arm: true

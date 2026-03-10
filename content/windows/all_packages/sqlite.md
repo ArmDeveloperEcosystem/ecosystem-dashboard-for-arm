@@ -1,6 +1,7 @@
 ---
 name: SQLite
 category: Database
+OS: Windows
 description: SQLite is a C-language library that implements a small, fast, self-contained, high-reliability, full-featured, SQL database engine.
 download_url: https://github.com/sqlite/sqlite/tags
 works_on_arm: true

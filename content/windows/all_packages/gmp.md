@@ -1,6 +1,7 @@
 ---
 name: GNU Multiple Precision Arithmetic Library (GMP)
 category: Miscellaneous
+OS: Windows
 description: GMP is a library for precision arithmetic, operating on signed integers, floating-point, and rational numbers. GMP has a rich set of functions with a regular interface.
 download_url: https://ftp.gnu.org/gnu/gmp/
 works_on_arm: true

@@ -1,6 +1,7 @@
 ---
 name: GStreamer
 category: Video
+OS: Windows
 description: GStreamer is a pipeline-based multimedia framework that links together a wide variety of media processing systems to complete complex workflows.
 download_url: https://gstreamer.freedesktop.org/download/?__goaway_challenge=meta-refresh&__goaway_id=a219fce4226429308852a4c55fca6c60&__goaway_referer=https%3A%2F%2Fgstreamer.freedesktop.org%2F#windows
 works_on_arm: true

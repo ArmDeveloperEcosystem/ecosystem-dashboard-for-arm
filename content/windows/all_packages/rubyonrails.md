@@ -1,6 +1,7 @@
 ---
 name: Ruby on Rails
 category: Languages and Frameworks
+OS: Windows
 description: Ruby on Rails (RoR) is a popular web framework written in the Ruby programming language.
 download_url: https://github.com/rails/rails/tags
 works_on_arm: true

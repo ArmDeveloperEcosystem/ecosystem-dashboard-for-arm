@@ -1,6 +1,7 @@
 ---
 name: NGINX
 category: Web Server
+OS: Windows
 description: NGINX is open-source software for web serving, reverse proxying, caching, load balancing, media streaming etc.
 download_url: https://nginx.org/en/download.html
 works_on_arm: true

@@ -1,6 +1,7 @@
 ---
 name: Docker
 category: Containers and Orchestration
+OS: Windows
 description: Docker is an open platform for developing, shipping, and running applications. Docker provides the ability to package and run an application in a loosely isolated environment called a container.
 download_url: https://docs.docker.com/desktop/setup/install/windows-install/
 works_on_arm: true

@@ -1,6 +1,7 @@
 ---
 name: Blender
 category: Video
+OS: Windows
 description: Blender is a free and open-source 3D computer graphics software tool set that is used for creating animated films, visual effects, art, 3D-printed models, motion graphics, interactive 3D applications, and virtual reality. It is also used in creating models for video games.
 download_url: https://www.blender.org/download/
 works_on_arm: true

@@ -1,6 +1,7 @@
 ---
 name: Dav1d
 category: Video
+OS: Windows
 description: Dav1d is an AV1 cross-platform decoder, open-source, and focused on speed and correctness.
 download_url: https://github.com/videolan/dav1d/tags
 works_on_arm: true

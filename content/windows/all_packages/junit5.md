@@ -1,6 +1,7 @@
 ---
 name: JUnit5
 category: Miscellaneous
+OS: Windows
 description: JUnit5 is the latest major version of the JUnit testing framework, which is used for writing and running unit tests in Java. JUnit5 is designed to address the limitations of previous versions while providing new features and enhancements that make writing and running tests more efficient and powerful.
 download_url: https://github.com/junit-team/junit5/releases
 works_on_arm: true

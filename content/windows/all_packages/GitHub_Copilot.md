@@ -1,6 +1,7 @@
 ---
 name: GitHub Copilot
 category: Compilers/Tools
+OS: Windows
 description: GitHub Copilot is a code completion and programming AI-assistant developed by GitHub and OpenAI that assists users of Visual Studio Code, Visual Studio, Neovim, and JetBrains integrated development environments (IDEs) by autocompleting code.
 download_url: https://github.com/features/copilot/
 works_on_arm: true

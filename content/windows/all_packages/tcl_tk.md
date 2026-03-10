@@ -1,6 +1,7 @@
 ---
 name: Tcl/Tk
 category: Languages and Frameworks
+OS: Windows
 description: Tcl (Tool Command Language) is a powerful but easy to learn dynamic programming language, suitable for a wide range of uses, including web and desktop applications, networking, administration, testing and many more. Tk is a graphical user interface toolkit that takes developing desktop applications to a higher level than conventional approaches.
 download_url: https://www.tcl-lang.org/software/tcltk/
 works_on_arm: true

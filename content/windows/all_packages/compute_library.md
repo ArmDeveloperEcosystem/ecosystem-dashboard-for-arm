@@ -1,6 +1,7 @@
 ---
 name: Arm Compute Library
-category: AI/ML
+category: AI/ML Tools
+OS: Windows
 description: Arm Compute Library (ACL) is a key component of Arm Kleidi, which brings together the latest developer enablement technologies and critical developer resources to accelerate AI development and enhance performance across Arm-based platforms. ACL provides a comprehensive set of low-level machine learning functions optimized for Arm Cortex-A CPU, Arm Neoverse, and Arm Mali GPU architectures, to facilitate superior ML performance.
 download_url: https://github.com/ARM-software/ComputeLibrary/releases
 works_on_arm: true

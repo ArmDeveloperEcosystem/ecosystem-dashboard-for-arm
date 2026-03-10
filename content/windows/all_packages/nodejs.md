@@ -1,6 +1,7 @@
 ---
 name: Node.js
 category: Runtimes
+OS: Windows
 description: Node.js is a free, open-source and cross-platform Javascript runtime environment that allows developer to create servers, web apps, command line tools and scripts.
 download_url: https://nodejs.org/en/blog/release/
 works_on_arm: true

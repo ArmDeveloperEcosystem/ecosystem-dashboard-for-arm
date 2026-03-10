@@ -1,6 +1,7 @@
 ---
 name: Ruby
 category: Languages and Frameworks
+OS: Windows
 description: Ruby is a flexible and object-oriented language that's easy to learn and use, making it a popular choice for building web applications.
 download_url: https://www.ruby-lang.org/en/downloads/releases/
 works_on_arm: true

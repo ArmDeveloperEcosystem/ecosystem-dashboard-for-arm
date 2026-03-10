@@ -1,6 +1,7 @@
 ---
 name: WiX
 category: Compilers/Tools
+OS: Windows
 description: WiX is a free software toolset that builds Windows Installer packages from XML.
 download_url: https://docs.firegiant.com/quick-start/
 works_on_arm: true

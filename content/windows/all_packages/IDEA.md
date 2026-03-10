@@ -1,6 +1,7 @@
 ---
 name: IntelliJ IDEA
 category: Miscellaneous
+OS: Windows
 description: IntelliJ IDEA is an integrated development environment (IDE) written in Java for developing computer software written in Java, Kotlin, Groovy, and other JVM-based languages.
 download_url: https://www.jetbrains.com/idea/download/?section=windows
 works_on_arm: true

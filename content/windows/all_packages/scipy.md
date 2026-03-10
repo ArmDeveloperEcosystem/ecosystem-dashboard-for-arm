@@ -1,6 +1,7 @@
 ---
 name: SciPy
-category: AI/ML
+category: AI/ML Tools
+OS: Windows
 description: SciPy is an open-source software for science, mathematics, and engineering. It includes modules for statistics, integration, optimization, Fourier transforms, linear algebra, signal and image processing, ODE solvers, etc.
 download_url: https://github.com/scipy/scipy/releases
 works_on_arm: true

@@ -1,6 +1,7 @@
 ---
 name: Antlr4
-category: AI/ML
+category: AI/ML Tools
+OS: Windows
 description: ANTLR offers Language Recognition. Antlr generates parser for reading, executing, processing, or translating structured binary files and texts.
 download_url: https://github.com/antlr/antlr4/releases
 works_on_arm: true

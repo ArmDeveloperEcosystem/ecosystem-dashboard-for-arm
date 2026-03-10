@@ -1,6 +1,7 @@
 ---
 name: PowerShell
 category: Languages and Frameworks
+OS: Windows
 description: PowerShell is a cross-platform task automation solution made up of a command-line shell, a scripting language, and a configuration management framework. PowerShell runs on Windows, Linux, and macOS.
 download_url: https://github.com/PowerShell/PowerShell/releases/
 works_on_arm: true

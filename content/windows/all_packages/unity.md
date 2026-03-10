@@ -1,6 +1,7 @@
 ---
 name: Unity
 category: Compilers/Tools
+OS: Windows
 description: Unity is a cross-platform game engine developed by Unity Technologies which supports a variety of desktop, mobile, console, augmented reality, and virtual reality platforms.
 download_url: https://unity.com/download
 works_on_arm: true

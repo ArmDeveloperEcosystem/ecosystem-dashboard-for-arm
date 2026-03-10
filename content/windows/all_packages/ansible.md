@@ -1,6 +1,7 @@
 ---
 name: Ansible
 category: DevOps
+OS: Windows
 description: Ansible is an open-source IT automation tool that simplifies configuration management, application deployment, and workflow orchestration using human-readable playbooks to ensure systems remain in their desired state.
 download_url: https://github.com/ansible/ansible/releases
 works_on_arm: true

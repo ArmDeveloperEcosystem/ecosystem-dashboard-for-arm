@@ -1,6 +1,7 @@
 ---
 name: OpenBLAS
-category: AI/ML
+category: AI/ML Tools
+OS: Windows
 description: OpenBLAS is an open-source implementation of the BLAS and LAPACK APIs with many hand-crafted optimizations for specific processor types.
 download_url: https://github.com/OpenMathLib/OpenBLAS/releases
 works_on_arm: true
