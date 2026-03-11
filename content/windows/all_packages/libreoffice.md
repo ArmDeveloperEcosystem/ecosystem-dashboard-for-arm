@@ -1,7 +1,6 @@
 ---
 name: LibreOffice
 category: Miscellaneous
-OS: Windows
 description: LibreOffice is a flexible, open-source office suite that provides tools for word processing, spreadsheets, presentations, and other document creation tasks, making it a multipurpose application.
 download_url: https://downloadarchive.documentfoundation.org/libreoffice/old/
 works_on_arm: true

@@ -1,7 +1,6 @@
 ---
 name: Clang
 category: Compilers/Tools
-OS: Windows
 description: Clang is a compiler front-end for the C family of languages, which is built as part of the LLVM compiler infrastructure project.
 download_url: https://releases.llvm.org/
 works_on_arm: true

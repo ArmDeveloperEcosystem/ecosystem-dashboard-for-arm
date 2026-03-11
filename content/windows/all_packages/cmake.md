@@ -1,7 +1,6 @@
 ---
 name: CMake
 category: Compilers/Tools
-OS: Windows
 description: CMake is a de-facto standard for building code, especially C and C++, and it manages the cross-platform software build process for software development projects.
 download_url: https://cmake.org/download/
 works_on_arm: true

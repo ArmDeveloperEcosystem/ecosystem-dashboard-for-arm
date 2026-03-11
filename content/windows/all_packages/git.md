@@ -1,7 +1,6 @@
 ---
 name: Git
 category: DevOps
-OS: Windows
 description: Git is a distributed version control system that enables developers to track code changes, collaborate effectively, and manage project history.
 download_url: https://git-scm.com/install/windows
 works_on_arm: true

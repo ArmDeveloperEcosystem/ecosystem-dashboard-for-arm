@@ -1,7 +1,6 @@
 ---
 name: Django
 category: Languages and Frameworks
-OS: Windows
 description: Django is a high-level Python web framework that encourages rapid development and clean, pragmatic design.
 download_url: https://github.com/django/django/tags
 works_on_arm: true

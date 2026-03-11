@@ -1,7 +1,6 @@
 ---
 name: Telegram
 category: Messaging/Comms
-OS: Windows
 description: Telegram is a cloud-based, cross-platform social media and instant messaging service.
 download_url: https://desktop.telegram.org/
 works_on_arm: true

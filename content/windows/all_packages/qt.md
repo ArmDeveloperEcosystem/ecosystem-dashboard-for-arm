@@ -1,7 +1,6 @@
 ---
 name: Qt
 category: Languages and Frameworks
-OS: Windows
 description: Qt is a cross-platform application development framework primarily used with C++ (and optionally QML). It provides UI components, libraries, and tools for building GUI and embedded applications, fitting squarely under programming frameworks.
 download_url: https://download.qt.io/official_releases/online_installers/
 works_on_arm: true

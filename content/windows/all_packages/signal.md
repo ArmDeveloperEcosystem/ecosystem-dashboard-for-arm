@@ -1,7 +1,6 @@
 ---
 name: Signal
 category: Messaging/Comms
-OS: Windows
 description: Signal is an open-source, encrypted messaging service for instant messaging, voice calls, and video calls.
 download_url: https://signal.org/download/
 works_on_arm: true

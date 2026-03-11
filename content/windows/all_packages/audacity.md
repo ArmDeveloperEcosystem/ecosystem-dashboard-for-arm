@@ -1,7 +1,6 @@
 ---
 name: Audacity
 category: Video
-OS: Windows
 description: Audacity is a free and open-source digital audio editor and recording application software, available for Windows, macOS, Linux, and other Unix-like operating systems.
 download_url: https://www.audacityteam.org/download/
 works_on_arm: true

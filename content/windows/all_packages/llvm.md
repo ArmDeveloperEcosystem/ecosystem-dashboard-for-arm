@@ -1,7 +1,6 @@
 ---
 name:  LLVM Toolchain
 category: Compilers/Tools
-OS: Windows
 description: LLVM is a set of compiler and toolchain technologies. It is broadly capable as a frontend for any programming language and a backend for any ISA.
 download_url: https://github.com/llvm/llvm-project/releases/
 works_on_arm: true

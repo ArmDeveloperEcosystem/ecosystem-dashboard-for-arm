@@ -2,7 +2,6 @@
 name: GitHub Actions Runner - Hosted
 vendor: GitHub
 category: Cloud Tools
-OS: Windows
 description: Hosted Arm64 Windows virtual machines from GitHub to run automated workflows. Contains an environment of tools, packages, and settings available for GitHub Actions to use.
 product_url: https://docs.github.com/en/actions
 works_on_arm: true

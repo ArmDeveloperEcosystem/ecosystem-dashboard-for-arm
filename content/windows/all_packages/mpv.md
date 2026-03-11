@@ -1,7 +1,6 @@
 ---
 name: mpv
 category: Video
-OS: Windows
 description: mpv is a free and open-source media player software based on MPlayer, mplayer2, and FFmpeg, that runs on several operating systems.
 download_url: https://mpv.io/installation/
 works_on_arm: true

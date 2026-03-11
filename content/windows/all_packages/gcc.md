@@ -1,7 +1,6 @@
 ---
 name: GCC
 category: Compilers/Tools
-OS: Windows
 description: GCC is a collection of compilers from the GNU Project that support various programming languages, hardware architectures, and operating systems.
 download_url: https://gcc.gnu.org/install/binaries.html
 works_on_arm: true

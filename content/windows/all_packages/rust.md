@@ -1,7 +1,6 @@
 ---
 name: Rust
 category: Languages and Frameworks
-OS: Windows
 description: Rust is an open source multi-paradigm, general-purpose programming language that emphasizes performance, type safety, and concurrency.
 download_url: https://github.com/rust-lang/rust/releases
 works_on_arm: true

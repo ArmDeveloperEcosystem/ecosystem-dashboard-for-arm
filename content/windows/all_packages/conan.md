@@ -1,7 +1,6 @@
 ---
 name: Conan
 category: Database
-OS: Windows
 description: Decentralized, open-source (MIT) package manager for C and C++ developers.
 download_url: https://github.com/conan-io/conan/releases
 works_on_arm: true

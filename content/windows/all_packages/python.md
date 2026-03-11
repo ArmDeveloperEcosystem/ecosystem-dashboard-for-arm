@@ -1,7 +1,6 @@
 ---
 name: Python
 category: Languages and Frameworks
-OS: Windows
 description: Python is a high-level interpreted programming language. It is widely used in web development, data analysis, artificial intelligence, and scientific computing, with a large standard library and active community support.
 download_url: https://www.python.org/downloads/source/
 works_on_arm: true

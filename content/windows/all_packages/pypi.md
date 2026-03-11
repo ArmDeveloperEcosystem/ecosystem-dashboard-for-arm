@@ -1,7 +1,6 @@
 ---
 name: PyPI
 category: Database
-OS: Windows
 description: Central package index for software written in and used in Python development environments.
 download_url: https://packaging.python.org/en/latest/tutorials/installing-packages/
 works_on_arm: true

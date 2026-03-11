@@ -1,7 +1,6 @@
 ---
 name: Visual Studio Code
 category: Miscellaneous
-OS: Windows
 description: Visual Studio Code is an integrated development environment developed by Microsoft for Windows, Linux, macOS and web browsers. Features include support for debugging, syntax highlighting, intelligent code completion, snippets, code refactoring, and embedded version control with Git.
 download_url: https://code.visualstudio.com/
 works_on_arm: true

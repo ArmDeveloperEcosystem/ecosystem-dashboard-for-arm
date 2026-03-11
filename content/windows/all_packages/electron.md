@@ -1,7 +1,6 @@
 ---
 name: Electron
 category: Languages and Frameworks
-OS: Windows
 description: Electron is a framework that empowers developers to create desktop applications that work across different operating systems by utilizing web technologies like JavaScript, HTML and CSS.
 download_url: https://github.com/electron/electron/releases
 works_on_arm: true

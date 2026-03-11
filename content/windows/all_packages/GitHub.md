@@ -1,7 +1,6 @@
 ---
 name: GitHub
 category: Compilers/Tools
-OS: Windows
 description: GitHub Desktop is a proprietary developer platform that allows developers to create, store, manage, and share their code.
 download_url: https://github.com/desktop/desktop/releases
 works_on_arm: true
