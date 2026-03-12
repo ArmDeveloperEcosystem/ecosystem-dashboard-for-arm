@@ -1,6 +1,6 @@
 ---
 name: ActiveMQ
-category: Messaging/Comms
+category: Miscellaneous
 description: ActiveMQ is an open-source message broker that facilitates multiple messaging protocols, enabling communication between various applications and systems.
 download_url: https://activemq.apache.org/components/classic/documentation/download-archives
 works_on_arm: true

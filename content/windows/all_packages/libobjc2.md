@@ -1,6 +1,6 @@
 ---
 name: libobjc2
-category: Languages and Frameworks
+category: Languages
 description: The GNUstep Objective-C runtime was designed as a drop-in replacement for the GCC runtime.
 download_url: https://github.com/gnustep/libobjc2/releases
 works_on_arm: true

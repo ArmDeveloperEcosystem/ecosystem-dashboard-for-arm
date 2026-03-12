@@ -1,6 +1,6 @@
 ---
 name: Java
-category: Languages and Frameworks
+category: Languages
 description: Java is a set of computer software and specifications that provides a software platform for developing application software and deploying it in a cross-platform computing environment.
 download_url: https://www.oracle.com/java/technologies/downloads/
 works_on_arm: true
