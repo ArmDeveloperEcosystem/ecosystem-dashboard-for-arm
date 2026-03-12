@@ -1,6 +1,6 @@
 ---
 name: Curl
-category: Miscellaneous
+category: Web
 description: Curl is a command-line utility for transporting data using various network protocols. It is used to make online requests, download files, and communicate with APIs.
 download_url: https://github.com/curl/curl/releases
 works_on_arm: true

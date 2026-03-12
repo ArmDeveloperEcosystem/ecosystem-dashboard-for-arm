@@ -1,6 +1,6 @@
 ---
 name: Scikit-learn
-category: AI/ML
+category: AI/ML Tools
 description: Scikit-learn is a Python-based machine learning library that offers a comprehensive set of tools for building and training predictive models.
 download_url: https://pypi.org/project/scikit-learn/#files
 works_on_arm: true
