@@ -1,6 +1,6 @@
 ---
 name: Shotcut
-category: Video
+category: Media
 description: Shotcut is a free and open-source, cross-platform video, audio, and image editing program for FreeBSD, Linux, macOS and Windows.
 download_url: https://shotcut.org/download/
 works_on_arm: true
