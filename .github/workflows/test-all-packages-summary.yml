@@ -4,21 +4,26 @@ concurrency:
   group: global-summary
   cancel-in-progress: true
 
+permissions:
+  actions: read
+  contents: write
 
 on:
-  # Manual trigger only (triggered by the last finishing batch)
   workflow_dispatch:
     inputs:
+      start_time:
+        description: "UTC timestamp captured by the orchestrator before dispatching batches"
+        required: true
+        default: ""
       triggering_batch:
-        description: 'Name of the batch that triggered this (optional)'
+        description: "Name of the workflow that triggered this summary (optional)"
         required: false
-        default: ''
+        default: ""
 
 jobs:
   global-summary:
     name: Generate Global Summary
     runs-on: ubuntu-24.04-arm
-    # Run even if batches fail
     if: always()
 
     steps:
@@ -26,35 +31,79 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # For manual triggers, use the ref that triggered it
           ref: ${{ github.ref }}
 
-      - name: Pull latest test results from repo
+      - name: Pull latest branch state
         run: |
-          echo "Pulling latest commits with test results..."
+          echo "Pulling latest branch state..."
           for i in {1..10}; do
-            if git pull --rebase origin "${{ github.event.workflow_run.head_branch || github.ref_name }}"; then
-              echo "✅ Successfully pulled latest results"
+            if git pull --rebase origin "${{ github.ref_name }}"; then
+              echo "✅ Successfully pulled latest branch state"
               exit 0
             fi
             echo "❌ Pull failed, retrying in 5s... (Attempt $i/10)"
             sleep 5
           done
-          echo "⚠️ Failed to pull latest results after 10 attempts. Proceeding with local data."
+          echo "⚠️ Failed to pull latest branch state after 10 attempts. Proceeding with local checkout."
 
-      - name: Build test-results structure from committed JSON
+      - name: Download batch artifacts
+        id: download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          START_TIME: ${{ inputs.start_time }}
         run: |
-          mkdir -p test-results
-          
-          # Recreate artifact-like structure for compatibility
-          for f in data/test-results/*.json; do
-            [ -f "$f" ] || continue
-            base=$(basename "$f" .json)
-            mkdir -p "test-results/${base}-test-results"
-            cp "$f" "test-results/${base}-test-results/${base}.json"
+          if [ -z "$START_TIME" ]; then
+            echo "❌ Error: start_time input is required to locate the correct batch runs."
+            exit 1
+          fi
+
+          mkdir -p downloaded-results
+          DOWNLOADED_BATCHES=0
+
+          for i in {1..19}; do
+            WORKFLOW="test-all-packages-batch${i}.yml"
+            ARTIFACT="batch${i}-test-results"
+            DEST="downloaded-results/batch${i}"
+            mkdir -p "$DEST"
+
+            RUN_ID=$(gh run list \
+              --workflow "$WORKFLOW" \
+              --branch "${{ github.ref_name }}" \
+              --json databaseId,createdAt \
+              --limit 50 \
+              --jq ".[] | select(.createdAt >= \"$START_TIME\") | .databaseId" | head -n 1)
+
+            if [ -z "$RUN_ID" ]; then
+              echo "⚠️ Warning: Could not find a batch run for $WORKFLOW after $START_TIME."
+              continue
+            fi
+
+            echo "📥 Downloading $ARTIFACT from run $RUN_ID..."
+            if gh run download "$RUN_ID" -n "$ARTIFACT" -D "$DEST"; then
+              DOWNLOADED_BATCHES=$((DOWNLOADED_BATCHES + 1))
+            else
+              echo "⚠️ Warning: Failed to download $ARTIFACT from run $RUN_ID."
+            fi
           done
-          
-          echo "✅ Prepared $(find test-results -name '*.json' | wc -l) test result files"
+
+          echo "downloaded_batches=$DOWNLOADED_BATCHES" >> $GITHUB_OUTPUT
+
+      - name: Build test-results structure from batch artifacts
+        id: assemble
+        run: |
+          mkdir -p test-results data/test-results
+
+          JSON_COUNT=0
+          while IFS= read -r -d '' json_file; do
+            base=$(basename "$json_file" .json)
+            mkdir -p "test-results/${base}-test-results"
+            cp "$json_file" "test-results/${base}-test-results/${base}.json"
+            cp "$json_file" "data/test-results/${base}.json"
+            JSON_COUNT=$((JSON_COUNT + 1))
+          done < <(find downloaded-results -name '*.json' -print0)
+
+          echo "json_count=$JSON_COUNT" >> $GITHUB_OUTPUT
+          echo "✅ Prepared $JSON_COUNT test result files from ${{ steps.download.outputs.downloaded_batches || '0' }} batch artifacts."
 
       - name: Generate global summary
         run: |
@@ -62,35 +111,34 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "_Last updated: $(date -u +'%Y-%m-%d %H:%M:%S UTC')_" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Batch artifacts downloaded | ${{ steps.download.outputs.downloaded_batches || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| JSON result files assembled | ${{ steps.assemble.outputs.json_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
           TOTAL=0
           PASS=0
           FAIL=0
-          
-          # We gather data first to show failures at the top
           FAIL_LIST=""
           PASS_LIST=""
 
-          # Process all JSON files
           for result_dir in test-results/*/; do
             for json_file in "$result_dir"*.json; do
               [ -f "$json_file" ] || continue
-              
+
               SLUG=$(basename "$json_file" .json)
-              
-              # Only count if it has a corresponding markdown file in content/
-              if [ ! -f "content/opensource_packages/${SLUG}.md" ] && [ ! -f "content/commercial_packages/${SLUG}.md" ]; then
+              if [ ! -f "content/opensource_packages/${SLUG}.md" ]; then
                 continue
               fi
 
               TOTAL=$((TOTAL + 1))
-              
+
               NAME=$(jq -r '.package.name' "$json_file")
               VERSION=$(jq -r '.package.version' "$json_file")
-              # Truncate extremely long versions
               VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g' | cut -c 1-40)
               [ "${#VERSION}" -gt 39 ] && VERSION="${VERSION}..."
-              
+
               STATUS=$(jq -r '.run.status' "$json_file")
               PASSED_COUNT=$(jq -r '.tests.passed' "$json_file")
               FAILED_COUNT=$(jq -r '.tests.failed' "$json_file")
@@ -135,11 +183,39 @@ jobs:
 
           if [ $TOTAL -eq 0 ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "⚠️ **Warning:** No test results found matching content. Batches may still be running." >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          if [ $TOTAL -eq 0 ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "⚠️ **Warning:** No test results found. Batches may still be running." >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **Warning:** No test results found. Check whether the batch artifacts completed and uploaded successfully." >> $GITHUB_STEP_SUMMARY
           fi
 
+      - name: Commit aggregated test results
+        if: always() && steps.assemble.outputs.json_count != '0'
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+          git add data/test-results/*.json
+
+          if ! git diff --staged --quiet; then
+            git commit -m "Update aggregated test results [skip ci]"
+
+            PUSH_SUCCESS=false
+            for i in {1..10}; do
+              if git pull --rebase origin "${{ github.ref_name }}"; then
+                if git push origin HEAD:${{ github.ref_name }}; then
+                  echo "✅ Successfully pushed aggregated test results"
+                  PUSH_SUCCESS=true
+                  break
+                fi
+              else
+                echo "⚠️ Pull with rebase failed; aborting and retrying..."
+                git rebase --abort || true
+              fi
+              sleep $((i * 5))
+            done
+
+            if [ "$PUSH_SUCCESS" = false ]; then
+              echo "❌ Error: Failed to push aggregated test results after 10 attempts."
+              exit 1
+            fi
+          else
+            echo "No aggregated test-result changes to commit"
+          fi

@@ -88,78 +88,94 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          # Hash a string
-          echo "hello" > test.txt
-          # nettle-hash output format can vary. It might be "HASH filename" or "filename: HASH"
-          # We extract the 64-character hex string
-          HASH=$(nettle-hash -a sha256 test.txt | grep -oE '[0-9a-f]{64}' | head -n1)
-          EXPECTED="5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
-          
-          if [ "$HASH" = "$EXPECTED" ]; then
-             echo "✓ SHA256 hash matches"
+          if nettle-hash --version 2>&1 | grep -Eq '[0-9]+\.[0-9]+'; then
+             echo "✓ nettle-hash version output works"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ SHA256 hash mismatch: '$HASH' != '$EXPECTED'"
-             nettle-hash -a sha256 test.txt
+             echo "✗ nettle-hash version output failed"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 3 - Check nettle-pbkdf2 binary
+      - name: Test 3 - Check pkg-config flags
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          if command -v nettle-pbkdf2 &> /dev/null; then
-             echo "✓ nettle-pbkdf2 binary found"
+          FLAGS=$(pkg-config --cflags --libs nettle 2>&1)
+          echo "$FLAGS"
+
+          if echo "$FLAGS" | grep -q -- "-lnettle"; then
+             echo "✓ pkg-config returned libnettle flags"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ nettle-pbkdf2 binary not found"
+             echo "✗ pkg-config failed for libnettle"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 4 - Compile simple C program with libnettle
+      - name: Test 4 - Verify architecture
         id: test4
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
+          ARCH=$(uname -m)
+          echo "Detected architecture: $ARCH"
+
+          if [ "$ARCH" = "aarch64" ]; then
+             echo "✓ Running on Arm64"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ Expected aarch64 runner"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 5 - Hash data and compile a program
+        id: test5
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          # Functional Validation
+
+          echo "hello" > test.txt
+          HASH_OUTPUT=$(nettle-hash -a sha256 test.txt)
+          HASH=$(echo "$HASH_OUTPUT" | tr -d ' ' | grep -oE '[0-9a-f]{64}' | head -n1)
+          EXPECTED="5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+
           cat <<EOF > test_nettle.c
           #include <nettle/sha2.h>
           #include <stdio.h>
-          
-          int main() {
+
+          int main(void) {
               struct sha256_ctx ctx;
               sha256_init(&ctx);
               printf("SHA256 initialized\n");
               return 0;
           }
           EOF
-          
-          # Compile
-          if gcc test_nettle.c -o test_nettle -lnettle; then
-             echo "✓ Compilation successful"
-             if ./test_nettle | grep -q "SHA256 initialized"; then
-                echo "✓ Program ran successfully"
-                echo "status=passed" >> $GITHUB_OUTPUT
-            else
-                echo "✗ Program run failed"
-                echo "status=failed" >> $GITHUB_OUTPUT
-                exit 1
-            fi
+
+          gcc test_nettle.c -o test_nettle $(pkg-config --cflags --libs nettle)
+
+          if [ "$HASH" = "$EXPECTED" ] && ./test_nettle | grep -q "SHA256 initialized"; then
+             echo "✓ nettle hashed data and linked a test program"
+             echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ Compilation failed"
+             echo "✗ nettle functional validation failed"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -183,7 +199,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Perform SHA256 hash
+          # Check version command
           if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -191,7 +207,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Check nettle-pbkdf2 binary
+          # Check pkg-config flags
           if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -199,13 +215,21 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Compile simple C program with libnettle
+          # Verify architecture
           if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
+
+          # Hash data and compile a program
+          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
@@ -230,8 +254,8 @@ jobs:
             "package": {
               "name": "Nettle",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "C",
+              "category": "Crypto"
             },
             "run": {
               "id": "${{ github.run_id }}",
@@ -255,19 +279,24 @@ jobs:
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Perform SHA256 hash",
+                  "name": "Check version command",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check nettle-pbkdf2 binary",
+                  "name": "Check pkg-config flags",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Compile simple C program with libnettle",
+                  "name": "Verify architecture",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Hash data and compile a program",
+                  "status": "${{ steps.test5.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 }
               ]
             },
@@ -306,9 +335,8 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
           echo "1. Test 1 - Check nettle-hash binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Test 2 - Perform SHA256 hash: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Test 3 - Check nettle-pbkdf2 binary: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Compile simple C program with libnettle: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
-
+          echo "2. Test 2 - Check version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Test 3 - Check pkg-config flags: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "4. Test 4 - Verify architecture: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Test 5 - Hash data and compile a program: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
 

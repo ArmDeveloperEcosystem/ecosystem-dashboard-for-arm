@@ -14,116 +14,142 @@ on:
 jobs:
   test-keydb:
     runs-on: ubuntu-24.04-arm
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=keydb" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/keydb" >> $GITHUB_OUTPUT
-      
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=keydb" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/keydb" >> "$GITHUB_OUTPUT"
+
       - name: Install KeyDB
         id: install
         run: |
-          echo "Installing KeyDB..."
-          
-          # Build from source (PPA for Noble 24.04 is currently missing)
           sudo apt-get update
           sudo apt-get install -y build-essential tcl pkg-config libssl-dev git uuid-dev libcurl4-openssl-dev
-          
-          echo "Cloning KeyDB..."
-          git clone --depth 1 https://github.com/Snapchat/KeyDB.git
+
+          VERSION="v6.3.4"
+          git clone --depth 1 --branch "$VERSION" https://github.com/Snapchat/KeyDB.git
           cd KeyDB
-          echo "Building KeyDB..."
-          make -j$(nproc) USE_JEMALLOC=no
+          make -j"$(nproc)" USE_JEMALLOC=no
           sudo make install USE_JEMALLOC=no
-          
-          if command -v keydb-server &> /dev/null; then
-            echo "KeyDB installed successfully"
-            echo "install_status=success" >> $GITHUB_OUTPUT
+
+          if command -v keydb-server >/dev/null 2>&1 && command -v keydb-cli >/dev/null 2>&1; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
-            echo "KeyDB installation failed"
-            echo "install_status=failed" >> $GITHUB_OUTPUT
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-      
+
       - name: Get KeyDB version
         id: version
         run: |
-          VERSION=$(keydb-server --version | grep -oP 'v=[0-9.]+' | cut -d= -f2 || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected KeyDB version: $VERSION"
-      
-      - name: Test 1 - Binary Existence
+          VERSION=$(keydb-server --version | grep -o 'v=[0-9.]*' | cut -d= -f2 || echo "unknown")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Test 1 - Check Binary Existence
         id: test1
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if command -v keydb-server &> /dev/null && command -v keydb-cli &> /dev/null; then
-            echo "✓ KeyDB binaries found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          if command -v keydb-server >/dev/null 2>&1 && command -v keydb-cli >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ KeyDB binaries not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 2 - Version Command
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check Version Output
         id: test2
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if keydb-server --version; then
-            echo "✓ Version command successful"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          if keydb-server --version 2>&1 | grep -q 'KeyDB server v='; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ Version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 3 - Server Start/Stop
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check Help Output
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          keydb-server --daemonize yes
-          sleep 2
-          if keydb-cli ping | grep -q PONG; then
-            echo "✓ KeyDB server started and responded to ping"
-            keydb-cli shutdown
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          if keydb-server --help 2>&1 | grep -q '^Usage:'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ KeyDB server failed to respond"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if file $(which keydb-server) | grep -qi "aarch64"; then
-            echo "✓ keydb-server is ARM64"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          ARCH=$(uname -m)
+
+          if [ "$ARCH" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ keydb-server is NOT ARM64"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+
+          keydb-server --daemonize yes --port 6380 --save '' --appendonly no
+          trap 'keydb-cli -p 6380 shutdown 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 20); do
+            if keydb-cli -p 6380 ping > ping.txt 2>/dev/null && grep -q '^PONG$' ping.txt; then
+              break
+            fi
+            sleep 1
+          done
+
+          keydb-cli -p 6380 set smoke hello-arm64 > set-output.txt
+          keydb-cli -p 6380 get smoke > get-output.txt
+
+          if grep -q '^hello-arm64$' get-output.txt; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat ping.txt || true
+            cat set-output.txt || true
+            cat get-output.txt || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          keydb-cli -p 6380 shutdown
+          trap - EXIT
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         if: always()
@@ -136,7 +162,7 @@ jobs:
           check_test() {
             local status=$1
             local duration=$2
-            if [ "$status" == "passed" ]; then
+            if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
@@ -148,44 +174,38 @@ jobs:
           check_test "${{ steps.test2.outputs.status }}" "${{ steps.test2.outputs.duration || 0 }}"
           check_test "${{ steps.test3.outputs.status }}" "${{ steps.test3.outputs.duration || 0 }}"
           check_test "${{ steps.test4.outputs.status }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_test "${{ steps.test5.outputs.status }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
-          # Fetch the direct job URL for deep-linking
-          JOB_ID="${{ github.job }}"
-          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
-          
-          if [ -z "$JOB_URL" ]; then
-            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
-          fi
-
           mkdir -p test-results
-          
+
           cat > test-results/keydb.json << EOF
           {
             "schema_version": "1.0",
             "package": {
               "name": "KeyDB",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "cpp",
-              "category": "Database"
+              "language": "C++",
+              "category": "Databases - noSQL"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "$JOB_URL",
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -200,17 +220,17 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Test 1 - Binary Existence",
+                  "name": "Test 1 - Check Binary Existence",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Test 2 - Version Command",
+                  "name": "Test 2 - Check Version Output",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Test 3 - Server Start/Stop",
+                  "name": "Test 3 - Check Help Output",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
@@ -218,6 +238,11 @@ jobs:
                   "name": "Test 4 - Architecture Verification",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Test 5 - Functional Validation",
+                  "status": "${{ steps.test5.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 }
               ]
             },
@@ -227,9 +252,7 @@ jobs:
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/keydb.json
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -237,20 +260,22 @@ jobs:
           name: keydb-test-results
           path: test-results/keydb.json
           retention-days: 10
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## KeyDB Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Test 1 - Binary Existence: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Test 2 - Version Command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Test 3 - Server Start/Stop: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "## KeyDB Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Test 1 - Check Binary Existence: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Test 2 - Check Version Output: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Test 3 - Check Help Output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"

@@ -80,73 +80,90 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 2 - Generate Random Number
+      - name: Test 2 - Check version command
         id: test2
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          if openssl rand -hex 16; then
-             echo "✓ Random number generation successful"
+          if openssl version 2>&1 | grep -q '^OpenSSL '; then
+             echo "✓ version command works"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ Random number generation failed"
+             echo "✗ version command failed"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 3 - Generate Private Key
+      - name: Test 3 - List supported ciphers
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          if openssl genrsa -out private.key 2048; then
-             echo "✓ Private key generation successful"
-             
-             if [ -f "private.key" ]; then
-                echo "✓ Key file created"
-                echo "status=passed" >> $GITHUB_OUTPUT
-            else
-                echo "✗ Key file missing"
-                echo "status=failed" >> $GITHUB_OUTPUT
-                exit 1
-            fi
+          if openssl list -cipher-commands > /dev/null 2>&1; then
+             echo "✓ OpenSSL listed supported cipher commands"
+             echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ Private key generation failed"
+             echo "✗ OpenSSL command parsing failed"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 4 - Generate Certificate Request
+      - name: Test 4 - Verify architecture
         id: test4
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          # Requires private key from previous step
-          if openssl req -new -key private.key -out cert.csr -subj "/C=US/ST=CA/L=SanFrancisco/O=MyOrg/CN=mydomain.com"; then
-             echo "✓ CSR generation successful"
-             
-             if [ -f "cert.csr" ]; then
-                echo "✓ CSR file created"
-                echo "status=passed" >> $GITHUB_OUTPUT
-            else
-                echo "✗ CSR file missing"
-                echo "status=failed" >> $GITHUB_OUTPUT
-                exit 1
-            fi
+          ARCH=$(uname -m)
+          echo "Detected architecture: $ARCH"
+
+          if [ "$ARCH" = "aarch64" ]; then
+             echo "✓ Running on Arm64"
+             echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ CSR generation failed"
+             echo "✗ Expected aarch64 runner"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
-            fi
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 5 - Generate and inspect a certificate
+        id: test5
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          # Functional Validation
+          
+          rm -f private.key certificate.pem
+
+          openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
+            -keyout private.key \
+            -out certificate.pem \
+            -days 1 \
+            -subj "/C=US/ST=TX/L=Austin/O=Arm/CN=arm64.openssl.test" > /dev/null 2>&1
+
+          SUBJECT=$(openssl x509 -in certificate.pem -noout -subject 2>&1)
+          echo "$SUBJECT"
+
+          if [ -f "private.key" ] && [ -f "certificate.pem" ] && echo "$SUBJECT" | grep -q "CN = arm64.openssl.test"; then
+             openssl pkey -in private.key -pubout > /dev/null 2>&1
+             echo "✓ OpenSSL generated and inspected a self-signed certificate"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ OpenSSL functional validation failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -170,7 +187,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Generate Random Number
+          # Check version command
           if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -178,7 +195,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Generate Private Key
+          # List supported ciphers
           if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -186,13 +203,21 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Generate Certificate Request
+          # Verify architecture
           if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
+
+          # Generate and inspect a certificate
+          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
@@ -217,8 +242,8 @@ jobs:
             "package": {
               "name": "OpenSSL",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "C",
+              "category": "Crypto"
             },
             "run": {
               "id": "${{ github.run_id }}",
@@ -242,19 +267,24 @@ jobs:
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Generate Random Number",
+                  "name": "Check version command",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Generate Private Key",
+                  "name": "List supported ciphers",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Generate Certificate Request",
+                  "name": "Verify architecture",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Generate and inspect a certificate",
+                  "status": "${{ steps.test5.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 }
               ]
             },
@@ -293,10 +323,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
           echo "1. Test 1 - Check openssl binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Test 2 - Generate Random Number: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Test 3 - Generate Private Key: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Generate Certificate Request: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "2. Test 2 - Check version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Test 3 - List supported ciphers: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "4. Test 4 - Verify architecture: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Test 5 - Generate and inspect a certificate: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
 
 
 

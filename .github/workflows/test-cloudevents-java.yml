@@ -45,13 +45,33 @@ jobs:
           
           cd ce-test
           
-          # Fix Maven compiler source/target to 1.8 (default is 1.5 which is not supported by Java 17+)
-          # We add properties for compiler source and target
-          sed -i 's/<properties>/<properties><maven.compiler.source>1.8<\/maven.compiler.source><maven.compiler.target>1.8<\/maven.compiler.target>/' pom.xml
-          
-          # Add dependency to pom.xml
-          # We use sed to insert dependency before </dependencies>
-          sed -i 's/<\/dependencies>/<dependency><groupId>io.cloudevents<\/groupId><artifactId>cloudevents-core<\/artifactId><version>2.5.0<\/version><\/dependency><\/dependencies>/' pom.xml
+          python3 - <<'PY'
+          from pathlib import Path
+
+          pom = Path("pom.xml")
+          text = pom.read_text()
+
+          if "<properties>" in text:
+              text = text.replace(
+                  "<properties>",
+                  "<properties><maven.compiler.source>1.8</maven.compiler.source><maven.compiler.target>1.8</maven.compiler.target>",
+                  1,
+              )
+          else:
+              text = text.replace(
+                  "<version>1.0-SNAPSHOT</version>",
+                  "<version>1.0-SNAPSHOT</version><properties><maven.compiler.source>1.8</maven.compiler.source><maven.compiler.target>1.8</maven.compiler.target></properties>",
+                  1,
+              )
+
+          text = text.replace(
+              "</dependencies>",
+              "<dependency><groupId>io.cloudevents</groupId><artifactId>cloudevents-core</artifactId><version>2.5.0</version></dependency></dependencies>",
+              1,
+          )
+
+          pom.write_text(text)
+          PY
           
           echo "install_status=success" >> $GITHUB_OUTPUT
       
@@ -63,18 +83,17 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Cloudevents-Java version: $VERSION"
       
-      - name: Test 1 - Compile Project
+      - name: Test 1 - Check Maven and Java binaries
         id: test1
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          cd ce-test
           
-          if mvn compile; then
-             echo "✓ Maven compile successful"
+          if command -v mvn > /dev/null 2>&1 && command -v java > /dev/null 2>&1; then
+             echo "✓ Maven and Java binaries found"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ Maven compile failed"
+             echo "✗ Maven or Java binary missing"
              echo "status=failed" >> $GITHUB_OUTPUT
              END_TIME=$(date +%s)
              echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -84,13 +103,79 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 2 - Create Event Code
+      - name: Test 2 - Check dependency version in pom
         id: test2
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          cd ce-test/src/main/java/com/example
+          cd ce-test
           
+          if grep -q "<artifactId>cloudevents-core</artifactId>" pom.xml && grep -q "<version>2.5.0</version>" pom.xml; then
+             echo "✓ CloudEvents dependency version declared in pom.xml"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ CloudEvents dependency declaration missing from pom.xml"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             END_TIME=$(date +%s)
+             echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 3 - Check dependency tree
+        id: test3
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          cd ce-test
+          
+          if mvn dependency:tree | grep -q "io.cloudevents:cloudevents-core"; then
+             echo "✓ CloudEvents dependency found in Maven dependency tree"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ CloudEvents dependency missing in Maven dependency tree"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             END_TIME=$(date +%s)
+             echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 4 - Verify architecture
+        id: test4
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          
+          ARCH=$(uname -m)
+          echo "Detected architecture: $ARCH"
+
+          if [ "$ARCH" = "aarch64" ]; then
+             echo "✓ Running on Arm64"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ Expected aarch64 runner"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             END_TIME=$(date +%s)
+             echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 5 - Build and run CloudEvent example
+        id: test5
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          # Functional Validation
+          cd ce-test/src/main/java/com/example
+
           cat > App.java << EOF
           package com.example;
           
@@ -108,70 +193,28 @@ jobs:
                       .withData("application/json", "{}".getBytes())
                       .build();
                   
-                  System.out.println("Event created: " + event.getId());
+                  System.out.println(event.getType());
+                  System.out.println(event.getSource());
               }
           }
           EOF
-          
-          if [ -f "App.java" ]; then
-             echo "✓ App.java created"
+
+          cd ../../../../
+          mvn compile > /dev/null
+          OUTPUT=$(mvn exec:java -Dexec.mainClass="com.example.App")
+          echo "$OUTPUT"
+
+          if echo "$OUTPUT" | grep -q "example.demo" && echo "$OUTPUT" | grep -q "http://example.com"; then
+             echo "✓ CloudEvents Java built and ran an event example"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ App.java creation failed"
+             echo "✗ CloudEvents Java functional validation failed"
              echo "status=failed" >> $GITHUB_OUTPUT
-             END_TIME=$(date +%s)
-             echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
              exit 1
           fi
-          
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-      - name: Test 3 - Build and Run
-        id: test3
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          cd ce-test
-          
-          # Compile again with new code
-          mvn compile
-          
-          # Run
-          if mvn exec:java -Dexec.mainClass="com.example.App" | grep -q "Event created"; then
-             echo "✓ Application ran successfully"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ Application run failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             END_TIME=$(date +%s)
-             echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-             exit 1
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-      - name: Test 4 - Check Dependency
-        id: test4
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          cd ce-test
-          
-          if mvn dependency:tree | grep -q "io.cloudevents:cloudevents-core"; then
-             echo "✓ Dependency found in tree"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ Dependency missing in tree"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             END_TIME=$(date +%s)
-             echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-             exit 1
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT      
       - name: Calculate test summary
         if: always()
         id: summary
@@ -180,7 +223,7 @@ jobs:
           FAILED=0
           TOTAL_DURATION=0
 
-          # Compile Project
+          # Check Maven and Java binaries
           if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -188,7 +231,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Create Event Code
+          # Check dependency version in pom
           if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -196,7 +239,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Build and Run
+          # Check dependency tree
           if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -204,13 +247,21 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Check Dependency
+          # Verify architecture
           if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
+
+          # Build and run CloudEvent example
+          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
@@ -255,24 +306,29 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Compile Project",
+                  "name": "Check Maven and Java binaries",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Create Event Code",
+                  "name": "Check dependency version in pom",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Build and Run",
+                  "name": "Check dependency tree",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check Dependency",
+                  "name": "Verify architecture",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Build and run CloudEvent example",
+                  "status": "${{ steps.test5.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 }
               ]
             },
@@ -307,11 +363,10 @@ jobs:
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Compile Project: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Create Event Code: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Build and Run: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Check Dependency: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
-
+          echo "1. Check Maven and Java binaries: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check dependency version in pom: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Check dependency tree: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "4. Verify architecture: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Build and run CloudEvent example: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
 
 

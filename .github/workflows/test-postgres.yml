@@ -1,8 +1,8 @@
 name: Test PostgreSQL on Arm64
 
 on:
-  workflow_call:
   workflow_dispatch:
+  workflow_call:
   push:
     branches:
       - main
@@ -14,32 +14,24 @@ on:
 jobs:
   test-postgres:
     runs-on: ubuntu-24.04-arm
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "package_slug=postgres" >> $GITHUB_OUTPUT
           echo "dashboard_link=/opensource_packages/postgres" >> $GITHUB_OUTPUT
-      
-      # ============================================================
-      # Install PostgreSQL
-      # ============================================================
+
       - name: Install PostgreSQL
         id: install
         run: |
           echo "Installing PostgreSQL..."
-          
-          # Install PostgreSQL from Ubuntu repository
           sudo apt-get update
-          sudo apt-get install -y postgresql postgresql-contrib
-          
-          # Verify installation
-          if command -v psql &> /dev/null; then
+          if sudo apt-get install -y postgresql postgresql-contrib; then
             echo "PostgreSQL installed successfully"
             echo "install_status=success" >> $GITHUB_OUTPUT
           else
@@ -47,122 +39,140 @@ jobs:
             echo "install_status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
-      
-      # ============================================================
-      # Detect version
-      # ============================================================
+
       - name: Detect PostgreSQL version
         id: version
         run: |
-          VERSION=$(psql --version | grep -oP '(?<=psql \(PostgreSQL\) )[0-9.]+')
+          VERSION=$(psql --version | awk '{print $3}' || echo "unknown")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected PostgreSQL version: $VERSION"
-      
-      # ============================================================
-      # Run tests
-      # ============================================================
-      - name: Test 1 - Check psql client binary exists
+
+      - name: Test 1 - Check client and server binaries
         id: test1
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          if command -v psql &> /dev/null; then
-            echo "✓ psql command found"
-            which psql
+
+          if command -v psql > /dev/null 2>&1 && command -v pg_isready > /dev/null 2>&1 && compgen -G "/usr/lib/postgresql/*/bin/postgres" > /dev/null; then
+            echo "✓ PostgreSQL client and server binaries found"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ psql command not found"
+            echo "✗ Required PostgreSQL binaries were not found"
             echo "status=failed" >> $GITHUB_OUTPUT
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Check postgres server binary exists
+
+      - name: Test 2 - Check version command
         id: test2
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          # PostgreSQL server binary is in /usr/lib/postgresql/*/bin/ when installed via APT
-          if [ -f /usr/lib/postgresql/*/bin/postgres ]; then
-            echo "✓ postgres server binary found"
-            ls -la /usr/lib/postgresql/*/bin/postgres
+
+          if psql --version 2>&1 | grep -q "PostgreSQL"; then
+            echo "✓ PostgreSQL version output works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ postgres server binary not found"
-            echo "Searching for postgres binary:"
-            find /usr -name postgres -type f 2>/dev/null || echo "No postgres binary found"
+            echo "✗ PostgreSQL version output failed"
             echo "status=failed" >> $GITHUB_OUTPUT
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 3 - Check PostgreSQL version command
+
+      - name: Test 3 - Check help output
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          if psql --version | grep -q "PostgreSQL"; then
-            echo "✓ PostgreSQL version check passed"
-            psql --version
+
+          if psql --help > /dev/null 2>&1 && pg_isready --help > /dev/null 2>&1; then
+            echo "✓ PostgreSQL help output works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ PostgreSQL version check failed"
+            echo "✗ PostgreSQL help output failed"
             echo "status=failed" >> $GITHUB_OUTPUT
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 4 - Start PostgreSQL server
+
+      - name: Test 4 - Verify architecture
         id: test4
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          # Start PostgreSQL service
-          sudo systemctl start postgresql
-          
-          # Wait for PostgreSQL to be ready (with retries)
-          echo "Waiting for PostgreSQL to be ready..."
+
+          ARCH=$(uname -m)
+          echo "Detected architecture: $ARCH"
+
+          if [ "$ARCH" = "aarch64" ]; then
+            echo "✓ Running on Arm64"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ Expected aarch64 runner"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 5 - Functional start and query
+        id: test5
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          # Functional Validation
+
+          sudo systemctl restart postgresql
+
           MAX_RETRIES=30
           RETRY_COUNT=0
-          
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
             if sudo -u postgres pg_isready -q; then
-              echo "✓ PostgreSQL server is ready"
               break
             fi
             RETRY_COUNT=$((RETRY_COUNT + 1))
-            echo "Waiting for PostgreSQL... ($RETRY_COUNT/$MAX_RETRIES)"
             sleep 1
           done
-          
-          # Final check
-          if sudo systemctl is-active postgresql && sudo -u postgres pg_isready -q; then
-            echo "✓ PostgreSQL server started successfully and is accepting connections"
+
+          if ! sudo -u postgres pg_isready -q; then
+            echo "✗ PostgreSQL did not become ready"
+            sudo systemctl status postgresql --no-pager || true
+            echo "status=failed" >> $GITHUB_OUTPUT
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          QUERY_RESULT=$(sudo -u postgres psql -Atqc "SELECT 1")
+          if [ "$QUERY_RESULT" = "1" ]; then
+            echo "✓ PostgreSQL started and executed a sample query successfully"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ PostgreSQL server failed to start or is not accepting connections"
-            sudo systemctl status postgresql || true
-            echo "PostgreSQL log:"
-            sudo tail -20 /var/log/postgresql/postgresql-*.log 2>/dev/null || echo "Could not read PostgreSQL log"
+            echo "✗ PostgreSQL query returned unexpected result: $QUERY_RESULT"
             echo "status=failed" >> $GITHUB_OUTPUT
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      # ============================================================
-      # Calculate summary
+
       - name: Calculate test summary
         if: always()
         id: summary
@@ -171,37 +181,40 @@ jobs:
           FAILED=0
           TOTAL_DURATION=0
 
-          # Check psql client binary exists
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test1.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Check postgres server binary exists
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test2.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Check PostgreSQL version command
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test3.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Start PostgreSQL server
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test4.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
+
+          if [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
@@ -215,34 +228,24 @@ jobs:
             echo "badge_status=failing" >> $GITHUB_OUTPUT
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
-          # Fetch the direct job URL for deep-linking
-          JOB_ID="${{ github.job }}"
-          # Using GH_TOKEN to find the exact job URL. 
-          # Reusable workflows are often named "JobID / JobID" or just "JobID"
-          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
-          
-          # Fallback if URL calculation fails
-          if [ -z "$JOB_URL" ]; then
-            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
-          fi
-
           mkdir -p test-results
-          
+
           cat > test-results/postgres.json << EOF
           {
             "schema_version": "1.0",
             "package": {
               "name": "PostgreSQL",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "c",
+              "language": "C",
               "category": "Database"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "$JOB_URL",
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -257,24 +260,29 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check psql client binary exists",
+                  "name": "Check client and server binaries",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check postgres server binary exists",
+                  "name": "Check version command",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check PostgreSQL version command",
+                  "name": "Check help output",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Start PostgreSQL server",
+                  "name": "Verify architecture",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Functional start and query",
+                  "status": "${{ steps.test5.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 }
               ]
             },
@@ -284,14 +292,10 @@ jobs:
             }
           }
           EOF
-          
+
           echo "Generated test results:"
           cat test-results/postgres.json
-      
-      # ============================================================
-      # STANDARD STEPS - Commit results to repository
-      # ============================================================
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -299,7 +303,7 @@ jobs:
           name: postgres-test-results
           path: test-results/postgres.json
           retention-days: 90
-      
+
       - name: Create test summary
         if: always()
         run: |
@@ -313,10 +317,8 @@ jobs:
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check psql client binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check postgres server binary exists: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check PostgreSQL version command: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Start PostgreSQL server: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
+          echo "1. Test 1 - Check client and server binaries: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "2. Test 2 - Check version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Test 3 - Check help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "4. Test 4 - Verify architecture: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Test 5 - Functional start and query: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY

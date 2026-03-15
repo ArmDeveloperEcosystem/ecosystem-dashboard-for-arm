@@ -29,7 +29,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential git
+          sudo apt-get install -y cmake build-essential git pkg-config
       
       - name: Build CJSON from Source
         id: build
@@ -51,8 +51,7 @@ jobs:
       - name: Get CJSON version
         id: version
         run: |
-          cd cJSON
-          VERSION=$(git describe --tags --always || echo "unknown")
+          VERSION=$(pkg-config --modversion libcjson 2>/dev/null || cd cJSON && git describe --tags --always || echo "unknown")
           VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected CJSON version: $VERSION"
@@ -75,73 +74,118 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 2 - Check Library File
+      - name: Test 2 - Check version metadata
         id: test2
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          if [ -f "/usr/local/lib/libcjson.so" ]; then
-             echo "✓ libcjson.so found"
+          VERSION=$(pkg-config --modversion libcjson 2>&1)
+          echo "$VERSION"
+
+          if echo "$VERSION" | grep -Eq '^[0-9]'; then
+             echo "✓ pkg-config reported the installed cJSON version"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ libcjson.so not found"
+             echo "✗ cJSON version metadata lookup failed"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 3 - Compile Test Program
+      - name: Test 3 - Check pkg-config flags
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          cat > test.c << EOF
-          #include <stdio.h>
-          #include <cjson/cJSON.h>
-          
-          int main() {
-              cJSON *root = cJSON_CreateObject();
-              cJSON_AddStringToObject(root, "name", "test");
-              char *out = cJSON_Print(root);
-              printf("%s\n", out);
-              cJSON_Delete(root);
-              return 0;
-          }
-          EOF
-          
-          if gcc test.c -o test -lcjson; then
-             echo "✓ Compiled test program"
+          FLAGS=$(pkg-config --cflags --libs libcjson 2>&1)
+          echo "$FLAGS"
+
+          if echo "$FLAGS" | grep -q "cjson"; then
+             echo "✓ pkg-config returned cJSON compile flags"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ Compilation failed"
+             echo "✗ cJSON compile flags lookup failed"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 4 - Run Test Program
+      - name: Test 4 - Verify architecture
         id: test4
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          if ./test | grep -q "test"; then
-             echo "✓ Test program ran successfully"
+          ARCH=$(uname -m)
+          echo "Detected architecture: $ARCH"
+
+          if [ "$ARCH" = "aarch64" ]; then
+             echo "✓ Running on Arm64"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ Test program failed"
+             echo "✗ Expected aarch64 runner"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT      
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 5 - Compile and run test program
+        id: test5
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          # Functional Validation
+
+          cat > test.c << EOF
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <cjson/cJSON.h>
+
+          int main(void) {
+              cJSON *root = cJSON_CreateObject();
+              char *out;
+
+              if (root == NULL) {
+                  return 1;
+              }
+
+              cJSON_AddStringToObject(root, "name", "test");
+              out = cJSON_PrintUnformatted(root);
+
+              if (out == NULL) {
+                  cJSON_Delete(root);
+                  return 1;
+              }
+
+              printf("%s\n", out);
+              free(out);
+              cJSON_Delete(root);
+              return 0;
+          }
+          EOF
+
+          gcc test.c -o test $(pkg-config --cflags --libs libcjson)
+
+          if ./test | grep -q '{"name":"test"}'; then
+             echo "✓ cJSON compiled and executed successfully"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ cJSON functional validation failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
       - name: Calculate test summary
         if: always()
         id: summary
@@ -158,7 +202,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Check Library File
+          # Check version metadata
           if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -166,7 +210,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Compile Test Program
+          # Check pkg-config flags
           if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -174,13 +218,21 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Run Test Program
+          # Verify architecture
           if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
+
+          # Compile and run test program
+          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
@@ -230,19 +282,24 @@ jobs:
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check Library File",
+                  "name": "Check version metadata",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Compile Test Program",
+                  "name": "Check pkg-config flags",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Run Test Program",
+                  "name": "Verify architecture",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Compile and run test program",
+                  "status": "${{ steps.test5.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 }
               ]
             },
@@ -278,10 +335,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
           echo "1. Check Header File: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check Library File: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Compile Test Program: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Run Test Program: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "2. Check version metadata: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Check pkg-config flags: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "4. Verify architecture: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Compile and run test program: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
 
 
 
