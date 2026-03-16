@@ -1,6 +1,6 @@
 ---
 name: Godot
-category: Media
+category: Gaming
 description: Godot is an open source game engine designed to create both 2D and 3D games targeting PC, mobile, web, and virtual, augmented, and mixed reality platforms and can also be used to develop non-game software.
 download_url: https://godotengine.org/download/windows/
 works_on_arm: true
