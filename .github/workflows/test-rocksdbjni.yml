@@ -1,37 +1,6 @@
-# Package Test Template
-#
-# This is a TEMPLATE file stored in the tests/ directory - it will not run as a workflow.
-# To use it:
-# 1. Copy this file to .github/workflows/test-<your-package>.yml
-# 2. Replace all RocksDBjni placeholders with your package name (e.g., "Redis")
-# 3. Replace all rocksdbjni placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the appropriate trigger(s) in the 'on:' section
-#
-# See .github/workflows/test-nginx.yml and test-envoy.yml for real examples. Template
-#
-# This is a TEMPLATE file - it will not run automatically.
-# To use it:
-# 1. Copy this file to test-<your-package>.yml
-# 2. Replace all RocksDBjni placeholders with your package name (e.g., "Redis")
-# 3. Replace all rocksdbjni placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the 'push:' trigger section below (remove the workflow_dispatch if desired)
-#
-# See test-nginx.yml and test-envoy.yml for real examples.
-
 name: Test RocksDBjni on Arm64
-
-# This is a TEMPLATE - it has no triggers and will not run.
-# When you copy this file, uncomment the appropriate triggers below:
 on:
-  # workflow_dispatch:  # Uncomment for manual testing
+  workflow_dispatch:
   workflow_call:
   push:
     branches:
@@ -56,24 +25,67 @@ jobs:
           echo "package_slug=rocksdbjni" >> $GITHUB_OUTPUT
           echo "dashboard_link=/opensource_packages/rocksdbjni" >> $GITHUB_OUTPUT
       
-      # ============================================================
-      # CUSTOMIZE THIS: Install your package
-      # ============================================================
       - name: Install RocksDBjni
         id: install
         run: |
           echo "Installing RocksDBjni..."
-          
-          # Example for apt packages:
+
           sudo apt-get update
-          sudo apt-get install -y rocksdbjni
-          
-          # Example for downloading binaries:
-          # sudo curl -L -o /usr/local/bin/rocksdbjni https://github.com/org/repo/releases/download/v1.0.0/rocksdbjni-linux-arm64
-          # sudo chmod +x /usr/local/bin/rocksdbjni
-          
-          # Verify installation
-          if command -v rocksdbjni &> /dev/null; then
+          sudo apt-get install -y openjdk-21-jdk-headless maven
+
+          ROCKSDBJNI_VERSION="10.5.1"
+          PROJECT_DIR=/tmp/rocksdbjni-smoke
+          rm -rf "$PROJECT_DIR"
+          mkdir -p "$PROJECT_DIR/src/main/java"
+
+          cat > "$PROJECT_DIR/pom.xml" <<EOF
+          <project xmlns="http://maven.apache.org/POM/4.0.0"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>smoke</groupId>
+            <artifactId>rocksdbjni-smoke</artifactId>
+            <version>1.0.0</version>
+            <properties>
+              <maven.compiler.source>17</maven.compiler.source>
+              <maven.compiler.target>17</maven.compiler.target>
+            </properties>
+            <dependencies>
+              <dependency>
+                <groupId>org.rocksdb</groupId>
+                <artifactId>rocksdbjni</artifactId>
+                <version>${ROCKSDBJNI_VERSION}</version>
+              </dependency>
+            </dependencies>
+          </project>
+          EOF
+
+          cat > "$PROJECT_DIR/src/main/java/VersionMain.java" <<'EOF'
+          import org.rocksdb.RocksDB;
+          public class VersionMain {
+            public static void main(String[] args) {
+              RocksDB.loadLibrary();
+              System.out.println(RocksDB.rocksdbVersion());
+            }
+          }
+          EOF
+
+          cat > "$PROJECT_DIR/src/main/java/Main.java" <<'EOF'
+          import org.rocksdb.Options;
+          import org.rocksdb.RocksDB;
+          public class Main {
+            public static void main(String[] args) throws Exception {
+              RocksDB.loadLibrary();
+              try (Options options = new Options().setCreateIfMissing(true);
+                   RocksDB db = RocksDB.open(options, "/tmp/rocksdbjni-db")) {
+                db.put("arm64".getBytes(), "ok".getBytes());
+                System.out.println(new String(db.get("arm64".getBytes())));
+              }
+            }
+          }
+          EOF
+
+          if mvn -q -f "$PROJECT_DIR/pom.xml" dependency:resolve >/dev/null 2>&1; then
             echo "RocksDBjni installed successfully"
             echo "install_status=success" >> $GITHUB_OUTPUT
           else
@@ -82,14 +94,10 @@ jobs:
             exit 1
           fi
       
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
       - name: Get RocksDBjni version
         id: version
         run: |
-          # Adjust this command based on how your package reports version
-          VERSION=$(rocksdbjni --version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+          VERSION=$(mvn -q -f /tmp/rocksdbjni-smoke/pom.xml compile exec:java -Dexec.mainClass=VersionMain 2>/dev/null | tail -n 1 || echo "unknown")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected RocksDBjni version: $VERSION"
       
@@ -102,57 +110,58 @@ jobs:
       # 4. Exit 1 on failure
       # ============================================================
       
-      - name: Test 1 - Check rocksdbjni binary exists
+      - name: Test 1 - Check RocksDBjni jar and Arm64 native library
         id: test1
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          if command -v rocksdbjni &> /dev/null; then
-            echo "✓ rocksdbjni binary found"
+
+          JAR=$(find ~/.m2/repository/org/rocksdb/rocksdbjni -path '*/10.5.1/rocksdbjni-10.5.1.jar' | head -n 1)
+          if [ -n "$JAR" ] && unzip -l "$JAR" | grep -q 'librocksdbjni-linux-aarch64.so'; then
+            echo "✓ RocksDBjni jar contains Arm64 native library"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ rocksdbjni binary not found"
+            echo "✗ RocksDBjni jar or Arm64 native library not found"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 2 - Check rocksdbjni version command
+      - name: Test 2 - Check RocksDBjni version output
         id: test2
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          if rocksdbjni --version 2>&1 | grep -q "version\|[0-9]"; then
-            echo "✓ rocksdbjni version command works"
-            rocksdbjni --version
+
+          if mvn -q -f /tmp/rocksdbjni-smoke/pom.xml compile exec:java -Dexec.mainClass=VersionMain >/tmp/rocksdbjni-version.log 2>&1 && grep -qx '10.5.1' /tmp/rocksdbjni-version.log; then
+            echo "✓ RocksDBjni version query works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ rocksdbjni version command failed"
+            cat /tmp/rocksdbjni-version.log || true
+            echo "✗ RocksDBjni version query failed"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 3 - Check rocksdbjni help output
+      - name: Test 3 - Check Maven dependency resolution
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          if rocksdbjni --help 2>&1 | grep -qi "usage\|help\|options"; then
-            echo "✓ rocksdbjni help command works"
+
+          if mvn -q -f /tmp/rocksdbjni-smoke/pom.xml dependency:build-classpath -Dmdep.outputFile=/tmp/rocksdbjni.classpath >/dev/null 2>&1 && grep -q 'rocksdbjni-10.5.1.jar' /tmp/rocksdbjni.classpath; then
+            echo "✓ Maven resolved the RocksDBjni classpath"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ rocksdbjni help command failed"
+            echo "✗ Maven failed to resolve the RocksDBjni classpath"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -194,24 +203,47 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if rocksdbjni --version > /dev/null 2>&1 || rocksdbjni --help > /dev/null 2>&1; then
-            echo "✓ Basic functional check passed"
+          if mvn -q -f /tmp/rocksdbjni-smoke/pom.xml compile exec:java -Dexec.mainClass=Main >/tmp/rocksdbjni-main.log 2>&1 && grep -qx 'ok' /tmp/rocksdbjni-main.log; then
+            echo "✓ RocksDBjni completed a real put/get round trip"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ Basic functional check failed"
+            cat /tmp/rocksdbjni-main.log || true
+            echo "✗ RocksDBjni functional validation failed"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
 
           END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Test 6 - Regression Validation
         id: test6
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "note=This workflow uses direct-download artifacts. Compare the pinned baseline against the latest stable upstream release before changing the version." >> "$GITHUB_OUTPUT"
+          CURRENT_VERSION="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST_VERSION=$(python3 - <<'PY'
+          import urllib.request, xml.etree.ElementTree as ET
+          xml = urllib.request.urlopen("https://repo1.maven.org/maven2/org/rocksdb/rocksdbjni/maven-metadata.xml").read()
+          root = ET.fromstring(xml)
+          versions = [v.text for v in root.findall(".//version")]
+          print(versions[-1])
+          PY
+          )
+
+          if [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
+            DECISION="already_at_latest"
+            COMPARISON="Current pinned version matches the latest stable Maven Central release and passed the smoke tests on Arm64."
+          else
+            DECISION="manual_review_needed"
+            COMPARISON="Current pinned version passed the smoke tests on Arm64. The latest stable upstream release differs and still needs an explicit upgrade regression run before any version bump."
+          fi
+
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
+          echo "comparison=$COMPARISON" >> "$GITHUB_OUTPUT"
+          echo "note=$COMPARISON" >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -315,17 +347,17 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check rocksdbjni binary exists",
+                  "name": "Check RocksDBjni jar and Arm64 native library",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check rocksdbjni version command",
+                  "name": "Check RocksDBjni version output",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check rocksdbjni help output",
+                  "name": "Check Maven dependency resolution",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
@@ -381,15 +413,18 @@ jobs:
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check rocksdbjni binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check rocksdbjni version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check rocksdbjni help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check RocksDBjni jar and Arm64 native library: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check RocksDBjni version output: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Check Maven dependency resolution: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
 
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Current vs Next" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current version tested:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Upgrade candidate checked:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Decision:** ${{ steps.test6.outputs.decision || 'manual_review_needed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
 
 

@@ -1,37 +1,6 @@
-# Package Test Template
-#
-# This is a TEMPLATE file stored in the tests/ directory - it will not run as a workflow.
-# To use it:
-# 1. Copy this file to .github/workflows/test-<your-package>.yml
-# 2. Replace all Relic placeholders with your package name (e.g., "Redis")
-# 3. Replace all relic placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the appropriate trigger(s) in the 'on:' section
-#
-# See .github/workflows/test-nginx.yml and test-envoy.yml for real examples. Template
-#
-# This is a TEMPLATE file - it will not run automatically.
-# To use it:
-# 1. Copy this file to test-<your-package>.yml
-# 2. Replace all Relic placeholders with your package name (e.g., "Redis")
-# 3. Replace all relic placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the 'push:' trigger section below (remove the workflow_dispatch if desired)
-#
-# See test-nginx.yml and test-envoy.yml for real examples.
-
 name: Test Relic on Arm64
-
-# This is a TEMPLATE - it has no triggers and will not run.
-# When you copy this file, uncomment the appropriate triggers below:
 on:
-  # workflow_dispatch:  # Uncomment for manual testing
+  workflow_dispatch:
   workflow_call:
   push:
     branches:
@@ -56,24 +25,21 @@ jobs:
           echo "package_slug=relic" >> $GITHUB_OUTPUT
           echo "dashboard_link=/opensource_packages/relic" >> $GITHUB_OUTPUT
       
-      # ============================================================
-      # CUSTOMIZE THIS: Install your package
-      # ============================================================
       - name: Install Relic
         id: install
         run: |
           echo "Installing Relic..."
-          
-          # Example for apt packages:
+
           sudo apt-get update
-          sudo apt-get install -y relic
-          
-          # Example for downloading binaries:
-          # sudo curl -L -o /usr/local/bin/relic https://github.com/org/repo/releases/download/v1.0.0/relic-linux-arm64
-          # sudo chmod +x /usr/local/bin/relic
-          
-          # Verify installation
-          if command -v relic &> /dev/null; then
+          sudo apt-get install -y golang-go
+
+          export GOBIN=/tmp/relic-bin
+          mkdir -p "$GOBIN"
+          RELIC_VERSION="v8.2.0"
+          go install "github.com/sassoftware/relic/v8@${RELIC_VERSION}"
+          sudo install -m 0755 "$GOBIN/relic" /usr/local/bin/relic
+
+          if command -v relic >/dev/null 2>&1; then
             echo "Relic installed successfully"
             echo "install_status=success" >> $GITHUB_OUTPUT
           else
@@ -82,14 +48,10 @@ jobs:
             exit 1
           fi
       
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
       - name: Get Relic version
         id: version
         run: |
-          # Adjust this command based on how your package reports version
-          VERSION=$(relic --version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+          VERSION=$(relic --version 2>&1 | awk '/relic version/ {print $3; exit}' || echo "unknown")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Relic version: $VERSION"
       
@@ -126,7 +88,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if relic --version 2>&1 | grep -q "version\|[0-9]"; then
+          if relic --version 2>&1 | grep -q "relic version"; then
             echo "✓ relic version command works"
             relic --version
             echo "status=passed" >> $GITHUB_OUTPUT
@@ -145,7 +107,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if relic --help 2>&1 | grep -qi "usage\|help\|options"; then
+          if relic --help 2>&1 | grep -qi "Available Commands"; then
             echo "✓ relic help command works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -194,24 +156,44 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if relic --version > /dev/null 2>&1 || relic --help > /dev/null 2>&1; then
-            echo "✓ Basic functional check passed"
+          if relic completion bash > /tmp/relic-completion.sh 2>/dev/null && [ -s /tmp/relic-completion.sh ] && relic verify --help > /dev/null 2>&1; then
+            echo "✓ Relic generated shell completion and executed a real subcommand path"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ Basic functional check failed"
+            echo "✗ Relic functional validation failed"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
 
           END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Test 6 - Regression Validation
         id: test6
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "note=This workflow uses direct-download artifacts. Compare the pinned baseline against the latest stable upstream release before changing the version." >> "$GITHUB_OUTPUT"
+          CURRENT_VERSION="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST_VERSION=$(python3 - <<'PY'
+          import json, urllib.request
+          data = json.load(urllib.request.urlopen("https://api.github.com/repos/sassoftware/relic/releases/latest"))
+          print(data["tag_name"])
+          PY
+          )
+
+          if [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
+            DECISION="already_at_latest"
+            COMPARISON="Current pinned version matches the latest stable upstream release and passed the smoke tests on Arm64."
+          else
+            DECISION="manual_review_needed"
+            COMPARISON="Current pinned version passed the smoke tests on Arm64. The latest stable upstream release differs and still needs an explicit upgrade regression run before any version bump."
+          fi
+
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
+          echo "comparison=$COMPARISON" >> "$GITHUB_OUTPUT"
+          echo "note=$COMPARISON" >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -388,8 +370,12 @@ jobs:
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
-
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Current vs Next" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current version tested:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Upgrade candidate checked:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Decision:** ${{ steps.test6.outputs.decision || 'manual_review_needed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
 
 
 

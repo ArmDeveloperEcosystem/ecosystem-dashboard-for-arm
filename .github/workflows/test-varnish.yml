@@ -1,37 +1,6 @@
-# Package Test Template
-#
-# This is a TEMPLATE file stored in the tests/ directory - it will not run as a workflow.
-# To use it:
-# 1. Copy this file to .github/workflows/test-<your-package>.yml
-# 2. Replace all Varnish placeholders with your package name (e.g., "Redis")
-# 3. Replace all varnish placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the appropriate trigger(s) in the 'on:' section
-#
-# See .github/workflows/test-nginx.yml and test-envoy.yml for real examples. Template
-#
-# This is a TEMPLATE file - it will not run automatically.
-# To use it:
-# 1. Copy this file to test-<your-package>.yml
-# 2. Replace all Varnish placeholders with your package name (e.g., "Redis")
-# 3. Replace all varnish placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the 'push:' trigger section below (remove the workflow_dispatch if desired)
-#
-# See test-nginx.yml and test-envoy.yml for real examples.
-
 name: Test Varnish on Arm64
-
-# This is a TEMPLATE - it has no triggers and will not run.
-# When you copy this file, uncomment the appropriate triggers below:
 on:
-  # workflow_dispatch:  # Uncomment for manual testing
+  workflow_dispatch:
   workflow_call:
   push:
     branches:
@@ -56,24 +25,15 @@ jobs:
           echo "package_slug=varnish" >> $GITHUB_OUTPUT
           echo "dashboard_link=/opensource_packages/varnish" >> $GITHUB_OUTPUT
       
-      # ============================================================
-      # CUSTOMIZE THIS: Install your package
-      # ============================================================
       - name: Install Varnish
         id: install
         run: |
           echo "Installing Varnish..."
-          
-          # Example for apt packages:
+
           sudo apt-get update
-          sudo apt-get install -y varnish
-          
-          # Example for downloading binaries:
-          # sudo curl -L -o /usr/local/bin/varnish https://github.com/org/repo/releases/download/v1.0.0/varnish-linux-arm64
-          # sudo chmod +x /usr/local/bin/varnish
-          
-          # Verify installation
-          if command -v varnish &> /dev/null; then
+          sudo apt-get install -y varnish curl
+
+          if command -v varnishd &> /dev/null; then
             echo "Varnish installed successfully"
             echo "install_status=success" >> $GITHUB_OUTPUT
           else
@@ -82,14 +42,10 @@ jobs:
             exit 1
           fi
       
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
       - name: Get Varnish version
         id: version
         run: |
-          # Adjust this command based on how your package reports version
-          VERSION=$(varnish --version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+          VERSION=$(varnishd -V 2>&1 | grep -oP 'varnish-\K[0-9.]+' | head -1 || echo "unknown")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Varnish version: $VERSION"
       
@@ -108,7 +64,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if command -v varnish &> /dev/null; then
+          if command -v varnishd &> /dev/null; then
             echo "✓ varnish binary found"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -126,9 +82,9 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if varnish --version 2>&1 | grep -q "version\|[0-9]"; then
+          if varnishd -V 2>&1 | grep -q 'varnish-'; then
             echo "✓ varnish version command works"
-            varnish --version
+            varnishd -V | head -1
             echo "status=passed" >> $GITHUB_OUTPUT
           else
             echo "✗ varnish version command failed"
@@ -145,7 +101,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if varnish --help 2>&1 | grep -qi "usage\|help\|options"; then
+          if varnishlog -h 2>&1 | grep -q 'Usage:'; then
             echo "✓ varnish help command works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -194,24 +150,55 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if varnish --version > /dev/null 2>&1 || varnish --help > /dev/null 2>&1; then
+
+          sudo pkill varnishd >/dev/null 2>&1 || true
+          mkdir -p /tmp/varnish-backend
+          printf 'varnish-ok\n' > /tmp/varnish-backend/index.html
+          cd /tmp/varnish-backend
+          python3 -m http.server 18100 > /tmp/varnish-backend.log 2>&1 &
+          BACKEND_PID=$!
+          trap 'kill $BACKEND_PID 2>/dev/null || true; sudo pkill varnishd >/dev/null 2>&1 || true' EXIT
+
+          cat > /tmp/default.vcl <<'EOF'
+          vcl 4.1;
+          backend default {
+            .host = "127.0.0.1";
+            .port = "18100";
+          }
+          EOF
+
+          sudo varnishd -F -a 127.0.0.1:6091 -f /tmp/default.vcl -s malloc,128m > /tmp/varnish.log 2>&1 &
+
+          for attempt in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:6091 > /tmp/varnish-body.txt 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          if grep -q 'varnish-ok' /tmp/varnish-body.txt; then
             echo "✓ Basic functional check passed"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
+            cat /tmp/varnish.log || true
             echo "✗ Basic functional check failed"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
 
           END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Test 6 - Regression Validation
         id: test6
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
           echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "note=This workflow uses direct-download artifacts. Compare the pinned baseline against the latest stable upstream release before changing the version." >> "$GITHUB_OUTPUT"
+          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
+          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -388,7 +375,11 @@ jobs:
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
-
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Current vs Next" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current version tested:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Upgrade candidate checked:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Decision:** ${{ steps.test6.outputs.decision || 'manual_review_needed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
 
 
