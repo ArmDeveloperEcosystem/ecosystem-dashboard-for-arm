@@ -1,6 +1,6 @@
 ---
 name: Jupyter
-category: Languages
+category: Languages and Frameworks
 description: Project Jupyter (pronounced "Jupiter") is a project to develop open-source software, open standards, and services for interactive computing across multiple programming languages.
 download_url: https://jupyter.org/install
 works_on_arm: true

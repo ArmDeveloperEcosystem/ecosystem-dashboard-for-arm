@@ -1,6 +1,6 @@
 ---
 name: Flang
-category: Languages
+category: Languages and Frameworks
 description: Flang is a Fortran front-end designed for integration with LLVM, with open source licensing consistent with Clang C++ and LLVM, and suitable for deployment and interoperability with Clang/LLVM across a wide variety of systems.
 download_url: https://github.com/flang-compiler/flang/releases
 works_on_arm: true

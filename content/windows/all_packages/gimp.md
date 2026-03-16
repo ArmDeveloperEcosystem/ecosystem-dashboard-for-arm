@@ -1,6 +1,6 @@
 ---
 name: GIMP
-category: Media
+category: Video
 description: The GNU Image Manipulation Program (GIMP), is a free and open-source raster graphics editor. It is commonly used for photo retouching, image editing, free-hand drawing, and converting between different image file formats.
 download_url: https://www.gimp.org/downloads/
 works_on_arm: true

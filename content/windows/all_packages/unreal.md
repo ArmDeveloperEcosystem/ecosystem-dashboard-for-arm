@@ -1,6 +1,6 @@
 ---
 name: Unreal Engine
-category: Compilers/Tools
+category: Gaming
 description: Unreal Engine is a game engine developed by Epic Games. Initially developed for PC first-person shooters, it has since been used in a variety of genres of games and has been adopted by other industries, most notably the film and television industry.
 download_url: https://www.unrealengine.com/en-US/download
 works_on_arm: true
