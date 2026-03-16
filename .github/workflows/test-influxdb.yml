@@ -1,16 +1,24 @@
 name: Test InfluxDB on Arm64
+
 on:
+  workflow_dispatch:
   workflow_call:
   push:
     branches:
       - main
       - smoke_tests
     paths:
-      - 'content/opensource_packages/influxdb.md'
-      - '.github/workflows/test-influxdb.yml'
+      - "content/opensource_packages/influxdb.md"
+      - ".github/workflows/test-influxdb.yml"
+
 jobs:
   test-influxdb:
     runs-on: ubuntu-24.04-arm
+    env:
+      INFLUXDB_VERSION: "3.4.0"
+      INFLUXDB_IMAGE: "influxdb:3.4.0-core"
+      INFLUXDB_LATEST: "3.8.3"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -18,196 +26,130 @@ jobs:
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=influxdb" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/influxdb" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=influxdb" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/influxdb" >> "$GITHUB_OUTPUT"
 
-      # ============================================================
-      # CUSTOMIZE THIS: Install your package
-      # ============================================================
       - name: Install InfluxDB
         id: install
         run: |
-          echo "Installing InfluxDB..."
-          
-          # Install prerequisites
-          sudo apt-get update
-          sudo apt-get install -y wget tar
-          
-          # Download InfluxDB
-          # Using a stable version, e.g., 2.7.5
-          VERSION="2.7.5"
-          URL="https://download.influxdata.com/influxdb/releases/influxdb2-${VERSION}-linux-arm64.tar.gz"
-          
-          if wget -q $URL -O influxdb.tar.gz || curl -L $URL -o influxdb.tar.gz; then
-             echo "Downloaded successfully"
-          else
-             echo "Download failed, trying alternative URL"
-             # Try a different version or mirror if needed
-             URL="https://dl.influxdata.com/influxdb/releases/influxdb2-${VERSION}-linux-arm64.tar.gz"
-             if wget -q $URL -O influxdb.tar.gz; then
-                echo "Downloaded from alternative URL"
-            else
-                echo "All download attempts failed"
-                exit 1
-            fi
+          set -euo pipefail
+          if ! command -v docker >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y docker.io
           fi
-          
-          # Extract
-          tar -xzf influxdb.tar.gz
-          mv influxdb2-${VERSION}-linux-arm64 influxdb
-          
-          # Verify installation
-          if [ -f "influxdb/influxd" ]; then
-             echo "InfluxDB binary found"
-             echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-             echo "InfluxDB binary not found"
-             echo "install_status=failed" >> $GITHUB_OUTPUT
-             exit 1
-          fi
+          sudo systemctl start docker || sudo service docker start || true
+          sudo docker pull "${INFLUXDB_IMAGE}"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
 
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
       - name: Get InfluxDB version
         id: version
         run: |
-          VERSION=$(influxdb/influxd version | awk '{print $2}' || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected InfluxDB version: $VERSION"
+          echo "version=${INFLUXDB_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest=${INFLUXDB_LATEST}" >> "$GITHUB_OUTPUT"
 
-      # ============================================================
-      # ADD YOUR TESTS BELOW
-      # Each test should:
-      # 1. Have a unique id (test1, test2, etc.)
-      # 2. Track start/end time for duration
-      # 3. Set status=passed or status=failed
-      # 4. Exit 1 on failure
-      # ============================================================
-
-      - name: Test 1 - Check influxd binary exists
+      - name: Test 1 - Artifact Existence
         id: test1
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          if [ -x "influxdb/influxd" ]; then
-            echo "✓ influxd binary found and executable"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if sudo docker image inspect "${INFLUXDB_IMAGE}" >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ influxd binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Check version command
+      - name: Test 2 - Version Check
         id: test2
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          if influxdb/influxd version | grep -qi "InfluxDB"; then
-            echo "✓ influxd version command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          sudo docker run --rm "${INFLUXDB_IMAGE}" influxdb3 --version 2>&1 | tee /tmp/influxdb-version.log
+          if grep -Fq "influxdb3 ${INFLUXDB_VERSION}" /tmp/influxdb-version.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ influxd version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Check help command
+      - name: Test 3 - Help Output Validation
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          if influxdb/influxd --help | grep -qiE "Usage|influxd"; then
-             echo "✓ influxd help works"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          sudo docker run --rm "${INFLUXDB_IMAGE}" influxdb3 serve --help 2>&1 | tee /tmp/influxdb-help.log
+          if grep -Fq "Run the InfluxDB 3 Core server" /tmp/influxdb-help.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ influxd help failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 4 - Run InfluxDB (short run)
+      - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          # Run influxd in background
-          # It uses default port 8086
-          
-          influxdb/influxd > influxdb.log 2>&1 &
-          PID=$!
-          
-          sleep 10
-          
-          if ps -p $PID > /dev/null; then
-             echo "✓ influxd started"
-             echo "status=passed" >> $GITHUB_OUTPUT
-             # Kill it
-             kill $PID || true
+          if [ "$(uname -m)" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ influxd failed to start"
-             cat influxdb.log
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Check inspect command
+      - name: Test 5 - Functional Validation
         id: test5
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          # Functional Validation
-          
-          if influxdb/influxd inspect --help | grep -qiE "Commands for inspecting|inspect"; then
-             echo "✓ influxd inspect command works"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ influxd inspect command failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
+          cleanup() {
+            sudo docker rm -f influx3-ci >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          sudo docker rm -f influx3-ci >/dev/null 2>&1 || true
+          sudo docker run -d --name influx3-ci -p 8181:8181 "${INFLUXDB_IMAGE}" \
+            influxdb3 serve --node-id node1 --object-store file --data-dir /var/lib/influxdb3 --without-auth >/dev/null
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8181/health >/tmp/influxdb-health.log; then
+              break
             fi
-          
-          # Architecture Verification
-          ARCH=$(uname -m)
-          if [ "$ARCH" != "aarch64" ]; then
-            echo "status=failed" >> $GITHUB_OUTPUT
+            sleep 2
+          done
+          if grep -Fq "OK" /tmp/influxdb-health.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            sudo docker logs influx3-ci || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-            # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
       - name: Test 6 - Regression Validation
         id: test6
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version }}"
+          LATEST="${{ steps.version.outputs.latest }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "decision=pinned_is_latest" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned InfluxDB version ${CURRENT} matches the latest stable open-source core container tag published for Arm64, so this workflow is already testing the newest validated baseline." >> "$GITHUB_OUTPUT"
+          else
+            echo "decision=hold_current_until_regression_run" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned InfluxDB version ${CURRENT} passed smoke tests in this run. The newer stable upstream candidate ${LATEST} still needs an explicit side-by-side regression run before the pin is advanced." >> "$GITHUB_OUTPUT"
+          fi
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -219,84 +161,54 @@ jobs:
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
-
-          # Check influxd binary exists
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
+          check_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}"
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.test1.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test2.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test3.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test4.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
-
-          # Check version command
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
-
-          # Check help command
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Run InfluxDB (short run)
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Check inspect command
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
-
-
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
-          else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
           mkdir -p test-results
-          
-          cat > test-results/influxdb.json << EOF
+          cat > test-results/influxdb.json <<EOF_JSON
           {
             "schema_version": "1.0",
             "package": {
               "name": "InfluxDB",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "Rust",
+              "category": "Database"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -310,36 +222,12 @@ jobs:
               "skipped": 0,
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
-                {
-                  "name": "Check influxd binary exists",
-                  "status": "${{ steps.test1.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Check version command",
-                  "status": "${{ steps.test2.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Check help command",
-                  "status": "${{ steps.test3.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Run InfluxDB (short run)",
-                  "status": "${{ steps.test4.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Check inspect command",
-                  "status": "${{ steps.test5.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Test 6 - Regression Validation",
-                  "status": "${{ steps.test6.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}
-                }
+                {"name": "Test 1 - Artifact Existence", "status": "${{ steps.test1.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}},
+                {"name": "Test 2 - Version Check", "status": "${{ steps.test2.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}},
+                {"name": "Test 3 - Help Output Validation", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
+                {"name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
+                {"name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
+                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}", "latest_version": "${{ steps.test6.outputs.latest_version || steps.version.outputs.latest }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}"}
               ]
             },
             "metadata": {
@@ -347,14 +235,8 @@ jobs:
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
           }
-          EOF
-          
-          echo "Generated test results:"
-          cat test-results/influxdb.json
-      # ============================================================
-      # STANDARD STEPS - Usually don't need to modify below here
-      # ============================================================
-      
+          EOF_JSON
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -362,33 +244,3 @@ jobs:
           name: influxdb-test-results
           path: test-results/influxdb.json
           retention-days: 90
-      
-      - name: Create test summary
-        if: always()
-        run: |
-          echo "## InfluxDB Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Test 1 - Check influxd binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Test 2 - Check version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Test 3 - Check help command: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Run InfluxDB (short run): ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Check inspect command: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Current vs Next" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Upgrade candidate checked:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Decision:** ${{ steps.test6.outputs.decision || 'manual_review_needed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
-
