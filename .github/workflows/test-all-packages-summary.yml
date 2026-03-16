@@ -112,6 +112,84 @@ jobs:
           echo "malformed_count=$MALFORMED_COUNT" >> $GITHUB_OUTPUT
           echo "✅ Prepared $JSON_COUNT valid test result files from ${{ steps.download.outputs.downloaded_batches || '0' }} batch artifacts."
 
+      - name: Normalize result URLs to exact job links
+        if: always() && steps.assemble.outputs.json_count != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          data_dir = Path("data/test-results")
+          cache = {}
+          updated = 0
+          unresolved = []
+
+          def resolve_job_url(run_id: str, fallback_url: str) -> str:
+              if run_id in cache:
+                  return cache[run_id]
+
+              try:
+                  raw = subprocess.check_output(
+                      [
+                          "gh",
+                          "api",
+                          f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run_id}/jobs",
+                      ],
+                      text=True,
+                  )
+                  jobs = json.loads(raw).get("jobs", [])
+              except Exception:
+                  cache[run_id] = fallback_url
+                  return fallback_url
+
+              for job in jobs:
+                  if (job.get("name") or "").strip().lower() == "summary":
+                      continue
+                  html_url = (job.get("html_url") or "").strip()
+                  if html_url:
+                      cache[run_id] = html_url
+                      return html_url
+
+              cache[run_id] = fallback_url
+              return fallback_url
+
+          for json_path in sorted(data_dir.glob("*.json")):
+              try:
+                  payload = json.loads(json_path.read_text())
+              except Exception:
+                  continue
+
+              run = payload.get("run") or {}
+              run_id = str(run.get("id") or "").strip()
+              current_url = str(run.get("url") or "").strip()
+
+              if not run_id or "/job/" in current_url:
+                  continue
+
+              exact_url = resolve_job_url(run_id, current_url)
+              if exact_url != current_url:
+                  payload["run"]["url"] = exact_url
+                  rendered = json.dumps(payload, indent=2) + "\n"
+                  json_path.write_text(rendered)
+
+                  mirror = Path("test-results") / f"{json_path.stem}-test-results" / json_path.name
+                  if mirror.exists():
+                      mirror.write_text(rendered)
+                  updated += 1
+              else:
+                  unresolved.append(json_path.name)
+
+          print(f"Normalized {updated} result URLs to exact job links.")
+          if unresolved:
+              print("Unable to resolve exact job links for:")
+              for name in unresolved[:50]:
+                  print(f" - {name}")
+          PY
+
       - name: Generate global summary
         run: |
           echo "# 📊 Global Package Test Summary" >> $GITHUB_STEP_SUMMARY
@@ -131,6 +209,10 @@ jobs:
           MALFORMED=0
           FAIL_LIST=""
           PASS_LIST=""
+          REGRESSION_TOTAL=0
+          REGRESSION_PASS=0
+          REGRESSION_FAIL=0
+          REGRESSION_LIST=""
 
           for result_dir in test-results/*/; do
             for json_file in "$result_dir"*.json; do
@@ -160,6 +242,7 @@ jobs:
               FAILED_COUNT=$(jq -r '.tests.failed' "$json_file")
               SKIPPED_COUNT=$(jq -r '.tests.skipped // 0' "$json_file")
               TOTAL_TESTS=$((PASSED_COUNT + FAILED_COUNT + SKIPPED_COUNT))
+              REGRESSION_ENTRY=$(jq -c '.tests.details[]? | select(.name == "Test 6 - Regression Validation" or .name == "Regression Validation")' "$json_file" | head -n 1)
 
               if [ "$STATUS" = "success" ]; then
                 PASS=$((PASS + 1))
@@ -167,6 +250,29 @@ jobs:
               else
                 FAIL=$((FAIL + 1))
                 FAIL_LIST="${FAIL_LIST}| ❌ $NAME | $VERSION | $PASSED_COUNT/$TOTAL_TESTS passed ($FAILED_COUNT failed) |"$'\n'
+              fi
+
+              if [ -n "$REGRESSION_ENTRY" ]; then
+                REGRESSION_TOTAL=$((REGRESSION_TOTAL + 1))
+                REG_STATUS=$(echo "$REGRESSION_ENTRY" | jq -r '.status // "unknown"')
+                CURRENT_VERSION=$(echo "$REGRESSION_ENTRY" | jq -r '.current_version // .baseline_version // .current // ""')
+                LATEST_VERSION=$(echo "$REGRESSION_ENTRY" | jq -r '.latest_version // .next_version // .candidate_version // ""')
+                NEXT_INSTALLED_VERSION=$(echo "$REGRESSION_ENTRY" | jq -r '.next_installed_version // .installed_next_version // .next_reported_version // ""')
+                DECISION=$(echo "$REGRESSION_ENTRY" | jq -r '.decision // "unspecified"')
+                COMPARISON=$(echo "$REGRESSION_ENTRY" | jq -r '.comparison // .note // ""' | tr '\n' ' ' | sed 's/|/\\|/g')
+
+                if [ "$REG_STATUS" = "passed" ]; then
+                  REGRESSION_PASS=$((REGRESSION_PASS + 1))
+                else
+                  REGRESSION_FAIL=$((REGRESSION_FAIL + 1))
+                fi
+
+                [ -z "$CURRENT_VERSION" ] && CURRENT_VERSION="n/a"
+                [ -z "$LATEST_VERSION" ] && LATEST_VERSION="n/a"
+                [ -z "$NEXT_INSTALLED_VERSION" ] && NEXT_INSTALLED_VERSION="n/a"
+                [ -z "$COMPARISON" ] && COMPARISON="No regression note recorded."
+
+                REGRESSION_LIST="${REGRESSION_LIST}| ${NAME} | ${CURRENT_VERSION} | ${LATEST_VERSION} | ${NEXT_INSTALLED_VERSION} | ${REG_STATUS} | ${DECISION} | ${COMPARISON} |"$'\n'
               fi
             done
           done
@@ -178,7 +284,18 @@ jobs:
           echo "| **Passed** | $PASS ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| **Failed** | $FAIL ❌ |" >> $GITHUB_STEP_SUMMARY
           echo "| **Malformed Results** | $MALFORMED ⚠️ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Packages With Regression Validation** | $REGRESSION_TOTAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Regression Validation Passed** | $REGRESSION_PASS ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Regression Validation Failed** | $REGRESSION_FAIL ❌ |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ $REGRESSION_TOTAL -gt 0 ]; then
+            echo "## 🔁 Regression Validation Snapshot" >> $GITHUB_STEP_SUMMARY
+            echo "| Package | Current Tested | Next Candidate | Next Installed | Regression Status | Decision | Notes |" >> $GITHUB_STEP_SUMMARY
+            echo "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+            echo -e "$REGRESSION_LIST" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
 
           if [ $FAIL -gt 0 ]; then
             echo "## ❌ Failed Packages ($FAIL)" >> $GITHUB_STEP_SUMMARY

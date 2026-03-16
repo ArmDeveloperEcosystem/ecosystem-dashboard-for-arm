@@ -138,19 +138,37 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version }}"
           LATEST="${{ steps.version.outputs.latest }}"
+          NEXT_BINARY="/tmp/operator-sdk-next"
+          NEXT_URL="https://github.com/operator-framework/operator-sdk/releases/download/v${LATEST}/operator-sdk_linux_arm64"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
-          if [ "$CURRENT" = "$LATEST" ]; then
-            echo "decision=pinned_is_latest" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned operator-sdk version ${CURRENT} matches the latest stable upstream Linux Arm64 release, so this workflow is already testing the newest validated baseline." >> "$GITHUB_OUTPUT"
+
+          if curl -fsSL "$NEXT_URL" -o "$NEXT_BINARY"; then
+            chmod +x "$NEXT_BINARY"
+            NEXT_INSTALLED_VERSION=$("$NEXT_BINARY" version 2>&1 | grep -oE 'v?[0-9]+([.][0-9]+)+' | head -1 | sed 's/^v//' || true)
+            if [ -n "$NEXT_INSTALLED_VERSION" ]; then
+              echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned operator-sdk version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and installed candidate version ${LATEST} on Arm64, and the installed binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned operator-sdk version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} downloaded without reporting a usable installed version on Arm64." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
           else
-            echo "decision=hold_current_until_regression_run" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned operator-sdk version ${CURRENT} passed smoke tests in this run. The newer stable upstream candidate ${LATEST} still needs an explicit side-by-side regression run before the pin is advanced." >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=download_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned operator-sdk version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded and installed on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -227,7 +245,7 @@ jobs:
                 {"name": "Test 3 - Help Output Validation", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
                 {"name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
                 {"name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
-                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}", "latest_version": "${{ steps.test6.outputs.latest_version || steps.version.outputs.latest }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}"}
+                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}", "latest_version": "${{ steps.test6.outputs.latest_version || steps.version.outputs.latest }}", "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}"}
               ]
             },
             "metadata": {
@@ -244,3 +262,32 @@ jobs:
           name: operator-framework-test-results
           path: test-results/operator-framework.json
           retention-days: 90
+
+      - name: Create test summary
+        if: always()
+        run: |
+          {
+            echo "## Operator Framework Test Results"
+            echo ""
+            echo "- **Version:** ${{ steps.version.outputs.version || 'unknown' }}"
+            echo "- **Status:** ${{ steps.summary.outputs.overall_status || 'failure' }}"
+            echo "- **Tests Passed:** ${{ steps.summary.outputs.passed || 0 }}"
+            echo "- **Tests Failed:** ${{ steps.summary.outputs.failed || 0 }}"
+            echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s"
+            echo "- **Runner:** ubuntu-24.04 (arm64)"
+            echo ""
+            echo "### Test Details"
+            echo "1. Test 1 - Binary Existence: ${{ steps.test1.outputs.status || 'skipped' }}"
+            echo "2. Test 2 - Version Check: ${{ steps.test2.outputs.status || 'skipped' }}"
+            echo "3. Test 3 - Help Output Validation: ${{ steps.test3.outputs.status || 'skipped' }}"
+            echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}"
+            echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}"
+            echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}"
+            echo ""
+            echo "### Current vs Next"
+            echo "- **Current version tested:** ${{ steps.test6.outputs.current_version || 'unknown' }}"
+            echo "- **Upgrade candidate checked:** ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+            echo "- **Next installed version:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+            echo "- **Decision:** ${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+            echo "${{ steps.test6.outputs.comparison || 'Pending explicit regression validation.' }}"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -35,6 +35,7 @@ jobs:
           sudo apt-get install -y openjdk-17-jre-headless curl libarchive-tools
           
           echo "Installing Nextflow via official script..."
+          export NXF_VER="23.07.0-edge"
           if curl -s https://get.nextflow.io | bash; then
              chmod +x nextflow
              sudo mv nextflow /usr/local/bin/
@@ -183,12 +184,41 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST=$(GH_TOKEN=${{ github.token }} gh api repos/nextflow-io/nextflow/releases/latest --jq .tag_name 2>/dev/null | sed 's/^v//')
+          if [ -z "$LATEST" ]; then
+            LATEST="25.04.8"
+          fi
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+
+          NEXT_DIR=$(mktemp -d)
+          (
+            cd "$NEXT_DIR"
+            export NXF_VER="$LATEST"
+            if curl -s https://get.nextflow.io | bash; then
+              chmod +x nextflow
+              NEXT_INSTALLED_VERSION=$(./nextflow -version 2>&1 | grep -oE "[0-9]+\\.[0-9]+\\.[0-9]+(\\.[0-9]+)?(-edge)?" | head -n 1)
+              if [ -n "$NEXT_INSTALLED_VERSION" ]; then
+                echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Nextflow version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the installed binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+                echo "status=passed" >> "$GITHUB_OUTPUT"
+              else
+                echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Nextflow version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not report a usable version on Arm64." >> "$GITHUB_OUTPUT"
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+            else
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Nextflow version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be installed on Arm64." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          )
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -344,7 +374,12 @@ jobs:
                 {
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}
+                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
@@ -391,10 +426,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Current vs Next" >> $GITHUB_STEP_SUMMARY
           echo "- **Current version tested:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Upgrade candidate checked:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Upgrade candidate checked:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next installed version:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Decision:** ${{ steps.test6.outputs.decision || 'manual_review_needed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "${{ steps.test6.outputs.comparison || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
 
 
 
