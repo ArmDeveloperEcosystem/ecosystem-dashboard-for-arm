@@ -162,22 +162,119 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          DECISION="hold_current"
-          NOTE="Pinned Data Prepper version remains the validated baseline pending an explicit upgrade run."
-          if [ "${{ steps.version.outputs.latest }}" = "${DATA_PREPPER_VERSION}" ]; then
-            DECISION="current_is_latest_stable"
-            NOTE="Pinned Data Prepper version already matches the latest stable upstream release."
-          fi
+          CURRENT="${DATA_PREPPER_VERSION}"
+          LATEST="${{ steps.version.outputs.latest }}"
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
 
-          echo "current_version=${DATA_PREPPER_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${{ steps.version.outputs.latest }}" >> "$GITHUB_OUTPUT"
-          echo "decision=${DECISION}" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned Data Prepper version ${DATA_PREPPER_VERSION} was installed from the official tarball, its Java runtime version was probed successfully, and its example HTTP ingestion pipeline started on Arm in this run. Latest stable Data Prepper release ${{ steps.version.outputs.latest }} was checked before any version bump decision." >> "$GITHUB_OUTPUT"
-          echo "note=${NOTE}" >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          NEXT_TGZ="/tmp/data-prepper-regression-${LATEST}.tgz"
+          NEXT_DIR=$(mktemp -d)
+          NEXT_URL="https://artifacts.opensearch.org/data-prepper/${LATEST}/opensearch-data-prepper-${LATEST}-linux-x64.tar.gz"
+
+          if curl -fsSL "$NEXT_URL" -o "$NEXT_TGZ"; then
+            echo "Next version download status: passed"
+            tar -xzf "$NEXT_TGZ" -C "$NEXT_DIR"
+            NEXT_HOME="$NEXT_DIR/opensearch-data-prepper-${LATEST}-linux-x64"
+            if [ -x "$NEXT_HOME/bin/data-prepper" ]; then
+              cat > /tmp/DataPrepperRegressionProbe.java <<'EOF'
+              public class DataPrepperRegressionProbe {
+                public static void main(String[] args) {
+                  System.out.println(new org.opensearch.dataprepper.core.CoreVersionProvider().getVersionString());
+                }
+              }
+              EOF
+              javac -cp "$NEXT_HOME/lib/*" /tmp/DataPrepperRegressionProbe.java
+              NEXT_INSTALLED_VERSION=$(java -cp "$NEXT_HOME/lib/*:/tmp" DataPrepperRegressionProbe | tr -d '\r')
+              if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
+                echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+                if [ "$LATEST" = "$CURRENT" ]; then
+                  echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+                  echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+                  echo "comparison=Current pinned Data Prepper version ${CURRENT} already matches the latest stable release. Regression validation re-downloaded the latest Data Prepper tarball and the extracted runtime reported version ${NEXT_INSTALLED_VERSION} on Arm64." >> "$GITHUB_OUTPUT"
+                  echo "Regression install result: Current stable version already validated on Arm64"
+                else
+                  echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                  echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+                  echo "comparison=Current pinned Data Prepper version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the extracted runtime reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+                  echo "Regression install result: Next version installed successfully on Arm64"
+                fi
+                echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
+                echo "status=passed" >> "$GITHUB_OUTPUT"
+              else
+                echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed but reported a version mismatch on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Data Prepper version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} extracted on Arm64 and reported version ${NEXT_INSTALLED_VERSION:-unknown}, which does not match the requested upgrade target." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
+                echo "Regression install result: Next version installed but reported a version mismatch on Arm64"
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+            else
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Data Prepper version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not extract a usable runtime tree on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Data Prepper version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded from the official tarball path." >> "$GITHUB_OUTPUT"
+            echo "Next version download status: failed"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+
+      - name: Show regression validation details
+        if: always()
+        run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+              *)
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                  REGRESSION_RESULT="Regression validation passed"
+                else
+                  REGRESSION_RESULT="Regression validation failed"
+                fi
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
@@ -294,8 +391,8 @@ jobs:
           echo "5. Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "6. Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Current vs Next" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Current version tested:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Upgrade candidate checked:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Decision:** ${{ steps.test6.outputs.decision || 'manual_review_needed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests.' }}" >> "$GITHUB_STEP_SUMMARY"

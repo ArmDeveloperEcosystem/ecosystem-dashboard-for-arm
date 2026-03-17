@@ -181,18 +181,105 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ "${{ steps.version.outputs.latest_plugin }}" = "${BASELINE_PLUGIN_VERSION}" ] && \
-             [ "${{ steps.version.outputs.latest_cni }}" = "${BASELINE_CNI_VERSION}" ]; then
-            echo "decision=at_latest" >> "$GITHUB_OUTPUT"
-            echo "note=Pinned CNI plugin and cnitool versions already match the latest stable releases." >> "$GITHUB_OUTPUT"
+          export PATH="$HOME/go-toolchain/go/bin:$PATH"
+          CURRENT="plugins ${BASELINE_PLUGIN_VERSION} + cnitool ${BASELINE_CNI_VERSION}"
+          LATEST_PLUGIN="${{ steps.version.outputs.latest_plugin }}"
+          LATEST_CNI="${{ steps.version.outputs.latest_cni }}"
+          LATEST="plugins ${LATEST_PLUGIN} + cnitool ${LATEST_CNI}"
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          NEXT_DIR=$(mktemp -d)
+          NEXT_PLUGIN_TGZ="/tmp/cni-plugins-regression.tgz"
+          NEXT_PLUGIN_URL="https://github.com/containernetworking/plugins/releases/download/${LATEST_PLUGIN}/cni-plugins-linux-arm64-${LATEST_PLUGIN}.tgz"
+          if curl -fsSL "$NEXT_PLUGIN_URL" -o "$NEXT_PLUGIN_TGZ"; then
+            echo "Next version download status: passed"
+            mkdir -p "${NEXT_DIR}/plugins" "${NEXT_DIR}/bin"
+            tar -xzf "$NEXT_PLUGIN_TGZ" -C "${NEXT_DIR}/plugins"
+            GOBIN="${NEXT_DIR}/bin" go install "github.com/containernetworking/cni/cnitool@${LATEST_CNI}"
+            NEXT_PLUGIN_VERSION=$("${NEXT_DIR}/plugins/bridge" -version 2>&1 | awk '{print $4}' | head -n 1 || true)
+            NEXT_CNITOOL_VERSION=$(go version -m "${NEXT_DIR}/bin/cnitool" | awk '$1=="mod" {print $3; exit}' || true)
+            NEXT_INSTALLED_VERSION="plugins ${NEXT_PLUGIN_VERSION} + cnitool ${NEXT_CNITOOL_VERSION}"
+            if [ "$NEXT_PLUGIN_VERSION" = "$LATEST_PLUGIN" ] && [ "$NEXT_CNITOOL_VERSION" = "$LATEST_CNI" ]; then
+              echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+              if [ "$LATEST_PLUGIN" = "$BASELINE_PLUGIN_VERSION" ] && [ "$LATEST_CNI" = "$BASELINE_CNI_VERSION" ]; then
+                echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned CNI baseline already matches the latest stable plugin and cnitool releases. Regression validation re-downloaded the latest Arm64 plugin archive and rebuilt cnitool on Arm64, and the installed versions matched ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+                echo "Regression install result: Current stable version already validated on Arm64"
+              else
+                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned CNI baseline ${CURRENT} passed smoke tests in this run. Regression validation installed ${LATEST} on Arm64, and the plugin plus cnitool probes both matched the requested upgrade target." >> "$GITHUB_OUTPUT"
+                echo "Regression install result: Next version installed successfully on Arm64"
+              fi
+              echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed but reported a version mismatch on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned CNI baseline ${CURRENT} passed smoke tests in this run, but the regression target ${LATEST} installed on Arm64 and reported ${NEXT_INSTALLED_VERSION}, which does not match the requested upgrade versions." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
+              echo "Regression install result: Next version installed but reported a version mismatch on Arm64"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
           else
-            echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-            echo "note=Newer stable CNI plugin or cnitool release exists and should be regression-checked before bumping." >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned CNI baseline ${CURRENT} passed smoke tests in this run, but the regression target ${LATEST} could not be downloaded and rebuilt on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version download status: failed"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+
+      - name: Show regression validation details
+        if: always()
+        run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+              *)
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                  REGRESSION_RESULT="Regression validation passed"
+                else
+                  REGRESSION_RESULT="Regression validation failed"
+                fi
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
@@ -308,8 +395,8 @@ jobs:
           echo "- **Regression decision:** ${{ steps.test6.outputs.decision }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Regression note:** ${{ steps.test6.outputs.note }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Current vs Next" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Current version tested:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Upgrade candidate checked:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Decision:** ${{ steps.test6.outputs.decision || 'manual_review_needed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> "$GITHUB_STEP_SUMMARY"

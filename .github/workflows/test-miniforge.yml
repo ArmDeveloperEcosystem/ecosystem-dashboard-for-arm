@@ -34,10 +34,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y wget
           
-          # Download installer
-          URL="https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh"
+          # Download pinned baseline installer
+          VERSION="23.3.1-0"
+          URL="https://github.com/conda-forge/miniforge/releases/download/${VERSION}/Miniforge3-${VERSION}-Linux-aarch64.sh"
           
-          if wget -q $URL; then
+          if wget -q -O Miniforge3-Linux-aarch64.sh "$URL"; then
              # Install silently
              bash Miniforge3-Linux-aarch64.sh -b -p $HOME/miniforge3
              
@@ -60,13 +61,16 @@ jobs:
         run: |
           # Check conda version
           export PATH="$HOME/miniforge3/bin:$PATH"
+          RELEASE_VERSION="23.3.1-0"
           if command -v conda &> /dev/null; then
-             VERSION=$(conda --version 2>&1 | awk '{print $2}' || echo "unknown")
+             CONDA_VERSION=$(conda --version 2>&1 | awk '{print $2}' || echo "unknown")
           else
-             VERSION="unknown"
+             CONDA_VERSION="unknown"
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Miniforge (conda) version: $VERSION"
+          echo "version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
+          echo "conda_version=$CONDA_VERSION" >> $GITHUB_OUTPUT
+          echo "Detected Miniforge release: $RELEASE_VERSION"
+          echo "Detected bundled conda version: $CONDA_VERSION"
 
       # ============================================================
       # ADD YOUR TESTS BELOW
@@ -192,14 +196,85 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST=$(GH_TOKEN=${{ github.token }} gh api repos/conda-forge/miniforge/releases/latest --jq '.tag_name' 2>/dev/null || true)
+          if [ -z "$LATEST" ]; then
+            LATEST="26.1.0-0"
+          fi
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+
+          NEXT_DIR=$(mktemp -d)
+          NEXT_INSTALLER="$NEXT_DIR/Miniforge3-Linux-aarch64.sh"
+          NEXT_PREFIX="$NEXT_DIR/miniforge3"
+          NEXT_URL="https://github.com/conda-forge/miniforge/releases/download/${LATEST}/Miniforge3-${LATEST}-Linux-aarch64.sh"
+
+          if wget -q -O "$NEXT_INSTALLER" "$NEXT_URL"; then
+            bash "$NEXT_INSTALLER" -b -p "$NEXT_PREFIX"
+            NEXT_CONDA_VERSION=$("$NEXT_PREFIX/bin/conda" --version 2>/dev/null | awk '{print $2}' || true)
+            if [ -x "$NEXT_PREFIX/bin/conda" ]; then
+              echo "next_installed_version=$LATEST" >> "$GITHUB_OUTPUT"
+              if [ "$CURRENT" = "$LATEST" ]; then
+                echo "decision=already_at_latest" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Miniforge release ${CURRENT} passed smoke tests in this run and already matches the latest published installer. Regression validation re-staged the same release on Arm64, and the bundled conda reported version ${NEXT_CONDA_VERSION:-unknown}." >> "$GITHUB_OUTPUT"
+              else
+                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Miniforge release ${CURRENT} passed smoke tests in this run. Regression validation installed candidate release ${LATEST} on Arm64, and the staged installer completed successfully with bundled conda ${NEXT_CONDA_VERSION:-unknown}." >> "$GITHUB_OUTPUT"
+              fi
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Miniforge release ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not produce a usable Arm64 installation." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Miniforge release ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+
+      - name: Show regression validation details
+        if: always()
+        run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+              *)
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                  REGRESSION_RESULT="Regression validation passed"
+                else
+                  REGRESSION_RESULT="Regression validation failed"
+                fi
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
@@ -327,7 +402,13 @@ jobs:
                 {
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}
+                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}"
                 }
               ]
             },
@@ -372,11 +453,11 @@ jobs:
           echo "5. Test 5 - Create test environment: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Current vs Next" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Upgrade candidate checked:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Decision:** ${{ steps.test6.outputs.decision || 'manual_review_needed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
 
 

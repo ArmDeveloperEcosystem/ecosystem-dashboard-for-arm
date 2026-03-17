@@ -128,6 +128,31 @@ jobs:
           updated = 0
           unresolved = []
 
+          def normalize_runner(runner):
+              if isinstance(runner, dict):
+                  return runner
+
+              if not isinstance(runner, str):
+                  return runner
+
+              value = runner.strip()
+              lowered = value.lower()
+              known_suffixes = [
+                  ("-arm64", "arm64"),
+                  ("-aarch64", "arm64"),
+                  ("-amd64", "amd64"),
+                  ("-x86_64", "amd64"),
+                  ("-arm", "arm64"),
+              ]
+
+              for suffix, arch in known_suffixes:
+                  if lowered.endswith(suffix):
+                      os_value = value[: -len(suffix)]
+                      if os_value:
+                          return {"os": os_value, "arch": arch}
+
+              return {"os": value, "arch": "unknown"}
+
           def resolve_job_url(run_id: str, fallback_url: str) -> str:
               if run_id in cache:
                   return cache[run_id]
@@ -166,12 +191,26 @@ jobs:
               run = payload.get("run") or {}
               run_id = str(run.get("id") or "").strip()
               current_url = str(run.get("url") or "").strip()
+              runner_value = run.get("runner")
+              normalized_runner = normalize_runner(runner_value)
+              runner_changed = normalized_runner != runner_value
+
+              if runner_changed:
+                  payload["run"]["runner"] = normalized_runner
 
               if not run_id or "/job/" in current_url:
+                  if runner_changed:
+                      rendered = json.dumps(payload, indent=2) + "\n"
+                      json_path.write_text(rendered)
+
+                      mirror = Path("test-results") / f"{json_path.stem}-test-results" / json_path.name
+                      if mirror.exists():
+                          mirror.write_text(rendered)
+                      updated += 1
                   continue
 
               exact_url = resolve_job_url(run_id, current_url)
-              if exact_url != current_url:
+              if exact_url != current_url or runner_changed:
                   payload["run"]["url"] = exact_url
                   rendered = json.dumps(payload, indent=2) + "\n"
                   json_path.write_text(rendered)
@@ -257,8 +296,9 @@ jobs:
                 REG_STATUS=$(echo "$REGRESSION_ENTRY" | jq -r '.status // "unknown"')
                 CURRENT_VERSION=$(echo "$REGRESSION_ENTRY" | jq -r '.current_version // .baseline_version // .current // ""')
                 LATEST_VERSION=$(echo "$REGRESSION_ENTRY" | jq -r '.latest_version // .next_version // .candidate_version // ""')
-                NEXT_INSTALLED_VERSION=$(echo "$REGRESSION_ENTRY" | jq -r '.next_installed_version // .installed_next_version // .next_reported_version // ""')
+                NEXT_INSTALLED_VERSION=$(echo "$REGRESSION_ENTRY" | jq -r '.next_installed_version // .installed_next_version // .next_reported_version // ""' || true)
                 DECISION=$(echo "$REGRESSION_ENTRY" | jq -r '.decision // "unspecified"')
+                REGRESSION_RESULT=$(echo "$REGRESSION_ENTRY" | jq -r '.regression_result // ""')
                 COMPARISON=$(echo "$REGRESSION_ENTRY" | jq -r '.comparison // .note // ""' | tr '\n' ' ' | sed 's/|/\\|/g')
 
                 if [ "$REG_STATUS" = "passed" ]; then
@@ -270,9 +310,33 @@ jobs:
                 [ -z "$CURRENT_VERSION" ] && CURRENT_VERSION="n/a"
                 [ -z "$LATEST_VERSION" ] && LATEST_VERSION="n/a"
                 [ -z "$NEXT_INSTALLED_VERSION" ] && NEXT_INSTALLED_VERSION="n/a"
+                if [ -z "$REGRESSION_RESULT" ]; then
+                  case "$DECISION" in
+                    next_install_validated)
+                      REGRESSION_RESULT="Next version installed successfully on Arm64"
+                      ;;
+                    next_install_failed)
+                      REGRESSION_RESULT="Next version install failed on Arm64"
+                      ;;
+                    current_is_latest_stable)
+                      REGRESSION_RESULT="Current stable version already validated on Arm64"
+                      ;;
+                    manual_review_needed)
+                      REGRESSION_RESULT="Pending regression install validation"
+                      ;;
+                    *)
+                      if [ "$REG_STATUS" = "passed" ]; then
+                        REGRESSION_RESULT="Regression validation passed"
+                      else
+                        REGRESSION_RESULT="Regression validation failed"
+                      fi
+                      ;;
+                  esac
+                fi
+                REGRESSION_RESULT=$(echo "$REGRESSION_RESULT" | sed 's/|/\\|/g')
                 [ -z "$COMPARISON" ] && COMPARISON="No regression note recorded."
 
-                REGRESSION_LIST="${REGRESSION_LIST}| ${NAME} | ${CURRENT_VERSION} | ${LATEST_VERSION} | ${NEXT_INSTALLED_VERSION} | ${REG_STATUS} | ${DECISION} | ${COMPARISON} |"$'\n'
+                REGRESSION_LIST="${REGRESSION_LIST}| ${NAME} | ${CURRENT_VERSION} | ${LATEST_VERSION} | ${NEXT_INSTALLED_VERSION} | ${REGRESSION_RESULT} | ${COMPARISON} |"$'\n'
               fi
             done
           done
@@ -291,8 +355,8 @@ jobs:
 
           if [ $REGRESSION_TOTAL -gt 0 ]; then
             echo "## 🔁 Regression Validation Snapshot" >> $GITHUB_STEP_SUMMARY
-            echo "| Package | Current Tested | Next Candidate | Next Installed | Regression Status | Decision | Notes |" >> $GITHUB_STEP_SUMMARY
-            echo "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+            echo "| Package | Current Tested | Next Candidate | Next Installed | Regression Result | Notes |" >> $GITHUB_STEP_SUMMARY
+            echo "| :--- | :--- | :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
             echo -e "$REGRESSION_LIST" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi

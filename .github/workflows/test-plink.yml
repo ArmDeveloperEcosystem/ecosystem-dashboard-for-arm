@@ -163,22 +163,115 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ "${{ steps.version.outputs.latest }}" = "${PLINK_REF}" ]; then
+          CURRENT_TAG="${PLINK_REF}"
+          CURRENT_VERSION="${PLINK_VERSION}"
+          LATEST_TAG="${{ steps.version.outputs.latest }}"
+          LATEST_VERSION=$(printf '%s' "$LATEST_TAG" | sed 's/_as_released$//')
+
+          NEXT_INSTALLED="not_installed"
+          DECISION=""
+          REGRESSION_RESULT=""
+          COMPARISON=""
+          STATUS="failed"
+
+          if [ "$LATEST_TAG" = "$CURRENT_TAG" ]; then
             DECISION="current_is_latest_stable"
-            NOTE="Pinned PLink tag already matches the latest stable GitHub release."
+            REGRESSION_RESULT="Current stable version already validated on Arm64"
+            COMPARISON="Current pinned PLink tag ${CURRENT_TAG} already matches the latest stable upstream Git release, so there is no newer version to install in Test 6."
+            STATUS="passed"
           else
-            DECISION="hold_current"
-            NOTE="Pinned PLink tag remains the validated Arm64 baseline until the newer stable release is explicitly regression-tested."
+            NEXT_VENV=$(mktemp -d /tmp/plink-next-XXXXXX)
+            python3 -m venv "$NEXT_VENV"
+
+            if "$NEXT_VENV/bin/python" -m pip install -q --upgrade pip && \
+               "$NEXT_VENV/bin/python" -m pip install -q "git+https://github.com/3-manifolds/PLink@${LATEST_TAG}"; then
+              NEXT_INSTALLED=$("$NEXT_VENV/bin/python" - <<'PY'
+          import plink
+          print(plink.__version__)
+          PY
+              )
+              NEXT_INSTALLED="${NEXT_INSTALLED:-unknown}"
+
+              if [ "$NEXT_INSTALLED" = "$LATEST_VERSION" ]; then
+                DECISION="next_install_validated"
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                COMPARISON="Current pinned PLink version ${CURRENT_VERSION} passed smoke tests in this run. Regression validation installed candidate tag ${LATEST_TAG} on Arm64, and the installed package reported version ${NEXT_INSTALLED}."
+                STATUS="passed"
+              else
+                DECISION="next_install_failed"
+                REGRESSION_RESULT="Next version installed but reported a version mismatch on Arm64"
+                COMPARISON="Current pinned PLink version ${CURRENT_VERSION} passed smoke tests in this run, but the regression candidate tag ${LATEST_TAG} installed on Arm64 and reported version ${NEXT_INSTALLED} instead of the expected ${LATEST_VERSION}."
+                STATUS="failed"
+              fi
+            else
+              NEXT_INSTALLED="install_failed"
+              DECISION="next_install_failed"
+              REGRESSION_RESULT="Next version install failed on Arm64"
+              COMPARISON="Current pinned PLink version ${CURRENT_VERSION} passed smoke tests in this run, but the regression candidate tag ${LATEST_TAG} could not be installed on Arm64."
+              STATUS="failed"
+            fi
           fi
-          echo "current_version=${PLINK_REF}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${{ steps.version.outputs.latest }}" >> "$GITHUB_OUTPUT"
+
+          echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
           echo "decision=${DECISION}" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned PLink release ${PLINK_REF} was installed from the upstream Git tag, the installed package version ${PLINK_VERSION} was verified, package metadata was validated through pip, and a headless xvfb-backed LinkEditor startup succeeded on Arm64. The latest GitHub release tag was checked before any version bump decision." >> "$GITHUB_OUTPUT"
-          echo "note=${NOTE}" >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "regression_result=${REGRESSION_RESULT}" >> "$GITHUB_OUTPUT"
+          echo "comparison=${COMPARISON}" >> "$GITHUB_OUTPUT"
+          echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT_VERSION}"
+          echo "Next version targeted for install validation: ${LATEST_VERSION}"
+          echo "Next version installed on Arm64: ${NEXT_INSTALLED}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${COMPARISON}"
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+          if [ "$STATUS" != "passed" ]; then
+            exit 1
+          fi
+
+
+      - name: Show regression validation details
+        if: always()
+        run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+              *)
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                  REGRESSION_RESULT="Regression validation passed"
+                else
+                  REGRESSION_RESULT="Regression validation failed"
+                fi
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
@@ -258,7 +351,7 @@ jobs:
                 {"name": "Test 3 - Check Help Output or Configuration", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
                 {"name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
                 {"name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
-                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}}
+                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}", "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}", "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}"}
               ]
             },
             "metadata": {
@@ -295,10 +388,10 @@ jobs:
             echo "- Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}"
             echo "- Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}"
             echo ""
-            echo "### Current vs Next"
+            echo "### Regression Validation (Next Version Install)"
             echo "- Current (Pinned): ${{ steps.test6.outputs.current_version }}"
             echo "- Next (Latest Stable): ${{ steps.test6.outputs.latest_version }}"
-            echo "- Decision: ${{ steps.test6.outputs.decision }}"
+            echo "- Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+            echo "- **Regression install result:** ${REGRESSION_RESULT}"
             echo "- Comparison: ${{ steps.test6.outputs.comparison }}"
-            echo "- Note: ${{ steps.test6.outputs.note }}"
           } >> "$GITHUB_STEP_SUMMARY"
