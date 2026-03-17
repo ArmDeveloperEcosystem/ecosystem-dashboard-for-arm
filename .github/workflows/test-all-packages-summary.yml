@@ -102,9 +102,10 @@ jobs:
               continue
             fi
             base=$(basename "$json_file" .json)
-            mkdir -p "test-results/${base}-test-results"
-            cp "$json_file" "test-results/${base}-test-results/${base}.json"
-            cp "$json_file" "data/test-results/${base}.json"
+            canonical_base=$(echo "$base" | tr '[:upper:]' '[:lower:]')
+            mkdir -p "test-results/${canonical_base}-test-results"
+            cp "$json_file" "test-results/${canonical_base}-test-results/${canonical_base}.json"
+            cp "$json_file" "data/test-results/${canonical_base}.json"
             JSON_COUNT=$((JSON_COUNT + 1))
           done < <(find downloaded-results -name '*.json' -print0)
 
@@ -182,12 +183,14 @@ jobs:
               cache[run_id] = fallback_url
               return fallback_url
 
-          for json_path in sorted(data_dir.glob("*.json")):
+          for json_path in sorted(list(data_dir.glob("*.json"))):
               try:
                   payload = json.loads(json_path.read_text())
               except Exception:
                   continue
 
+              canonical_path = data_dir / json_path.name.lower()
+              path_changed = canonical_path != json_path
               run = payload.get("run") or {}
               run_id = str(run.get("id") or "").strip()
               current_url = str(run.get("url") or "").strip()
@@ -199,28 +202,32 @@ jobs:
                   payload["run"]["runner"] = normalized_runner
 
               if not run_id or "/job/" in current_url:
-                  if runner_changed:
+                  if runner_changed or path_changed:
                       rendered = json.dumps(payload, indent=2) + "\n"
-                      json_path.write_text(rendered)
+                      canonical_path.write_text(rendered)
+                      if path_changed and json_path.exists():
+                          json_path.unlink()
 
-                      mirror = Path("test-results") / f"{json_path.stem}-test-results" / json_path.name
+                      mirror = Path("test-results") / f"{canonical_path.stem}-test-results" / canonical_path.name
                       if mirror.exists():
                           mirror.write_text(rendered)
                       updated += 1
                   continue
 
               exact_url = resolve_job_url(run_id, current_url)
-              if exact_url != current_url or runner_changed:
+              if exact_url != current_url or runner_changed or path_changed:
                   payload["run"]["url"] = exact_url
                   rendered = json.dumps(payload, indent=2) + "\n"
-                  json_path.write_text(rendered)
+                  canonical_path.write_text(rendered)
+                  if path_changed and json_path.exists():
+                      json_path.unlink()
 
-                  mirror = Path("test-results") / f"{json_path.stem}-test-results" / json_path.name
+                  mirror = Path("test-results") / f"{canonical_path.stem}-test-results" / canonical_path.name
                   if mirror.exists():
                       mirror.write_text(rendered)
                   updated += 1
               else:
-                  unresolved.append(json_path.name)
+                  unresolved.append(canonical_path.name)
 
           print(f"Normalized {updated} result URLs to exact job links.")
           if unresolved:
@@ -390,7 +397,7 @@ jobs:
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-          git add data/test-results/*.json
+          git add -A data/test-results
 
           if ! git diff --staged --quiet; then
             git commit -m "Update aggregated test results [skip ci]"
