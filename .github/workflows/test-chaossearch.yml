@@ -62,29 +62,28 @@ jobs:
       - name: Install Terraform-provider-chaossearch
         id: install
         run: |
-          echo "Installing Terraform-provider-chaossearch from source..."
-          
-          # Install Go
-          sudo apt-get update
-          sudo apt-get install -y golang-go
-          
-          # Clone repository
-          git clone https://github.com/chaossearch/terraform-provider-chaossearch.git
-          cd terraform-provider-chaossearch
-          
-          # Build
-          go build -o terraform-provider-chaossearch
-          
-          # Install
-          sudo mv terraform-provider-chaossearch /usr/local/bin/
-          
-          # Verify installation
-          if command -v terraform-provider-chaossearch &> /dev/null; then
+          set -euo pipefail
+          echo "Installing Terraform-provider-chaossearch..."
+          CURRENT_VERSION="1.0.20"
+          echo "baseline_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          ZIP_PATH="/tmp/terraform-provider-chaossearch_${CURRENT_VERSION}_linux_arm64.zip"
+          curl -fsSL -o "$ZIP_PATH" "https://github.com/chaossearch/terraform-provider-chaossearch/releases/download/v${CURRENT_VERSION}/terraform-provider-chaossearch_${CURRENT_VERSION}_linux_arm64.zip"
+          TMP_DIR=$(mktemp -d)
+          unzip -q "$ZIP_PATH" -d "$TMP_DIR"
+          BINARY=$(find "$TMP_DIR" -type f -name 'terraform-provider-chaossearch*' | head -n 1)
+          if [ -z "$BINARY" ]; then
+            echo "Terraform-provider-chaossearch installation failed"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          chmod +x "$BINARY"
+          sudo mv "$BINARY" /usr/local/bin/terraform-provider-chaossearch
+          if command -v terraform-provider-chaossearch >/dev/null 2>&1; then
             echo "Terraform-provider-chaossearch installed successfully"
-            echo "install_status=success" >> $GITHUB_OUTPUT
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "Terraform-provider-chaossearch installation failed"
-            echo "install_status=failed" >> $GITHUB_OUTPUT
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
       
@@ -94,13 +93,9 @@ jobs:
       - name: Get Terraform-provider-chaossearch version
         id: version
         run: |
-          # Providers are plugins, find the version from the repository we just cloned
-          if [ -d "terraform-provider-chaossearch" ]; then
-             VERSION=$(grep -m 1 "version =" terraform-provider-chaossearch/version/version.go 2>/dev/null | grep -oP '[0-9.]+' || echo "0.12.0")
-          else
-             VERSION="0.12.0"
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Terraform-provider-chaossearch version: $VERSION"
       
       # ============================================================
@@ -134,6 +129,7 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
           # Install Terraform
@@ -160,11 +156,12 @@ jobs:
           provider "chaossearch" {}
           EOF
 
-          if terraform init; then
+          if timeout 120s terraform init >/tmp/chaossearch-terraform-init.log 2>&1; then
             echo "✓ terraform init with chaossearch provider passed"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
             echo "✗ terraform init failed"
+            cat /tmp/chaossearch-terraform-init.log
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -231,7 +228,7 @@ jobs:
           # Even if direct execution is discouraged, it should still be a valid executable
           # If we run it without arguments, it should typicaly wait for TF or print internal info
           # We'll just verify it doesn't crash immediately with "exec format error"
-          if /usr/local/bin/terraform-provider-chaossearch 2>&1 | grep -qi "This binary is a plugin"; then
+          if timeout 5s /usr/local/bin/terraform-provider-chaossearch 2>&1 | grep -qi "This binary is a plugin"; then
             echo "✓ Basic functional check passed (plugin message detected)"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -246,13 +243,73 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST=$(GH_TOKEN=${{ github.token }} gh api repos/chaossearch/terraform-provider-chaossearch/releases/latest --jq .tag_name 2>/dev/null | sed 's/^v//' || true)
+          if [ -z "$LATEST" ]; then
+            echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Terraform-provider-chaossearch release ${CURRENT} passed smoke tests in this run, but the latest stable release could not be resolved." >> "$GITHUB_OUTPUT"
+            echo "=== Regression Validation (Next Version Install) ==="
+            echo "Current version tested in Tests 1-5: $CURRENT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Terraform-provider-chaossearch release ${CURRENT} passed smoke tests in this run, but the latest stable release could not be resolved."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "$LATEST" = "$CURRENT" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Terraform-provider-chaossearch release ${CURRENT} passed smoke tests in this run and already matches the latest stable official Arm64 release asset." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Terraform-provider-chaossearch release ${CURRENT} passed smoke tests in this run and already matches the latest stable official Arm64 release asset."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            NEXT_DIR=$(mktemp -d)
+            NEXT_ZIP="$NEXT_DIR/terraform-provider-chaossearch_${LATEST}_linux_arm64.zip"
+            curl -fsSL -o "$NEXT_ZIP" "https://github.com/chaossearch/terraform-provider-chaossearch/releases/download/v${LATEST}/terraform-provider-chaossearch_${LATEST}_linux_arm64.zip"
+            unzip -q "$NEXT_ZIP" -d "$NEXT_DIR/extracted"
+            NEXT_BIN=$(find "$NEXT_DIR/extracted" -type f -name 'terraform-provider-chaossearch*' | head -n 1)
+            if [ -n "$NEXT_BIN" ] && file "$NEXT_BIN" | grep -q 'ARM aarch64' && timeout 5s "$NEXT_BIN" 2>&1 | grep -qi "This binary is a plugin"; then
+              echo "next_installed_version=$LATEST" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Terraform-provider-chaossearch release ${CURRENT} passed smoke tests in this run. Regression validation downloaded the official Arm64 release asset for ${LATEST}, verified the candidate binary is an ARM64 executable, and confirmed it exposes the expected Terraform plugin startup message." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $LATEST"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned Terraform-provider-chaossearch release ${CURRENT} passed smoke tests in this run. Regression validation downloaded the official Arm64 release asset for ${LATEST}, verified the candidate binary is an ARM64 executable, and confirmed it exposes the expected Terraform plugin startup message."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Terraform-provider-chaossearch release ${CURRENT} passed smoke tests in this run, but the candidate Arm64 release asset ${LATEST} could not be validated successfully." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Terraform-provider-chaossearch release ${CURRENT} passed smoke tests in this run, but the candidate Arm64 release asset ${LATEST} could not be validated successfully."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -297,8 +354,10 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
           # Check chaossearch binary exists
@@ -306,6 +365,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
@@ -314,6 +374,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
@@ -322,6 +383,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
@@ -330,6 +392,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
@@ -338,6 +401,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
           # Regression Validation
@@ -352,18 +416,27 @@ jobs:
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ $CORE_FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
             echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
       - name: Generate test results JSON
         if: always()
         run: |
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}"
+          fi
           mkdir -p test-results
           
           cat > test-results/chaossearch.json << EOF
@@ -377,7 +450,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -420,10 +493,17 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
             "metadata": {
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}",
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
@@ -448,6 +528,23 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || 'manual_review_needed' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
           echo "## Terraform-provider-chaossearch Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
@@ -468,11 +565,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY
 
 
 

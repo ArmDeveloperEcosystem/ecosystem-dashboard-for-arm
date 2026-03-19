@@ -8,8 +8,8 @@ on:
       - main
       - smoke_tests
     paths:
-      - 'content/opensource_packages/python-dlpy.md'
-      - '.github/workflows/test-python-dlpy.yml'
+      - "content/opensource_packages/python-dlpy.md"
+      - ".github/workflows/test-python-dlpy.yml"
 
 jobs:
   test-python-dlpy:
@@ -17,7 +17,6 @@ jobs:
     env:
       SAS_DLPY_VERSION: "0.7.0"
       SWAT_VERSION: "v1.17.1"
-      NEXT_SAS_DLPY_VERSION: "1.3.0"
 
     steps:
       - name: Checkout repository
@@ -30,24 +29,20 @@ jobs:
           echo "package_slug=python-dlpy" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/python-dlpy" >> "$GITHUB_OUTPUT"
 
-      - name: Install Python-DLPy
+      - name: Install baseline Python-DLPy stack
         id: install
         run: |
-          echo "Installing Python-DLPy..."
+          set -euo pipefail
           python3 -m venv venv
           source venv/bin/activate
           python -m pip install --upgrade pip setuptools wheel
-
-          # sas-dlpy 1.3.0 now depends on swat>=1.5.0 from a distribution that
-          # is not published for Linux Arm64. Pin the last Arm-workable DLPy
-          # release and build SWAT from source for the functional smoke tests.
           python -m pip install "sas-dlpy==${SAS_DLPY_VERSION}"
+
           rm -rf /tmp/python-swat
           git clone --depth 1 --branch "${SWAT_VERSION}" https://github.com/sassoftware/python-swat.git /tmp/python-swat
           python -m pip install /tmp/python-swat
 
           echo "$PWD/venv/bin" >> "$GITHUB_PATH"
-
           if python -c "import dlpy, swat" >/dev/null 2>&1; then
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
@@ -58,9 +53,10 @@ jobs:
       - name: Get Python-DLPy version
         id: version
         run: |
-          VERSION=$(python -c "import importlib.metadata as md; print(md.version('sas-dlpy'))" 2>/dev/null || echo "unknown")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected Python-DLPy version: $VERSION"
+          set -euo pipefail
+          VERSION=$(python -c "import importlib.metadata as md; print(md.version('sas-dlpy'))")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected Python-DLPy version: ${VERSION}"
 
       - name: Test 1 - Check Python-DLPy import
         id: test1
@@ -80,11 +76,12 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          EXPECTED_SWAT_VERSION="${SWAT_VERSION#v}"
           START_TIME=$(date +%s)
-          if python - <<'PY'
+          if python - <<PY
           import importlib.metadata as md
-          assert md.version("sas-dlpy") == "0.7.0"
-          assert md.version("swat") == "1.17.1"
+          assert md.version("sas-dlpy") == "${SAS_DLPY_VERSION}"
+          assert md.version("swat") == "${EXPECTED_SWAT_VERSION}"
           PY
           then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -118,8 +115,7 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
+          if [ "$(uname -m)" = "aarch64" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -132,14 +128,24 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          EXPECTED_SWAT_VERSION="${SWAT_VERSION#v}"
           START_TIME=$(date +%s)
-          if python - <<'PY'
-          from dlpy.utils import prod_without_none
+          if python - <<PY
+          import importlib.metadata as md
+          import dlpy
+          import dlpy.utils as utils
           import swat
-          assert prod_without_none([2, 3, None, 4]) == 24
-          assert swat.__version__ == "1.17.1"
-          print("prod_without_none=24")
-          print(f"swat={swat.__version__}")
+
+          assert md.version("sas-dlpy") == "${SAS_DLPY_VERSION}"
+          assert md.version("swat") == "${EXPECTED_SWAT_VERSION}"
+          assert hasattr(dlpy, "Model")
+          assert utils.camelcase_to_underscore("ArmSmoke") == "arm_smoke"
+
+          original = swat.get_option("cas.print_messages")
+          swat.set_option("cas.print_messages", False)
+          assert swat.get_option("cas.print_messages") is False
+          swat.reset_option("cas.print_messages")
+          print("dlpy-ok")
           PY
           then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -154,97 +160,186 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || env.SAS_DLPY_VERSION }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=1.3.0" >> "$GITHUB_OUTPUT"
-          echo "decision=hold_current_arm_dependency_gap" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned sas-dlpy 0.7.0 was smoke-tested successfully in this run with python-swat v1.17.1 built from source. The newer sas-dlpy 1.3.0 upgrade candidate cannot currently be installed on Linux Arm64 because it requires swat>=1.5.0 from a distribution that is not published for this platform." >> "$GITHUB_OUTPUT"
-          echo "note=Keep sas-dlpy pinned at 0.7.0 on Arm until upstream ships an installable Linux Arm64 SWAT distribution or an alternative source-install path for the newer DLPy line." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || env.SAS_DLPY_VERSION }}"
+          EXPECTED_SWAT_VERSION="${SWAT_VERSION#v}"
+          LATEST=$(python - <<'PY'
+          import json
+          import urllib.request
+
+          with urllib.request.urlopen("https://pypi.org/pypi/sas-dlpy/json") as response:
+              data = json.load(response)
+          print(data["info"]["version"])
+          PY
+          )
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+
+          if [ -z "${LATEST}" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned sas-dlpy version ${CURRENT} passed smoke tests in this run, but the latest stable PyPI release could not be resolved for regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          rm -rf /tmp/dlpy-regression-venv /tmp/python-swat-regression
+          if ! python3 -m venv /tmp/dlpy-regression-venv; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned sas-dlpy version ${CURRENT} passed smoke tests in this run, but the isolated regression virtual environment could not be created on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          source /tmp/dlpy-regression-venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+
+          if ! git clone --depth 1 --branch "${SWAT_VERSION}" https://github.com/sassoftware/python-swat.git /tmp/python-swat-regression; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned sas-dlpy version ${CURRENT} passed smoke tests in this run, but the required python-swat source tag ${SWAT_VERSION} could not be cloned for the Arm64 regression environment." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if ! python -m pip install /tmp/python-swat-regression; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned sas-dlpy version ${CURRENT} passed smoke tests in this run, but python-swat ${EXPECTED_SWAT_VERSION} could not be installed from source in the Arm64 regression environment." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if ! python -m pip install "sas-dlpy==${LATEST}"; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned sas-dlpy version ${CURRENT} passed smoke tests in this run, but the latest stable PyPI release ${LATEST} could not be installed on Arm64 even after preinstalling source-built python-swat ${EXPECTED_SWAT_VERSION}." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if ! NEXT_INSTALLED_VERSION=$(python -c "import importlib.metadata as md; print(md.version('sas-dlpy'))"); then
+            echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned sas-dlpy version ${CURRENT} passed smoke tests in this run, but the installed regression package version could not be read back on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
+
+          if ! python - <<PY
+          import importlib.metadata as md
+          import dlpy
+          import dlpy.utils as utils
+          import swat
+
+          assert md.version("sas-dlpy") == "${LATEST}"
+          assert md.version("swat") == "${EXPECTED_SWAT_VERSION}"
+          assert hasattr(dlpy, "Model")
+          assert utils.camelcase_to_underscore("ArmSmoke") == "arm_smoke"
+
+          original = swat.get_option("cas.print_messages")
+          swat.set_option("cas.print_messages", False)
+          assert swat.get_option("cas.print_messages") is False
+          swat.reset_option("cas.print_messages")
+          print("dlpy-regression-ok")
+          PY
+          then
+            echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned sas-dlpy version ${CURRENT} passed smoke tests in this run, but the latest stable release ${LATEST} did not complete the shared DLPy and SWAT functional smoke on Arm64 after installation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "${NEXT_INSTALLED_VERSION}" = "${LATEST}" ]; then
+            echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned sas-dlpy version ${CURRENT} passed smoke tests in this run. Regression validation installed the latest stable PyPI release ${LATEST} on Arm64 after preinstalling source-built python-swat ${EXPECTED_SWAT_VERSION}, and the candidate completed the shared DLPy utility and SWAT option-surface smoke successfully." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned sas-dlpy version ${CURRENT} passed smoke tests in this run, but the candidate install reported version ${NEXT_INSTALLED_VERSION} instead of the latest stable PyPI release ${LATEST} on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Show regression validation details
         if: always()
         run: |
-          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
-          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
-          if [ -z "$REGRESSION_RESULT" ]; then
-            case "$DECISION" in
-              next_install_validated|safe_to_upgrade)
-                REGRESSION_RESULT="Next version installed successfully on Arm64"
-                ;;
-              next_install_failed|next_lookup_failed)
-                REGRESSION_RESULT="Next version install failed on Arm64"
-                ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Current stable version already validated on Arm64"
-                ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
-              *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
-                ;;
-            esac
-          fi
-
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
-          echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          if [ "${{ steps.test1.outputs.status }}" = "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          if [ "${{ steps.test2.outputs.status }}" = "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          if [ "${{ steps.test3.outputs.status }}" = "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          if [ "${{ steps.test4.outputs.status }}" = "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          if [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-
-          if [ "${{ steps.test6.outputs.status }}" = "passed" ]; then
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -253,28 +348,37 @@ jobs:
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ $FAILED -eq 0 ]; then
+          if [ "$FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
-            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           JOB_ID="${{ github.job }}"
-          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
           if [ -z "$JOB_URL" ]; then
             JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
           fi
 
           mkdir -p test-results
-          cat > test-results/python-dlpy.json <<JSON
+          cat > test-results/python-dlpy.json <<EOF
           {
             "schema_version": "1.0",
             "package": {
@@ -294,26 +398,56 @@ jobs:
               }
             },
             "tests": {
-              "passed": ${{ steps.summary.outputs.passed }},
-              "failed": ${{ steps.summary.outputs.failed }},
+              "passed": ${{ steps.summary.outputs.passed || 0 }},
+              "failed": ${{ steps.summary.outputs.failed || 0 }},
               "skipped": 0,
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
-                {"name": "Check Python-DLPy import", "status": "${{ steps.test1.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}},
-                {"name": "Check distribution versions", "status": "${{ steps.test2.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}},
-                {"name": "Check package metadata", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
-                {"name": "Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
-                {"name": "Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
-                {"name": "Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}}
+                {
+                  "name": "Check Python-DLPy import",
+                  "status": "${{ steps.test1.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check distribution versions",
+                  "status": "${{ steps.test2.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Check package metadata",
+                  "status": "${{ steps.test3.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Architecture Verification",
+                  "status": "${{ steps.test4.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Functional Validation",
+                  "status": "${{ steps.test5.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Test 6 - Regression Validation",
+                  "status": "${{ steps.test6.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+                }
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "core_failed": ${{ steps.summary.outputs.core_failed || 0 }}
             }
           }
-          JSON
-          cat test-results/python-dlpy.json
+          EOF
 
       - name: Upload test results
         if: always()
@@ -326,12 +460,13 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
           echo "## Python-DLPy Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status || 'failure' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed || 0 }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed || 0 }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -346,5 +481,6 @@ jobs:
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

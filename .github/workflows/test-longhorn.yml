@@ -27,6 +27,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=longhorn" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/longhorn" >> "$GITHUB_OUTPUT"
+          echo "current_version=${LONGHORNCTL_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install longhornctl
         id: install
@@ -38,7 +39,7 @@ jobs:
           # arm_recommended_minimum_version is 1.6.0 (2024-02-01). Applying the
           # 1-year rule, pin the current latest stable CLI release in the last year.
           URL="https://github.com/longhorn/cli/releases/download/${LONGHORNCTL_VERSION}/longhornctl-linux-arm64"
-          curl -fsSL "$URL" -o longhornctl
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL "$URL" -o longhornctl
           chmod +x longhornctl
           sudo mv longhornctl /usr/local/bin/longhornctl
 
@@ -134,24 +135,86 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || env.LONGHORNCTL_VERSION }}"
-          LATEST_TAG=$(curl -s https://api.github.com/repos/longhorn/cli/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\\1/' || true)
-          [ -z "$LATEST_TAG" ] && LATEST_TAG="${LONGHORNCTL_VERSION}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+
+          LATEST_TAG=$(python3 - <<'PY'
+          import json
+          import urllib.request
+
+          req = urllib.request.Request(
+              'https://api.github.com/repos/longhorn/cli/releases/latest',
+              headers={'User-Agent': 'github-actions'},
+          )
+          release = json.load(urllib.request.urlopen(req))
+          print(release['tag_name'])
+          PY
+          )
+
+          if [ -z "$LATEST_TAG" ]; then
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned longhornctl version ${CURRENT} passed smoke tests in this run, but the latest published Arm64 release could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned longhornctl version ${CURRENT} passed smoke tests in this run, but the latest published Arm64 release could not be resolved automatically."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           NEXT_BINARY="/tmp/longhornctl-next"
           NEXT_URL="https://github.com/longhorn/cli/releases/download/${LATEST_TAG}/longhornctl-linux-arm64"
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
-          if curl -fsSL "$NEXT_URL" -o "$NEXT_BINARY"; then
+          echo "Next version targeted for install validation: $LATEST_TAG"
+
+          if [ "$CURRENT" = "$LATEST_TAG" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned longhornctl version ${CURRENT} passed smoke tests in this run and is already the latest published Arm64 CLI release." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned longhornctl version ${CURRENT} passed smoke tests in this run and is already the latest published Arm64 CLI release."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL "$NEXT_URL" -o "$NEXT_BINARY"; then
             chmod +x "$NEXT_BINARY"
             NEXT_INSTALLED_VERSION=$("$NEXT_BINARY" version 2>&1 | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
-            if [ -n "$NEXT_INSTALLED_VERSION" ]; then
+            if [ "$NEXT_INSTALLED_VERSION" = "$LATEST_TAG" ] \
+              && "$NEXT_BINARY" --help >/tmp/longhorn-next-help.log 2>&1 \
+              && grep -qiE 'Longhorn|Commands|version' /tmp/longhorn-next-help.log \
+              && "$NEXT_BINARY" check preflight --help >/tmp/longhorn-next-preflight.log 2>&1 \
+              && grep -qi 'preflight' /tmp/longhorn-next-preflight.log \
+              && file "$NEXT_BINARY" | grep -Eqi 'aarch64|arm64'; then
               echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
               echo "comparison=Current pinned longhornctl version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and installed candidate version ${LATEST_TAG} on Arm64, and the installed binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned longhornctl version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and installed candidate version ${LATEST_TAG} on Arm64, and the installed binary reported version ${NEXT_INSTALLED_VERSION}."
               echo "status=passed" >> "$GITHUB_OUTPUT"
             else
-              echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
+              file "$NEXT_BINARY" || true
+              cat /tmp/longhorn-next-help.log || true
+              cat /tmp/longhorn-next-preflight.log || true
+              echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned longhornctl version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST_TAG} downloaded without reporting a usable installed version on Arm64." >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned longhornctl version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST_TAG} did not complete version/help/preflight validation on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned longhornctl version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST_TAG} did not complete version/help/preflight validation on Arm64."
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
             fi
@@ -206,14 +269,17 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
+          CORE_FAILED=0
 
           if [ "${{ steps.test1.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
@@ -221,6 +287,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
@@ -228,6 +295,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
@@ -235,6 +303,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
@@ -242,6 +311,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
@@ -254,22 +324,27 @@ jobs:
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ $FAILED -eq 0 ]; then
+          if [ $CORE_FAILED -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           JOB_ID="${{ github.job }}"
-          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
           if [ -z "$JOB_URL" ]; then
             JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
           fi
@@ -305,8 +380,17 @@ jobs:
                 {"name": "Check help output", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
                 {"name": "Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
                 {"name": "Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
-                {"name": "Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || env.LONGHORNCTL_VERSION }}", "latest_version": "${{ steps.test6.outputs.latest_version || 'v1.11.0' }}", "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "comparison": "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || '' }}"}
-                "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                {
+                  "name": "Regression Validation",
+                  "status": "${{ steps.test6.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || env.LONGHORNCTL_VERSION }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || 'v1.11.0' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || '' }}"
+                }
               ]
             },
             "metadata": {
@@ -328,6 +412,25 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
+
           echo "## Longhorn Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"

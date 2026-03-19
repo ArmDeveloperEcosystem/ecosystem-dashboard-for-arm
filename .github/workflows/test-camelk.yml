@@ -62,14 +62,13 @@ jobs:
       - name: Install Apache Camel K
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Apache Camel K..."
-          
-          # Example for apt packages:
-          sudo apt-get update
-          VERSION=$(curl -s https://api.github.com/repos/apache/camel-k/releases/latest | grep tag_name | cut -d "\"" -f 4 | sed "s/v//")
-          curl -L "https://github.com/apache/camel-k/releases/download/v${VERSION}/camel-k-client-${VERSION}-linux-arm64.tar.gz" -o kamel.tar.gz
+          VERSION="2.9.1"
+          echo "baseline_version=v${VERSION}" >> "$GITHUB_OUTPUT"
+          curl -fsSL "https://github.com/apache/camel-k/releases/download/v${VERSION}/camel-k-client-${VERSION}-linux-arm64.tar.gz" -o kamel.tar.gz
           tar -xzf kamel.tar.gz
-          sudo cp kamel /usr/local/bin/
+          sudo install -m 0755 kamel /usr/local/bin/kamel
           
           # Verify installation
           if command -v kamel &> /dev/null; then
@@ -87,8 +86,14 @@ jobs:
       - name: Get Apache Camel K version
         id: version
         run: |
-          # Adjust this command based on how your package reports version
-          VERSION=$(kamel version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+          set -euo pipefail
+          RAW_VERSION=$(timeout 10s kamel version 2>&1 || true)
+          VERSION=$(printf '%s\n' "$RAW_VERSION" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
+          else
+            VERSION="v${VERSION}"
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Apache Camel K version: $VERSION"
       
@@ -125,7 +130,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if kamel version 2>&1 | grep -q "version\|[0-9]"; then
+          if timeout 10s kamel version 2>&1 | grep -qiE 'Camel K Client|[0-9]+\.[0-9]+\.[0-9]+'; then
             echo "✓ kamel version command works"
             kamel version
             echo "status=passed" >> $GITHUB_OUTPUT
@@ -144,7 +149,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if kamel --help 2>&1 | grep -qi "usage\|help\|options"; then
+          if timeout 10s kamel --help 2>&1 | grep -qiE "usage|help|options"; then
             echo "✓ kamel help command works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -193,8 +198,7 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if kamel version > /dev/null 2>&1 || kamel --help > /dev/null 2>&1; then
+          if timeout 10s kamel version > /dev/null 2>&1 || timeout 10s kamel --help > /dev/null 2>&1; then
             echo "✓ Basic functional check passed"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -210,13 +214,106 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST_TAG=$(GH_TOKEN=${{ github.token }} gh api repos/apache/camel-k/releases/latest --jq .tag_name 2>/dev/null | tr -d '[:space:]' || true)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG=$(curl -fsSL https://api.github.com/repos/apache/camel-k/releases/latest | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null | tr -d '[:space:]' || true)
+          fi
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST_TAG:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: ${LATEST_TAG:-unknown}"
+
+          if [ -z "$LATEST_TAG" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Camel K version ${CURRENT} passed smoke tests in this run, but the next regression candidate version could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Apache Camel K version ${CURRENT} passed smoke tests in this run, but the next regression candidate version could not be resolved automatically."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "$CURRENT" = "$LATEST_TAG" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Camel K version ${CURRENT} already matches the latest stable upstream release, so there is no newer version to install in Test 6." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Apache Camel K version ${CURRENT} already matches the latest stable upstream release, so there is no newer version to install in Test 6."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          LATEST="${LATEST_TAG#v}"
+          NEXT_DIR=$(mktemp -d)
+          NEXT_TAR="$NEXT_DIR/kamel.tar.gz"
+          NEXT_URL="https://github.com/apache/camel-k/releases/download/${LATEST_TAG}/camel-k-client-${LATEST}-linux-arm64.tar.gz"
+          if curl -fsSL -o "$NEXT_TAR" "$NEXT_URL"; then
+            tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
+            NEXT_BIN="$NEXT_DIR/kamel"
+            if [ -x "$NEXT_BIN" ]; then
+              NEXT_RAW=$(timeout 10s "$NEXT_BIN" version 2>&1 || true)
+              NEXT_INSTALLED_VERSION=$(printf '%s\n' "$NEXT_RAW" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+              if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "v${NEXT_INSTALLED_VERSION}" = "$LATEST_TAG" ]; then
+                echo "next_installed_version=v${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Apache Camel K version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST_TAG} on Arm64, and the downloaded client reported version v${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: v${NEXT_INSTALLED_VERSION}"
+                echo "Regression install result: Next version installed successfully on Arm64"
+                echo "Details: Current pinned Apache Camel K version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST_TAG} on Arm64, and the downloaded client reported version v${NEXT_INSTALLED_VERSION}."
+                echo "status=passed" >> "$GITHUB_OUTPUT"
+              else
+                echo "next_installed_version=${NEXT_INSTALLED_VERSION:+v$NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed but reported a version mismatch on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Apache Camel K version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST_TAG} downloaded on Arm64 and reported version ${NEXT_INSTALLED_VERSION:+v$NEXT_INSTALLED_VERSION} instead of the expected ${LATEST_TAG}." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:+v$NEXT_INSTALLED_VERSION}"
+                echo "Regression install result: Next version installed but reported a version mismatch on Arm64"
+                echo "Details: Current pinned Apache Camel K version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST_TAG} downloaded on Arm64 and reported version ${NEXT_INSTALLED_VERSION:+v$NEXT_INSTALLED_VERSION} instead of the expected ${LATEST_TAG}."
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                END_TIME=$(date +%s)
+                echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+            else
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Apache Camel K version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST_TAG} did not extract a usable Arm64 binary." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Apache Camel K version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST_TAG} did not extract a usable Arm64 binary."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Camel K version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST_TAG} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Apache Camel K version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST_TAG} could not be downloaded on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -261,8 +358,10 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
           # Check kamel binary exists
@@ -270,6 +369,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
@@ -278,6 +378,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
@@ -286,6 +387,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
@@ -294,6 +396,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
@@ -302,6 +405,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
           # Regression Validation
@@ -316,18 +420,28 @@ jobs:
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ $CORE_FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
             echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
       - name: Generate test results JSON
         if: always()
         run: |
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}"
+          fi
+
           mkdir -p test-results
           
           cat > test-results/camelk.json << EOF
@@ -336,12 +450,12 @@ jobs:
             "package": {
               "name": "Apache Camel K",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "DevOps",
+              "language": "Go",
               "category": "DevOps"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -384,10 +498,17 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
             "metadata": {
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}",
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
@@ -412,6 +533,24 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || 'manual_review_needed' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
+
           echo "## Apache Camel K Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
@@ -432,11 +571,12 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> Support badge remains tied to Tests 1-5. Test 6 reports next-version install readiness on Arm64." >> $GITHUB_STEP_SUMMARY
 
 
 

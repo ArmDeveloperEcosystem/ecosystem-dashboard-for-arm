@@ -1,5 +1,4 @@
 name: Test Apache HttpComponents Client on Arm64
-# Trigger run for JSON generation
 
 on:
   workflow_call:
@@ -15,176 +14,158 @@ on:
 jobs:
   test-httpcomponents-client:
     runs-on: ubuntu-24.04-arm
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=httpcomponents-client" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/httpcomponents-client" >> $GITHUB_OUTPUT
-      
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=httpcomponents-client" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/httpcomponents-client" >> "$GITHUB_OUTPUT"
+
       - name: Install Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '11'
-      
+          distribution: temurin
+          java-version: "21"
+
       - name: Install Apache HttpComponents Client
         id: install
         run: |
-          echo "Installing Apache HttpComponents Client..."
-          
-          # Using version 5.3.1 (released Jan 2024)
-          HC_VERSION=5.3.1
-          wget https://archive.apache.org/dist/httpcomponents/httpclient/binary/httpcomponents-client-${HC_VERSION}-bin.tar.gz
-          tar -xzf httpcomponents-client-${HC_VERSION}-bin.tar.gz
-          
-          # Set HC_HOME dynamically by finding the jar
-          # The tarball might extract to a nested directory
-          HC_JAR=$(find . -name "httpclient5-*.jar" | head -n 1)
-          # JAR is in lib/, so go up two levels
-          HC_HOME=$(dirname $(dirname $HC_JAR))
-          echo "HC_HOME=$PWD/$HC_HOME" >> $GITHUB_ENV
-          
-          echo "install_status=success" >> $GITHUB_OUTPUT
-      
+          set -euo pipefail
+          CURRENT_VERSION="5.4"
+          WORKDIR=$(mktemp -d)
+          TARBALL="$WORKDIR/httpcomponents-client-${CURRENT_VERSION}-bin.tar.gz"
+          curl -fsSL "https://archive.apache.org/dist/httpcomponents/httpclient/binary/httpcomponents-client-${CURRENT_VERSION}-bin.tar.gz" -o "$TARBALL"
+          tar -xzf "$TARBALL" -C "$WORKDIR"
+          HC_HOME=$(find "$WORKDIR" -maxdepth 2 -type d -name "httpcomponents-client-${CURRENT_VERSION}" | head -n 1)
+          if [ -z "$HC_HOME" ]; then
+            HC_HOME=$(dirname "$(dirname "$(find "$WORKDIR" -name 'httpclient5-*.jar' ! -name '*tests*' | head -n 1)")")
+          fi
+          if [ -z "$HC_HOME" ] || [ ! -d "$HC_HOME/lib" ]; then
+            echo "Unable to locate extracted HttpComponents home"
+            exit 1
+          fi
+          echo "HC_HOME=$HC_HOME" >> "$GITHUB_ENV"
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
       - name: Get HttpComponents version
         id: version
         run: |
-          VERSION="5.3.1"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected HttpComponents Client version: $VERSION"
-      
-      - name: Test 1 - Check JARs exist
+          set -euo pipefail
+          JAR=$(find "$HC_HOME/lib" -name 'httpclient5-[0-9]*.jar' | head -n 1)
+          VERSION=$(basename "$JAR" | sed -E 's/^httpclient5-([0-9A-Za-z.\-]+)\.jar$/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected Apache HttpComponents Client version: $VERSION"
+
+      - name: Test 1 - Check client jars exist
         id: test1
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          if ls $HC_HOME/lib/httpclient5-*.jar 1> /dev/null 2>&1; then
-            echo "✓ httpclient jar found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if ls "$HC_HOME"/lib/httpclient5-*.jar "$HC_HOME"/lib/httpcore5-*.jar >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ httpclient jar not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Create Java Program
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Compile Java client
         id: test2
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          cat > TestHttpClient.java <<EOF
+          cat > TestHttpClient.java <<'EOF'
           import org.apache.hc.client5.http.classic.methods.HttpGet;
           import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+          import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
           import org.apache.hc.client5.http.impl.classic.HttpClients;
           import org.apache.hc.core5.http.io.entity.EntityUtils;
-          import org.apache.hc.core5.http.ClassicHttpResponse;
-          
+
           public class TestHttpClient {
-              public static void main(String[] args) throws Exception {
-                  try (CloseableHttpClient httpclient = HttpClients.createDefault()) {
-                      HttpGet httpGet = new HttpGet("http://www.google.com");
-                      httpclient.execute(httpGet, response -> {
-                          System.out.println(response.getCode() + " " + response.getReasonPhrase());
-                          return null;
-                      });
+            public static void main(String[] args) throws Exception {
+              try (CloseableHttpClient client = HttpClients.createDefault()) {
+                HttpGet request = new HttpGet(args[0]);
+                try (CloseableHttpResponse response = client.execute(request)) {
+                  System.out.println(response.getCode());
+                  if (response.getEntity() != null) {
+                    System.out.println(EntityUtils.toString(response.getEntity()).trim());
                   }
+                }
               }
+            }
           }
           EOF
-          
-          if [ -f "TestHttpClient.java" ]; then
-             echo "✓ java program created"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          javac -cp "$HC_HOME/lib/*" TestHttpClient.java
+          if [ -f TestHttpClient.class ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ java program creation failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Compile Java Program
+      - name: Test 3 - Run loopback HTTP request
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          # Need to include all jars in lib
-          CLASSPATH="$HC_HOME/lib/*:."
-          
-          javac -cp "$CLASSPATH" TestHttpClient.java
-          
-          if [ -f "TestHttpClient.class" ]; then
-             echo "✓ compilation works"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          TEST_DIR=$(mktemp -d)
+          printf 'httpcomponents-ok\n' > "$TEST_DIR/index.html"
+          python3 -m http.server 18181 --bind 127.0.0.1 --directory "$TEST_DIR" >/tmp/httpcomponents-server.log 2>&1 &
+          SERVER_PID=$!
+          cleanup() {
+            kill "$SERVER_PID" >/dev/null 2>&1 || true
+            wait "$SERVER_PID" >/dev/null 2>&1 || true
+            rm -rf "$TEST_DIR"
+          }
+          trap cleanup EXIT
+          sleep 2
+          OUTPUT=$(java -cp "$HC_HOME/lib/*:." TestHttpClient "http://127.0.0.1:18181/")
+          if echo "$OUTPUT" | grep -q '^200$' && echo "$OUTPUT" | grep -q 'httpcomponents-ok'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ compilation failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            echo "Unexpected output:"
+            echo "$OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 4 - Run Java Program
+      - name: Test 4 - Check expected client classes
         id: test4
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          CLASSPATH="$HC_HOME/lib/*:."
-          
-          OUTPUT=$(java -cp "$CLASSPATH" TestHttpClient)
-          
-          if echo "$OUTPUT" | grep -q "200 OK"; then
-             echo "✓ execution works"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          JAR=$(find "$HC_HOME/lib" -name 'httpclient5-[0-9]*.jar' | head -n 1)
+          if jar tf "$JAR" | grep -q 'org/apache/hc/client5/http/impl/classic/HttpClients.class'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ execution failed"
-             echo "Output: $OUTPUT"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Check Logging Libs
+      - name: Test 5 - Check dependency jars and Arm64 runner
         id: test5
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          # Functional Validation
-          
-          # Check for slf4j or log4j binding which is often needed
-          if ls $HC_HOME/lib/slf4j-api-*.jar 1> /dev/null 2>&1; then
-             echo "✓ slf4j api jar found"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          if ls "$HC_HOME"/lib/httpcore5-*.jar "$HC_HOME"/lib/httpcore5-h2-*.jar >/dev/null 2>&1 && [ "$(uname -m)" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ slf4j api jar not found"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
-          # Architecture Verification
-          ARCH=$(uname -m)
-          if [ "$ARCH" != "aarch64" ]; then
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -192,173 +173,187 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST=$(curl -fsSL https://downloads.apache.org/httpcomponents/httpclient/binary/ 2>/dev/null | grep -oE 'httpcomponents-client-[0-9]+\.[0-9]+\.[0-9]+-bin\\.tar\\.gz' | sed -E 's/httpcomponents-client-([0-9.]+)-bin\\.tar\\.gz/\\1/' | sort -V | tail -n 1)
-          if [ -z "$LATEST" ]; then
-            LATEST="5.6-alpha1"
-          fi
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Current version tested in Tests 1-5: $CURRENT"
 
-          NEXT_TAR="/tmp/httpcomponents-client-regression.tar.gz"
-          NEXT_DIR=$(mktemp -d)
-          NEXT_URL="https://archive.apache.org/dist/httpcomponents/httpclient/binary/httpcomponents-client-${LATEST}-bin.tar.gz"
-          if wget -q -O "$NEXT_TAR" "$NEXT_URL"; then
-            tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
-            NEXT_JAR=$(find "$NEXT_DIR" -name 'httpclient5-*.jar' | head -n 1)
-            if [ -n "$NEXT_JAR" ]; then
-              NEXT_INSTALLED_VERSION=$(basename "$NEXT_JAR" | sed -E 's/httpclient5-([0-9A-Za-z.\\-]+)\\.jar/\\1/' || true)
-              echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
-              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned Apache HttpComponents Client version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the extracted artifact reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-            else
-              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
-              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned Apache HttpComponents Client version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not extract a usable client jar on Arm64." >> "$GITHUB_OUTPUT"
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          else
-            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Apache HttpComponents Client version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+          LATEST=$(python3 - <<'PY'
+          import json, urllib.request
+          with urllib.request.urlopen("https://search.maven.org/solrsearch/select?q=g:%22org.apache.httpcomponents.client5%22+AND+a:%22httpclient5%22&rows=20&wt=json", timeout=20) as r:
+              data = json.load(r)
+          print(data["response"]["docs"][0]["latestVersion"])
+          PY
+          )
+
+          if [ -z "$LATEST" ]; then
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache HttpComponents Client version ${CURRENT} passed smoke tests in this run, but the latest stable release could not be resolved from Maven Central." >> "$GITHUB_OUTPUT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Apache HttpComponents Client version ${CURRENT} passed smoke tests in this run, but the latest stable release could not be resolved from Maven Central."
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache HttpComponents Client version ${CURRENT} passed smoke tests in this run and the latest stable release is also ${LATEST}, so current stable remains validated on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Apache HttpComponents Client version ${CURRENT} passed smoke tests in this run and the latest stable release is also ${LATEST}, so current stable remains validated on Arm64."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_DIR=$(mktemp -d)
+          NEXT_TAR="$NEXT_DIR/httpcomponents-client-${LATEST}-bin.tar.gz"
+          NEXT_URL="https://downloads.apache.org/httpcomponents/httpclient/binary/httpcomponents-client-${LATEST}-bin.tar.gz"
+          if ! curl -fsSL "$NEXT_URL" -o "$NEXT_TAR"; then
+            NEXT_URL="https://archive.apache.org/dist/httpcomponents/httpclient/binary/httpcomponents-client-${LATEST}-bin.tar.gz"
+            curl -fsSL "$NEXT_URL" -o "$NEXT_TAR"
+          fi
+          tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
+          NEXT_HOME=$(find "$NEXT_DIR" -maxdepth 2 -type d -name "httpcomponents-client-${LATEST}" | head -n 1)
+          if [ -z "$NEXT_HOME" ]; then
+            NEXT_HOME=$(dirname "$(dirname "$(find "$NEXT_DIR" -name 'httpclient5-*.jar' ! -name '*tests*' | head -n 1)")")
+          fi
+          NEXT_JAR=$(find "$NEXT_HOME/lib" -name 'httpclient5-[0-9]*.jar' | head -n 1)
+          NEXT_REPORTED=$(basename "$NEXT_JAR" | sed -E 's/^httpclient5-([0-9A-Za-z.\-]+)\.jar$/\1/')
+          javac -cp "$NEXT_HOME/lib/*" TestHttpClient.java
+          TEST_DIR=$(mktemp -d)
+          printf 'httpcomponents-next-ok\n' > "$TEST_DIR/index.html"
+          python3 -m http.server 18182 --bind 127.0.0.1 --directory "$TEST_DIR" >/tmp/httpcomponents-regression-server.log 2>&1 &
+          SERVER_PID=$!
+          cleanup() {
+            kill "$SERVER_PID" >/dev/null 2>&1 || true
+            wait "$SERVER_PID" >/dev/null 2>&1 || true
+            rm -rf "$TEST_DIR" "$NEXT_DIR"
+          }
+          trap cleanup EXIT
+          sleep 2
+          OUTPUT=$(java -cp "$NEXT_HOME/lib/*:." TestHttpClient "http://127.0.0.1:18182/")
+          if [ "$NEXT_REPORTED" = "$LATEST" ] && echo "$OUTPUT" | grep -q '^200$' && echo "$OUTPUT" | grep -q 'httpcomponents-next-ok'; then
+            echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache HttpComponents Client version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the extracted client artifact reported version ${NEXT_REPORTED} while completing a real loopback HTTP request." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_REPORTED"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned Apache HttpComponents Client version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the extracted client artifact reported version ${NEXT_REPORTED} while completing a real loopback HTTP request."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "next_installed_version=${NEXT_REPORTED:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache HttpComponents Client version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not complete the expected Arm64 loopback validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_REPORTED:-unknown}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Apache HttpComponents Client version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not complete the expected Arm64 loopback validation."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Show regression validation details
         if: always()
         run: |
-          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
-          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
-          if [ -z "$REGRESSION_RESULT" ]; then
-            case "$DECISION" in
-              next_install_validated|safe_to_upgrade)
-                REGRESSION_RESULT="Next version installed successfully on Arm64"
-                ;;
-              next_install_failed|next_lookup_failed)
-                REGRESSION_RESULT="Next version install failed on Arm64"
-                ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Current stable version already validated on Arm64"
-                ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
-              *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
-                ;;
-            esac
-          fi
-
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
-          echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check JARs exist
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          # Create Java Program
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          # Compile Java Program
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Run Java Program
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Check Logging Libs
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
-          # Fetch the direct job URL for deep-linking
+          set -euo pipefail
+          mkdir -p test-results
           JOB_ID="${{ github.job }}"
-          # Using GH_TOKEN to find the exact job URL. 
-          # Reusable workflows are often named "JobID / JobID" or just "JobID"
-          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
-          
-          # Fallback if URL calculation fails
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
           if [ -z "$JOB_URL" ]; then
             JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
           fi
 
-          mkdir -p test-results
-          
-          cat > test-results/httpcomponents-client.json << EOF
+          cat > test-results/httpcomponents-client.json <<EOF
           {
             "schema_version": "1.0",
             "package": {
-              "name": "Apache HttpComponents Client",
+              "name": "Apache Httpcomponents Client",
               "version": "${{ steps.version.outputs.version }}",
               "language": "Java",
-              "category": "Libraries"
+              "category": "Networking"
             },
             "run": {
               "id": "${{ github.run_id }}",
@@ -377,27 +372,27 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check JARs exist",
+                  "name": "Check client jars exist",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Create Java Program",
+                  "name": "Compile Java client",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Compile Java Program",
+                  "name": "Run loopback HTTP request",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Run Java Program",
+                  "name": "Check expected client classes",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check Logging Libs",
+                  "name": "Check dependency jars and Arm64 runner",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 },
@@ -405,12 +400,12 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
-                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
-                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
-                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
                   "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
                   "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
-                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
+                  "comparison": "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
                 }
               ]
             },
@@ -420,46 +415,10 @@ jobs:
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/httpcomponents-client.json
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: httpcomponents-client-test-results
           path: test-results/httpcomponents-client.json
-          retention-days: 90
-      
-      - name: Create test summary
-        if: always()
-        run: |
-          echo "## Apache HttpComponents Client Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check JARs exist: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Create Java Program: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Compile Java Program: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Run Java Program: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Check Logging Libs: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
-
-

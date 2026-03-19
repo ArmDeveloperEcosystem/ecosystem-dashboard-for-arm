@@ -14,6 +14,8 @@ on:
 jobs:
   test-tiffin:
     runs-on: ubuntu-24.04-arm
+    env:
+      TIFFIN_VERSION: "0.4.0"
 
     steps:
       - name: Checkout repository
@@ -25,10 +27,12 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=tiffin" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/tiffin" >> "$GITHUB_OUTPUT"
+          echo "current_version=${TIFFIN_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install Tiffin
         id: install
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y curl git clang libclang-dev pkg-config build-essential
 
@@ -36,7 +40,7 @@ jobs:
           source "$HOME/.cargo/env"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-          git clone --depth 1 --branch v0.4.0 https://github.com/FyraLabs/tiffin.git
+          git clone --depth 1 --branch "v${TIFFIN_VERSION}" https://github.com/FyraLabs/tiffin.git
           cd tiffin
           cargo build --release --locked
 
@@ -50,8 +54,17 @@ jobs:
       - name: Get Tiffin version
         id: version
         run: |
+          set -euo pipefail
           VERSION=$(grep '^version = ' tiffin/Cargo.toml | head -n 1 | cut -d '"' -f 2 || echo "unknown")
+          LATEST=$(python3 - <<'PY'
+          import json, urllib.request
+          req = urllib.request.Request("https://api.github.com/repos/FyraLabs/tiffin/releases/latest", headers={"User-Agent": "github-actions"})
+          data = json.load(urllib.request.urlopen(req, timeout=20))
+          print(str(data["tag_name"]).lstrip("v"))
+          PY
+          )
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Build Artifact
         id: test1
@@ -75,7 +88,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
 
-          if grep '^version = ' tiffin/Cargo.toml | grep -q '"0.4.0"'; then
+          if grep '^version = ' tiffin/Cargo.toml | grep -q "\"${TIFFIN_VERSION}\""; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -151,12 +164,81 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
+          source "$HOME/.cargo/env"
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ] || [ "$LATEST" = "not_yet_checked" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Tiffin version $CURRENT passed smoke tests in this run, but the next stable version could not be resolved for Arm64 install validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          TMPDIR=$(mktemp -d)
+          cleanup() {
+            rm -rf "$TMPDIR"
+          }
+          trap cleanup EXIT
+
+          git clone --depth 1 --branch "v${LATEST}" https://github.com/FyraLabs/tiffin.git "$TMPDIR/tiffin"
+          cargo build --release --locked --manifest-path "$TMPDIR/tiffin/Cargo.toml" >"$TMPDIR/build.log" 2>&1
+          cargo metadata --format-version=1 --locked --manifest-path "$TMPDIR/tiffin/Cargo.toml" >"$TMPDIR/metadata.json" 2>&1
+
+          cat > "$TMPDIR/tiffin/examples/smoke.rs" <<'EOF'
+          use std::path::PathBuf;
+
+          fn main() {
+              let container = tiffin::Container::new(PathBuf::from("/"));
+              println!("root={}", container.root.display());
+          }
+          EOF
+
+          cargo run --release --locked --manifest-path "$TMPDIR/tiffin/Cargo.toml" --example smoke >"$TMPDIR/smoke.log" 2>&1
+          NEXT_INSTALLED_VERSION=$(grep '^version = ' "$TMPDIR/tiffin/Cargo.toml" | head -n 1 | cut -d '"' -f 2 || true)
+
+          if [ -z "$NEXT_INSTALLED_VERSION" ] || \
+             ! grep -q '"name":"tiffin"' "$TMPDIR/metadata.json" || \
+             ! grep -q '^root=/$' "$TMPDIR/smoke.log"; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Tiffin version $CURRENT passed smoke tests in this run, but the candidate source tag v$LATEST failed the real build, metadata, or example smoke path on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Tiffin version $CURRENT matches the latest stable tag. Regression validation rebuilt v$LATEST in an isolated checkout and confirmed cargo metadata plus the example smoke successfully on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+            echo "Regression install result: Current stable version already validated on Arm64"
+          else
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Tiffin version $CURRENT passed smoke tests in this run. Regression validation rebuilt candidate tag v$LATEST and confirmed cargo metadata plus the example smoke successfully on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+            echo "Regression install result: Next version installed successfully on Arm64"
+          fi
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -202,45 +284,86 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          check_test() {
+          check_core_test() {
             local status=$1
             local duration=$2
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + $duration))
           }
 
-          check_test "${{ steps.test1.outputs.status }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status }}" "${{ steps.test5.outputs.duration || 0 }}"
-          check_test "${{ steps.test6.outputs.status }}" "${{ steps.test6.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ "$FAILED" -eq 0 ]; then
+          if [ "$CORE_FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 
       - name: Generate test results JSON
         if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           mkdir -p test-results
+          JOB_URL=$(python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          job_id = os.environ["GITHUB_JOB"]
+          token = os.environ["GITHUB_TOKEN"]
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100",
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "github-actions",
+              },
+          )
+          data = json.load(urllib.request.urlopen(req, timeout=20))
+          for job in data.get("jobs", []):
+              if job.get("name") in (f"{job_id} / {job_id}", job_id):
+                  print(job.get("html_url", ""))
+                  break
+          PY
+          )
+          if [ -z "${JOB_URL}" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
 
           cat > test-results/tiffin.json << EOF
           {
@@ -253,7 +376,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "${JOB_URL}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -296,12 +419,19 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}"
                 }
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "core_failed": ${{ steps.summary.outputs.core_failed || 0 }}
             }
           }
           EOF
@@ -335,7 +465,8 @@ jobs:
           echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Pinned current version passed smoke tests.' }}" >> "$GITHUB_STEP_SUMMARY"

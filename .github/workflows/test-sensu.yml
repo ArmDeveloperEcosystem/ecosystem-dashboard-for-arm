@@ -248,47 +248,60 @@ jobs:
         run: |
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          check_test() {
+          check_core_test() {
             local status="$1"
             local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
-          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ steps.test1.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test2.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test3.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test4.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
+          if [ "$CORE_FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "${JOB_URL}" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
           cat > test-results/sensu.json <<EOF_JSON
           {
             "schema_version": "1.0",
@@ -300,7 +313,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "url": "${JOB_URL}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -319,7 +332,7 @@ jobs:
                 {"name": "Test 3 - Help Output Validation", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
                 {"name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
                 {"name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
-                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}", "latest_version": "${{ steps.test6.outputs.latest_version || steps.version.outputs.latest }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}"}
+                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}", "latest_version": "${{ steps.test6.outputs.latest_version || steps.version.outputs.latest }}", "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}"}
               ]
             },
             "metadata": {
@@ -332,6 +345,7 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
           {
             echo "## Sensu Test Results"
             echo ""
@@ -351,6 +365,7 @@ jobs:
             echo "### Regression Validation (Next Version Install)"
             echo "- Current pinned version: \`${{ steps.test6.outputs.current_version || steps.version.outputs.version }}\`"
             echo "- Next version targeted for install validation: \`${{ steps.test6.outputs.latest_version || steps.version.outputs.latest }}\`"
+            echo "- Next version installed on Arm64: \`${{ steps.test6.outputs.next_installed_version || 'not_installed' }}\`"
             echo "- **Regression install result:** ${REGRESSION_RESULT}"
             echo "- Comparison: ${{ steps.test6.outputs.comparison || 'No regression comparison recorded.' }}"
           } >> "$GITHUB_STEP_SUMMARY"

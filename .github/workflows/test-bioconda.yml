@@ -29,24 +29,24 @@ jobs:
       - name: Install Miniforge (Conda)
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Miniforge (Conda)..."
+          sudo apt-get update
+          sudo apt-get install -y curl
+
+          BASELINE_RELEASE="26.1.0-0"
+          URL="https://github.com/conda-forge/miniforge/releases/download/${BASELINE_RELEASE}/Miniforge3-${BASELINE_RELEASE}-Linux-aarch64.sh"
+
+          curl -fsSL "$URL" -o miniforge.sh
+          bash miniforge.sh -b -p "$HOME/miniforge"
+          echo "$HOME/miniforge/bin" >> "$GITHUB_PATH"
+          echo "baseline_release=$BASELINE_RELEASE" >> "$GITHUB_OUTPUT"
+
+          "$HOME/miniforge/bin/conda" config --add channels defaults
+          "$HOME/miniforge/bin/conda" config --add channels bioconda
+          "$HOME/miniforge/bin/conda" config --add channels conda-forge
           
-          # Download Miniforge for aarch64
-          wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh -O miniforge.sh
-          
-          # Install silently
-          bash miniforge.sh -b -p $HOME/miniforge
-          
-          # Initialize conda for shell interaction
-          source $HOME/miniforge/bin/activate
-          conda init bash
-          
-          # Add bioconda channels
-          conda config --add channels defaults
-          conda config --add channels bioconda
-          conda config --add channels conda-forge
-          
-          if command -v conda &> /dev/null; then
+          if [ -x "$HOME/miniforge/bin/conda" ]; then
              echo "Conda installed successfully"
              echo "install_status=success" >> $GITHUB_OUTPUT
           else
@@ -58,8 +58,7 @@ jobs:
       - name: Get Conda version
         id: version
         run: |
-          source $HOME/miniforge/bin/activate
-          VERSION=$(conda --version 2>&1 | grep -oP 'conda \K[0-9.]+' | head -1 || echo "unknown")
+          VERSION=$("$HOME/miniforge/bin/conda" --version 2>&1 | awk '{print $2}' || echo "unknown")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Conda version: $VERSION"
       
@@ -185,13 +184,69 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT_VERSION="${{ steps.version.outputs.version || 'unknown' }}"
+          BASELINE_RELEASE="${{ steps.install.outputs.baseline_release }}"
+          LATEST_RELEASE=$(python3 - <<'PY'
+          import json
+          import urllib.request
+
+          with urllib.request.urlopen("https://api.github.com/repos/conda-forge/miniforge/releases/latest", timeout=30) as response:
+              data = json.load(response)
+
+          print(data["tag_name"])
+          PY
+          )
+
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT_VERSION"
+          echo "Next version targeted for install validation: $LATEST_RELEASE"
+
+          if [ "$LATEST_RELEASE" = "$BASELINE_RELEASE" ]; then
+            echo "next_installed_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Miniforge release ${BASELINE_RELEASE} passed smoke tests in this run and already matches the latest stable Arm64 release. The installed conda binary reports version ${CURRENT_VERSION}." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT_VERSION"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Miniforge release ${BASELINE_RELEASE} passed smoke tests in this run and already matches the latest stable Arm64 release. The installed conda binary reports version ${CURRENT_VERSION}."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            NEXT_URL="https://github.com/conda-forge/miniforge/releases/download/${LATEST_RELEASE}/Miniforge3-${LATEST_RELEASE}-Linux-aarch64.sh"
+            curl -fsSL "$NEXT_URL" -o Miniforge-next.sh
+            bash Miniforge-next.sh -b -p "$RUNNER_TEMP/miniforge-next"
+            "$RUNNER_TEMP/miniforge-next/bin/conda" config --add channels defaults
+            "$RUNNER_TEMP/miniforge-next/bin/conda" config --add channels bioconda
+            "$RUNNER_TEMP/miniforge-next/bin/conda" config --add channels conda-forge
+            "$RUNNER_TEMP/miniforge-next/bin/conda" search seqtk --override-channels -c bioconda > next-search.log
+            NEXT_CONDA_VERSION=$("$RUNNER_TEMP/miniforge-next/bin/conda" --version 2>&1 | awk '{print $2}' || true)
+
+            if [ -n "$NEXT_CONDA_VERSION" ]; then
+              echo "next_installed_version=$NEXT_CONDA_VERSION" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Miniforge release ${BASELINE_RELEASE} passed smoke tests in this run. Regression validation installed candidate release ${LATEST_RELEASE} on Arm64, configured the Bioconda channel, and the installed conda binary reported version ${NEXT_CONDA_VERSION}." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_CONDA_VERSION"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned Miniforge release ${BASELINE_RELEASE} passed smoke tests in this run. Regression validation installed candidate release ${LATEST_RELEASE} on Arm64, configured the Bioconda channel, and the installed conda binary reported version ${NEXT_CONDA_VERSION}."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              cat next-search.log || true
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Miniforge release ${BASELINE_RELEASE} passed smoke tests in this run, but candidate release ${LATEST_RELEASE} did not produce a usable Arm64 Bioconda-capable conda install." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Miniforge release ${BASELINE_RELEASE} passed smoke tests in this run, but candidate release ${LATEST_RELEASE} did not produce a usable Arm64 Bioconda-capable conda install."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -292,7 +347,11 @@ jobs:
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ "${{ steps.test1.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test2.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test3.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test4.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
@@ -303,6 +362,11 @@ jobs:
       - name: Generate test results JSON
         if: always()
         run: |
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
           mkdir -p test-results
           
           cat > test-results/bioconda.json << EOF
@@ -316,7 +380,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -359,12 +423,19 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}"
             }
           }
           EOF
@@ -383,6 +454,8 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression comparison summary unavailable.' }}"
+
           echo "## Bioconda Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
@@ -403,11 +476,11 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Support badge is based on Tests 1-5:** yes" >> $GITHUB_STEP_SUMMARY
 
 
 

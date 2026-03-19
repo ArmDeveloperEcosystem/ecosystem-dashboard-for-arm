@@ -190,14 +190,87 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          CURRENT="$(echo "${{ steps.version.outputs.version || 'unknown' }}" | tr -d '[:space:]' | sed 's/^v//')"
+          LATEST=$(python3 - <<'PY'
+          import re
+          import urllib.request
+
+          html = urllib.request.urlopen("https://downloads.apache.org/flume/", timeout=20).read().decode("utf-8", "ignore")
+          versions = sorted(set(re.findall(r'href="([0-9]+\.[0-9]+\.[0-9]+)/"', html)))
+          print(versions[-1] if versions else "")
+          PY
+          )
+
+          NEXT_INSTALLED="not_installed"
+          DECISION="next_lookup_failed"
+          REGRESSION_RESULT="Next version install failed on Arm64"
+          COMPARISON="Current pinned Flume version ${CURRENT} passed smoke tests in this run, but the next regression candidate version could not be resolved automatically."
+          STATUS="failed"
+
+          if [ -z "$LATEST" ]; then
+            NEXT_INSTALLED="lookup_failed"
+          elif [ "$CURRENT" = "$LATEST" ]; then
+            NEXT_INSTALLED="$CURRENT"
+            DECISION="current_is_latest_stable"
+            REGRESSION_RESULT="Current stable version already validated on Arm64"
+            COMPARISON="Current pinned Flume version ${CURRENT} already matches the latest stable upstream Apache download, so there is no newer version to install in Test 6."
+            STATUS="passed"
+          else
+            NEXT_DIR=$(mktemp -d /tmp/flume-next-XXXXXX)
+            NEXT_TARBALL="$NEXT_DIR/flume.tar.gz"
+            if curl -fsSL -o "$NEXT_TARBALL" "https://downloads.apache.org/flume/${LATEST}/apache-flume-${LATEST}-bin.tar.gz"; then
+              tar -xzf "$NEXT_TARBALL" -C "$NEXT_DIR"
+              NEXT_HOME=$(find "$NEXT_DIR" -maxdepth 1 -type d -name "apache-flume-${LATEST}-bin" | head -1)
+              NEXT_BIN="$NEXT_HOME/bin/flume-ng"
+              if [ -n "$NEXT_HOME" ] && [ -x "$NEXT_BIN" ]; then
+                NEXT_INSTALLED_VERSION=$((PATH="$NEXT_HOME/bin:$PATH" "$NEXT_BIN" version 2>&1 || true) | grep "Flume" | head -1 | awk '{print $2}')
+                if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
+                  NEXT_INSTALLED="$NEXT_INSTALLED_VERSION"
+                  DECISION="next_install_validated"
+                  REGRESSION_RESULT="Next version installed successfully on Arm64"
+                  COMPARISON="Current pinned Flume version ${CURRENT} passed smoke tests in this run. Regression validation downloaded candidate version ${LATEST} on Arm64, and the extracted flume-ng binary reported version ${NEXT_INSTALLED_VERSION}."
+                  STATUS="passed"
+                else
+                  NEXT_INSTALLED="${NEXT_INSTALLED_VERSION:-unknown}"
+                  DECISION="next_install_failed"
+                  REGRESSION_RESULT="Next version installed but reported a version mismatch on Arm64"
+                  COMPARISON="Current pinned Flume version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} extracted on Arm64 and reported version ${NEXT_INSTALLED} instead of the expected ${LATEST}."
+                fi
+              else
+                NEXT_INSTALLED="install_failed"
+                DECISION="next_install_failed"
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                COMPARISON="Current pinned Flume version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not extract a usable Arm64 Flume distribution."
+              fi
+            else
+              NEXT_INSTALLED="install_failed"
+              DECISION="next_install_failed"
+              REGRESSION_RESULT="Next version install failed on Arm64"
+              COMPARISON="Current pinned Flume version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64."
+            fi
+          fi
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=$NEXT_INSTALLED" >> "$GITHUB_OUTPUT"
+          echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
+          echo "regression_result=$REGRESSION_RESULT" >> "$GITHUB_OUTPUT"
+          echo "comparison=$COMPARISON" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+          echo "Next version installed on Arm64: $NEXT_INSTALLED"
+          echo "Regression install result: $REGRESSION_RESULT"
+          echo "Details: $COMPARISON"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+          if [ "$STATUS" != "passed" ]; then
+            exit 1
+          fi
 
 
       - name: Show regression validation details
@@ -410,4 +483,3 @@ jobs:
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-

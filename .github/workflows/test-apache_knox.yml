@@ -65,6 +65,7 @@ jobs:
       - name: Install Apache Knox
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Apache Knox..."
           
           # Install Java (Prerequisite) and set HOME
@@ -74,8 +75,9 @@ jobs:
           echo "JAVA_HOME=/usr/lib/jvm/java-11-openjdk-arm64" >> $GITHUB_ENV
           
           # Download Apache Knox
-          wget -q https://archive.apache.org/dist/knox/2.0.0/knox-2.0.0.zip
-          unzip -q knox-2.0.0.zip
+          KNOX_VERSION=2.0.0
+          wget -q https://downloads.apache.org/knox/${KNOX_VERSION}/knox-${KNOX_VERSION}.zip
+          unzip -q knox-${KNOX_VERSION}.zip
           # Use wildcard to handle potential variations in directory name
           mv knox-*/ $HOME/knox
           
@@ -88,6 +90,7 @@ jobs:
           if [ -d "$HOME/knox" ]; then
             echo "Apache Knox installed successfully"
             echo "install_status=success" >> $GITHUB_OUTPUT
+            echo "baseline_version=${KNOX_VERSION}" >> $GITHUB_OUTPUT
             echo "$HOME/knox/bin" >> $GITHUB_PATH
           else
             echo "Apache Knox installation failed"
@@ -98,8 +101,7 @@ jobs:
       - name: Get Apache Knox version
         id: version
         run: |
-          # Get version from CLI using robust regex
-          VERSION=$(knox-cli.sh version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "2.0.0")
+          VERSION="${{ steps.install.outputs.baseline_version || '2.0.0' }}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Apache Knox version: $VERSION"
       
@@ -149,7 +151,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if knox-cli.sh help 2>&1 | grep -qiE "usage|options|commands|knox"; then
+          if knoxcli.sh help 2>&1 | grep -qiE "knoxcli|list-topologies|version"; then
             echo "✓ Knox CLI help works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -188,11 +190,11 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if knox-cli.sh list-topologies 2>&1 | grep -qiE "topologies|knox"; then
-             echo "✓ Knox CLI topologies command ran"
+          if gateway.sh status 2>&1 | grep -qiE "gateway is not running|no pid file found"; then
+             echo "✓ gateway status command ran"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ Knox CLI execution failed"
+             echo "✗ gateway status command failed"
              echo "status=failed" >> $GITHUB_OUTPUT
              END_TIME=$(date +%s)
              echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -204,13 +206,96 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST=$(python3 - <<'PY'
+          import re, urllib.request
+          html = urllib.request.urlopen('https://downloads.apache.org/knox/').read().decode()
+          versions = sorted(
+              set(re.findall(r'href="([0-9]+\.[0-9]+\.[0-9]+)/"', html)),
+              key=lambda s: [int(x) for x in s.split('.')]
+          )
+          print(versions[-1] if versions else '')
+          PY
+          )
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+
+          if [ -z "$LATEST" ]; then
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Knox version ${CURRENT} passed smoke tests in this run, but the next official distribution candidate could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Apache Knox version ${CURRENT} passed smoke tests in this run, but the next official distribution candidate could not be resolved automatically."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Knox version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 distribution candidate for this workflow." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Apache Knox version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 distribution candidate for this workflow."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_ZIP="/tmp/knox-${LATEST}.zip"
+          NEXT_DIR=$(mktemp -d)
+          NEXT_URL="https://downloads.apache.org/knox/${LATEST}/knox-${LATEST}.zip"
+          if curl -fsSLo "$NEXT_ZIP" "$NEXT_URL"; then
+            unzip -q "$NEXT_ZIP" -d "$NEXT_DIR"
+            NEXT_HOME="$NEXT_DIR/knox-${LATEST}"
+            if [ -x "$NEXT_HOME/bin/knoxcli.sh" ] && \
+               [ -x "$NEXT_HOME/bin/gateway.sh" ] && \
+               "$NEXT_HOME/bin/knoxcli.sh" help 2>&1 | grep -qiE "KnoxCLI|list-topologies|version" && \
+               "$NEXT_HOME/bin/gateway.sh" status 2>&1 | grep -qiE "Gateway is not running|No PID file found"; then
+              echo "next_installed_version=$LATEST" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Apache Knox version ${CURRENT} passed smoke tests in this run. Regression validation downloaded official distribution ${LATEST} on Arm64, verified the extracted Knox CLI scripts, and confirmed non-interactive help and status behavior." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $LATEST"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned Apache Knox version ${CURRENT} passed smoke tests in this run. Regression validation downloaded official distribution ${LATEST} on Arm64, verified the extracted Knox CLI scripts, and confirmed non-interactive help and status behavior."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Apache Knox version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not expose usable Arm64 Knox CLI scripts for non-interactive validation." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Apache Knox version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not expose usable Arm64 Knox CLI scripts for non-interactive validation."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Knox version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Apache Knox version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -311,7 +396,11 @@ jobs:
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ "${{ steps.test1.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test2.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test3.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test4.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
@@ -322,6 +411,11 @@ jobs:
       - name: Generate test results JSON
         if: always()
         run: |
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
+          fi
           mkdir -p test-results
           
           cat > test-results/apache_knox.json << EOF
@@ -335,7 +429,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -378,10 +472,17 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
                 }
               ]
             },
             "metadata": {
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}",
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
@@ -406,6 +507,7 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Pending regression install validation' }}"
           echo "## Apache Knox Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
@@ -429,8 +531,8 @@ jobs:
           echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "- **Support badge is based on Tests 1-5:** yes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
 
 
 

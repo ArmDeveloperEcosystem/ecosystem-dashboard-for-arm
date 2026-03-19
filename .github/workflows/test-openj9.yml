@@ -57,21 +57,50 @@ jobs:
           set -euo pipefail
           INSTALL_DIR="${{ steps.install.outputs.install_dir }}"
           JAVA_OUTPUT=$("${INSTALL_DIR}/bin/java" -version 2>&1)
-          LATEST=$(python3 - <<'PY'
-          import json, urllib.request
+          LATEST_INFO=$(python3 - <<'PY'
+          import json
+          import re
+          import urllib.request
+
           try:
               req = urllib.request.Request(
                   "https://api.github.com/repos/ibmruntimes/semeru17-binaries/releases/latest",
                   headers={"User-Agent": "codex"},
               )
               data = json.load(urllib.request.urlopen(req, timeout=20))
-              print(data.get("tag_name", "unknown"))
+              tag = data.get("tag_name", "unknown")
+              asset = next(
+                  (
+                      item
+                      for item in data.get("assets", [])
+                      if "aarch64_linux" in item.get("name", "")
+                      and item.get("name", "").endswith(".tar.gz")
+                  ),
+                  None,
+              )
+              version = "unknown"
+              url = ""
+              if asset:
+                  match = re.search(r"_linux_([0-9]+(?:\.[0-9]+)+)\.tar\.gz$", asset["name"])
+                  if match:
+                      version = match.group(1)
+                  url = asset.get("browser_download_url", "")
+              print(tag)
+              print(version)
+              print(url)
           except Exception:
               print("unknown")
+              print("unknown")
+              print("")
           PY
           )
+          LATEST_TAG=$(printf '%s\n' "$LATEST_INFO" | sed -n '1p')
+          LATEST_VERSION=$(printf '%s\n' "$LATEST_INFO" | sed -n '2p')
+          LATEST_URL=$(printf '%s\n' "$LATEST_INFO" | sed -n '3p')
           echo "version=${OPENJ9_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "latest=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+          echo "latest_url=${LATEST_URL}" >> "$GITHUB_OUTPUT"
           {
             echo "java_output<<EOF"
             echo "${JAVA_OUTPUT}"
@@ -182,17 +211,15 @@ jobs:
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
-          CURRENT_URL="${OPENJ9_URL}"
-          BASELINE_RAW="${OPENJ9_VERSION}"
-          BASELINE_CLEAN="${CURRENT#v}"
-          LATEST_CLEAN="${LATEST#v}"
+          LATEST_TAG="${{ steps.version.outputs.latest_tag || 'unknown' }}"
+          NEXT_URL="${{ steps.version.outputs.latest_url || '' }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $LATEST"
 
-          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ] || [ "$LATEST" = "not_yet_checked" ]; then
+          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ] || [ -z "$NEXT_URL" ]; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
@@ -205,9 +232,6 @@ jobs:
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
-          NEXT_URL="${CURRENT_URL//$BASELINE_RAW/$LATEST}"
-          NEXT_URL="${NEXT_URL//$BASELINE_CLEAN/$LATEST_CLEAN}"
 
           TMPDIR=$(mktemp -d)
           cleanup() {
@@ -248,19 +272,60 @@ jobs:
               ;;
           esac
 
-          NEXT_INSTALLED_VERSION="$LATEST"
-          echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
-          if [ "$CURRENT" = "$LATEST" ] || [ "$BASELINE_CLEAN" = "$LATEST_CLEAN" ]; then
+          NEXT_INSTALL_DIR=$(find "$TMPDIR" -maxdepth 1 -type d -name 'jdk-*' | head -n 1)
+          if [ -z "$NEXT_INSTALL_DIR" ] || [ ! -x "${NEXT_INSTALL_DIR}/bin/java" ] || [ ! -x "${NEXT_INSTALL_DIR}/bin/javac" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenJ9 version $CURRENT passed smoke tests in this run, but the candidate archive from $NEXT_URL did not unpack a usable Arm64 JDK." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_JAVA_OUTPUT=$("${NEXT_INSTALL_DIR}/bin/java" -version 2>&1)
+          NEXT_VERSION=$(printf '%s\n' "$NEXT_JAVA_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n 1 || true)
+
+          cat > /tmp/HelloOpenJ9Next.java <<'EOF'
+          public class HelloOpenJ9Next {
+              public static void main(String[] args) {
+                  System.out.println("openj9-next-ok");
+              }
+          }
+          EOF
+          "${NEXT_INSTALL_DIR}/bin/javac" /tmp/HelloOpenJ9Next.java
+          NEXT_RUN=$("${NEXT_INSTALL_DIR}/bin/java" -cp /tmp HelloOpenJ9Next 2>/tmp/openj9-next-run.err || true)
+
+          if [ -z "$NEXT_VERSION" ] || ! printf '%s\n' "$NEXT_JAVA_OUTPUT" | grep -qi "openj9" || [ "$NEXT_RUN" != "openj9-next-ok" ]; then
+            printf '%s\n' "$NEXT_JAVA_OUTPUT"
+            cat /tmp/openj9-next-run.err || true
+            echo "next_installed_version=${NEXT_VERSION:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenJ9 version $CURRENT passed smoke tests in this run, but the candidate JDK from $NEXT_URL did not complete a real Arm64 compile-and-run validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_VERSION:-not_installed}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "next_installed_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "$LATEST" ] || [ "${OPENJ9_RELEASE_TAG}" = "$LATEST_TAG" ]; then
             echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
             echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned OpenJ9 version $CURRENT matches the latest stable candidate. Regression validation re-downloaded and extracted the Arm64 artifact from $NEXT_URL successfully." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+            echo "comparison=Current pinned OpenJ9 version $CURRENT matches the latest stable candidate. Regression validation re-downloaded the official Arm64 JDK from $NEXT_URL, and the extracted candidate reported version $NEXT_VERSION and completed a real compile-and-run check successfully." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_VERSION"
             echo "Regression install result: Current stable version already validated on Arm64"
           else
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned OpenJ9 version $CURRENT passed smoke tests in this run. Regression validation downloaded and extracted the candidate Arm64 artifact from $NEXT_URL successfully." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+            echo "comparison=Current pinned OpenJ9 version $CURRENT passed smoke tests in this run. Regression validation downloaded the candidate Arm64 JDK from $NEXT_URL, and the extracted candidate reported version $NEXT_VERSION and completed a real compile-and-run check successfully." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_VERSION"
             echo "Regression install result: Next version installed successfully on Arm64"
           fi
           echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -350,7 +415,13 @@ jobs:
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
+          fi
 
           cat > test-results/openj9.json <<EOF
           {
@@ -363,7 +434,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -382,7 +453,7 @@ jobs:
                 {"name": "Test 3 - Check Help Output or Configuration", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
                 {"name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
                 {"name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
-                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || '' }}", "latest_version": "${{ steps.test6.outputs.latest_version || '' }}", "decision": "${{ steps.test6.outputs.decision || '' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}", "note": "${{ steps.test6.outputs.note || '' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}"}
+                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || '' }}", "latest_version": "${{ steps.test6.outputs.latest_version || '' }}", "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}", "decision": "${{ steps.test6.outputs.decision || '' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}"}
               ]
             },
             "metadata": {
@@ -421,8 +492,8 @@ jobs:
           echo "6. Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Current/Baseline:** ${{ steps.test6.outputs.current_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Latest Stable Checked:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Summary:** ${{ steps.test6.outputs.comparison || 'No comparison recorded.' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Note:** ${{ steps.test6.outputs.note || 'No note recorded.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

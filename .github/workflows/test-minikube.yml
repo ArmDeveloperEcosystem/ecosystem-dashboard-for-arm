@@ -1,5 +1,6 @@
 name: Test Minikube on Arm64
 on:
+  workflow_dispatch:
   workflow_call:
   push:
     branches:
@@ -21,6 +22,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "package_slug=minikube" >> $GITHUB_OUTPUT
           echo "dashboard_link=/opensource_packages/minikube" >> $GITHUB_OUTPUT
+          echo "current_version=v1.10.0" >> $GITHUB_OUTPUT
 
       # ============================================================
       # CUSTOMIZE THIS: Install your package
@@ -28,15 +30,11 @@ jobs:
       - name: Install Minikube
         id: install
         run: |
-          echo "Installing Minikube..."
-          
-          # Install prerequisites
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y curl conntrack
-          
-          # Download Minikube binary
-          # https://storage.googleapis.com/minikube/releases/latest/minikube-linux-arm64
-          URL="https://storage.googleapis.com/minikube/releases/latest/minikube-linux-arm64"
+          VERSION="${{ steps.metadata.outputs.current_version }}"
+          URL="https://storage.googleapis.com/minikube/releases/${VERSION}/minikube-linux-arm64"
           
           if curl -LO $URL; then
              sudo install minikube-linux-arm64 /usr/local/bin/minikube
@@ -54,7 +52,8 @@ jobs:
       - name: Get Minikube version
         id: version
         run: |
-          VERSION=$(minikube version --short 2>&1 || echo "unknown")
+          set -euo pipefail
+          VERSION=$(minikube version --short 2>&1 | awk '{print $NF}' || echo "unknown")
           VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Minikube version: $VERSION"
@@ -72,9 +71,10 @@ jobs:
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
-          if command -v minikube &> /dev/null; then
+          if command -v minikube >/dev/null 2>&1 && file "$(command -v minikube)" | grep -qiE 'arm aarch64|aarch64'; then
             echo "✓ minikube binary found"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -90,9 +90,11 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if minikube version 2>&1 | grep -q "minikube"; then
+          EXPECTED="${{ steps.metadata.outputs.current_version }}"
+          REPORTED=$(minikube version --short 2>&1 | awk '{print $NF}')
+          if [ "$REPORTED" = "$EXPECTED" ]; then
             echo "✓ version command works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -108,6 +110,7 @@ jobs:
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
           if minikube help 2>&1 | grep -qiE "Usage|minikube"; then
@@ -126,6 +129,7 @@ jobs:
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
           # View config (should be empty but command should work)
@@ -145,10 +149,9 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Functional Validation
-          
-          if minikube completion bash 2>&1 | grep -q "bash completion"; then
+          if minikube completion bash 2>&1 | grep -q "__start_minikube"; then
              echo "✓ completion command works"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -174,42 +177,62 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          CURRENT="${{ steps.version.outputs.version }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
           LATEST=$(GH_TOKEN=${{ github.token }} gh api repos/kubernetes/minikube/releases/latest --jq '.tag_name' 2>/dev/null || true)
           if [ -z "$LATEST" ]; then
             LATEST="v1.38.1"
           fi
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: $LATEST"
 
           NEXT_DIR=$(mktemp -d)
           NEXT_BIN="$NEXT_DIR/minikube"
           NEXT_URL="https://storage.googleapis.com/minikube/releases/${LATEST}/minikube-linux-arm64"
           if curl -fsSL "$NEXT_URL" -o "$NEXT_BIN"; then
             chmod +x "$NEXT_BIN"
-            NEXT_INSTALLED_VERSION=$("$NEXT_BIN" version --short 2>&1 | sed 's/[\",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g' || true)
-            if [ -x "$NEXT_BIN" ] && [ -n "$NEXT_INSTALLED_VERSION" ]; then
+            NEXT_INSTALLED_VERSION=$("$NEXT_BIN" version --short 2>&1 | awk '{print $NF}' | sed 's/[\",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g' || true)
+            if [ -x "$NEXT_BIN" ] && [ -n "$NEXT_INSTALLED_VERSION" ] && file "$NEXT_BIN" | grep -qiE 'arm aarch64|aarch64'; then
               echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
-              if [ "${CURRENT#v}" = "${LATEST#v}" ]; then
-                echo "decision=already_at_latest" >> "$GITHUB_OUTPUT"
+              if [ "$CURRENT" = "$LATEST" ]; then
+                echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
                 echo "comparison=Current Minikube version ${CURRENT} passed smoke tests in this run and already matches the latest published Arm64 release. Regression validation re-staged ${NEXT_INSTALLED_VERSION} on Arm64 successfully." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+                echo "Regression install result: Current stable version already validated on Arm64"
+                echo "Details: Current Minikube version ${CURRENT} passed smoke tests in this run and already matches the latest published Arm64 release. Regression validation re-staged ${NEXT_INSTALLED_VERSION} on Arm64 successfully."
               else
                 echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
                 echo "comparison=Current Minikube version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the staged binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+                echo "Regression install result: Next version installed successfully on Arm64"
+                echo "Details: Current Minikube version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the staged binary reported version ${NEXT_INSTALLED_VERSION}."
               fi
               echo "status=passed" >> "$GITHUB_OUTPUT"
             else
               echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
               echo "comparison=Current Minikube version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not report a usable installed version on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: unknown"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current Minikube version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not report a usable installed version on Arm64."
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
             fi
           else
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
             echo "comparison=Current Minikube version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current Minikube version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -257,74 +280,64 @@ jobs:
         if: always()
         id: summary
         run: |
+          CORE_FAILED=0
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
+          check_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+          check_core() {
+            local status="$1"
+            local duration="$2"
+            check_test "$status" "$duration"
+            if [ "$status" != "passed" ]; then
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          }
+          check_core "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}"
 
-          # Check minikube binary
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
-
-          # Check version command
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
-
-          # Check help command
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Check config command
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Check completion command
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
-
-
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ "$FAILED" -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
             echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
       - name: Generate test results JSON
         if: always()
         run: |
           mkdir -p test-results
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          JOB_URL="$RUN_URL"
+          JOB_NAME="test-minikube / test-minikube"
+          RESOLVED_JOB_URL=$(GH_TOKEN=${{ github.token }} gh api "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"${JOB_NAME}\") | .html_url" 2>/dev/null | head -n 1 || true)
+          if [ -n "$RESOLVED_JOB_URL" ]; then
+            JOB_URL="$RESOLVED_JOB_URL"
+          fi
           
           cat > test-results/minikube.json << EOF
           {
@@ -332,12 +345,12 @@ jobs:
             "package": {
               "name": "Minikube",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "Go",
+              "category": "Containers and Orchestration"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "${JOB_URL}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -391,7 +404,8 @@ jobs:
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "core_failed": ${{ steps.summary.outputs.core_failed || 0 }}
             }
           }
           EOF
@@ -413,6 +427,7 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression result unavailable' }}"
           echo "## Minikube Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
@@ -436,5 +451,4 @@ jobs:
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
 

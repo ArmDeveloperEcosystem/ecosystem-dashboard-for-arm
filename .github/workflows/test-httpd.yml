@@ -14,137 +14,130 @@ on:
 jobs:
   test-httpd:
     runs-on: ubuntu-24.04-arm
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=httpd" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/httpd" >> $GITHUB_OUTPUT
-      
-      - name: Install Apache httpd
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=httpd" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/httpd" >> "$GITHUB_OUTPUT"
+
+      - name: Install Apache httpd baseline
         id: install
         run: |
-          echo "Installing Apache httpd..."
-          
-          # Ubuntu 24.04 should have a recent version (2.4.58+)
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y apache2
-          
-          echo "install_status=success" >> $GITHUB_OUTPUT
-      
+          sudo apt-get install -y build-essential curl ca-certificates file libapr1-dev libaprutil1-dev libssl-dev libpcre3-dev
+
+          CURRENT_VERSION="2.4.32"
+          WORKDIR=$(mktemp -d)
+          TARBALL="$WORKDIR/httpd-${CURRENT_VERSION}.tar.bz2"
+          curl -fsSL "https://archive.apache.org/dist/httpd/httpd-${CURRENT_VERSION}.tar.bz2" -o "$TARBALL"
+          tar -xjf "$TARBALL" -C "$WORKDIR"
+          SRC_DIR="$WORKDIR/httpd-${CURRENT_VERSION}"
+          PREFIX="$WORKDIR/httpd-current"
+          PCRE_CONFIG=$(command -v pcre-config || command -v pcre2-config)
+          cd "$SRC_DIR"
+          ./configure --prefix="$PREFIX" --with-apr=/usr/bin/apr-1-config --with-apr-util=/usr/bin/apu-1-config --with-pcre="$PCRE_CONFIG" >/tmp/httpd-configure.log 2>&1
+          make -j"$(nproc)" >/tmp/httpd-make.log 2>&1
+          make install >/tmp/httpd-install.log 2>&1
+
+          sed -i 's/^Listen 80$/Listen 18080/' "$PREFIX/conf/httpd.conf"
+          if ! grep -q '^ServerName 127.0.0.1$' "$PREFIX/conf/httpd.conf"; then
+            printf '\nServerName 127.0.0.1\n' >> "$PREFIX/conf/httpd.conf"
+          fi
+
+          echo "HTTPD_HOME=$PREFIX" >> "$GITHUB_ENV"
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
       - name: Get httpd version
         id: version
         run: |
-          VERSION=$(apache2 -v | grep "Server version" | awk -F'/' '{print $2}' | awk '{print $1}')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          VERSION=$("$HTTPD_HOME/bin/httpd" -v | awk -F'/' '/Server version/ {print $2}' | awk '{print $1}')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected httpd version: $VERSION"
-      
-      - name: Test 1 - Check binary exists
+
+      - name: Test 1 - Check httpd binary exists
         id: test1
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          if command -v apache2 &> /dev/null; then
-            echo "✓ apache2 binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if [ -x "$HTTPD_HOME/bin/httpd" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ apache2 binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Check Config Syntax
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Validate baseline version
         id: test2
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          if sudo apachectl configtest; then
-             echo "✓ config syntax ok"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          VERSION=$("$HTTPD_HOME/bin/httpd" -v | awk -F'/' '/Server version/ {print $2}' | awk '{print $1}')
+          if [ "$VERSION" = "${{ steps.install.outputs.current_version }}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ config syntax failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Start Service
+      - name: Test 3 - Check config syntax
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          sudo service apache2 start
-          
-          if systemctl is-active --quiet apache2; then
-             echo "✓ service started"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          if "$HTTPD_HOME/bin/httpd" -t -d "$HTTPD_HOME" -f "$HTTPD_HOME/conf/httpd.conf"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ service start failed"
-             sudo journalctl -u apache2 --no-pager
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 4 - Curl Localhost
+      - name: Test 4 - Start server and curl localhost
         id: test4
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          if curl -s http://localhost | grep -q "Apache2"; then
-             echo "✓ localhost reachable"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          "$HTTPD_HOME/bin/httpd" -d "$HTTPD_HOME" -f "$HTTPD_HOME/conf/httpd.conf"
+          cleanup() {
+            "$HTTPD_HOME/bin/httpd" -k stop -d "$HTTPD_HOME" -f "$HTTPD_HOME/conf/httpd.conf" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          sleep 2
+          if curl -fsS http://127.0.0.1:18080/ | grep -Eq 'It works|Apache HTTP Server'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ localhost unreachable or unexpected content"
-             curl -v http://localhost || true
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Stop Service
+      - name: Test 5 - Stop server and verify Arm64 binary
         id: test5
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          # Functional Validation
-          
-          sudo service apache2 stop
-          
-          if ! systemctl is-active --quiet apache2; then
-             echo "✓ service stopped"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          "$HTTPD_HOME/bin/httpd" -k stop -d "$HTTPD_HOME" -f "$HTTPD_HOME/conf/httpd.conf" >/dev/null 2>&1 || true
+          if file "$HTTPD_HOME/bin/httpd" | grep -qi 'aarch64\|arm64\|ARM aarch64'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ service stop failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
-          # Architecture Verification
-          ARCH=$(uname -m)
-          if [ "$ARCH" != "aarch64" ]; then
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -152,138 +145,177 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "Current version tested in Tests 1-5: $CURRENT"
+
+          LATEST=$(python3 - <<'PY'
+          import re, urllib.request
+          html = urllib.request.urlopen("https://downloads.apache.org/httpd/", timeout=20).read().decode()
+          versions = sorted(set(re.findall(r'httpd-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.bz2', html)), key=lambda s: [int(x) for x in s.split('.')])
+          print(versions[-1] if versions else "")
+          PY
+          )
+
+          if [ -z "$LATEST" ]; then
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache httpd version ${CURRENT} passed smoke tests in this run, but the latest stable release could not be resolved from the official Apache downloads page." >> "$GITHUB_OUTPUT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Apache httpd version ${CURRENT} passed smoke tests in this run, but the latest stable release could not be resolved from the official Apache downloads page."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache httpd version ${CURRENT} passed smoke tests in this run and the latest stable release is also ${LATEST}, so current stable remains validated on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Apache httpd version ${CURRENT} passed smoke tests in this run and the latest stable release is also ${LATEST}, so current stable remains validated on Arm64."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PCRE_CONFIG=$(command -v pcre-config || command -v pcre2-config)
+          NEXT_DIR=$(mktemp -d)
+          NEXT_TAR="$NEXT_DIR/httpd-${LATEST}.tar.bz2"
+          curl -fsSL "https://downloads.apache.org/httpd/httpd-${LATEST}.tar.bz2" -o "$NEXT_TAR"
+          tar -xjf "$NEXT_TAR" -C "$NEXT_DIR"
+          SRC_DIR="$NEXT_DIR/httpd-${LATEST}"
+          PREFIX="$NEXT_DIR/httpd-next"
+          cd "$SRC_DIR"
+          ./configure --prefix="$PREFIX" --with-apr=/usr/bin/apr-1-config --with-apr-util=/usr/bin/apu-1-config --with-pcre="$PCRE_CONFIG" >/tmp/httpd-regression-configure.log 2>&1
+          make -j"$(nproc)" >/tmp/httpd-regression-make.log 2>&1
+          make install >/tmp/httpd-regression-install.log 2>&1
+          sed -i 's/^Listen 80$/Listen 18081/' "$PREFIX/conf/httpd.conf"
+          if ! grep -q '^ServerName 127.0.0.1$' "$PREFIX/conf/httpd.conf"; then
+            printf '\nServerName 127.0.0.1\n' >> "$PREFIX/conf/httpd.conf"
+          fi
+          NEXT_REPORTED=$("$PREFIX/bin/httpd" -v | awk -F'/' '/Server version/ {print $2}' | awk '{print $1}')
+          "$PREFIX/bin/httpd" -t -d "$PREFIX" -f "$PREFIX/conf/httpd.conf"
+          "$PREFIX/bin/httpd" -d "$PREFIX" -f "$PREFIX/conf/httpd.conf"
+          cleanup() {
+            "$PREFIX/bin/httpd" -k stop -d "$PREFIX" -f "$PREFIX/conf/httpd.conf" >/dev/null 2>&1 || true
+            rm -rf "$NEXT_DIR"
+          }
+          trap cleanup EXIT
+          sleep 2
+          if [ "$NEXT_REPORTED" = "$LATEST" ] && curl -fsS http://127.0.0.1:18081/ | grep -Eq 'It works|Apache HTTP Server' && file "$PREFIX/bin/httpd" | grep -qi 'aarch64\|arm64\|ARM aarch64'; then
+            echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache httpd version ${CURRENT} passed smoke tests in this run. Regression validation built candidate version ${LATEST} from the official source tarball on Arm64, and the candidate server reported version ${NEXT_REPORTED} while serving localhost successfully." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_REPORTED"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned Apache httpd version ${CURRENT} passed smoke tests in this run. Regression validation built candidate version ${LATEST} from the official source tarball on Arm64, and the candidate server reported version ${NEXT_REPORTED} while serving localhost successfully."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "next_installed_version=${NEXT_REPORTED:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache httpd version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not complete the expected Arm64 build/startup validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_REPORTED:-unknown}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Apache httpd version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not complete the expected Arm64 build/startup validation."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Show regression validation details
         if: always()
         run: |
-          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
-          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
-          if [ -z "$REGRESSION_RESULT" ]; then
-            case "$DECISION" in
-              next_install_validated|safe_to_upgrade)
-                REGRESSION_RESULT="Next version installed successfully on Arm64"
-                ;;
-              next_install_failed|next_lookup_failed)
-                REGRESSION_RESULT="Next version install failed on Arm64"
-                ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Current stable version already validated on Arm64"
-                ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
-              *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
-                ;;
-            esac
-          fi
-
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
-          echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check binary exists
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          # Check Config Syntax
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          # Start Service
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Curl Localhost
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Stop Service
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
-          # Fetch the direct job URL for deep-linking
+          set -euo pipefail
+          mkdir -p test-results
           JOB_ID="${{ github.job }}"
-          # Using GH_TOKEN to find the exact job URL. 
-          # Reusable workflows are often named "JobID / JobID" or just "JobID"
-          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
-          
-          # Fallback if URL calculation fails
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
           if [ -z "$JOB_URL" ]; then
             JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
           fi
 
-          mkdir -p test-results
-          
-          cat > test-results/httpd.json << EOF
+          cat > test-results/httpd.json <<EOF
           {
             "schema_version": "1.0",
             "package": {
@@ -309,27 +341,27 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check binary exists",
+                  "name": "Check httpd binary exists",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check Config Syntax",
+                  "name": "Validate baseline version",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Start Service",
+                  "name": "Check config syntax",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Curl Localhost",
+                  "name": "Start server and curl localhost",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Stop Service",
+                  "name": "Stop server and verify Arm64 binary",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 },
@@ -337,6 +369,12 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
                 }
               ]
             },
@@ -346,45 +384,10 @@ jobs:
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/httpd.json
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: httpd-test-results
           path: test-results/httpd.json
-          retention-days: 90
-      
-      - name: Create test summary
-        if: always()
-        run: |
-          echo "## Apache httpd Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check Config Syntax: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Start Service: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Curl Localhost: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Stop Service: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
-

@@ -1,17 +1,23 @@
 name: Test Logstash on Arm64
+
 on:
-  workflow_dispatch:
   workflow_call:
+  workflow_dispatch:
   push:
     branches:
       - main
       - smoke_tests
     paths:
-      - 'content/opensource_packages/logstash.md'
-      - '.github/workflows/test-logstash.yml'
+      - "content/opensource_packages/logstash.md"
+      - ".github/workflows/test-logstash.yml"
+
 jobs:
   test-logstash:
     runs-on: ubuntu-24.04-arm
+
+    env:
+      BASELINE_VERSION: "8.19.12"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -19,229 +25,281 @@ jobs:
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=logstash" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/logstash" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=logstash" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/logstash" >> "$GITHUB_OUTPUT"
+          echo "current_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install Logstash
         id: install
         run: |
-          echo "Installing Logstash..."
-          
-          # Install prerequisites (Java)
+          set -euo pipefail
+          VERSION="${{ steps.metadata.outputs.current_version }}"
+          DEB_PATH="/tmp/logstash-${VERSION}-arm64.deb"
+          ROOT_DIR="/tmp/logstash-${VERSION}-root"
+          SETTINGS_DIR="/tmp/logstash-settings-${VERSION}"
+          DATA_DIR="/tmp/logstash-data-${VERSION}"
+          PIPELINE_PATH="/tmp/logstash-${VERSION}.conf"
+          URL="https://artifacts.elastic.co/downloads/logstash/logstash-${VERSION}-arm64.deb"
+
           sudo apt-get update
-          sudo apt-get install -y openjdk-17-jdk wget gnupg
-          
-          # Try installing via apt (Elastic repo)
-          wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | sudo gpg --dearmor -o /usr/share/keyrings/elastic-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/elastic-keyring.gpg] https://artifacts.elastic.co/packages/8.x/apt stable main" | sudo tee /etc/apt/sources.list.d/elastic-8.x.list
-          
-          sudo apt-get update
-          if sudo apt-get install -y logstash; then
-             echo "Logstash installed successfully via apt"
-             echo "install_status=success" >> $GITHUB_OUTPUT
-             echo "/usr/share/logstash/bin" >> $GITHUB_PATH
-          else
-             echo "Apt installation failed, trying direct download..."
-             # Fallback: direct download of .deb
-             VERSION="8.11.1" # Use a known stable version
-             URL="https://artifacts.elastic.co/downloads/logstash/logstash-${VERSION}-arm64.deb"
-             if wget -q $URL -O logstash.deb; then
-                if sudo dpkg -i logstash.deb; then
-                   echo "Logstash installed successfully via deb"
-                   echo "install_status=success" >> $GITHUB_OUTPUT
-                   echo "/usr/share/logstash/bin" >> $GITHUB_PATH
-                else
-                   echo "Logstash installation failed"
-                   echo "install_status=failed" >> $GITHUB_OUTPUT
-                   exit 1
-                fi
-             else
-                echo "Logstash download failed"
-                echo "install_status=failed" >> $GITHUB_OUTPUT
-                exit 1
-             fi
-          fi
+          sudo apt-get install -y curl file
+
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL "$URL" -o "$DEB_PATH"
+          rm -rf "$ROOT_DIR" "$SETTINGS_DIR" "$DATA_DIR"
+          mkdir -p "$ROOT_DIR" "$DATA_DIR"
+          dpkg-deb -x "$DEB_PATH" "$ROOT_DIR"
+
+          LOGSTASH_HOME="${ROOT_DIR}/usr/share/logstash"
+          BINARY_PATH="${LOGSTASH_HOME}/bin/logstash"
+          cp -a "${ROOT_DIR}/etc/logstash" "$SETTINGS_DIR"
+          printf '%s\n' 'input { stdin { } } output { stdout { codec => rubydebug } }' > "$PIPELINE_PATH"
+
+          echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "deb_path=$DEB_PATH" >> "$GITHUB_OUTPUT"
+          echo "root_dir=$ROOT_DIR" >> "$GITHUB_OUTPUT"
+          echo "home_dir=$LOGSTASH_HOME" >> "$GITHUB_OUTPUT"
+          echo "binary_path=$BINARY_PATH" >> "$GITHUB_OUTPUT"
+          echo "settings_dir=$SETTINGS_DIR" >> "$GITHUB_OUTPUT"
+          echo "data_dir=$DATA_DIR" >> "$GITHUB_OUTPUT"
+          echo "pipeline_path=$PIPELINE_PATH" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get Logstash version
         id: version
         run: |
-          VERSION=$(/usr/share/logstash/bin/logstash --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          VERSION=$("${{ steps.install.outputs.binary_path }}" --version 2>&1 | grep -oE 'logstash [0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}' | head -n 1 || true)
+          if [ -z "$VERSION" ]; then
+            VERSION="unknown"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Logstash version: $VERSION"
 
-      - name: Test 1 - Check logstash binary
+      - name: Test 1 - Check Logstash binary exists
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if [ -f "/usr/share/logstash/bin/logstash" ]; then
-            echo "✓ logstash binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if [ -x "${{ steps.install.outputs.binary_path }}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ logstash binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-      - name: Test 2 - Check version command
-        id: test2
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          
-          if /usr/share/logstash/bin/logstash --version 2>&1 | grep -qi "logstash"; then
-            echo "✓ version command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-      - name: Test 3 - Check help command
-        id: test3
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          
-          if /usr/share/logstash/bin/logstash --help 2>&1 | grep -qi "Usage"; then
-             echo "✓ help command works"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ help command failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-      - name: Test 4 - Check config test (dry run)
-        id: test4
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          
-          # Create a simple config
-          echo 'input { stdin {} } output { stdout {} }' > test.conf
-          
-          # Run config test
-          if /usr/share/logstash/bin/logstash -f test.conf --config.test_and_exit 2>&1 | grep -qi "Configuration OK"; then
-             echo "✓ Config test passed"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ Config test failed (or timed out)"
-             # Logstash can be heavy, being slightly lenient if it at least started
-             echo "status=passed" >> $GITHUB_OUTPUT
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-      - name: Test 5 - Check architecture verification
-        id: test5
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          # Functional Validation
-          
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-      - name: Test 6 - Regression Validation
-        id: test6
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          LATEST="$(
-            python3 - <<'PY' | while read -r v; do
-              import json, urllib.request
-              data = json.load(urllib.request.urlopen("https://artifacts-api.elastic.co/v1/versions"))
-              versions = [v for v in data["versions"] if "SNAPSHOT" not in v]
-              def key(v):
-                  return tuple(int(x) for x in v.split("."))
-              for v in sorted(versions, key=key, reverse=True):
-                  print(v)
-              PY
-              URL="https://artifacts.elastic.co/downloads/logstash/logstash-${v}-arm64.deb"
-              if wget -q --spider "$URL"; then
-                echo "$v"
-                break
-              fi
-            done
-          )" || true
-          if [ -z "$LATEST" ]; then
-            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Logstash version ${CURRENT} passed smoke tests in this run, but the next regression candidate version could not be resolved automatically." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
-          NEXT_DEB="/tmp/logstash-regression.deb"
-          NEXT_DIR=$(mktemp -d)
-          NEXT_URL="https://artifacts.elastic.co/downloads/logstash/logstash-${LATEST}-arm64.deb"
-          if wget -q -O "$NEXT_DEB" "$NEXT_URL"; then
-            dpkg-deb -x "$NEXT_DEB" "$NEXT_DIR"
-            NEXT_BIN="$NEXT_DIR/usr/share/logstash/bin/logstash"
-            if [ -x "$NEXT_BIN" ]; then
-              JAVA_BIN=$(command -v java || true)
-              if [ -n "$JAVA_BIN" ]; then
-                JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$JAVA_BIN")")")
-              else
-                JAVA_HOME=""
-              fi
-              NEXT_INSTALLED_VERSION=$(LS_JAVA_HOME="$JAVA_HOME" "$NEXT_BIN" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
-              if [ -n "$NEXT_INSTALLED_VERSION" ]; then
-                echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
-                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned Logstash version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the installed binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
-                echo "status=passed" >> "$GITHUB_OUTPUT"
-              else
-                echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
-                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned Logstash version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not report a usable version on Arm64." >> "$GITHUB_OUTPUT"
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-            else
-              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
-              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned Logstash version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not unpack into a usable Arm64 install tree." >> "$GITHUB_OUTPUT"
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          else
-            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Logstash version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
+      - name: Test 2 - Check Logstash version output
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          EXPECTED="${{ steps.install.outputs.baseline_version }}"
+          REPORTED="${{ steps.version.outputs.version }}"
+          if [ "$REPORTED" = "$EXPECTED" ] && "${{ steps.install.outputs.binary_path }}" --version 2>&1 | grep -qi "logstash"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            "${{ steps.install.outputs.binary_path }}" --version || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check Logstash help output
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if "${{ steps.install.outputs.binary_path }}" --help >/tmp/logstash-help.log 2>&1 \
+            && grep -qi "Usage" /tmp/logstash-help.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/logstash-help.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Check Logstash config test
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if timeout 180 "${{ steps.install.outputs.binary_path }}" \
+            --path.settings "${{ steps.install.outputs.settings_dir }}" \
+            --path.data "${{ steps.install.outputs.data_dir }}" \
+            -f "${{ steps.install.outputs.pipeline_path }}" \
+            --config.test_and_exit >/tmp/logstash-config.log 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/logstash-config.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Check package architecture
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          PACKAGE_ARCH=$(dpkg-deb -f "${{ steps.install.outputs.deb_path }}" Architecture)
+          if [ "$(uname -m)" = "aarch64" ] && [ "$PACKAGE_ARCH" = "arm64" ]; then
+            if [ -x "${{ steps.install.outputs.home_dir }}/jdk/bin/java" ]; then
+              file "${{ steps.install.outputs.home_dir }}/jdk/bin/java" | grep -Eqi "aarch64|arm64"
+            fi
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            dpkg-deb -f "${{ steps.install.outputs.deb_path }}" Architecture || true
+            uname -m || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+
+          LATEST="$(
+            python3 - <<'PY'
+          import json
+          import urllib.request
+
+          data = json.load(urllib.request.urlopen("https://artifacts-api.elastic.co/v1/versions"))
+          versions = [v for v in data["versions"] if "SNAPSHOT" not in v]
+
+          def key(v):
+              return tuple(int(x) for x in v.split("."))
+
+          for version in sorted(versions, key=key, reverse=True):
+              url = f"https://artifacts.elastic.co/downloads/logstash/logstash-{version}-arm64.deb"
+              req = urllib.request.Request(url, method="HEAD")
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as response:
+                      if response.status < 400:
+                          print(version)
+                          break
+              except Exception:
+                  continue
+          PY
+          )"
+
+          if [ -z "$LATEST" ]; then
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Logstash version ${CURRENT} passed smoke tests in this run, but the latest published Arm64 Logstash package could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Logstash version ${CURRENT} passed smoke tests in this run, but the latest published Arm64 Logstash package could not be resolved automatically."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Logstash version ${CURRENT} passed smoke tests in this run and is already the latest published Arm64 Logstash package." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Logstash version ${CURRENT} passed smoke tests in this run and is already the latest published Arm64 Logstash package."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_DEB="/tmp/logstash-${LATEST}-arm64.deb"
+          NEXT_ROOT="/tmp/logstash-${LATEST}-root"
+          NEXT_SETTINGS="/tmp/logstash-settings-${LATEST}"
+          NEXT_DATA="/tmp/logstash-data-${LATEST}"
+          NEXT_PIPELINE="/tmp/logstash-${LATEST}.conf"
+          NEXT_URL="https://artifacts.elastic.co/downloads/logstash/logstash-${LATEST}-arm64.deb"
+
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL "$NEXT_URL" -o "$NEXT_DEB"
+          rm -rf "$NEXT_ROOT" "$NEXT_SETTINGS" "$NEXT_DATA"
+          mkdir -p "$NEXT_ROOT" "$NEXT_DATA"
+          dpkg-deb -x "$NEXT_DEB" "$NEXT_ROOT"
+
+          NEXT_HOME="${NEXT_ROOT}/usr/share/logstash"
+          NEXT_BIN="${NEXT_HOME}/bin/logstash"
+          cp -a "${NEXT_ROOT}/etc/logstash" "$NEXT_SETTINGS"
+          printf '%s\n' 'input { stdin { } } output { stdout { codec => rubydebug } }' > "$NEXT_PIPELINE"
+
+          NEXT_REPORTED=$("$NEXT_BIN" --version 2>&1 | grep -oE 'logstash [0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}' | head -n 1 || true)
+
+          if [ "$NEXT_REPORTED" = "$LATEST" ] \
+            && "$NEXT_BIN" --help >/tmp/logstash-next-help.log 2>&1 \
+            && grep -qi "Usage" /tmp/logstash-next-help.log \
+            && timeout 180 "$NEXT_BIN" \
+              --path.settings "$NEXT_SETTINGS" \
+              --path.data "$NEXT_DATA" \
+              -f "$NEXT_PIPELINE" \
+              --config.test_and_exit >/tmp/logstash-next-config.log 2>&1 \
+            && [ "$(dpkg-deb -f "$NEXT_DEB" Architecture)" = "arm64" ]; then
+            echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Logstash version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the extracted binary reported version ${NEXT_REPORTED} while successfully passing help and config validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_REPORTED"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned Logstash version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the extracted binary reported version ${NEXT_REPORTED} while successfully passing help and config validation."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            "$NEXT_BIN" --version || true
+            cat /tmp/logstash-next-help.log || true
+            cat /tmp/logstash-next-config.log || true
+            dpkg-deb -f "$NEXT_DEB" Architecture || true
+            echo "next_installed_version=${NEXT_REPORTED:-install_failed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Logstash version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not complete version/help/config validation on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_REPORTED:-install_failed}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Logstash version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not complete version/help/config validation on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Show regression validation details
         if: always()
@@ -256,87 +314,97 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
                 REGRESSION_RESULT="Current stable version already validated on Arm64"
                 ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
               *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
+                REGRESSION_RESULT="Pending regression install validation"
                 ;;
             esac
           fi
 
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
           echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
-          
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then PASSED=$((PASSED + 1)); else FAILED=$((FAILED + 1)); fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
-          
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then PASSED=$((PASSED + 1)); else FAILED=$((FAILED + 1)); fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
-          
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then PASSED=$((PASSED + 1)); else FAILED=$((FAILED + 1)); fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-          
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then PASSED=$((PASSED + 1)); else FAILED=$((FAILED + 1)); fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-          
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then PASSED=$((PASSED + 1)); else FAILED=$((FAILED + 1)); fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-          
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          CORE_FAILED=0
+
+          for TEST in 1 2 3 4 5; do
+            STATUS="${{ steps.test1.outputs.status }}"
+            DURATION="${{ steps.test1.outputs.duration || 0 }}"
+            case "$TEST" in
+              1) STATUS="${{ steps.test1.outputs.status || 'failed' }}"; DURATION="${{ steps.test1.outputs.duration || 0 }}" ;;
+              2) STATUS="${{ steps.test2.outputs.status || 'failed' }}"; DURATION="${{ steps.test2.outputs.duration || 0 }}" ;;
+              3) STATUS="${{ steps.test3.outputs.status || 'failed' }}"; DURATION="${{ steps.test3.outputs.duration || 0 }}" ;;
+              4) STATUS="${{ steps.test4.outputs.status || 'failed' }}"; DURATION="${{ steps.test4.outputs.duration || 0 }}" ;;
+              5) STATUS="${{ steps.test5.outputs.status || 'failed' }}"; DURATION="${{ steps.test5.outputs.duration || 0 }}" ;;
+            esac
+
+            if [ "$STATUS" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + DURATION))
+          done
+
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
-            exit 1
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
           fi
 
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
+            exit 1
+          fi
 
       - name: Generate test results JSON
         if: always()
         run: |
-          # Fetch the direct job URL for deep-linking
+          set -euo pipefail
           JOB_ID="${{ github.job }}"
-          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
-          
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+
           if [ -z "$JOB_URL" ]; then
             JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
           fi
 
           mkdir -p test-results
-          
+
           cat > test-results/logstash.json << EOF
           {
             "schema_version": "1.0",
             "package": {
               "name": "Logstash",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "Java",
+              "category": "Monitoring/Observability"
             },
             "run": {
               "id": "${{ github.run_id }}",
@@ -355,27 +423,27 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Test 1 - Check logstash binary",
+                  "name": "Test 1 - Check Logstash binary exists",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Test 2 - Check version command",
+                  "name": "Test 2 - Check Logstash version output",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Test 3 - Check help command",
+                  "name": "Test 3 - Check Logstash help output",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Test 4 - Check config test (dry run)",
+                  "name": "Test 4 - Check Logstash config test",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Test 5 - Check architecture verification",
+                  "name": "Test 5 - Check package architecture",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 },
@@ -383,7 +451,7 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
-                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || '' }}",
                   "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
                   "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
                   "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
@@ -398,9 +466,7 @@ jobs:
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/logstash.json
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -408,29 +474,49 @@ jobs:
           name: logstash-test-results
           path: test-results/logstash.json
           retention-days: 90
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## Logstash Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Test 1 - Check logstash binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Test 2 - Check version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Test 3 - Check help command: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Check config test (dry run): ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Check architecture verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
+
+          echo "## Logstash Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Test 1 - Check Logstash binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Test 2 - Check Logstash version output: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Test 3 - Check Logstash help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Test 4 - Check Logstash config test: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Test 5 - Check package architecture: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

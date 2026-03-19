@@ -1,161 +1,190 @@
 name: Test Distribution Registry on Arm64
 
-# When you copy this file, uncomment the appropriate triggers below:
 on:
-  workflow_dispatch:  # Uncomment for manual testing
+  workflow_dispatch:
   workflow_call:
   push:
     branches:
       - main
       - smoke_tests
     paths:
-      - 'content/opensource_packages/distribution-registry.md'
-      - '.github/workflows/test-distribution-registry.yml'
+      - "content/opensource_packages/distribution-registry.md"
+      - ".github/workflows/test-distribution-registry.yml"
 
 jobs:
   test-distribution-registry:
     runs-on: ubuntu-24.04-arm
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=distribution-registry" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/distribution-registry" >> $GITHUB_OUTPUT
-      
-      # ============================================================
-      # CUSTOMIZE THIS: Install your package
-      # ============================================================
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=distribution-registry" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/distribution-registry" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y curl jq
+          sudo docker version >/dev/null
+
       - name: Install Distribution Registry
         id: install
         run: |
-          echo "Installing Distribution Registry..."
-          # Download binary from GitHub releases
-          # Example: registry_2.8.3_linux_arm64.tar.gz
-          
-          LATEST_TAG=$(curl -s https://api.github.com/repos/distribution/distribution/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-          if [ -z "$LATEST_TAG" ]; then LATEST_TAG="v2.8.3"; fi
-          
-          # Remove 'v' prefix if needed for filename, but check release assets first.
-          # Usually registry_2.8.3_linux_arm64.tar.gz
-          VERSION_NUM=${LATEST_TAG#v}
-          
-          wget -q "https://github.com/distribution/distribution/releases/download/${LATEST_TAG}/registry_${VERSION_NUM}_linux_arm64.tar.gz"
-          tar -xzf "registry_${VERSION_NUM}_linux_arm64.tar.gz"
-          
-          sudo cp registry /usr/local/bin/
-          
-          echo "install_status=success" >> $GITHUB_OUTPUT
-      
+          set -euo pipefail
+          CURRENT_VERSION="2.7.0"
+          WORKDIR=$(mktemp -d)
+          curl -fsSL "https://github.com/distribution/distribution/archive/refs/tags/v${CURRENT_VERSION}.tar.gz" -o "$WORKDIR/registry-${CURRENT_VERSION}.tar.gz"
+          tar -xzf "$WORKDIR/registry-${CURRENT_VERSION}.tar.gz" -C "$WORKDIR"
+          SRC_DIR="$WORKDIR/distribution-${CURRENT_VERSION}"
+          BUILD_DIR=$(mktemp -d)
+
+          sudo docker run --rm \
+            -v "$SRC_DIR":/src \
+            -v "$BUILD_DIR":/work \
+            -w /work \
+            golang:1.24-bookworm \
+            bash -lc '
+              set -euo pipefail
+              mkdir -p /work/gopath/src/github.com/docker
+              ln -s /src /work/gopath/src/github.com/docker/distribution
+              cd /work/gopath/src/github.com/docker/distribution
+              export GOPATH=/work/gopath
+              export GO111MODULE=off
+              export PATH=/usr/local/go/bin:$PATH
+              make binaries >/tmp/registry-build.log 2>&1 || { tail -n 80 /tmp/registry-build.log; exit 1; }
+              cp bin/registry /work/registry
+            '
+
+          sudo install -m 0755 "$BUILD_DIR/registry" /usr/local/bin/registry
+          echo "baseline_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
       - name: Get Registry version
         id: version
         run: |
-          VERSION=$(registry --version 2>&1 | awk '{print $3}' || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Registry version: $VERSION"
-      
+          set -euo pipefail
+          VERSION="${{ steps.install.outputs.baseline_version }}"
+          RAW_VERSION=$(registry --version 2>&1 | tr -d '\r')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected Distribution Registry release tag: $VERSION"
+          echo "Current registry version banner: ${RAW_VERSION}"
+
       - name: Test 1 - Check registry binary exists
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if command -v registry &> /dev/null; then
-            echo "✓ registry binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          if command -v registry >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ registry binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Check version command
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check version banner
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if registry --version 2>&1 | grep -qi "registry"; then
-            echo "✓ version command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          BANNER=$(registry --version 2>&1 | tr -d '\r')
+
+          if echo "$BANNER" | grep -qi 'distribution'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "$BANNER"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Test 3 - Check help output
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if registry --help 2>&1 | grep -qi "usage"; then
-            echo "✓ help command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if registry --help >/tmp/registry-help.log 2>&1 \
+            && grep -q 'serve' /tmp/registry-help.log \
+            && grep -q 'garbage-collect' /tmp/registry-help.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ help command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            cat /tmp/registry-help.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      # Add more tests as needed (test4, test5, etc.)
-      # Examples:
-      # - Run a simple command
-      # - Check configuration files
-      # - Start/stop a service
-      # - Test basic functionality
-      
-      # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
-      # ============================================================
-      
-      - name: Test 4 - Architecture Verification
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture verification
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          echo "Checking system architecture..."
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          if [ "$(uname -m)" = "aarch64" ] && file "$(command -v registry)" | grep -Eqi 'aarch64|arm64'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            file "$(command -v registry)" || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 5 - Functional Validation
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Start baseline registry
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if registry --version > /dev/null 2>&1 || registry --help > /dev/null 2>&1; then
-            echo "✓ Basic functional check passed"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          CONFIG=$(mktemp)
+          cat > "$CONFIG" <<'EOF'
+          version: 0.1
+          log:
+            level: debug
+          storage:
+            filesystem:
+              rootdirectory: /tmp/registry-data
+          http:
+            addr: :5005
+          EOF
+
+          if timeout 10s registry serve "$CONFIG" >/tmp/registry-serve.log 2>&1 || true; then
+            :
+          fi
+
+          if grep -q 'listening on' /tmp/registry-serve.log && grep -q 'redis not configured' /tmp/registry-serve.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ Basic functional check failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            cat /tmp/registry-serve.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
@@ -166,16 +195,86 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST_TAG=$(curl -fsSL \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/distribution/distribution/releases/latest | jq -r '.tag_name // empty')
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v3.0.0"
+          fi
+          LATEST_VERSION="${LATEST_TAG#v}"
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST_VERSION"
+
+          if [ "$LATEST_VERSION" = "$CURRENT" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Distribution Registry release ${CURRENT} passed smoke tests in this run and no newer stable release is currently published." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Distribution Registry release ${CURRENT} passed smoke tests in this run and no newer stable release is currently published."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_DIR=$(mktemp -d)
+          curl -fsSL -o "$NEXT_DIR/registry-${LATEST_VERSION}-arm64.tar.gz" \
+            "https://github.com/distribution/distribution/releases/download/${LATEST_TAG}/registry_${LATEST_VERSION}_linux_arm64.tar.gz"
+          tar -xzf "$NEXT_DIR/registry-${LATEST_VERSION}-arm64.tar.gz" -C "$NEXT_DIR"
+          NEXT_BIN="$NEXT_DIR/registry"
+          NEXT_REPORTED=$(timeout 10s "$NEXT_BIN" --version 2>&1 | awk '{print $NF}' | tr -d '\r\n' || true)
+          NEXT_CONFIG="$NEXT_DIR/registry.yml"
+          cat > "$NEXT_CONFIG" <<'EOF'
+          version: 0.1
+          log:
+            level: debug
+          storage:
+            filesystem:
+              rootdirectory: /tmp/registry-next-data
+          http:
+            addr: :5006
+          EOF
+          timeout 10s "$NEXT_BIN" serve "$NEXT_CONFIG" >/tmp/registry-next.log 2>&1 || true
+
+          if [ -x "$NEXT_BIN" ] \
+            && [ "$NEXT_REPORTED" = "$LATEST_VERSION" ] \
+            && grep -q 'listening on' /tmp/registry-next.log \
+            && grep -q 'redis not configured' /tmp/registry-next.log; then
+            echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Distribution Registry release ${CURRENT} passed smoke tests in this run. Regression validation downloaded the official Arm64 release asset ${LATEST_TAG}, and the candidate binary reported version ${NEXT_REPORTED} while completing a bounded real startup on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_REPORTED"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned Distribution Registry release ${CURRENT} passed smoke tests in this run. Regression validation downloaded the official Arm64 release asset ${LATEST_TAG}, and the candidate binary reported version ${NEXT_REPORTED} while completing a bounded real startup on Arm64."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/registry-next.log || true
+            echo "next_installed_version=${NEXT_REPORTED:-install_failed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Distribution Registry release ${CURRENT} passed smoke tests in this run, but the next stable Arm64 release ${LATEST_TAG} could not be validated successfully on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_REPORTED:-install_failed}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Distribution Registry release ${CURRENT} passed smoke tests in this run, but the next stable Arm64 release ${LATEST_TAG} could not be validated successfully on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Show regression validation details
         if: always()
@@ -190,14 +289,11 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
                 REGRESSION_RESULT="Current stable version already validated on Arm64"
                 ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
               *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
                   REGRESSION_RESULT="Regression validation passed"
                 else
                   REGRESSION_RESULT="Regression validation failed"
@@ -207,11 +303,11 @@ jobs:
           fi
 
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
           echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
@@ -220,84 +316,76 @@ jobs:
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
+          CORE_FAILED=0
 
-          # Check registry binary exists
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
+          for STEP in 1 2 3 4 5; do
+            if [ "${{ steps.test1.outputs.status }}" = "passed" ] && [ "$STEP" -eq 1 ] \
+              || [ "${{ steps.test2.outputs.status }}" = "passed" ] && [ "$STEP" -eq 2 ] \
+              || [ "${{ steps.test3.outputs.status }}" = "passed" ] && [ "$STEP" -eq 3 ] \
+              || [ "${{ steps.test4.outputs.status }}" = "passed" ] && [ "$STEP" -eq 4 ] \
+              || [ "${{ steps.test5.outputs.status }}" = "passed" ] && [ "$STEP" -eq 5 ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          done
+
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
-
-          # Check version command
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
-
-          # Check help output
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Architecture Verification
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Functional Validation
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
+
+          if [ "${{ steps.test6.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
+          JOB_URL=$(curl -fsSL \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+            | jq -r '.jobs[] | select(.name == "test-distribution-registry / test-distribution-registry" or .name == "test-distribution-registry") | .html_url' | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}"
+          fi
+
           mkdir -p test-results
-          
           cat > test-results/distribution-registry.json << EOF
           {
             "schema_version": "1.0",
             "package": {
               "name": "Distribution Registry",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "Containers and Orchestration",
+              "language": "Go",
               "category": "Containers and Orchestration"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -317,7 +405,7 @@ jobs:
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check version command",
+                  "name": "Check version banner",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
@@ -327,12 +415,12 @@ jobs:
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Architecture Verification",
+                  "name": "Architecture verification",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Functional Validation",
+                  "name": "Start baseline registry",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 },
@@ -340,23 +428,23 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || '' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
             "metadata": {
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}",
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/distribution-registry.json
-      
-      # ============================================================
-      # STANDARD STEPS - Usually don't need to modify below here
-      # ============================================================
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -364,37 +452,48 @@ jobs:
           name: distribution-registry-test-results
           path: test-results/distribution-registry.json
           retention-days: 90
-      
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## Distribution Registry Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check distribution-registry binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check distribution-registry version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check distribution-registry help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || '' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              *)
+                REGRESSION_RESULT="Regression validation status unavailable"
+                ;;
+            esac
+          fi
 
-          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
-
-
-
+          echo "## Distribution Registry Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Check registry binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Check version banner: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Check help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Architecture verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Start baseline registry: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

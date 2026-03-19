@@ -13,137 +13,154 @@ on:
 jobs:
   test-docker-ce:
     runs-on: ubuntu-24.04-arm
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=docker-ce" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/docker-ce" >> $GITHUB_OUTPUT
-      
-      - name: Install Docker
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=docker-ce" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/docker-ce" >> "$GITHUB_OUTPUT"
+
+      - name: Install Docker CE
         id: install
         run: |
-          echo "Installing Docker..."
-          
-          # Remove conflicting packages first
-          echo "Removing potential conflicting packages..."
-          sudo apt-get remove -y containerd containerd.io || true
-          
-          # Install using official convenience script
-          echo "Running official Docker install script..."
-          if curl -fsSL https://get.docker.com | sh; then
-             echo "Docker installed successfully"
-             echo "install_status=success" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          BASELINE_VERSION="24.0.3"
+          BASELINE_URL="https://download.docker.com/linux/static/stable/aarch64/docker-${BASELINE_VERSION}.tgz"
+          WORKDIR=$(mktemp -d)
+
+          echo "baseline_version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+          curl -fsSL -o "$WORKDIR/docker.tgz" "$BASELINE_URL"
+          tar -xzf "$WORKDIR/docker.tgz" -C "$WORKDIR"
+
+          sudo install -m 0755 "$WORKDIR/docker/docker" /usr/local/bin/docker
+          sudo install -m 0755 "$WORKDIR/docker/dockerd" /usr/local/bin/dockerd
+          sudo install -m 0755 "$WORKDIR/docker/containerd" /usr/local/bin/containerd
+          sudo install -m 0755 "$WORKDIR/docker/ctr" /usr/local/bin/ctr
+          sudo install -m 0755 "$WORKDIR/docker/runc" /usr/local/bin/runc
+
+          if command -v docker >/dev/null 2>&1 && command -v dockerd >/dev/null 2>&1; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
-             echo "Docker installation failed"
-             echo "install_status=failed" >> $GITHUB_OUTPUT
-             exit 1
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-      
-      - name: Get Docker version
+
+      - name: Get Docker CE version
         id: version
         run: |
-          VERSION=$(docker --version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Docker version: $VERSION"
-      
-      - name: Test 1 - Check docker binary exists
+          set -euo pipefail
+          RAW_VERSION=$(timeout 10s docker --version 2>&1 || true)
+          VERSION=$(printf '%s\n' "$RAW_VERSION" | awk '{print $3}' | tr -d ',\r\n')
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected Docker CE version: $VERSION"
+
+      - name: Test 1 - Check docker and dockerd binaries exist
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if command -v docker &> /dev/null; then
-            echo "✓ docker binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          if command -v docker >/dev/null 2>&1 && command -v dockerd >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ docker binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Check version command
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check docker client version output
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if docker --version 2>&1 | grep -q "version\|[0-9]"; then
-            echo "✓ docker version command works"
+
+          VERSION=$(timeout 10s docker --version 2>&1 | awk '{print $3}' | tr -d ',\r\n' || true)
+          if [ "$VERSION" = "${{ steps.install.outputs.baseline_version }}" ]; then
             docker --version
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ docker version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "Expected docker version ${{ steps.install.outputs.baseline_version }}, got ${VERSION:-unknown}"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 3 - Check help output
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check dockerd version output
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if docker --help 2>&1 | grep -qi "usage\|help\|options"; then
-            echo "✓ docker help command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          VERSION=$(timeout 10s dockerd --version 2>&1 | awk '{print $3}' | tr -d ',\r\n' || true)
+          if [ "$VERSION" = "${{ steps.install.outputs.baseline_version }}" ]; then
+            dockerd --version
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ docker help command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "Expected dockerd version ${{ steps.install.outputs.baseline_version }}, got ${VERSION:-unknown}"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 4 - Architecture Verification
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Check docker help output
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          echo "Checking system architecture..."
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          if timeout 10s docker --help 2>&1 | grep -qiE 'usage|management commands|commands'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 5 - Client/Server Check (Client only anticipated)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Verify Arm64 binaries
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # We only expect client to work if daemon isn't running/privileged
-          if docker info 2>&1 | grep -i "Client"; then
-             echo "✓ Docker client info check passed"
-             echo "status=passed" >> $GITHUB_OUTPUT
+
+          if [ "$(uname -m)" = "aarch64" ] && file /usr/local/bin/docker /usr/local/bin/dockerd | grep -qi 'ARM aarch64'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             # If docker info fails completely, that's bad, but usually it prints client info at least
-             # If it fails due to socket permissions (which is expected in some runners), we still consider binary valid
-             echo "✓ Docker binary seems present (ignoring daemon connection failure)"
-             echo "status=passed" >> $GITHUB_OUTPUT
+            file /usr/local/bin/docker /usr/local/bin/dockerd || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -151,16 +168,94 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          RELEASE_INDEX="https://download.docker.com/linux/static/stable/aarch64/"
+          LATEST_VERSION=$(curl -fsSL "$RELEASE_INDEX" | grep -oE 'docker-[0-9]+\.[0-9]+\.[0-9]+\.tgz' | sed 's/^docker-//' | sed 's/\.tgz$//' | sort -V | tail -n 1 || true)
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: ${LATEST_VERSION:-unknown}"
+
+          if [ -z "$LATEST_VERSION" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Docker CE version ${CURRENT} passed smoke tests in this run, but the next regression candidate could not be resolved from the official Arm64 static release index." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Docker CE version ${CURRENT} passed smoke tests in this run, but the next regression candidate could not be resolved from the official Arm64 static release index."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "$CURRENT" = "$LATEST_VERSION" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Docker CE version ${CURRENT} passed smoke tests in this run and is already the latest official Arm64 static release." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Docker CE version ${CURRENT} passed smoke tests in this run and is already the latest official Arm64 static release."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_DIR=$(mktemp -d)
+          NEXT_TAR="$NEXT_DIR/docker.tgz"
+          NEXT_URL="https://download.docker.com/linux/static/stable/aarch64/docker-${LATEST_VERSION}.tgz"
+          if curl -fsSL -o "$NEXT_TAR" "$NEXT_URL"; then
+            echo "Next version download status: passed"
+            tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
+            NEXT_DOCKER="$NEXT_DIR/docker/docker"
+            NEXT_DOCKERD="$NEXT_DIR/docker/dockerd"
+            NEXT_DOCKER_VERSION=$(timeout 10s "$NEXT_DOCKER" --version 2>&1 | awk '{print $3}' | tr -d ',\r\n' || true)
+            NEXT_DOCKERD_VERSION=$(timeout 10s "$NEXT_DOCKERD" --version 2>&1 | awk '{print $3}' | tr -d ',\r\n' || true)
+            if [ "$NEXT_DOCKER_VERSION" = "$LATEST_VERSION" ] && [ "$NEXT_DOCKERD_VERSION" = "$LATEST_VERSION" ] && file "$NEXT_DOCKER" "$NEXT_DOCKERD" | grep -qi 'ARM aarch64'; then
+              echo "next_installed_version=$NEXT_DOCKER_VERSION" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Docker CE version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the next official Arm64 static release ${LATEST_VERSION}, and both the docker client and dockerd binaries reported version ${NEXT_DOCKER_VERSION} on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_DOCKER_VERSION"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned Docker CE version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the next official Arm64 static release ${LATEST_VERSION}, and both the docker client and dockerd binaries reported version ${NEXT_DOCKER_VERSION} on Arm64."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=${NEXT_DOCKER_VERSION:-install_failed}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Docker CE version ${CURRENT} passed smoke tests in this run, but the next official Arm64 static release ${LATEST_VERSION} did not complete bounded version and architecture validation." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: ${NEXT_DOCKER_VERSION:-install_failed}"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Docker CE version ${CURRENT} passed smoke tests in this run, but the next official Arm64 static release ${LATEST_VERSION} did not complete bounded version and architecture validation."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Docker CE version ${CURRENT} passed smoke tests in this run, but the next official Arm64 static release ${LATEST_VERSION} could not be downloaded." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Docker CE version ${CURRENT} passed smoke tests in this run, but the next official Arm64 static release ${LATEST_VERSION} could not be downloaded."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Show regression validation details
         if: always()
@@ -204,48 +299,49 @@ jobs:
         run: |
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check docker binary exists
           if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Check version command
           if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Check help output
           if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Architecture Verification
           if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
-          # Client/Server Check (Client only anticipated)
           if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
+
           if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -253,24 +349,34 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ $CORE_FAILED -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}"
+          fi
+
           mkdir -p test-results
-          
+
           cat > test-results/docker-ce.json << EOF
           {
             "schema_version": "1.0",
@@ -282,7 +388,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -297,27 +403,27 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check docker binary exists",
+                  "name": "Check docker and dockerd binaries exist",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check version command",
+                  "name": "Check docker client version output",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check help output",
+                  "name": "Check dockerd version output",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Architecture Verification",
+                  "name": "Check docker help output",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Client/Server Check (Client only anticipated)",
+                  "name": "Verify Arm64 binaries",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 },
@@ -325,19 +431,23 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
             "metadata": {
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}",
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/docker-ce.json
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -345,31 +455,50 @@ jobs:
           name: docker-ce-test-results
           path: test-results/docker-ce.json
           retention-days: 90
-      
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## Docker CE Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check docker binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || 'manual_review_needed' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
 
+          echo "## Docker CE Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Check docker and dockerd binaries exist: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Check docker client version output: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Check dockerd version output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Check docker help output: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Verify Arm64 binaries: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> Support badge remains tied to Tests 1-5. Test 6 reports next-version install readiness on Arm64." >> "$GITHUB_STEP_SUMMARY"

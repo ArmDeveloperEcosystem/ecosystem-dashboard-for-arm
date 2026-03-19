@@ -28,6 +28,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=nsq" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/nsq" >> "$GITHUB_OUTPUT"
+          echo "current_version=${NSQ_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install NSQ
         id: install
@@ -224,20 +225,57 @@ jobs:
               ;;
           esac
 
-          NEXT_INSTALLED_VERSION="$LATEST"
+          NEXT_BIN=$(find "$TMPDIR" -type f -name nsqd -print -quit)
+          if [ -z "$NEXT_BIN" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NSQ version $CURRENT passed smoke tests in this run, but the extracted candidate artifact from $NEXT_URL did not contain an nsqd binary on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_INSTALLED_VERSION=$("$NEXT_BIN" --version 2>&1 | sed -n 's/^nsqd v//p' | head -n 1 | tr -d '\r')
+          if [ -z "$NEXT_INSTALLED_VERSION" ]; then
+            echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NSQ version $CURRENT passed smoke tests in this run, but the candidate Arm64 binary from $NEXT_URL did not report a usable version string." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: unknown"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
           if [ "$CURRENT" = "$LATEST" ] || [ "$BASELINE_CLEAN" = "$LATEST_CLEAN" ]; then
             echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
             echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned NSQ version $CURRENT matches the latest stable candidate. Regression validation re-downloaded and extracted the Arm64 artifact from $NEXT_URL successfully." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NSQ version $CURRENT matches the latest stable candidate. Regression validation re-downloaded and extracted the Arm64 artifact from $NEXT_URL successfully, and the candidate binary reported version $NEXT_INSTALLED_VERSION." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
             echo "Regression install result: Current stable version already validated on Arm64"
-          else
+          elif [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ] || [ "$NEXT_INSTALLED_VERSION" = "$LATEST_CLEAN" ]; then
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned NSQ version $CURRENT passed smoke tests in this run. Regression validation downloaded and extracted the candidate Arm64 artifact from $NEXT_URL successfully." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NSQ version $CURRENT passed smoke tests in this run. Regression validation downloaded and extracted the candidate Arm64 artifact from $NEXT_URL successfully, and the candidate binary reported version $NEXT_INSTALLED_VERSION." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
             echo "Regression install result: Next version installed successfully on Arm64"
+          else
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NSQ version $CURRENT passed smoke tests in this run, but the candidate Arm64 binary from $NEXT_URL reported version $NEXT_INSTALLED_VERSION instead of the expected latest stable version $LATEST_CLEAN." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
@@ -284,8 +322,10 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
           check_test() {
             local status="$1"
@@ -297,31 +337,47 @@ jobs:
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
-          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_core() {
+            local status="$1"
+            local duration="$2"
+            check_test "$status" "$duration"
+            if [ "$status" != "passed" ]; then
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          }
+          check_core "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
           check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
-          if [ "${{ steps.test1.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test2.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test3.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test4.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 
       - name: Generate test results JSON
         if: always()
         run: |
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
           mkdir -p test-results
           cat > test-results/nsq.json <<EOF_JSON
           {
@@ -334,7 +390,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -353,12 +409,13 @@ jobs:
                 {"name": "Test 3 - Help Output Validation", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
                 {"name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
                 {"name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
-                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}", "latest_version": "${{ steps.test6.outputs.latest_version || steps.version.outputs.latest }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}"}
+                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}", "latest_version": "${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || 'unknown' }}", "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}"}
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "core_failed": ${{ steps.summary.outputs.core_failed || 0 }}
             }
           }
           EOF_JSON

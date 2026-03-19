@@ -54,7 +54,7 @@ jobs:
         run: |
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "package_slug=Crystal-Language" >> $GITHUB_OUTPUT
-          echo "dashboard_link="/opensource_packages/Crystal-Language"" >> $GITHUB_OUTPUT
+          echo "dashboard_link=/opensource_packages/Crystal-Language" >> $GITHUB_OUTPUT
       
       # ============================================================
       # CUSTOMIZE THIS: Install your package
@@ -228,14 +228,89 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="$(echo "${{ steps.version.outputs.version || 'unknown' }}" | tr -d '[:space:]' | sed 's/^v//')"
+          LATEST_RAW=$(GH_TOKEN=${{ github.token }} gh api repos/crystal-lang/crystal/releases/latest --jq .tag_name 2>/dev/null || true)
+          LATEST_TAG=$(echo "$LATEST_RAW" | tr -d '[:space:]')
+          LATEST="${LATEST_TAG#v}"
+          NEXT_INSTALLED="not_installed"
+          DECISION="next_lookup_failed"
+          REGRESSION_RESULT="Next version install failed on Arm64"
+          COMPARISON="Current pinned Crystal Language version ${CURRENT} passed smoke tests in this run, but the next regression candidate version could not be resolved automatically."
+          STATUS="failed"
+
+          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
+            NEXT_INSTALLED="lookup_failed"
+          elif [ "$CURRENT" = "$LATEST" ]; then
+            NEXT_INSTALLED="$CURRENT"
+            DECISION="current_is_latest_stable"
+            REGRESSION_RESULT="Current stable version already validated on Arm64"
+            COMPARISON="Current pinned Crystal Language version ${CURRENT} already matches the latest stable upstream Arm64 release, so there is no newer version to install in Test 6."
+            STATUS="passed"
+          else
+            NEXT_DIR=$(mktemp -d /tmp/crystal-next-XXXXXX)
+            NEXT_TARBALL="$NEXT_DIR/crystal.tar.gz"
+            PRIMARY_ASSET="crystal-${LATEST}-1-linux-aarch64.tar.gz"
+            FALLBACK_ASSET="crystal-${LATEST}-1-linux-aarch64-bundled.tar.gz"
+            ASSET_NAME=""
+
+            if GH_TOKEN=${{ github.token }} gh api repos/crystal-lang/crystal/releases/latest --jq '.assets[]?.name' | grep -Fxq "$PRIMARY_ASSET"; then
+              ASSET_NAME="$PRIMARY_ASSET"
+            elif GH_TOKEN=${{ github.token }} gh api repos/crystal-lang/crystal/releases/latest --jq '.assets[]?.name' | grep -Fxq "$FALLBACK_ASSET"; then
+              ASSET_NAME="$FALLBACK_ASSET"
+            fi
+
+            if [ -n "$ASSET_NAME" ] && curl -fsSL -o "$NEXT_TARBALL" "https://github.com/crystal-lang/crystal/releases/download/${LATEST_TAG}/${ASSET_NAME}"; then
+              tar -xzf "$NEXT_TARBALL" -C "$NEXT_DIR"
+              NEXT_BIN=$(find "$NEXT_DIR" -type f -path '*/bin/crystal' | head -1)
+              if [ -n "$NEXT_BIN" ] && [ -f "$NEXT_BIN" ]; then
+                chmod +x "$NEXT_BIN"
+                NEXT_INSTALLED_VERSION=$("$NEXT_BIN" --version 2>&1 | grep -oP '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+                if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
+                  NEXT_INSTALLED="$NEXT_INSTALLED_VERSION"
+                  DECISION="next_install_validated"
+                  REGRESSION_RESULT="Next version installed successfully on Arm64"
+                  COMPARISON="Current pinned Crystal Language version ${CURRENT} passed smoke tests in this run. Regression validation downloaded candidate release ${LATEST} for Arm64, and the extracted crystal binary reported version ${NEXT_INSTALLED_VERSION}."
+                  STATUS="passed"
+                else
+                  NEXT_INSTALLED="${NEXT_INSTALLED_VERSION:-unknown}"
+                  DECISION="next_install_failed"
+                  REGRESSION_RESULT="Next version installed but reported a version mismatch on Arm64"
+                  COMPARISON="Current pinned Crystal Language version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} extracted on Arm64 and reported version ${NEXT_INSTALLED} instead of the expected ${LATEST}."
+                fi
+              else
+                NEXT_INSTALLED="install_failed"
+                DECISION="next_install_failed"
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                COMPARISON="Current pinned Crystal Language version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not extract a usable Arm64 crystal binary."
+              fi
+            else
+              NEXT_INSTALLED="install_failed"
+              DECISION="next_install_failed"
+              REGRESSION_RESULT="Next version install failed on Arm64"
+              COMPARISON="Current pinned Crystal Language version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded for Arm64."
+            fi
+          fi
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=$NEXT_INSTALLED" >> "$GITHUB_OUTPUT"
+          echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
+          echo "regression_result=$REGRESSION_RESULT" >> "$GITHUB_OUTPUT"
+          echo "comparison=$COMPARISON" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+          echo "Next version installed on Arm64: $NEXT_INSTALLED"
+          echo "Regression install result: $REGRESSION_RESULT"
+          echo "Details: $COMPARISON"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+          if [ "$STATUS" != "passed" ]; then
+            exit 1
+          fi
 
 
       - name: Show regression validation details
@@ -453,7 +528,6 @@ jobs:
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
 
 
 

@@ -13,7 +13,10 @@ on:
 jobs:
   test-rocksdbjni:
     runs-on: ubuntu-24.04-arm
-    
+    env:
+      ROCKSDBJNI_VERSION: "10.5.1"
+      ROCKSDBJNI_WORKDIR: "/tmp/rocksdbjni-smoke"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -28,13 +31,13 @@ jobs:
       - name: Install RocksDBjni
         id: install
         run: |
-          echo "Installing RocksDBjni..."
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
 
           sudo apt-get update
-          sudo apt-get install -y openjdk-21-jdk-headless maven
+          sudo apt-get install -y openjdk-21-jdk-headless maven unzip file curl python3
 
-          ROCKSDBJNI_VERSION="10.5.1"
-          PROJECT_DIR=/tmp/rocksdbjni-smoke
+          PROJECT_DIR="${ROCKSDBJNI_WORKDIR}"
           rm -rf "$PROJECT_DIR"
           mkdir -p "$PROJECT_DIR/src/main/java"
 
@@ -85,21 +88,40 @@ jobs:
           }
           EOF
 
-          if mvn -q -f "$PROJECT_DIR/pom.xml" dependency:resolve >/dev/null 2>&1; then
-            echo "RocksDBjni installed successfully"
-            echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-            echo "RocksDBjni installation failed"
-            echo "install_status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
+          mvn -q -f "$PROJECT_DIR/pom.xml" dependency:resolve >/dev/null
+          mvn -q -f "$PROJECT_DIR/pom.xml" compile >/dev/null
+
+          JAR_PATH="$HOME/.m2/repository/org/rocksdb/rocksdbjni/${ROCKSDBJNI_VERSION}/rocksdbjni-${ROCKSDBJNI_VERSION}.jar"
+          test -f "$JAR_PATH"
+
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "jar_path=$JAR_PATH" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
       
       - name: Get RocksDBjni version
         id: version
         run: |
-          VERSION=$(mvn -q -f /tmp/rocksdbjni-smoke/pom.xml compile exec:java -Dexec.mainClass=VersionMain 2>/dev/null | tail -n 1 || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          PROJECT_DIR="${{ steps.install.outputs.project_dir }}"
+          VERSION=$(mvn -q -f "$PROJECT_DIR/pom.xml" exec:java -Dexec.mainClass=VersionMain -Dexec.classpathScope=runtime 2>/dev/null | tail -n 1 || echo "unknown")
+          LATEST=$(
+            python3 - <<'PY'
+          import urllib.request
+          import xml.etree.ElementTree as ET
+
+          xml = urllib.request.urlopen(
+              "https://repo1.maven.org/maven2/org/rocksdb/rocksdbjni/maven-metadata.xml",
+              timeout=20,
+          ).read()
+          root = ET.fromstring(xml)
+          versions = [v.text for v in root.findall(".//version") if v.text]
+          print(versions[-1] if versions else "unknown")
+          PY
+          )
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
           echo "Detected RocksDBjni version: $VERSION"
+          echo "Detected latest stable release: $LATEST"
       
       # ============================================================
       # ADD YOUR TESTS BELOW
@@ -114,57 +136,62 @@ jobs:
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
 
-          JAR=$(find ~/.m2/repository/org/rocksdb/rocksdbjni -path '*/10.5.1/rocksdbjni-10.5.1.jar' | head -n 1)
+          JAR="${{ steps.install.outputs.jar_path }}"
           if [ -n "$JAR" ] && unzip -l "$JAR" | grep -q 'librocksdbjni-linux-aarch64.so'; then
             echo "✓ RocksDBjni jar contains Arm64 native library"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "✗ RocksDBjni jar or Arm64 native library not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
       - name: Test 2 - Check RocksDBjni version output
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
 
-          if mvn -q -f /tmp/rocksdbjni-smoke/pom.xml compile exec:java -Dexec.mainClass=VersionMain >/tmp/rocksdbjni-version.log 2>&1 && grep -qx '10.5.1' /tmp/rocksdbjni-version.log; then
+          PROJECT_DIR="${{ steps.install.outputs.project_dir }}"
+          if mvn -q -f "$PROJECT_DIR/pom.xml" exec:java -Dexec.mainClass=VersionMain -Dexec.classpathScope=runtime >/tmp/rocksdbjni-version.log 2>&1 && grep -qx "${ROCKSDBJNI_VERSION}" /tmp/rocksdbjni-version.log; then
             echo "✓ RocksDBjni version query works"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/rocksdbjni-version.log || true
             echo "✗ RocksDBjni version query failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
       - name: Test 3 - Check Maven dependency resolution
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
 
-          if mvn -q -f /tmp/rocksdbjni-smoke/pom.xml dependency:build-classpath -Dmdep.outputFile=/tmp/rocksdbjni.classpath >/dev/null 2>&1 && grep -q 'rocksdbjni-10.5.1.jar' /tmp/rocksdbjni.classpath; then
+          PROJECT_DIR="${{ steps.install.outputs.project_dir }}"
+          if mvn -q -f "$PROJECT_DIR/pom.xml" dependency:build-classpath -Dmdep.outputFile=/tmp/rocksdbjni.classpath >/dev/null 2>&1 && grep -q "rocksdbjni-${ROCKSDBJNI_VERSION}.jar" /tmp/rocksdbjni.classpath; then
             echo "✓ Maven resolved the RocksDBjni classpath"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "✗ Maven failed to resolve the RocksDBjni classpath"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
       # Add more tests as needed (test4, test5, etc.)
       # Examples:
@@ -182,34 +209,44 @@ jobs:
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          echo "Checking system architecture..."
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          JAR="${{ steps.install.outputs.jar_path }}"
+          EXTRACT_DIR="/tmp/rocksdbjni-arch-check"
+          rm -rf "$EXTRACT_DIR"
+          mkdir -p "$EXTRACT_DIR"
+          unzip -j -o "$JAR" 'librocksdbjni-linux-aarch64.so' -d "$EXTRACT_DIR" >/dev/null
+
+          if [ "$(uname -m)" = "aarch64" ] && file "$EXTRACT_DIR/librocksdbjni-linux-aarch64.so" | grep -qi 'ARM aarch64'; then
+            echo "✓ Native library is built for Arm64"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            uname -m
+            file "$EXTRACT_DIR/librocksdbjni-linux-aarch64.so" || true
+            echo "✗ Native library architecture verification failed"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 5 - Functional Validation
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if mvn -q -f /tmp/rocksdbjni-smoke/pom.xml compile exec:java -Dexec.mainClass=Main >/tmp/rocksdbjni-main.log 2>&1 && grep -qx 'ok' /tmp/rocksdbjni-main.log; then
+          PROJECT_DIR="${{ steps.install.outputs.project_dir }}"
+          rm -rf /tmp/rocksdbjni-db
+          if mvn -q -f "$PROJECT_DIR/pom.xml" exec:java -Dexec.mainClass=Main -Dexec.classpathScope=runtime >/tmp/rocksdbjni-main.log 2>&1 && grep -qx 'ok' /tmp/rocksdbjni-main.log; then
             echo "✓ RocksDBjni completed a real put/get round trip"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/rocksdbjni-main.log || true
             echo "✗ RocksDBjni functional validation failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
@@ -220,33 +257,132 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT_VERSION="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST_VERSION=$(python3 - <<'PY'
-          import urllib.request, xml.etree.ElementTree as ET
-          xml = urllib.request.urlopen("https://repo1.maven.org/maven2/org/rocksdb/rocksdbjni/maven-metadata.xml").read()
-          root = ET.fromstring(xml)
-          versions = [v.text for v in root.findall(".//version")]
-          print(versions[-1])
-          PY
-          )
-
-          if [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
-            DECISION="already_at_latest"
-            COMPARISON="Current pinned version matches the latest stable Maven Central release and passed the smoke tests on Arm64."
-          else
-            DECISION="manual_review_needed"
-            COMPARISON="Current pinned version passed the smoke tests on Arm64. The latest stable upstream release differs and still needs an explicit upgrade regression run before any version bump."
-          fi
+          LATEST_VERSION="${{ steps.version.outputs.latest || 'unknown' }}"
+          REGRESSION_DIR="/tmp/rocksdbjni-regression"
+          NEXT_INSTALLED="not_installed"
+          STATUS="failed"
 
           echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
-          echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
-          echo "comparison=$COMPARISON" >> "$GITHUB_OUTPUT"
-          echo "note=$COMPARISON" >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT_VERSION"
+          echo "Next version targeted for install validation: $LATEST_VERSION"
+
+          if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "unknown" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned RocksDBjni version $CURRENT_VERSION passed smoke tests in this run, but the latest stable Maven Central release could not be resolved for Arm64 install validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          rm -rf "$REGRESSION_DIR"
+          mkdir -p "$REGRESSION_DIR/src/main/java"
+
+          cat > "$REGRESSION_DIR/pom.xml" <<EOF
+          <project xmlns="http://maven.apache.org/POM/4.0.0"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>smoke</groupId>
+            <artifactId>rocksdbjni-regression</artifactId>
+            <version>1.0.0</version>
+            <properties>
+              <maven.compiler.source>17</maven.compiler.source>
+              <maven.compiler.target>17</maven.compiler.target>
+            </properties>
+            <dependencies>
+              <dependency>
+                <groupId>org.rocksdb</groupId>
+                <artifactId>rocksdbjni</artifactId>
+                <version>${LATEST_VERSION}</version>
+              </dependency>
+            </dependencies>
+          </project>
+          EOF
+
+          cat > "$REGRESSION_DIR/src/main/java/VersionMain.java" <<'EOF'
+          import org.rocksdb.RocksDB;
+          public class VersionMain {
+            public static void main(String[] args) {
+              RocksDB.loadLibrary();
+              System.out.println(RocksDB.rocksdbVersion());
+            }
+          }
+          EOF
+
+          cat > "$REGRESSION_DIR/src/main/java/Main.java" <<'EOF'
+          import org.rocksdb.Options;
+          import org.rocksdb.RocksDB;
+          public class Main {
+            public static void main(String[] args) throws Exception {
+              RocksDB.loadLibrary();
+              try (Options options = new Options().setCreateIfMissing(true);
+                   RocksDB db = RocksDB.open(options, "/tmp/rocksdbjni-db-next")) {
+                db.put("arm64".getBytes(), "ok".getBytes());
+                System.out.println(new String(db.get("arm64".getBytes())));
+              }
+            }
+          }
+          EOF
+
+          mvn -q -f "$REGRESSION_DIR/pom.xml" dependency:resolve >/dev/null
+          mvn -q -f "$REGRESSION_DIR/pom.xml" compile >/dev/null
+
+          NEXT_JAR="$HOME/.m2/repository/org/rocksdb/rocksdbjni/${LATEST_VERSION}/rocksdbjni-${LATEST_VERSION}.jar"
+          test -f "$NEXT_JAR"
+          unzip -l "$NEXT_JAR" | grep -q 'librocksdbjni-linux-aarch64.so'
+
+          NEXT_ARCH_DIR="/tmp/rocksdbjni-next-arch"
+          rm -rf "$NEXT_ARCH_DIR"
+          mkdir -p "$NEXT_ARCH_DIR"
+          unzip -j -o "$NEXT_JAR" 'librocksdbjni-linux-aarch64.so' -d "$NEXT_ARCH_DIR" >/dev/null
+          file "$NEXT_ARCH_DIR/librocksdbjni-linux-aarch64.so" | grep -qi 'ARM aarch64'
+
+          NEXT_INSTALLED=$(mvn -q -f "$REGRESSION_DIR/pom.xml" exec:java -Dexec.mainClass=VersionMain -Dexec.classpathScope=runtime 2>/dev/null | tail -n 1 || true)
+          rm -rf /tmp/rocksdbjni-db-next
+
+          if mvn -q -f "$REGRESSION_DIR/pom.xml" exec:java -Dexec.mainClass=Main -Dexec.classpathScope=runtime >/tmp/rocksdbjni-next-main.log 2>&1 && \
+             grep -qx 'ok' /tmp/rocksdbjni-next-main.log && \
+             [ "$NEXT_INSTALLED" = "$LATEST_VERSION" ]; then
+            echo "next_installed_version=$NEXT_INSTALLED" >> "$GITHUB_OUTPUT"
+            if [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
+              echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned RocksDBjni version $CURRENT_VERSION already matches the latest stable Maven Central release. Regression validation recreated the dependency graph in an isolated Arm64 project, confirmed the candidate JAR still ships librocksdbjni-linux-aarch64.so, and passed the real put/get smoke successfully." >> "$GITHUB_OUTPUT"
+              echo "Regression install result: Current stable version already validated on Arm64"
+            else
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned RocksDBjni version $CURRENT_VERSION passed smoke tests in this run. Regression validation installed candidate version $LATEST_VERSION from Maven Central on Arm64, confirmed the bundled aarch64 native library, and passed the real put/get smoke successfully." >> "$GITHUB_OUTPUT"
+              echo "Regression install result: Next version installed successfully on Arm64"
+            fi
+            STATUS="passed"
+          else
+            cat /tmp/rocksdbjni-next-main.log || true
+            echo "next_installed_version=${NEXT_INSTALLED:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned RocksDBjni version $CURRENT_VERSION passed smoke tests in this run, but candidate version $LATEST_VERSION did not complete the isolated Arm64 install-and-put/get validation successfully." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Next version install failed on Arm64"
+          fi
+
+          echo "Next version installed on Arm64: ${NEXT_INSTALLED}"
+          echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+          if [ "$STATUS" != "passed" ]; then
+            exit 1
+          fi
 
 
       - name: Show regression validation details
@@ -289,50 +425,30 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check rocksdbjni binary exists
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          # Check rocksdbjni version command
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" ${{ steps.test1.outputs.duration || 0 }}
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" ${{ steps.test2.outputs.duration || 0 }}
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" ${{ steps.test3.outputs.duration || 0 }}
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" ${{ steps.test4.outputs.duration || 0 }}
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" ${{ steps.test5.outputs.duration || 0 }}
 
-          # Check rocksdbjni help output
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Architecture Verification
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Functional Validation
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
           if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -340,36 +456,46 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
-          
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
           cat > test-results/rocksdbjni.json << EOF
           {
             "schema_version": "1.0",
             "package": {
               "name": "RocksDBjni",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "Database",
+              "language": "Java",
               "category": "Database"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -411,13 +537,21 @@ jobs:
                 {
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}
                 }
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
+            },
+            "regression": {
+              "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
+              "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+              "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+              "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+              "regression_result": "${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}",
+              "comparison": "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
             }
           }
           EOF
@@ -440,6 +574,7 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
           echo "## RocksDBjni Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
@@ -453,9 +588,8 @@ jobs:
           echo "1. Check RocksDBjni jar and Arm64 native library: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "2. Check RocksDBjni version output: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "3. Check Maven dependency resolution: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
-          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "4. Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
@@ -464,5 +598,3 @@ jobs:
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-

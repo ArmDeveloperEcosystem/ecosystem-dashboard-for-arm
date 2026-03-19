@@ -1,161 +1,317 @@
 name: Test Envoy on Arm64
 
-# This workflow tests Envoy installation and functionality on Arm64 runners
 on:
-  workflow_dispatch:  # Allow manual triggering
-  workflow_call:  # Allow being called by parent workflow
+  workflow_dispatch:
+  workflow_call:
   push:
     branches:
       - main
       - smoke_tests
     paths:
-      - 'content/opensource_packages/envoy.md'
-      - '.github/workflows/test-envoy.yml'
+      - "content/opensource_packages/envoy.md"
+      - ".github/workflows/test-envoy.yml"
 
 jobs:
   test-envoy:
     runs-on: ubuntu-24.04-arm
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=envoy" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/envoy" >> $GITHUB_OUTPUT
-      
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=envoy" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/envoy" >> "$GITHUB_OUTPUT"
+
       - name: Install Envoy
         id: install
         run: |
-          echo "Installing Envoy..."
-          # Download official ARM64 binary from GitHub releases
-          sudo curl -L -o /usr/local/bin/envoy https://github.com/envoyproxy/envoy/releases/download/v1.30.0/envoy-1.30.0-linux-aarch_64
-          sudo chmod +x /usr/local/bin/envoy
-          
-          # Verify installation
-          if command -v envoy &> /dev/null; then
-            echo "Envoy installed successfully"
-            echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-            echo "Envoy installation failed"
-            echo "install_status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-      
+          set -euo pipefail
+          CURRENT_VERSION="1.30.0"
+          WORK_DIR=$(mktemp -d)
+          BIN_PATH="${WORK_DIR}/envoy"
+          curl -fsSL "https://github.com/envoyproxy/envoy/releases/download/v${CURRENT_VERSION}/envoy-${CURRENT_VERSION}-linux-aarch_64" -o "$BIN_PATH"
+          chmod +x "$BIN_PATH"
+          sudo install -m 0755 "$BIN_PATH" /usr/local/bin/envoy
+          echo "baseline_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "binary_path=/usr/local/bin/envoy" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
       - name: Get Envoy version
         id: version
         run: |
-          VERSION=$(envoy --version 2>&1 | grep -oP 'version: [^/]+/\K[^/]+' || envoy --version 2>&1 | awk '{print $3}' | cut -d'/' -f2 || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          VERSION=$(envoy --version 2>&1 | grep -oP 'version: [^/]+/\K[^/]+' || true)
+          if [ -z "$VERSION" ]; then
+            VERSION=$(envoy --version 2>&1 | awk -F'/' '/version: / {print $2}' | tr -d '\r\n' || true)
+          fi
+          if [ -z "$VERSION" ]; then
+            VERSION="unknown"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Envoy version: $VERSION"
-      
-      - name: Test 1 - Check envoy binary exists
+
+      - name: Test 1 - Check Envoy binary exists
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if command -v envoy &> /dev/null; then
-            echo "✓ envoy binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if command -v envoy >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ envoy binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Check envoy version
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check Envoy version output
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if envoy --version 2>&1 | grep -q "version:"; then
-            echo "✓ envoy version command works"
-            envoy --version
-            echo "status=passed" >> $GITHUB_OUTPUT
+          EXPECTED="${{ steps.install.outputs.baseline_version }}"
+          REPORTED="${{ steps.version.outputs.version }}"
+          if [ "$REPORTED" = "$EXPECTED" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ envoy version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            envoy --version || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 3 - Validate envoy help output
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Validate Envoy help output
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if envoy --help 2>&1 | grep -q "USAGE"; then
-            echo "✓ envoy help output is valid"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if envoy --help >/tmp/envoy-help.log 2>&1 && grep -Eqi 'usage|options|admin-address-path' /tmp/envoy-help.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ envoy help output validation failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            cat /tmp/envoy-help.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 4 - Check envoy admin address option
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Validate a minimal configuration
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if envoy --help 2>&1 | grep -q "admin-address-path"; then
-            echo "✓ envoy admin-address-path option exists"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          cat > /tmp/envoy-minimal.yaml <<'EOF'
+          admin:
+            access_log_path: /tmp/envoy-admin.log
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 9901
+          static_resources:
+            listeners:
+            - name: listener_0
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 10000
+              filter_chains:
+              - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: ingress_http
+                    route_config:
+                      name: local_route
+                      virtual_hosts:
+                      - name: local_service
+                        domains: ["*"]
+                        routes:
+                        - match: { prefix: "/" }
+                          direct_response:
+                            status: 200
+                            body:
+                              inline_string: "ok"
+                    http_filters:
+                    - name: envoy.filters.http.router
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+          EOF
+          if envoy --mode validate -c /tmp/envoy-minimal.yaml >/tmp/envoy-validate.log 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ envoy admin-address-path option not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            cat /tmp/envoy-validate.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT      
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Test 5 - Architecture Verification
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Functional Validation
-          ARCH=$(uname -m)
-
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if [ "$(uname -m)" = "aarch64" ] && file "${{ steps.install.outputs.binary_path }}" | grep -Eqi 'aarch64|arm64'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "status=failed" >> $GITHUB_OUTPUT
+            file "${{ steps.install.outputs.binary_path }}" || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 6 - Regression Validation
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version }}"
+          LATEST="$(
+            python3 - <<'PY'
+          import json, urllib.request
+          req = urllib.request.Request(
+              'https://api.github.com/repos/envoyproxy/envoy/releases/latest',
+              headers={'User-Agent': 'github-actions'},
+          )
+          print(json.load(urllib.request.urlopen(req))['tag_name'].lstrip('v'))
+          PY
+          )"
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ -z "$LATEST" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Envoy version ${CURRENT} passed smoke tests in this run, but the latest upstream Arm64 release could not be resolved for candidate validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Envoy version ${CURRENT} passed smoke tests in this run, but the latest upstream Arm64 release could not be resolved for candidate validation."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Envoy version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 candidate for this workflow." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Envoy version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 candidate for this workflow."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_DIR=$(mktemp -d)
+          NEXT_BIN="${NEXT_DIR}/envoy"
+          curl -fsSL "https://github.com/envoyproxy/envoy/releases/download/v${LATEST}/envoy-${LATEST}-linux-aarch_64" -o "$NEXT_BIN"
+          chmod +x "$NEXT_BIN"
+          NEXT_REPORTED=$("$NEXT_BIN" --version 2>&1 | grep -oP 'version: [^/]+/\K[^/]+' || true)
+          if [ -z "$NEXT_REPORTED" ]; then
+            NEXT_REPORTED=$("$NEXT_BIN" --version 2>&1 | awk -F'/' '/version: / {print $2}' | tr -d '\r\n' || true)
+          fi
+
+          cat > "${NEXT_DIR}/envoy-minimal.yaml" <<'EOF'
+          admin:
+            access_log_path: /tmp/envoy-admin-next.log
+            address:
+              socket_address:
+                address: 127.0.0.1
+                port_value: 9902
+          static_resources:
+            listeners:
+            - name: listener_0
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 10001
+              filter_chains:
+              - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: ingress_http
+                    route_config:
+                      name: local_route
+                      virtual_hosts:
+                      - name: local_service
+                        domains: ["*"]
+                        routes:
+                        - match: { prefix: "/" }
+                          direct_response:
+                            status: 200
+                            body:
+                              inline_string: "ok"
+                    http_filters:
+                    - name: envoy.filters.http.router
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+          EOF
+
+          if [ "$NEXT_REPORTED" = "$LATEST" ] \
+            && file "$NEXT_BIN" | grep -Eqi 'aarch64|arm64' \
+            && "$NEXT_BIN" --help >/tmp/envoy-next-help.log 2>&1 \
+            && grep -Eqi 'usage|options|admin-address-path' /tmp/envoy-next-help.log \
+            && "$NEXT_BIN" --mode validate -c "${NEXT_DIR}/envoy-minimal.yaml" >/tmp/envoy-next-validate.log 2>&1; then
+            echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Envoy version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the next official Arm64 release ${LATEST}, and the candidate binary reported version ${NEXT_REPORTED} while successfully validating the minimal Envoy configuration on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_REPORTED"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned Envoy version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the next official Arm64 release ${LATEST}, and the candidate binary reported version ${NEXT_REPORTED} while successfully validating the minimal Envoy configuration on Arm64."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            file "$NEXT_BIN" || true
+            "$NEXT_BIN" --version || true
+            cat /tmp/envoy-next-help.log || true
+            cat /tmp/envoy-next-validate.log || true
+            echo "next_installed_version=${NEXT_REPORTED:-install_failed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Envoy version ${CURRENT} passed smoke tests in this run, but the candidate release ${LATEST} did not validate as a usable Arm64 Envoy binary." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_REPORTED:-install_failed}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Envoy version ${CURRENT} passed smoke tests in this run, but the candidate release ${LATEST} did not validate as a usable Arm64 Envoy binary."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Show regression validation details
         if: always()
@@ -187,105 +343,112 @@ jobs:
           fi
 
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
           echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check envoy binary exists
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+          # Check Envoy binary exists
+          if [ "${{ steps.test1.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Check envoy version
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+          # Check Envoy version output
+          if [ "${{ steps.test2.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Validate envoy help output
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+          # Validate Envoy help output
+          if [ "${{ steps.test3.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Check envoy admin address option
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+          # Validate a minimal configuration
+          if [ "${{ steps.test4.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
-
-          # Architecture Verification
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+          # Architecture verification
+          if [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
+
+          # Regression validation
+          if [ "${{ steps.test6.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
-          # Fetch the direct job URL for deep-linking
           JOB_ID="${{ github.job }}"
-          # Using GH_TOKEN to find the exact job URL. 
-          # Reusable workflows are often named "JobID / JobID" or just "JobID"
           JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
-          
-          # Fallback if URL calculation fails
+
           if [ -z "$JOB_URL" ]; then
             JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
           fi
 
           mkdir -p test-results
-          
-          cat > test-results/envoy.json << EOF
+
+          cat > test-results/envoy.json <<EOF
           {
             "schema_version": "1.0",
             "package": {
               "name": "Envoy",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "c++",
-              "category": "Proxy"
+              "language": "C++",
+              "category": "Containers and Orchestration"
             },
             "run": {
               "id": "${{ github.run_id }}",
@@ -304,28 +467,27 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check envoy binary exists",
+                  "name": "Check Envoy binary exists",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check envoy version",
+                  "name": "Check Envoy version output",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Validate envoy help output",
+                  "name": "Validate Envoy help output",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check envoy admin address option",
+                  "name": "Validate a minimal configuration",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
-                
                 },
                 {
-                  "name": "Test 5 - Architecture Verification",
+                  "name": "Architecture verification",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 },
@@ -333,19 +495,23 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
                 }
               ]
             },
             "metadata": {
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}",
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/envoy.json
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -353,34 +519,34 @@ jobs:
           name: envoy-test-results
           path: test-results/envoy.json
           retention-days: 90
-      
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## Envoy Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check envoy binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check envoy version: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Validate envoy help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Check envoy admin address option: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
-
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Pending regression install validation' }}"
+          echo "## Envoy Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Check Envoy binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Check Envoy version output: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Validate Envoy help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Validate a minimal configuration: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Architecture verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Support badge is based on Tests 1-5:** yes" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> Support badge reflects Tests 1-5. Test 6 records upgrade-install readiness on Arm64." >> "$GITHUB_STEP_SUMMARY"

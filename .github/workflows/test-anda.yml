@@ -29,6 +29,7 @@ jobs:
       - name: Install Anda
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Anda..."
           
           # Install dependencies (Rust/Cargo)
@@ -39,25 +40,29 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           source $HOME/.cargo/env
           
-          # Install Anda using Cargo
-          # This might take a while, but it's the standard way if no binary is available
-          # Metadata says 0.1.5 is supported
-          if cargo install anda; then
+          ANDA_VERSION="0.4.10"
+
+          # Install the current pinned baseline in an isolated prefix.
+          if cargo install anda --version "$ANDA_VERSION" --root "$HOME/.anda-current"; then
             echo "Anda installed successfully"
             echo "install_status=success" >> $GITHUB_OUTPUT
+            echo "baseline_version=$ANDA_VERSION" >> "$GITHUB_OUTPUT"
           else
             echo "Anda installation failed"
             echo "install_status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
           
-          # Add cargo bin to path for subsequent steps
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          # Add current candidate bin dir to path for subsequent steps
+          echo "$HOME/.anda-current/bin" >> "$GITHUB_PATH"
       
       - name: Get Anda version
         id: version
         run: |
-          VERSION=$(anda --version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+          VERSION=$(anda --version 2>&1 | grep -oP '[0-9.]+' | head -1 || true)
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ steps.install.outputs.baseline_version }}"
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Anda version: $VERSION"
       
@@ -156,13 +161,86 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST=$(python3 - <<'PY'
+          import json, urllib.request
+          data = json.load(urllib.request.urlopen('https://crates.io/api/v1/crates/anda'))
+          print(data['crate'].get('max_stable_version') or data['crate'].get('max_version') or '')
+          PY
+          )
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          if [ -z "$LATEST" ]; then
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Anda version ${CURRENT} passed smoke tests in this run, but the next stable Cargo release could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "=== Regression Validation (Next Version Install) ==="
+            echo "Current version tested in Tests 1-5: $CURRENT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Anda version ${CURRENT} passed smoke tests in this run, but the next stable Cargo release could not be resolved automatically."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Anda version ${CURRENT} passed smoke tests in this run and is already the latest stable Cargo release for this workflow." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Anda version ${CURRENT} passed smoke tests in this run and is already the latest stable Cargo release for this workflow."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_ROOT=$(mktemp -d)
+          if cargo install anda --version "$LATEST" --root "$NEXT_ROOT"; then
+            NEXT_INSTALLED_VERSION=$("$NEXT_ROOT/bin/anda" --version 2>&1 | grep -oP '[0-9.]+' | head -1 || true)
+            if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
+              echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Anda version ${CURRENT} passed smoke tests in this run. Regression validation installed Cargo candidate version ${LATEST} on Arm64, and the installed binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned Anda version ${CURRENT} passed smoke tests in this run. Regression validation installed Cargo candidate version ${LATEST} on Arm64, and the installed binary reported version ${NEXT_INSTALLED_VERSION}."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed but reported a version mismatch on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Anda version ${CURRENT} passed smoke tests in this run, but the Cargo candidate ${LATEST} reported version ${NEXT_INSTALLED_VERSION:-unknown} on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
+              echo "Regression install result: Next version installed but reported a version mismatch on Arm64"
+              echo "Details: Current pinned Anda version ${CURRENT} passed smoke tests in this run, but the Cargo candidate ${LATEST} reported version ${NEXT_INSTALLED_VERSION:-unknown} on Arm64."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Anda version ${CURRENT} passed smoke tests in this run, but the Cargo candidate ${LATEST} could not be installed on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Anda version ${CURRENT} passed smoke tests in this run, but the Cargo candidate ${LATEST} could not be installed on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -264,7 +342,11 @@ jobs:
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ "${{ steps.test1.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test2.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test3.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test4.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
@@ -343,12 +425,19 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}"
             }
           }
           EOF
@@ -367,6 +456,8 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression comparison summary unavailable.' }}"
+
           echo "## Anda Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
@@ -389,8 +480,8 @@ jobs:
           echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "- **Support badge is based on Tests 1-5:** yes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
 
 
 

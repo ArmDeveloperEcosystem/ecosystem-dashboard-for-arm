@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       MEDIAWIKI_VERSION: "1.43.2"
+      MEDIAWIKI_SERIES: "1.43"
       MEDIAWIKI_HOME: /opt/mediawiki-smoke
 
     steps:
@@ -54,8 +55,27 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(grep -E "MW_VERSION" "${MEDIAWIKI_HOME}/includes/Defines.php" | sed -E "s/.*'([^']+)'.*/\\1/" | head -1)
+          LATEST=$(
+            python3 - <<'PY'
+          import re
+          import urllib.request
+
+          req = urllib.request.Request(
+              "https://releases.wikimedia.org/mediawiki/1.43/",
+              headers={"User-Agent": "Mozilla/5.0"},
+          )
+          html = urllib.request.urlopen(req, timeout=20).read().decode("utf-8", "ignore")
+          versions = sorted(
+              {
+                  tuple(map(int, match.split(".")))
+                  for match in re.findall(r"mediawiki-(1\.43\.[0-9]+)\.tar\.gz", html)
+              }
+          )
+          print(".".join(map(str, versions[-1])))
+          PY
+          )
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest=${MEDIAWIKI_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Artifact Existence
         id: test1
@@ -146,13 +166,82 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${MEDIAWIKI_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${MEDIAWIKI_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned MediaWiki version ${MEDIAWIKI_VERSION} was downloaded from the official release tarball, its maintenance installer help output was validated, and a fresh install responded through the built-in PHP web server on Arm in this run. The pinned version remains the current stable target for this workflow." >> "$GITHUB_OUTPUT"
-          echo "note=MediaWiki was validated as an unpacked tarball install without a database, so the functional probe intentionally checks the first-run web experience rather than a completed wiki setup." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${MEDIAWIKI_VERSION}"
+          LATEST="${{ steps.version.outputs.latest }}"
+          SERIES="${MEDIAWIKI_SERIES}"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MediaWiki version ${CURRENT} passed smoke tests in this run, but the latest stable patch release for the pinned series could not be resolved from the official release directory." >> "$GITHUB_OUTPUT"
+            echo "note=MediaWiki is validated as an unpacked tarball install without a database, so the functional probe intentionally checks the first-run web experience rather than a completed wiki setup." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MediaWiki version ${CURRENT} passed smoke tests in this run and already matches the latest stable patch release published for the ${SERIES} series." >> "$GITHUB_OUTPUT"
+            echo "note=MediaWiki is validated as an unpacked tarball install without a database, so the functional probe intentionally checks the first-run web experience rather than a completed wiki setup." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          REG_HOME="/tmp/mediawiki-regression"
+          rm -rf "${REG_HOME}"
+          mkdir -p "${REG_HOME}"
+          curl -fsSL -A "Mozilla/5.0" -o /tmp/mediawiki-regression.tar.gz "https://releases.wikimedia.org/mediawiki/${SERIES}/mediawiki-${LATEST}.tar.gz"
+          tar -xzf /tmp/mediawiki-regression.tar.gz -C /tmp
+          mv "/tmp/mediawiki-${LATEST}"/* "${REG_HOME}/"
+
+          NEXT_VERSION=$(grep -E "MW_VERSION" "${REG_HOME}/includes/Defines.php" | sed -E "s/.*'([^']+)'.*/\\1/" | head -1)
+          php "${REG_HOME}/maintenance/install.php" --help >/tmp/mediawiki-regression-help.txt 2>&1
+          timeout 20 php -S 127.0.0.1:8089 -t "${REG_HOME}" >/tmp/mediawiki-regression-server.log 2>&1 &
+          SERVER_PID=$!
+          cleanup() {
+            kill "$SERVER_PID" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          sleep 4
+          STATUS_LINE=$(curl -I -s http://127.0.0.1:8089/ | head -n 1 || true)
+          BODY=$(curl -s http://127.0.0.1:8089/ || true)
+
+          if [ "$NEXT_VERSION" = "$LATEST" ] && grep -qiE "usage|install|options" /tmp/mediawiki-regression-help.txt && \
+             (echo "$STATUS_LINE" | grep -q "MediaWiki configuration Error" || echo "$BODY" | grep -qi "MediaWiki"); then
+            echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MediaWiki version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the official ${SERIES} patch candidate ${LATEST}, verified the unpacked source tree reports version ${NEXT_VERSION}, validated maintenance installer help output, and confirmed the first-run web response over the built-in PHP web server on Arm64." >> "$GITHUB_OUTPUT"
+            echo "note=MediaWiki is validated as an unpacked tarball install without a database, so the functional probe intentionally checks the first-run web experience rather than a completed wiki setup." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/mediawiki-regression-help.txt || true
+            cat /tmp/mediawiki-regression-server.log || true
+            echo "next_installed_version=${NEXT_VERSION:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MediaWiki version ${CURRENT} passed smoke tests in this run, but the ${SERIES} patch candidate ${LATEST} did not complete the expected unpacked-tarball validation path on Arm64." >> "$GITHUB_OUTPUT"
+            echo "note=MediaWiki is validated as an unpacked tarball install without a database, so the functional probe intentionally checks the first-run web experience rather than a completed wiki setup." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -197,49 +286,63 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          check_test() {
+          check_core_test() {
             local status="$1"
             local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          check_test "${{ steps.test1.outputs.status || 'skipped' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status || 'skipped' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status || 'skipped' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status || 'skipped' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status || 'skipped' }}" "${{ steps.test5.outputs.duration || 0 }}"
-          check_test "${{ steps.test6.outputs.status || 'skipped' }}" "${{ steps.test6.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ steps.test1.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test2.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test3.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test4.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
+          if [ "$CORE_FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
           cat > test-results/mediawiki.json <<EOF
           {
             "schema_version": "1.0",
@@ -251,7 +354,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -270,7 +373,7 @@ jobs:
                 { "name": "Test 3 - Help Output Validation", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }} },
                 { "name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }} },
                 { "name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }} },
-                { "name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }} }
+                { "name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}", "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}", "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}" }
               ]
             },
             "metadata": {
@@ -288,6 +391,7 @@ jobs:
             echo ""
             echo "- Version tested: \`${{ steps.version.outputs.version }}\`"
             echo "- Overall status: \`${{ steps.summary.outputs.overall_status }}\`"
+            echo "- Runner: \`ubuntu-24.04 (arm64)\`"
             echo ""
             echo "| Test | Status | Duration (s) |"
             echo "| --- | --- | ---: |"
@@ -300,11 +404,11 @@ jobs:
             echo ""
             echo "### Regression Validation (Next Version Install)"
             echo ""
-            echo "- Current pinned version: \`${{ steps.test6.outputs.current_version }}\`"
+            echo "- Current version tested in Tests 1-5: \`${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}\`"
             echo "- Next version targeted for install validation: \`${{ steps.test6.outputs.latest_version }}\`"
-            echo "- **Regression install result:** ${REGRESSION_RESULT}"
-            echo "- Comparison: ${{ steps.test6.outputs.comparison }}"
-            echo "- Note: ${{ steps.test6.outputs.note }}"
+            echo "- Next version installed on Arm64: \`${{ steps.test6.outputs.next_installed_version || 'not_installed' }}\`"
+            echo "- Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+            echo "- Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload test results

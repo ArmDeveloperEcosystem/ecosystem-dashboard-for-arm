@@ -194,14 +194,76 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
 
-          echo "current_version=3.3.0" >> "$GITHUB_OUTPUT"
-          echo "latest_version=3.3.0" >> "$GITHUB_OUTPUT"
-          echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version 3.3.0 was smoke-tested successfully in this run and already matches the latest validated stable Harness Open Source container tag for Arm64." >> "$GITHUB_OUTPUT"
+          LATEST_TAG=$(python3 - <<'PY'
+          import json, urllib.request
+          try:
+              data = json.load(urllib.request.urlopen("https://hub.docker.com/v2/repositories/harness/harness/tags/latest", timeout=20))
+              print(data.get("name", "latest"))
+          except Exception:
+              print("latest")
+          PY
+          )
+          LATEST_IMAGE="harness/harness:${LATEST_TAG}"
+          CID=$(sudo docker run -d --rm -p 13001:3000 "$LATEST_IMAGE")
+          cleanup() {
+            sudo docker rm -f "$CID" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          LATEST_VERSION=""
+          for _ in $(seq 1 60); do
+            LATEST_VERSION=$(sudo docker logs "$CID" 2>&1 | sed -n 's/.*"version":"\([0-9.][0-9.]*\)".*/\1/p' | tail -n 1)
+            if [ -n "$LATEST_VERSION" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$LATEST_VERSION" ]; then
+            sudo docker logs "$CID" 2>&1 | tail -80 || true
+            echo "latest_version=unknown" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Harness version ${CURRENT} passed smoke tests in this run, but the latest Arm64 container could not be started cleanly enough to resolve a usable runtime version." >> "$GITHUB_OUTPUT"
+            echo "Next version targeted for install validation: unknown"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Harness version ${CURRENT} passed smoke tests in this run, but the latest Arm64 container could not be started cleanly enough to resolve a usable runtime version."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: ${LATEST_VERSION}"
+          echo "next_installed_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+
+          if [ "$CURRENT" = "$LATEST_VERSION" ]; then
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Harness version ${CURRENT} passed smoke tests in this run and already matches the latest Arm64 container runtime version exposed by the upstream latest tag." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${LATEST_VERSION}"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Harness version ${CURRENT} passed smoke tests in this run and already matches the latest Arm64 container runtime version exposed by the upstream latest tag."
+          else
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Harness version ${CURRENT} passed smoke tests in this run. Regression validation started the upstream latest Arm64 container and it reported runtime version ${LATEST_VERSION}." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${LATEST_VERSION}"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned Harness version ${CURRENT} passed smoke tests in this run. Regression validation started the upstream latest Arm64 container and it reported runtime version ${LATEST_VERSION}."
+          fi
+
           echo "status=passed" >> "$GITHUB_OUTPUT"
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -246,45 +308,64 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          check_test() {
+          check_core_test() {
             local status="$1"
             local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
-          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ "$FAILED" -eq 0 ]; then
+          if [ "$CORE_FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
+          fi
 
           cat > test-results/harness.json <<EOF
           {
@@ -297,7 +378,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -342,15 +423,17 @@ jobs:
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
                   "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
                   "latest_version": "${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
                   "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
-                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}",
                   "comparison": "${{ steps.test6.outputs.comparison || 'Current pinned version passed smoke tests; latest-stable comparison still needs review.' }}"
                 }
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "core_failed": ${{ steps.summary.outputs.core_failed || 0 }}
             }
           }
           EOF
@@ -386,5 +469,6 @@ jobs:
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
-          echo "${{ steps.test6.outputs.comparison || 'Current pinned version passed smoke tests; latest-stable comparison still needs review.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Current pinned version passed smoke tests; latest-stable comparison still needs review.' }}" >> "$GITHUB_STEP_SUMMARY"

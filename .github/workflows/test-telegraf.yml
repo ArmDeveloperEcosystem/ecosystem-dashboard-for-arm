@@ -14,6 +14,9 @@ on:
 jobs:
   test-telegraf:
     runs-on: ubuntu-24.04-arm
+    env:
+      TELEGRAF_VERSION: "1.38.0"
+      TELEGRAF_WORKROOT: "/tmp/telegraf-smoke"
 
     steps:
       - name: Checkout repository
@@ -25,23 +28,31 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=telegraf" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/telegraf" >> "$GITHUB_OUTPUT"
-          echo "current_version=1.38.0" >> "$GITHUB_OUTPUT"
-          echo "latest_version=1.38.0" >> "$GITHUB_OUTPUT"
+          echo "current_version=${TELEGRAF_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install Telegraf
         id: install
         run: |
           set -euo pipefail
-          VERSION="${{ steps.metadata.outputs.current_version }}"
-          curl -fsSL "https://dl.influxdata.com/telegraf/releases/telegraf-${VERSION}_linux_arm64.tar.gz" -o /tmp/telegraf.tgz
-          rm -rf /tmp/telegraf-unpack
-          mkdir -p /tmp/telegraf-unpack
-          tar -xzf /tmp/telegraf.tgz -C /tmp/telegraf-unpack
-          BIN=$(find /tmp/telegraf-unpack -path "*/usr/bin/telegraf" | head -n 1)
-          install -m 0755 "$BIN" /usr/local/bin/telegraf
-          if command -v telegraf >/dev/null 2>&1; then
+          VERSION="${TELEGRAF_VERSION}"
+          ROOT="${TELEGRAF_WORKROOT}/current"
+          ARCHIVE="${TELEGRAF_WORKROOT}/telegraf-${VERSION}_linux_arm64.tar.gz"
+          sudo apt-get update
+          sudo apt-get install -y curl tar file ca-certificates
+          rm -rf "${TELEGRAF_WORKROOT}"
+          mkdir -p "${TELEGRAF_WORKROOT}"
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSLo "${ARCHIVE}" \
+            "https://dl.influxdata.com/telegraf/releases/telegraf-${VERSION}_linux_arm64.tar.gz"
+          tar -xzf "${ARCHIVE}" -C "${TELEGRAF_WORKROOT}"
+          mv "${TELEGRAF_WORKROOT}/telegraf-${VERSION}" "${ROOT}"
+          BIN=$(find "${ROOT}" -path "*/usr/bin/telegraf" -print -quit)
+          VERSION_OUTPUT=$("${BIN}" --version 2>&1 || true)
+          if [ -n "${BIN}" ] && printf '%s\n' "${VERSION_OUTPUT}" | grep -Fq "Telegraf ${VERSION}"; then
+            echo "root=${ROOT}" >> "$GITHUB_OUTPUT"
+            echo "bin=${BIN}" >> "$GITHUB_OUTPUT"
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
+            printf '%s\n' "${VERSION_OUTPUT}" || true
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -50,15 +61,37 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(telegraf --version | awk '{print $2}')
+          VERSION=$("${{ steps.install.outputs.bin }}" --version | awk '{print $2}')
+          LATEST=$(python3 - <<'PY'
+          import json
+          import urllib.request
+
+          req = urllib.request.Request(
+              "https://api.github.com/repos/influxdata/telegraf/releases?per_page=20",
+              headers={"User-Agent": "github-actions"},
+          )
+          data = json.load(urllib.request.urlopen(req, timeout=20))
+          for release in data:
+              if release.get("draft") or release.get("prerelease"):
+                  continue
+              tag = str(release.get("tag_name", "")).strip()
+              if tag:
+                  print(tag.lstrip("v"))
+                  break
+          else:
+              print("unknown")
+          PY
+          )
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Binary Existence
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if command -v telegraf >/dev/null 2>&1; then
+          if [ -x "${{ steps.install.outputs.bin }}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -71,10 +104,13 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if telegraf --version | grep -Eq '^Telegraf [0-9]'; then
+          "${{ steps.install.outputs.bin }}" --version > /tmp/telegraf-version.txt 2>&1
+          if grep -Fq "Telegraf ${TELEGRAF_VERSION}" /tmp/telegraf-version.txt; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            cat /tmp/telegraf-version.txt || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -85,10 +121,13 @@ jobs:
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if telegraf --help | grep -q '^NAME:'; then
+          "${{ steps.install.outputs.bin }}" --help > /tmp/telegraf-help.txt 2>&1
+          if grep -q '^NAME:' /tmp/telegraf-help.txt; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            cat /tmp/telegraf-help.txt || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -99,9 +138,10 @@ jobs:
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
+          if [ "$ARCH" = "aarch64" ] && file "${{ steps.install.outputs.bin }}" | grep -qi 'ARM aarch64'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -131,7 +171,7 @@ jobs:
             files = ["stdout"]
             data_format = "influx"
           EOF
-          telegraf --test --config /tmp/telegraf.conf > /tmp/telegraf-test.txt
+          "${{ steps.install.outputs.bin }}" --test --config /tmp/telegraf.conf > /tmp/telegraf-test.txt
           if grep -q 'cpu,cpu=cpu-total' /tmp/telegraf-test.txt; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -146,12 +186,86 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.metadata.outputs.current_version }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${{ steps.metadata.outputs.latest_version }}" >> "$GITHUB_OUTPUT"
-          echo "decision=pinned_is_latest" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version matches the latest validated stable Telegraf release and was smoke-tested in this run on Arm64." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || steps.metadata.outputs.current_version }}"
+          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+          NEXT_ROOT="${TELEGRAF_WORKROOT}/regression"
+          NEXT_ARCHIVE="${TELEGRAF_WORKROOT}/telegraf-${LATEST}_linux_arm64.tar.gz"
+          NEXT_CONFIG="/tmp/telegraf-next.conf"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ -z "${LATEST}" ] || [ "${LATEST}" = "unknown" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Telegraf version ${CURRENT} passed the real Arm64 config-test smoke in this run, but the latest stable upstream release could not be resolved for isolated regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          rm -rf "${NEXT_ROOT}"
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSLo "${NEXT_ARCHIVE}" \
+            "https://dl.influxdata.com/telegraf/releases/telegraf-${LATEST}_linux_arm64.tar.gz"
+          tar -xzf "${NEXT_ARCHIVE}" -C "${TELEGRAF_WORKROOT}"
+          mv "${TELEGRAF_WORKROOT}/telegraf-${LATEST}" "${NEXT_ROOT}"
+          NEXT_BIN=$(find "${NEXT_ROOT}" -path "*/usr/bin/telegraf" -print -quit)
+
+          cat > "${NEXT_CONFIG}" <<'EOF'
+          [agent]
+            interval = "1s"
+            round_interval = false
+            metric_batch_size = 1000
+            metric_buffer_limit = 10000
+            flush_interval = "1s"
+            omit_hostname = true
+          [[inputs.cpu]]
+            percpu = false
+            totalcpu = true
+          [[outputs.file]]
+            files = ["stdout"]
+            data_format = "influx"
+          EOF
+
+          NEXT_VERSION=$("${NEXT_BIN}" --version 2>&1 | awk '{print $2}' | head -1 || true)
+          NEXT_HELP=$("${NEXT_BIN}" --help 2>&1 || true)
+          NEXT_TEST=$("${NEXT_BIN}" --test --config "${NEXT_CONFIG}" 2>&1 || true)
+
+          if [ "${NEXT_VERSION}" = "${LATEST}" ] && \
+             file "${NEXT_BIN}" | grep -qi 'ARM aarch64' && \
+             printf '%s\n' "${NEXT_HELP}" | grep -q '^NAME:' && \
+             printf '%s\n' "${NEXT_TEST}" | grep -q 'cpu,cpu=cpu-total'; then
+            echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            if [ "${CURRENT}" = "${LATEST}" ]; then
+              echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Telegraf version ${CURRENT} already matches the latest stable release. Regression validation re-downloaded the official Arm64 tarball and reconfirmed the real version, help, and config-test paths on Arm64." >> "$GITHUB_OUTPUT"
+            else
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Telegraf version ${CURRENT} passed the real Arm64 config-test smoke in this run. Regression validation downloaded candidate version ${LATEST} from the official Arm64 tarball and confirmed the isolated version, help, and config-test paths successfully." >> "$GITHUB_OUTPUT"
+            fi
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "${NEXT_HELP}" | head -n 20 || true
+            printf '%s\n' "${NEXT_TEST}" | head -n 20 || true
+            echo "next_installed_version=${NEXT_VERSION:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Telegraf version ${CURRENT} passed the real Arm64 config-test smoke in this run, but candidate version ${LATEST} did not complete the isolated validation path successfully." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -159,78 +273,93 @@ jobs:
       - name: Show regression validation details
         if: always()
         run: |
-          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
-          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
-          if [ -z "$REGRESSION_RESULT" ]; then
-            case "$DECISION" in
-              next_install_validated|safe_to_upgrade)
-                REGRESSION_RESULT="Next version installed successfully on Arm64"
-                ;;
-              next_install_failed|next_lookup_failed)
-                REGRESSION_RESULT="Next version install failed on Arm64"
-                ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Current stable version already validated on Arm64"
-                ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
-              *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
-                ;;
-            esac
-          fi
-
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
-          echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
-          check_test() {
+          check_core_test() {
             local status="$1"
             local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
-          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
-          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
-          if [ "$FAILED" -eq 0 ]; then
+          if [ "$CORE_FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 
       - name: Generate test results JSON
         if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           mkdir -p test-results
+          JOB_URL=$(python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          job_id = os.environ["GITHUB_JOB"]
+          token = os.environ["GITHUB_TOKEN"]
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100",
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "github-actions",
+              },
+          )
+          data = json.load(urllib.request.urlopen(req, timeout=20))
+          for job in data.get("jobs", []):
+              if job.get("name") in (f"{job_id} / {job_id}", job_id):
+                  print(job.get("html_url", ""))
+                  break
+          PY
+          )
+          if [ -z "${JOB_URL}" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
           cat > test-results/telegraf.json <<EOF
           {
             "schema_version": "1.0",
@@ -242,7 +371,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "url": "${JOB_URL}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -261,12 +390,13 @@ jobs:
                 {"name": "Test 3 - Check Help Output", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
                 {"name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
                 {"name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
-                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.metadata.outputs.current_version }}", "latest_version": "${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version }}", "decision": "${{ steps.test6.outputs.decision || 'pinned_is_latest' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}"}
+                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version }}", "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}", "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}"}
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "core_failed": ${{ steps.summary.outputs.core_failed || 0 }}
             }
           }
           EOF
@@ -282,16 +412,20 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
-          echo "## Telegraf Test Results" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Test 6:** ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Current pinned version:** ${{ steps.test6.outputs.current_version || steps.metadata.outputs.current_version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Latest stable candidate:** ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Comparison:** ${{ steps.test6.outputs.comparison || 'Current pinned version was smoke-tested in this run.' }}" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Telegraf Test Results"
+            echo ""
+            echo "- **Version:** ${{ steps.version.outputs.version }}"
+            echo "- **Status:** ${{ steps.summary.outputs.overall_status }}"
+            echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}"
+            echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}"
+            echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s"
+            echo "- **Runner:** ubuntu-24.04 (arm64)"
+            echo ""
+            echo "### Regression Validation (Next Version Install)"
+            echo "- **Current pinned version:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version }}"
+            echo "- **Latest stable candidate:** ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+            echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+            echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+            echo "- **Comparison:** ${{ steps.test6.outputs.comparison || 'Current pinned version was smoke-tested in this run.' }}"
+          } >> "$GITHUB_STEP_SUMMARY"

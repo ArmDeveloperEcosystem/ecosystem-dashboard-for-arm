@@ -1,8 +1,7 @@
 name: Test Devtron on Arm64
 
-# When you copy this file, uncomment the appropriate triggers below:
 on:
-  workflow_dispatch:  # Uncomment for manual testing
+  workflow_dispatch:
   workflow_call:
   push:
     branches:
@@ -15,174 +14,345 @@ on:
 jobs:
   test-devtron:
     runs-on: ubuntu-24.04-arm
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=devtron" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/devtron" >> $GITHUB_OUTPUT
-      
-      # ============================================================
-      # CUSTOMIZE THIS: Install your package
-      # ============================================================
-      - name: Install Devtron
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=devtron" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/devtron" >> "$GITHUB_OUTPUT"
+
+      - name: Install Devtron baseline chart
         id: install
         run: |
-          echo "Installing Devtron..."
-          # Devtron is typically installed via Helm or kubectl, but we can check for the binary or CLI if available.
-          # The markdown points to GitHub releases. Let's check for a CLI binary.
-          # It seems Devtron is a platform, not a single CLI. 
-          # However, for smoke testing, we can try to download the release tarball to verify availability.
-          
-          LATEST_TAG=$(curl -s https://api.github.com/repos/devtron-labs/devtron/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-          if [ -z "$LATEST_TAG" ]; then LATEST_TAG="v0.6.2"; fi
-          
-          echo "Downloading Devtron $LATEST_TAG..."
-          # Checking assets... usually source code or specific binaries.
-          # If no binary, we clone the repo as a fallback for "source availability".
-          
-          git clone --depth 1 --branch $LATEST_TAG https://github.com/devtron-labs/devtron.git
-          
-          echo "install_status=success" >> $GITHUB_OUTPUT
-      
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y curl git jq python3-yaml
+
+          if ! command -v helm >/dev/null 2>&1; then
+            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          fi
+
+          BASELINE_TAG="v0.6.2"
+          echo "BASELINE_TAG=$BASELINE_TAG" >> "$GITHUB_ENV"
+
+          rm -rf /tmp/devtron-repo /tmp/devtron-chart-baseline
+          git clone --filter=blob:none --no-checkout https://github.com/devtron-labs/devtron.git /tmp/devtron-repo
+          git -C /tmp/devtron-repo sparse-checkout init --cone
+          git -C /tmp/devtron-repo sparse-checkout set charts/devtron
+          git -C /tmp/devtron-repo checkout "$BASELINE_TAG"
+
+          cp -R /tmp/devtron-repo/charts/devtron /tmp/devtron-chart-baseline
+
+          helm repo add argo https://argoproj.github.io/argo-helm --force-update >/dev/null 2>&1
+          helm repo add devtron https://helm.devtron.ai --force-update >/dev/null 2>&1
+          helm repo update >/tmp/devtron-helm-update.log 2>&1
+
+          (
+            cd /tmp/devtron-chart-baseline
+            helm dependency build >/tmp/devtron-baseline-deps.log 2>/tmp/devtron-baseline-deps.err
+          )
+
+          if [ -f /tmp/devtron-chart-baseline/Chart.yaml ] && [ -f /tmp/devtron-chart-baseline/values.yaml ]; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
       - name: Get Devtron version
         id: version
         run: |
-          cd devtron
-          VERSION=$(git describe --tags --always || echo "unknown")
-          VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Devtron version: $VERSION"
-      
-      - name: Test 1 - Check Repo Content
+          set -euo pipefail
+          VERSION=$(awk '/^appVersion:/ {print $2; exit}' /tmp/devtron-chart-baseline/Chart.yaml)
+          CHART_VERSION=$(awk '/^version:/ {print $2; exit}' /tmp/devtron-chart-baseline/Chart.yaml)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "chart_version=${CHART_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected Devtron appVersion: ${VERSION}"
+          echo "Detected Devtron chart version: ${CHART_VERSION}"
+
+      - name: Test 1 - Check Devtron chart exists
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if [ -f "devtron/go.mod" ]; then
-            echo "✓ go.mod found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          if [ -f /tmp/devtron-chart-baseline/Chart.yaml ] && \
+             [ -f /tmp/devtron-chart-baseline/values.yaml ] && \
+             [ -d /tmp/devtron-chart-baseline/templates ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ go.mod not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Check Dockerfile
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check chart metadata
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if [ -f "devtron/Dockerfile" ] || [ -f "devtron/docker/Dockerfile" ]; then
-            echo "✓ Dockerfile found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          APP_VERSION=$(awk '/^appVersion:/ {print $2; exit}' /tmp/devtron-chart-baseline/Chart.yaml)
+          CHART_VERSION=$(awk '/^version:/ {print $2; exit}' /tmp/devtron-chart-baseline/Chart.yaml)
+
+          if [ "$APP_VERSION" = "0.6.2" ] && [ "$CHART_VERSION" = "0.22.38" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ Dockerfile not found"
-            find devtron -name "Dockerfile"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "Expected appVersion 0.6.2 and chart version 0.22.38, got appVersion=${APP_VERSION} chart=${CHART_VERSION}"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 3 - Check README
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Resolve Helm dependencies
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if [ -f "devtron/README.md" ]; then
-            echo "✓ README found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          if ls /tmp/devtron-chart-baseline/charts/argo-cd-*.tgz >/dev/null 2>&1 && \
+             ls /tmp/devtron-chart-baseline/charts/security-*.tgz >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ README not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            cat /tmp/devtron-baseline-deps.log || true
+            cat /tmp/devtron-baseline-deps.err || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      # Add more tests as needed (test4, test5, etc.)
-      # Examples:
-      # - Run a simple command
-      # - Check configuration files
-      # - Start/stop a service
-      # - Test basic functionality
-      
-      # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
-      # ============================================================
-      
-      - name: Test 4 - Architecture Verification
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Verify Arm64 image manifests
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          echo "Checking system architecture..."
           ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
+
+          python3 - <<'PY' > /tmp/devtron-baseline-images.txt
+          import yaml
+          with open("/tmp/devtron-chart-baseline/values.yaml", "r", encoding="utf-8") as f:
+              values = yaml.safe_load(f)
+
+          global_registry = (values.get("global", {}) or {}).get("containerRegistry", "").rstrip("/")
+          components = values.get("components", {}) or {}
+
+          def full_image(registry, image, tag=None):
+              base = image
+              if registry:
+                  base = f"{registry}/{image}"
+              if tag:
+                  base = f"{base}:{tag}"
+              return base
+
+          for component in ("dashboard", "devtron"):
+              node = components.get(component, {}) or {}
+              image = node.get("image")
+              registry = (node.get("registry") or global_registry).rstrip("/")
+              if image:
+                  print(f"{component}\t{full_image(registry, image)}")
+
+          installer = values.get("installer", {}) or {}
+          installer_image = installer.get("image")
+          installer_tag = installer.get("tag")
+          installer_registry = (installer.get("registry") or global_registry).rstrip("/")
+          if installer_image and installer_tag:
+              print(f"installer\t{full_image(installer_registry, installer_image, installer_tag)}")
+          PY
+
+          if [ "$ARCH" != "aarch64" ]; then
+            echo "Runner architecture is not Arm64: $ARCH"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 5 - Functional Validation
-        id: test5
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if true; then
-            echo "Devtron is a K8s platform, skipping CLI validation"
-            echo "✓ Basic functional check passed"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ Basic functional check failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
+          while IFS=$'\t' read -r component image; do
+            [ -n "$component" ] || continue
+            if ! docker manifest inspect "$image" | jq -e '.manifests[]? | select(.platform.architecture=="arm64" and .platform.os=="linux")' >/dev/null; then
+              echo "Missing arm64 manifest for $component image: $image"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          done < /tmp/devtron-baseline-images.txt
 
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-      # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
-      # ============================================================
-      - name: Test 6 - Regression Validation
-        id: test6
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
+      - name: Test 5 - Render Devtron chart
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          if helm lint /tmp/devtron-chart-baseline >/tmp/devtron-baseline-lint.log 2>/tmp/devtron-baseline-lint.err && \
+             helm template devtron /tmp/devtron-chart-baseline >/tmp/devtron-baseline-template.yaml 2>/tmp/devtron-baseline-template.err && \
+             grep -q '^kind: ServiceAccount$' /tmp/devtron-baseline-template.yaml && \
+             grep -q 'namespace: devtroncd' /tmp/devtron-baseline-template.yaml; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/devtron-baseline-lint.log || true
+            cat /tmp/devtron-baseline-lint.err || true
+            cat /tmp/devtron-baseline-template.err || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          CURRENT_CHART_VERSION="${{ steps.version.outputs.chart_version || 'unknown' }}"
+          LATEST_TAG=$(GH_TOKEN=${{ github.token }} gh api repos/devtron-labs/devtron/releases --jq '[.[] | select(.draft == false and .prerelease == false)][0].tag_name' 2>/dev/null || true)
+          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
+            LATEST_TAG="v2.1.0"
+          fi
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+
+          rm -rf /tmp/devtron-repo-next /tmp/devtron-chart-next
+          git clone --filter=blob:none --no-checkout https://github.com/devtron-labs/devtron.git /tmp/devtron-repo-next
+          git -C /tmp/devtron-repo-next sparse-checkout init --cone
+          git -C /tmp/devtron-repo-next sparse-checkout set charts/devtron
+          git -C /tmp/devtron-repo-next checkout "$LATEST_TAG"
+          cp -R /tmp/devtron-repo-next/charts/devtron /tmp/devtron-chart-next
+
+          (
+            cd /tmp/devtron-chart-next
+            helm dependency build >/tmp/devtron-next-deps.log 2>/tmp/devtron-next-deps.err
+          )
+
+          NEXT_VERSION=$(awk '/^appVersion:/ {print $2; exit}' /tmp/devtron-chart-next/Chart.yaml)
+          NEXT_CHART_VERSION=$(awk '/^version:/ {print $2; exit}' /tmp/devtron-chart-next/Chart.yaml)
+
+          echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $NEXT_VERSION"
+
+          if [ "$NEXT_VERSION" = "$CURRENT" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Devtron chart appVersion ${CURRENT} with chart version ${CURRENT_CHART_VERSION} already matches the latest stable release, and its Helm chart dependencies, Arm64 image manifests, and template rendering all succeeded in this run." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Devtron chart appVersion ${CURRENT} with chart version ${CURRENT_CHART_VERSION} already matches the latest stable release, and its Helm chart dependencies, Arm64 image manifests, and template rendering all succeeded in this run."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            if ! ls /tmp/devtron-chart-next/charts/argo-cd-*.tgz >/dev/null 2>&1 || \
+               ! ls /tmp/devtron-chart-next/charts/security-*.tgz >/dev/null 2>&1; then
+              cat /tmp/devtron-next-deps.log || true
+              cat /tmp/devtron-next-deps.err || true
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Candidate Devtron release ${LATEST_TAG} could be checked out on Arm64, but the chart dependencies did not build successfully." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Candidate Devtron release ${LATEST_TAG} could be checked out on Arm64, but the chart dependencies did not build successfully."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+
+            python3 - <<'PY' > /tmp/devtron-next-images.txt
+            import yaml
+            with open("/tmp/devtron-chart-next/values.yaml", "r", encoding="utf-8") as f:
+                values = yaml.safe_load(f)
+
+            global_registry = (values.get("global", {}) or {}).get("containerRegistry", "").rstrip("/")
+            components = values.get("components", {}) or {}
+
+            def full_image(registry, image, tag=None):
+                base = image
+                if registry:
+                    base = f"{registry}/{image}"
+                if tag:
+                    base = f"{base}:{tag}"
+                return base
+
+            for component in ("dashboard", "devtron"):
+                node = components.get(component, {}) or {}
+                image = node.get("image")
+                registry = (node.get("registry") or global_registry).rstrip("/")
+                if image:
+                    print(f"{component}\t{full_image(registry, image)}")
+
+            installer = values.get("installer", {}) or {}
+            installer_image = installer.get("image")
+            installer_tag = installer.get("tag")
+            installer_registry = (installer.get("registry") or global_registry).rstrip("/")
+            if installer_image and installer_tag:
+                print(f"installer\t{full_image(installer_registry, installer_image, installer_tag)}")
+            PY
+
+            while IFS=$'\t' read -r component image; do
+              [ -n "$component" ] || continue
+              if ! docker manifest inspect "$image" | jq -e '.manifests[]? | select(.platform.architecture=="arm64" and .platform.os=="linux")' >/dev/null; then
+                echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Candidate Devtron release ${LATEST_TAG} chart appVersion ${NEXT_VERSION} resolved, but the ${component} image did not publish an arm64/linux manifest." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: install_failed"
+                echo "Regression install result: Next version install failed on Arm64"
+                echo "Details: Candidate Devtron release ${LATEST_TAG} chart appVersion ${NEXT_VERSION} resolved, but the ${component} image did not publish an arm64/linux manifest."
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+            done < /tmp/devtron-next-images.txt
+
+            if helm lint /tmp/devtron-chart-next >/tmp/devtron-next-lint.log 2>/tmp/devtron-next-lint.err && \
+               helm template devtron-next /tmp/devtron-chart-next >/tmp/devtron-next-template.yaml 2>/tmp/devtron-next-template.err && \
+               grep -q '^kind: ServiceAccount$' /tmp/devtron-next-template.yaml && \
+               grep -q 'namespace: devtroncd' /tmp/devtron-next-template.yaml; then
+              echo "next_installed_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Devtron chart appVersion ${CURRENT} with chart version ${CURRENT_CHART_VERSION} passed dependency build, Arm64 image-manifest checks, and Helm rendering in this run. Regression validation checked out release ${LATEST_TAG}, built chart dependencies, verified Arm64 manifests for the core images, and rendered candidate chart version ${NEXT_CHART_VERSION} with appVersion ${NEXT_VERSION} successfully." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_VERSION"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned Devtron chart appVersion ${CURRENT} with chart version ${CURRENT_CHART_VERSION} passed dependency build, Arm64 image-manifest checks, and Helm rendering in this run. Regression validation checked out release ${LATEST_TAG}, built chart dependencies, verified Arm64 manifests for the core images, and rendered candidate chart version ${NEXT_CHART_VERSION} with appVersion ${NEXT_VERSION} successfully."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              cat /tmp/devtron-next-lint.log || true
+              cat /tmp/devtron-next-lint.err || true
+              cat /tmp/devtron-next-template.err || true
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Candidate Devtron release ${LATEST_TAG} chart appVersion ${NEXT_VERSION} resolved, but the Helm chart failed linting or rendering on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Candidate Devtron release ${LATEST_TAG} chart appVersion ${NEXT_VERSION} resolved, but the Helm chart failed linting or rendering on Arm64."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Show regression validation details
         if: always()
@@ -200,22 +370,15 @@ jobs:
               current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Current stable version already validated on Arm64"
                 ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
               *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
+                REGRESSION_RESULT="Pending regression install validation"
                 ;;
             esac
           fi
 
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
           echo "Regression install result: ${REGRESSION_RESULT}"
           echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
@@ -224,91 +387,81 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check Repo Content
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_optional_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_optional_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}"
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            FAILED=$((FAILED + 1))
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Check Dockerfile
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
-
-          # Check README
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Architecture Verification
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Functional Validation
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
-
-
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
-          else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 
-      # ============================================================
-      # UPDATE THIS: Generate JSON with your package metadata and test details
-      # ============================================================
       - name: Generate test results JSON
         if: always()
         run: |
-          mkdir -p test-results
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --paginate --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}"
+          fi
 
+          mkdir -p test-results
           cat > test-results/devtron.json << EOF
           {
             "schema_version": "1.0",
             "package": {
               "name": "Devtron",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "Go",
+              "category": "DevOps"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -323,27 +476,27 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check Repo Content",
+                  "name": "Check Devtron chart exists",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check Dockerfile",
+                  "name": "Check chart metadata",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check README",
+                  "name": "Resolve Helm dependencies",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Architecture Verification",
+                  "name": "Verify Arm64 image manifests",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Functional Validation",
+                  "name": "Render Devtron chart",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 },
@@ -351,10 +504,17 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
             "metadata": {
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}",
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
@@ -363,10 +523,6 @@ jobs:
 
           echo "Generated test results:"
           cat test-results/devtron.json
-
-      # ============================================================
-      # STANDARD STEPS - Usually don't need to modify below here
-      # ============================================================
 
       - name: Upload test results
         if: always()
@@ -379,27 +535,44 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
-          echo "## Devtron Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check Repo Content: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check Dockerfile: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check README: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || 'manual_review_needed' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
 
+          echo "## Devtron Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Check Devtron chart exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Check chart metadata: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Resolve Helm dependencies: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Verify Arm64 image manifests: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Render Devtron chart: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

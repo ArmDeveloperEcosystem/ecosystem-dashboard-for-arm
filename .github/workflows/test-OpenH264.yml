@@ -139,12 +139,54 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=v2.6.0" >> "$GITHUB_OUTPUT"
-          echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version 2.6.0 was smoke-tested in this run and it already matches the latest stable OpenH264 release available within the last-year review window." >> "$GITHUB_OUTPUT"
-          echo "note=No newer stable release within the validated source-release line is newer than the pinned version under test." >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST_TAG=$(GH_TOKEN="${{ github.token }}" gh api repos/cisco/openh264/releases/latest --jq '.tag_name' 2>/dev/null || true)
+          LATEST="${LATEST_TAG#v}"
+          if [ -z "$LATEST" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Failed to resolve the latest stable OpenH264 release from GitHub during regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          if [ "$LATEST" = "$CURRENT" ]; then
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned version ${CURRENT} already matches the latest stable OpenH264 release available within the last-year review window." >> "$GITHUB_OUTPUT"
+          else
+            cd /tmp
+            rm -rf openh264-next openh264-next.tar.gz
+            curl -fsSL "https://github.com/cisco/openh264/archive/refs/tags/v${LATEST}.tar.gz" -o openh264-next.tar.gz
+            tar -xzf openh264-next.tar.gz
+            mv "openh264-${LATEST}" openh264-next
+            make -C openh264-next -j"$(nproc)"
+            if [ -x /tmp/openh264-next/h264enc ] && [ -x /tmp/openh264-next/h264dec ] && [ -f "/tmp/openh264-next/libopenh264.so.${LATEST}" ]; then
+              echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Candidate OpenH264 ${LATEST} built successfully on Arm64 and exposed the expected encoder, decoder, and versioned shared library." >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Candidate OpenH264 ${LATEST} could be downloaded on Arm64 but did not build the expected versioned binaries and library." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+          echo "note=OpenH264 regression validation uses the official source tarball path on Arm64." >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -257,7 +299,7 @@ jobs:
                 {"name": "Check help output", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
                 {"name": "Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
                 {"name": "Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
-                {"name": "Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}}
+                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}", "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}", "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "comparison": "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || '' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}"}
               ]
             },
             "metadata": {
@@ -279,6 +321,7 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Pending regression install validation' }}"
           echo "## OpenH264 Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
@@ -299,5 +342,6 @@ jobs:
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests.' }}" >> "$GITHUB_STEP_SUMMARY"

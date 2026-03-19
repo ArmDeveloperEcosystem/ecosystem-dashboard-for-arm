@@ -168,26 +168,99 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version }}"
-          LATEST_TAG="$(curl -fsSL https://api.github.com/repos/rancher/rancher/releases/latest | jq -r '.tag_name')"
+          LATEST_TAG="$(curl -fsSL 'https://api.github.com/repos/rancher/rancher/releases?per_page=20' | jq -r 'map(select(.draft == false and .prerelease == false)) | first | .tag_name')"
           LATEST="${LATEST_TAG#v}"
+          NEXT_INSTALLED="not_installed"
+          STATUS="failed"
+          CID=""
+          cleanup() {
+            if [ -n "$CID" ]; then
+              sudo docker rm -f "$CID" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
 
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
 
-          if [ "$LATEST" = "$CURRENT" ]; then
-            echo "decision=already_current" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned version ${CURRENT} is already the latest stable Rancher release and was smoke-tested successfully on Arm64 in this run." >> "$GITHUB_OUTPUT"
-          elif sudo docker manifest inspect "rancher/rancher:${LATEST_TAG}" | grep -q '"architecture":[[:space:]]*"arm64"'; then
-            echo "decision=upgrade_candidate_available" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned version ${CURRENT} passed smoke tests in this run. Latest stable ${LATEST} also publishes an arm64 image and is a candidate for the next version-bump validation." >> "$GITHUB_OUTPUT"
-          else
-            echo "decision=hold_current" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned version ${CURRENT} passed smoke tests in this run. Latest stable ${LATEST} does not currently expose a usable arm64 image manifest, so the workflow should remain pinned." >> "$GITHUB_OUTPUT"
+          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Rancher version ${CURRENT} passed smoke tests in this run, but the latest stable Rancher release could not be resolved for Arm64 install validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Rancher version ${CURRENT} passed smoke tests in this run, but the latest stable Rancher release could not be resolved for Arm64 install validation."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
 
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          if ! sudo docker manifest inspect "rancher/rancher:${LATEST_TAG}" >/tmp/rancher-next-manifest.json 2>&1 || ! grep -q '"architecture":[[:space:]]*"arm64"' /tmp/rancher-next-manifest.json; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Rancher version ${CURRENT} passed smoke tests in this run, but the latest stable image ${LATEST} does not currently publish a usable Arm64 manifest." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Rancher version ${CURRENT} passed smoke tests in this run, but the latest stable image ${LATEST} does not currently publish a usable Arm64 manifest."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          sudo docker pull "rancher/rancher:${LATEST_TAG}" >/tmp/rancher-next-pull.txt 2>&1
+          NEXT_INSTALLED=$(sudo docker run --rm --network host --entrypoint /usr/bin/rancher "rancher/rancher:${LATEST_TAG}" --version | awk '{print $3}' | sed 's/^v//')
+          CID=$(sudo docker run -d --privileged -p 19080:80 -p 19443:443 "rancher/rancher:${LATEST_TAG}")
+
+          for attempt in $(seq 1 30); do
+            if curl -kfsS https://127.0.0.1:19443/ping > /tmp/rancher-next-ping.txt 2>/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+
+          if [ "$NEXT_INSTALLED" = "$LATEST" ] && grep -qx 'pong' /tmp/rancher-next-ping.txt; then
+            echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
+            if [ "$LATEST" = "$CURRENT" ]; then
+              echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Rancher version ${CURRENT} passed smoke tests in this run and already matches the latest stable Rancher release. Regression validation re-pulled the Arm64 image ${LATEST_TAG}, the candidate CLI reported version ${NEXT_INSTALLED}, and the isolated candidate server returned a healthy /ping response." >> "$GITHUB_OUTPUT"
+              echo "Regression install result: Current stable version already validated on Arm64"
+              echo "Details: Current pinned Rancher version ${CURRENT} passed smoke tests in this run and already matches the latest stable Rancher release. Regression validation re-pulled the Arm64 image ${LATEST_TAG}, the candidate CLI reported version ${NEXT_INSTALLED}, and the isolated candidate server returned a healthy /ping response."
+            else
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Rancher version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate image ${LATEST_TAG} on Arm64, the candidate CLI reported version ${NEXT_INSTALLED}, and the isolated candidate server returned a healthy /ping response." >> "$GITHUB_OUTPUT"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned Rancher version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate image ${LATEST_TAG} on Arm64, the candidate CLI reported version ${NEXT_INSTALLED}, and the isolated candidate server returned a healthy /ping response."
+            fi
+            STATUS="passed"
+          else
+            cat /tmp/rancher-next-ping.txt || true
+            sudo docker logs "$CID" | tail -80 || true
+            echo "next_installed_version=${NEXT_INSTALLED:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Rancher version ${CURRENT} passed smoke tests in this run, but candidate image ${LATEST_TAG} did not report the expected version or return a healthy /ping response on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Rancher version ${CURRENT} passed smoke tests in this run, but candidate image ${LATEST_TAG} did not report the expected version or return a healthy /ping response on Arm64."
+            STATUS="failed"
+          fi
+
+          echo "Next version installed on Arm64: ${NEXT_INSTALLED}"
+          echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+          if [ "$STATUS" != "passed" ]; then
+            exit 1
+          fi
 
 
       - name: Show regression validation details
@@ -230,45 +303,64 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          check_test() {
+          check_core_test() {
             local status="$1"
             local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          check_test "${{ steps.test1.outputs.status || 'failed' }}" ${{ steps.test1.outputs.duration || 0 }}
-          check_test "${{ steps.test2.outputs.status || 'failed' }}" ${{ steps.test2.outputs.duration || 0 }}
-          check_test "${{ steps.test3.outputs.status || 'failed' }}" ${{ steps.test3.outputs.duration || 0 }}
-          check_test "${{ steps.test4.outputs.status || 'failed' }}" ${{ steps.test4.outputs.duration || 0 }}
-          check_test "${{ steps.test5.outputs.status || 'failed' }}" ${{ steps.test5.outputs.duration || 0 }}
-          check_test "${{ steps.test6.outputs.status || 'failed' }}" ${{ steps.test6.outputs.duration || 0 }}
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" ${{ steps.test1.outputs.duration || 0 }}
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" ${{ steps.test2.outputs.duration || 0 }}
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" ${{ steps.test3.outputs.duration || 0 }}
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" ${{ steps.test4.outputs.duration || 0 }}
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" ${{ steps.test5.outputs.duration || 0 }}
+
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ $FAILED -eq 0 ]; then
+          if [ "$CORE_FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
 
           cat > test-results/rancher.json << EOF
           {
@@ -281,7 +373,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -326,6 +418,7 @@ jobs:
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
                   "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
                   "latest_version": "${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
                   "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
                   "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
                   "comparison": "${{ steps.test6.outputs.comparison || 'Current pinned version passed smoke tests; latest-stable comparison still needs review.' }}"
@@ -350,6 +443,7 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
           echo "## Rancher (acquired by SUSE) Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
@@ -370,5 +464,6 @@ jobs:
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.test6.outputs.comparison || 'Current pinned version passed smoke tests; latest-stable comparison still needs review.' }}" >> "$GITHUB_STEP_SUMMARY"

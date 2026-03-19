@@ -46,8 +46,21 @@ jobs:
       - name: Get WildFly version
         id: version
         run: |
+          LATEST=$(python3 - <<'PY'
+          import json
+          import urllib.request
+
+          req = urllib.request.Request(
+              "https://api.github.com/repos/wildfly/wildfly/releases/latest",
+              headers={"User-Agent": "codex"},
+          )
+          data = json.load(urllib.request.urlopen(req, timeout=20))
+          print(str(data.get("tag_name", "unknown")).lstrip("v"))
+          PY
+          )
           VERSION=$("${{ steps.install.outputs.wildfly_home }}/bin/standalone.sh" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.Final' | head -n 1 || echo "unknown")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Binary Existence
         id: test1
@@ -121,12 +134,15 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
 
-          "${{ steps.install.outputs.wildfly_home }}/bin/standalone.sh" -b 127.0.0.1 > /tmp/wildfly.log 2>&1 &
+          "${{ steps.install.outputs.wildfly_home }}/bin/standalone.sh" \
+            -b 127.0.0.1 \
+            -Djboss.socket.binding.port-offset=100 \
+            > /tmp/wildfly.log 2>&1 &
           WILDFLY_PID=$!
           trap 'kill $WILDFLY_PID 2>/dev/null || true' EXIT
 
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8080/ > /tmp/wildfly.out 2>/dev/null; then
+            if curl -fsS http://127.0.0.1:8180/ > /tmp/wildfly.out 2>/dev/null; then
               break
             fi
             sleep 2
@@ -151,13 +167,96 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
 
-          echo "current_version=${WILDFLY_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "candidate_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "note=WildFly 26.1.1.Final was validated from the official release tarball on Arm64. A newer stable release still needs explicit current-vs-next validation before bumping." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ -z "${LATEST}" ] || [ "${LATEST}" = "unknown" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned WildFly version ${CURRENT} passed release-tarball validation in this run, but the latest stable release could not be resolved for isolated Arm64 regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          TMP_DIR=$(mktemp -d)
+          cleanup() {
+            if [ -n "${WILDFLY_PID:-}" ] && kill -0 "${WILDFLY_PID}" 2>/dev/null; then
+              kill "${WILDFLY_PID}" 2>/dev/null || true
+              wait "${WILDFLY_PID}" 2>/dev/null || true
+            fi
+            rm -rf "${TMP_DIR}"
+          }
+          trap cleanup EXIT
+
+          NEXT_ARCHIVE="wildfly-${LATEST}.tar.gz"
+          NEXT_URL="https://github.com/wildfly/wildfly/releases/download/${LATEST}/${NEXT_ARCHIVE}"
+          curl -fsSL -o "${TMP_DIR}/${NEXT_ARCHIVE}" "${NEXT_URL}"
+          tar -xzf "${TMP_DIR}/${NEXT_ARCHIVE}" -C "${TMP_DIR}"
+          NEXT_HOME="${TMP_DIR}/wildfly-${LATEST}"
+
+          if ! "${NEXT_HOME}/bin/standalone.sh" --version >/tmp/wildfly-next-version.log 2>&1 || \
+             ! grep -q "${LATEST}" /tmp/wildfly-next-version.log || \
+             ! "${NEXT_HOME}/bin/jboss-cli.sh" --help >/tmp/wildfly-next-help.log 2>&1; then
+            cat /tmp/wildfly-next-version.log || true
+            cat /tmp/wildfly-next-help.log || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned WildFly version ${CURRENT} passed release-tarball validation in this run, but candidate release ${LATEST} did not complete isolated version/help smoke on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          "${NEXT_HOME}/bin/standalone.sh" \
+            -b 127.0.0.1 \
+            -Djboss.socket.binding.port-offset=200 \
+            >/tmp/wildfly-next.log 2>&1 &
+          WILDFLY_PID=$!
+          READY=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8280/ >/tmp/wildfly-next-body.txt 2>/dev/null; then
+              READY=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$READY" -eq 1 ] && grep -qi 'WildFly' /tmp/wildfly-next-body.txt; then
+            echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            if [ "${CURRENT}" = "${LATEST}" ]; then
+              echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned WildFly version ${CURRENT} already matches the latest stable release. Regression validation re-downloaded the official tarball and reconfirmed version, help, and bounded server-start smoke successfully on Arm64." >> "$GITHUB_OUTPUT"
+            else
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned WildFly version ${CURRENT} passed release-tarball validation in this run, and candidate release ${LATEST} also passed isolated version, help, and bounded server-start smoke on Arm64." >> "$GITHUB_OUTPUT"
+            fi
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/wildfly-next.log || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned WildFly version ${CURRENT} passed release-tarball validation in this run, but candidate release ${LATEST} did not complete the bounded server-start smoke on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"

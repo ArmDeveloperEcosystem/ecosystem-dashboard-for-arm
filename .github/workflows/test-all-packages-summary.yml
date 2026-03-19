@@ -125,7 +125,7 @@ jobs:
           from pathlib import Path
 
           data_dir = Path("data/test-results")
-          cache = {}
+          job_cache = {}
           updated = 0
           unresolved = []
 
@@ -154,33 +154,49 @@ jobs:
 
               return {"os": value, "arch": "unknown"}
 
-          def resolve_job_url(run_id: str, fallback_url: str) -> str:
-              if run_id in cache:
-                  return cache[run_id]
-
+          def load_jobs(run_id: str):
+              if run_id in job_cache:
+                  return job_cache[run_id]
               try:
                   raw = subprocess.check_output(
                       [
                           "gh",
                           "api",
-                          f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run_id}/jobs",
+                          f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run_id}/jobs?per_page=100",
                       ],
                       text=True,
                   )
                   jobs = json.loads(raw).get("jobs", [])
               except Exception:
-                  cache[run_id] = fallback_url
+                  jobs = []
+              job_cache[run_id] = jobs
+              return jobs
+
+          def resolve_job_url(run_id: str, package_slug: str, fallback_url: str) -> str:
+              jobs = load_jobs(run_id)
+              if not jobs:
                   return fallback_url
 
-              for job in jobs:
-                  if (job.get("name") or "").strip().lower() == "summary":
-                      continue
-                  html_url = (job.get("html_url") or "").strip()
-                  if html_url:
-                      cache[run_id] = html_url
-                      return html_url
+              slug = (package_slug or "").strip().lower()
+              slug_candidates = {
+                  slug,
+                  slug.replace("_", "-"),
+                  slug.replace("-", "_"),
+              }
+              expected_job_ids = {f"test-{candidate}" for candidate in slug_candidates if candidate}
 
-              cache[run_id] = fallback_url
+              for job in jobs:
+                  name = (job.get("name") or "").strip()
+                  if not name:
+                      continue
+                  parts = [part.strip().lower() for part in name.split("/")]
+                  if "summary" in parts:
+                      continue
+                  if any(part in expected_job_ids for part in parts):
+                      html_url = (job.get("html_url") or "").strip()
+                      if html_url:
+                          return html_url
+
               return fallback_url
 
           for json_path in sorted(list(data_dir.glob("*.json"))):
@@ -191,6 +207,10 @@ jobs:
 
               canonical_path = data_dir / json_path.name.lower()
               path_changed = canonical_path != json_path
+              package_slug = (
+                  str((payload.get("metadata") or {}).get("package_slug") or "").strip().lower()
+                  or canonical_path.stem.lower()
+              )
               run = payload.get("run") or {}
               run_id = str(run.get("id") or "").strip()
               current_url = str(run.get("url") or "").strip()
@@ -201,7 +221,7 @@ jobs:
               if runner_changed:
                   payload["run"]["runner"] = normalized_runner
 
-              if not run_id or "/job/" in current_url:
+              if not run_id:
                   if runner_changed or path_changed:
                       rendered = json.dumps(payload, indent=2) + "\n"
                       canonical_path.write_text(rendered)
@@ -214,7 +234,7 @@ jobs:
                       updated += 1
                   continue
 
-              exact_url = resolve_job_url(run_id, current_url)
+              exact_url = resolve_job_url(run_id, package_slug, current_url)
               if exact_url != current_url or runner_changed or path_changed:
                   payload["run"]["url"] = exact_url
                   rendered = json.dumps(payload, indent=2) + "\n"
@@ -227,7 +247,7 @@ jobs:
                       mirror.write_text(rendered)
                   updated += 1
               else:
-                  unresolved.append(canonical_path.name)
+                  unresolved.append(f"{canonical_path.name}\t{run_id}\t{package_slug}")
 
           print(f"Normalized {updated} result URLs to exact job links.")
           if unresolved:

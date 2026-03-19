@@ -163,13 +163,109 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST=$(python3 - <<'PY'
+          import re, urllib.request
+          html = urllib.request.urlopen('https://downloads.apache.org/apr/').read().decode()
+          versions = sorted(
+              set(re.findall(r'apr-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz', html)),
+              key=lambda s: [int(x) for x in s.split('.')]
+          )
+          print(versions[-1] if versions else '')
+          PY
+          )
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+
+          if [ -z "$LATEST" ]; then
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned APR version ${CURRENT} passed smoke tests in this run, but the next regression candidate could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned APR version ${CURRENT} passed smoke tests in this run, but the next regression candidate could not be resolved automatically."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned APR version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 candidate for this workflow." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned APR version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 candidate for this workflow."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_DIR=$(mktemp -d)
+          NEXT_TAR="$NEXT_DIR/apr-${LATEST}.tar.gz"
+          NEXT_SRC="$NEXT_DIR/apr-${LATEST}"
+          NEXT_PREFIX="/usr/local/apr-regression"
+          NEXT_URL="https://downloads.apache.org/apr/apr-${LATEST}.tar.gz"
+          if curl -fsSLo "$NEXT_TAR" "$NEXT_URL"; then
+            tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
+            (
+              cd "$NEXT_SRC"
+              ./configure --prefix="$NEXT_PREFIX" >/tmp/apr-next-configure.log 2>&1
+              make -j"$(nproc)" >/tmp/apr-next-make.log 2>&1
+              make install DESTDIR="$NEXT_DIR/install_test" >/tmp/apr-next-install.log 2>&1
+            )
+            NEXT_CONFIG="$NEXT_DIR/install_test${NEXT_PREFIX}/bin/apr-1-config"
+            if [ -x "$NEXT_CONFIG" ]; then
+              NEXT_INSTALLED_VERSION=$("$NEXT_CONFIG" --version 2>/dev/null || true)
+            else
+              NEXT_INSTALLED_VERSION=""
+            fi
+            if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
+              echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned APR version ${CURRENT} passed smoke tests in this run. Regression validation downloaded candidate version ${LATEST} on Arm64, built it successfully, and the installed apr-1-config reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned APR version ${CURRENT} passed smoke tests in this run. Regression validation downloaded candidate version ${LATEST} on Arm64, built it successfully, and the installed apr-1-config reported version ${NEXT_INSTALLED_VERSION}."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              cat /tmp/apr-next-configure.log || true
+              cat /tmp/apr-next-make.log || true
+              cat /tmp/apr-next-install.log || true
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned APR version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not build/install into a usable Arm64 prefix." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned APR version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not build/install into a usable Arm64 prefix."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned APR version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned APR version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -270,7 +366,11 @@ jobs:
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ "${{ steps.test1.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test2.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test3.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test4.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
@@ -348,10 +448,17 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
                 }
               ]
             },
             "metadata": {
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}",
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
@@ -372,6 +479,7 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Pending regression install validation' }}"
           echo "## Apache Portable Runtime (APR) Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
@@ -394,8 +502,8 @@ jobs:
           echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "- **Support badge is based on Tests 1-5:** yes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
 
 
 

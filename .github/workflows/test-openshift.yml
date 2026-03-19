@@ -1,5 +1,6 @@
 name: Test OpenShift Client on Arm64
 on:
+  workflow_dispatch:
   workflow_call:
   push:
     branches:
@@ -8,9 +9,13 @@ on:
     paths:
       - 'content/opensource_packages/openshift.md'
       - '.github/workflows/test-openshift.yml'
+
 jobs:
   test-openshift:
     runs-on: ubuntu-24.04-arm
+    env:
+      OPENSHIFT_VERSION: "4.14.0"
+      OPENSHIFT_HOME: ${{ github.workspace }}/openshift-client
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -18,161 +23,146 @@ jobs:
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=openshift" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/openshift" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=openshift" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/openshift" >> "$GITHUB_OUTPUT"
 
-      # ============================================================
-      # CUSTOMIZE THIS: Install your package
-      # ============================================================
       - name: Install OpenShift Client (oc)
         id: install
         run: |
-          echo "Installing OpenShift Client..."
-          
-          # Install prerequisites
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y wget tar
-          
-          # Download OpenShift Client for Linux ARM64
-          # Using a stable version, e.g., 4.14
-          # Mirror URL: https://mirror.openshift.com/pub/openshift-v4/aarch64/clients/ocp/stable/openshift-client-linux.tar.gz
-          URL="https://mirror.openshift.com/pub/openshift-v4/aarch64/clients/ocp/stable/openshift-client-linux.tar.gz"
-          
-          if wget -q -O openshift-client.tar.gz "$URL"; then
-             echo "Downloaded successfully"
-          else
-             echo "Download failed"
-             echo "install_status=failed" >> $GITHUB_OUTPUT
-             exit 1
-          fi
-          
-          # Extract
-          mkdir -p openshift-client
-          tar -xzf openshift-client.tar.gz -C openshift-client
-          
-          # Add to path
-          echo "$(pwd)/openshift-client" >> $GITHUB_PATH
-          
-          echo "OpenShift Client installed"
-          echo "install_status=success" >> $GITHUB_OUTPUT
+          sudo apt-get install -y wget tar curl
 
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
+          VERSION="${OPENSHIFT_VERSION}"
+          URL="https://mirror.openshift.com/pub/openshift-v4/aarch64/clients/ocp/${VERSION}/openshift-client-linux.tar.gz"
+
+          wget -q -O /tmp/openshift-client.tar.gz "$URL"
+
+          rm -rf "${OPENSHIFT_HOME}"
+          mkdir -p "${OPENSHIFT_HOME}"
+          tar -xzf /tmp/openshift-client.tar.gz -C "${OPENSHIFT_HOME}"
+
+          if [ -x "${OPENSHIFT_HOME}/oc" ] && [ -x "${OPENSHIFT_HOME}/kubectl" ]; then
+            echo "${OPENSHIFT_HOME}" >> "$GITHUB_PATH"
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
       - name: Get package version
         id: version
         run: |
-          if [ -f "openshift-client/oc" ]; then
-             # oc version usually tries to connect to server, but --client flag avoids that
-             VERSION=$(./openshift-client/oc version --client | grep "Client Version" | awk '{print $3}' || echo "unknown")
-          else
-             VERSION="unknown"
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected OpenShift Client version: $VERSION"
+          set -euo pipefail
+          VERSION=$("${OPENSHIFT_HOME}/oc" version --client 2>/tmp/openshift-client-version.log | awk '/Client Version/ {print $3}' | sed 's/^v//' | head -n 1 || true)
+          LATEST=$(python3 - <<'PY'
+          import re, urllib.request
+          text = urllib.request.urlopen(
+              "https://mirror.openshift.com/pub/openshift-v4/aarch64/clients/ocp/stable/release.txt",
+              timeout=20,
+          ).read().decode(errors="ignore")
+          match = re.search(r"Name:\s+([0-9][0-9A-Za-z.+-]*)", text) or re.search(r"Version:\s+([0-9][0-9A-Za-z.+-]*)", text)
+          print(match.group(1) if match else "")
+          PY
+          )
 
-      # ============================================================
-      # ADD YOUR TESTS BELOW
-      # Each test should:
-      # 1. Have a unique id (test1, test2, etc.)
-      # 2. Track start/end time for duration
-      # 3. Set status=passed or status=failed
-      # 4. Exit 1 on failure
-      # ============================================================
+          if [ -z "$VERSION" ]; then
+            VERSION="unknown"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check oc binary
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if [ -f "openshift-client/oc" ]; then
-            echo "✓ oc binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          if [ -x "${OPENSHIFT_HOME}/oc" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ oc binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 2 - Check kubectl binary
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # The tarball usually includes kubectl as well
-          if [ -f "openshift-client/kubectl" ]; then
-             echo "✓ kubectl binary found"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ kubectl binary not found (warning only)"
-             # Not strictly required if we only care about oc, but good to know
-             echo "status=passed" >> $GITHUB_OUTPUT
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 3 - Run Help Command
+          if [ -x "${OPENSHIFT_HOME}/kubectl" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check client version output
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if ./openshift-client/oc help | grep -q "OpenShift Client"; then
-             echo "✓ Help command works"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ Help command failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-            # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
-      # ============================================================
-      
+          if "${OPENSHIFT_HOME}/oc" version --client >/tmp/oc-version.log 2>&1 \
+            && grep -q "Client Version" /tmp/oc-version.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/oc-version.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          echo "Checking system architecture..."
           ARCH=$(uname -m)
+
           if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 5 - Functional Validation
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if openshift --version > /dev/null 2>&1 || openshift --help > /dev/null 2>&1; then
-            echo "✓ Basic functional check passed"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          if "${OPENSHIFT_HOME}/oc" help >/tmp/oc-help.log 2>&1 \
+            && "${OPENSHIFT_HOME}/oc" completion bash >/tmp/oc-completion.sh 2>&1 \
+            && "${OPENSHIFT_HOME}/kubectl" version --client >/tmp/kubectl-version.log 2>&1 \
+            && grep -Eq 'OpenShift Client|Available Commands' /tmp/oc-help.log \
+            && [ -s /tmp/oc-completion.sh ] \
+            && grep -q "Client Version" /tmp/kubectl-version.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ Basic functional check failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            cat /tmp/oc-help.log || true
+            cat /tmp/kubectl-version.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
@@ -183,16 +173,95 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ -z "$LATEST" ]; then
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenShift Client version ${CURRENT} passed smoke tests in this run, but the next regression candidate could not be resolved from the official Arm64 release channel." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_TAR="/tmp/openshift-client-regression.tar.gz"
+          NEXT_DIR=$(mktemp -d)
+          NEXT_URL="https://mirror.openshift.com/pub/openshift-v4/aarch64/clients/ocp/${LATEST}/openshift-client-linux.tar.gz"
+
+          if wget -q -O "$NEXT_TAR" "$NEXT_URL"; then
+            mkdir -p "$NEXT_DIR/openshift-client"
+            tar -xzf "$NEXT_TAR" -C "$NEXT_DIR/openshift-client"
+            NEXT_HOME="$NEXT_DIR/openshift-client"
+            NEXT_INSTALLED_VERSION=$("$NEXT_HOME/oc" version --client 2>/tmp/openshift-next-version.log | awk '/Client Version/ {print $3}' | sed 's/^v//' | head -n 1 || true)
+
+            if [ -n "$NEXT_INSTALLED_VERSION" ] \
+              && [ -x "$NEXT_HOME/oc" ] \
+              && [ -x "$NEXT_HOME/kubectl" ] \
+              && "$NEXT_HOME/oc" help >/tmp/oc-next-help.log 2>&1 \
+              && "$NEXT_HOME/oc" completion bash >/tmp/oc-next-completion.sh 2>&1 \
+              && "$NEXT_HOME/kubectl" version --client >/tmp/kubectl-next-version.log 2>&1 \
+              && grep -Eq 'OpenShift Client|Available Commands' /tmp/oc-next-help.log \
+              && [ -s /tmp/oc-next-completion.sh ] \
+              && grep -q "Client Version" /tmp/kubectl-next-version.log; then
+              echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+
+              if [ "$CURRENT" = "$LATEST" ] || [ "$CURRENT" = "$NEXT_INSTALLED_VERSION" ]; then
+                echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned OpenShift Client version ${CURRENT} matches the latest stable Arm64 client. Regression validation re-downloaded the official client archive, and the extracted candidate binaries reported version ${NEXT_INSTALLED_VERSION} while passing help, completion, and kubectl client checks." >> "$GITHUB_OUTPUT"
+                echo "Regression install result: Current stable version already validated on Arm64"
+              else
+                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned OpenShift Client version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the extracted client binaries reported version ${NEXT_INSTALLED_VERSION} while passing help, completion, and kubectl client checks." >> "$GITHUB_OUTPUT"
+                echo "Regression install result: Next version installed successfully on Arm64"
+              fi
+
+              echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              cat /tmp/openshift-next-version.log || true
+              cat /tmp/oc-next-help.log || true
+              cat /tmp/kubectl-next-version.log || true
+              echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned OpenShift Client version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not expose a usable installed version on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: unknown"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenShift Client version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded from the official Arm64 client mirror." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Show regression validation details
         if: always()
@@ -234,87 +303,85 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check oc binary
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
+          check_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_core() {
+            local status="$1"
+            local duration="$2"
+            check_test "$status" "$duration"
+            if [ "$status" != "passed" ]; then
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          }
+
+          check_core "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}"
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
           else
-            FAILED=$((FAILED + 1))
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Check kubectl binary
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            FAILED=$((FAILED + 1))
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Run Help Command
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Architecture Verification
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Functional Validation
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
-
-
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
-          else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
           mkdir -p test-results
-          
+
           cat > test-results/openshift.json << EOF
           {
             "schema_version": "1.0",
             "package": {
               "name": "OpenShift Client",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "Go",
+              "category": "Containers/Kubernetes"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -329,27 +396,27 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check oc binary",
+                  "name": "Test 1 - Check oc binary",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check kubectl binary",
+                  "name": "Test 2 - Check kubectl binary",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Run Help Command",
+                  "name": "Test 3 - Check client version output",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Architecture Verification",
+                  "name": "Test 4 - Architecture Verification",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Functional Validation",
+                  "name": "Test 5 - Functional Validation",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 },
@@ -357,6 +424,12 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
@@ -366,13 +439,10 @@ jobs:
             }
           }
           EOF
-          
+
           echo "Generated test results:"
           cat test-results/openshift.json
-      # ============================================================
-      # STANDARD STEPS - Usually don't need to modify below here
-      # ============================================================
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -380,35 +450,49 @@ jobs:
           name: openshift-test-results
           path: test-results/openshift.json
           retention-days: 90
-      
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## OpenShift Client Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Test 1 - Check oc binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Test 2 - Check kubectl binary: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Test 3 - Run Help Command: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
 
-          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
-
+          echo "## OpenShift Client Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Test 1 - Check oc binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Test 2 - Check kubectl binary: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Test 3 - Check client version output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

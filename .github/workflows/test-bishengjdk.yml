@@ -29,10 +29,12 @@ jobs:
       - name: Install BiSheng JDK
         id: install
         run: |
+          set -euo pipefail
           echo "Installing BiSheng JDK..."
           
           # Using version 11.0.14 from Huawei Cloud Mirror
-          BISHENG_URL="https://mirrors.huaweicloud.com/kunpeng/archive/compiler/bisheng_jdk/bisheng-jdk-11.0.14-linux-aarch64.tar.gz"
+          BASELINE_ARCHIVE="bisheng-jdk-11.0.14-linux-aarch64.tar.gz"
+          BISHENG_URL="https://mirrors.huaweicloud.com/kunpeng/archive/compiler/bisheng_jdk/${BASELINE_ARCHIVE}"
           
           wget -q "$BISHENG_URL" -O bisheng-jdk.tar.gz
           
@@ -42,6 +44,7 @@ jobs:
           # Set JAVA_HOME and PATH for subsequent steps
           echo "JAVA_HOME=$PWD/bisheng-jdk" >> $GITHUB_ENV
           echo "$PWD/bisheng-jdk/bin" >> $GITHUB_PATH
+          echo "baseline_archive=$BASELINE_ARCHIVE" >> "$GITHUB_OUTPUT"
           
           if [ -f "bisheng-jdk/bin/java" ]; then
              echo "BiSheng JDK installed successfully"
@@ -57,7 +60,6 @@ jobs:
         run: |
           # Check if it's actually BiSheng
           RAW_VERSION=$(java -version 2>&1)
-          VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g')
           echo "$RAW_VERSION"
           
           # Extract version number
@@ -187,13 +189,96 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT_VERSION="${{ steps.version.outputs.version || 'unknown' }}"
+          BASELINE_ARCHIVE="${{ steps.install.outputs.baseline_archive }}"
+          LATEST_ARCHIVE=$(python3 - <<'PY'
+          import re, urllib.request
+          html = urllib.request.urlopen("https://mirrors.huaweicloud.com/kunpeng/archive/compiler/bisheng_jdk/", timeout=30).read().decode()
+          matches = sorted(
+              set(re.findall(r'bisheng-jdk-(11\.[0-9.]+(?:-b[0-9]+)?)\-linux-aarch64\.tar\.gz', html)),
+              key=lambda s: [int(x) if x.isdigit() else x for x in re.split(r'([0-9]+)', s.replace('-b', '.')) if x]
+          )
+          latest = matches[-1] if matches else ""
+          print(f"bisheng-jdk-{latest}-linux-aarch64.tar.gz" if latest else "")
+          PY
+          )
+
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+
+          if [ -z "$LATEST_ARCHIVE" ]; then
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned BiSheng JDK version ${CURRENT_VERSION} passed smoke tests in this run, but the next stable 11.x Arm64 archive could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "Current version tested in Tests 1-5: $CURRENT_VERSION"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned BiSheng JDK version ${CURRENT_VERSION} passed smoke tests in this run, but the next stable 11.x Arm64 archive could not be resolved automatically."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          LATEST_VERSION=$(echo "$LATEST_ARCHIVE" | sed -E 's/^bisheng-jdk-([^-]+(-b[0-9]+)?)\-linux-aarch64\.tar\.gz$/\1/' | sed 's/-b.*$//')
+          echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Current version tested in Tests 1-5: $CURRENT_VERSION"
+          echo "Next version targeted for install validation: $LATEST_VERSION"
+
+          if [ "$LATEST_ARCHIVE" = "$BASELINE_ARCHIVE" ]; then
+            echo "next_installed_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned BiSheng JDK archive ${BASELINE_ARCHIVE} passed smoke tests in this run and already matches the latest stable Arm64 11.x release. The installed java binary reports version ${CURRENT_VERSION}." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT_VERSION"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned BiSheng JDK archive ${BASELINE_ARCHIVE} passed smoke tests in this run and already matches the latest stable Arm64 11.x release. The installed java binary reports version ${CURRENT_VERSION}."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            NEXT_URL="https://mirrors.huaweicloud.com/kunpeng/archive/compiler/bisheng_jdk/${LATEST_ARCHIVE}"
+            curl -fsSL "$NEXT_URL" -o bisheng-jdk-next.tar.gz
+            mkdir -p "$RUNNER_TEMP/bisheng-jdk-next"
+            tar -xzf bisheng-jdk-next.tar.gz -C "$RUNNER_TEMP/bisheng-jdk-next" --strip-components=1
+            NEXT_JAVA="$RUNNER_TEMP/bisheng-jdk-next/bin/java"
+            NEXT_JAVAC="$RUNNER_TEMP/bisheng-jdk-next/bin/javac"
+            cat > HelloWorldNext.java <<'JAVA'
+          public class HelloWorldNext {
+              public static void main(String[] args) {
+                  System.out.println("Hello BiSheng!");
+              }
+          }
+          JAVA
+            NEXT_RAW=$("$NEXT_JAVA" -version 2>&1)
+            NEXT_INSTALLED_VERSION=$(echo "$NEXT_RAW" | grep -oP 'version "\K[0-9.]+' | head -1 || true)
+            "$NEXT_JAVAC" HelloWorldNext.java
+            NEXT_OUTPUT=$("$NEXT_JAVA" HelloWorldNext)
+
+            if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_OUTPUT" = "Hello BiSheng!" ]; then
+              echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned BiSheng JDK version ${CURRENT_VERSION} passed smoke tests in this run. Regression validation installed candidate archive ${LATEST_ARCHIVE} on Arm64, and the candidate java runtime reported version ${NEXT_INSTALLED_VERSION} after a real compile-and-run check." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned BiSheng JDK version ${CURRENT_VERSION} passed smoke tests in this run. Regression validation installed candidate archive ${LATEST_ARCHIVE} on Arm64, and the candidate java runtime reported version ${NEXT_INSTALLED_VERSION} after a real compile-and-run check."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "$NEXT_RAW" || true
+              echo "next_installed_version=${NEXT_INSTALLED_VERSION:-install_failed}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned BiSheng JDK version ${CURRENT_VERSION} passed smoke tests in this run, but candidate archive ${LATEST_ARCHIVE} did not produce a usable Arm64 JDK runtime and compile/run path." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-install_failed}"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned BiSheng JDK version ${CURRENT_VERSION} passed smoke tests in this run, but candidate archive ${LATEST_ARCHIVE} did not produce a usable Arm64 JDK runtime and compile/run path."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -294,7 +379,11 @@ jobs:
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ "${{ steps.test1.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test2.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test3.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test4.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
@@ -305,6 +394,11 @@ jobs:
       - name: Generate test results JSON
         if: always()
         run: |
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
           mkdir -p test-results
           
           cat > test-results/bishengjdk.json << EOF
@@ -318,7 +412,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -361,12 +455,19 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}"
             }
           }
           EOF
@@ -385,6 +486,8 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression comparison summary unavailable.' }}"
+
           echo "## BiSheng JDK Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
@@ -405,11 +508,11 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Support badge is based on Tests 1-5:** yes" >> $GITHUB_STEP_SUMMARY
 
 
 

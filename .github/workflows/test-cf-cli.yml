@@ -62,9 +62,10 @@ jobs:
       - name: Install Cloud Foundry CLI
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Cloud Foundry CLI..."
-          # Use official GitHub release for ARM64 (v8.7.6)
           CF_VERSION="8.7.6"
+          echo "baseline_version=$CF_VERSION" >> "$GITHUB_OUTPUT"
           URL="https://github.com/cloudfoundry/cli/releases/download/v${CF_VERSION}/cf8-cli_${CF_VERSION}_linux_arm64.tgz"
           
           echo "Downloading $URL..."
@@ -116,8 +117,11 @@ jobs:
       - name: Get Cloud Foundry CLI version
         id: version
         run: |
-          # Adjust this command based on how your package reports version
-          VERSION=$(cf --version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+          set -euo pipefail
+          VERSION=$(timeout 10s cf --version 2>&1 | grep -oP '[0-9.]+' | head -1 || true)
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Cloud Foundry CLI version: $VERSION"
       
@@ -154,7 +158,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if cf --version 2>&1 | grep -q "version\|[0-9]"; then
+          if timeout 10s cf --version 2>&1 | grep -q "version\|[0-9]"; then
             echo "✓ cf-cli version command works"
             cf --version
             echo "status=passed" >> $GITHUB_OUTPUT
@@ -173,7 +177,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if cf --help 2>&1 | grep -qi "usage\|help\|options"; then
+          if timeout 10s cf --help 2>&1 | grep -qi "usage\|help\|options"; then
             echo "✓ cf-cli help command works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -239,6 +243,7 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           LATEST=$(GH_TOKEN=${{ github.token }} gh api repos/cloudfoundry/cli/releases/latest --jq .tag_name 2>/dev/null | sed 's/^v//')
@@ -247,39 +252,59 @@ jobs:
           fi
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
 
           NEXT_TGZ="/tmp/cf-regression.tgz"
           NEXT_DIR=$(mktemp -d)
           NEXT_URL="https://github.com/cloudfoundry/cli/releases/download/v${LATEST}/cf8-cli_${LATEST}_linux_arm64.tgz"
           if wget -q -O "$NEXT_TGZ" "$NEXT_URL"; then
+            echo "Next version download status: passed"
             tar -xzf "$NEXT_TGZ" -C "$NEXT_DIR"
             NEXT_BIN=$(find "$NEXT_DIR" -type f \\( -name "cf8" -o -name "cf" \\) | head -n 1)
             if [ -n "$NEXT_BIN" ]; then
               chmod +x "$NEXT_BIN"
-              NEXT_INSTALLED_VERSION=$("$NEXT_BIN" --version 2>&1 | grep -oP '[0-9.]+' | head -n 1 || true)
-              if [ -n "$NEXT_INSTALLED_VERSION" ]; then
+              NEXT_INSTALLED_VERSION=$(timeout 10s "$NEXT_BIN" --version 2>&1 | grep -oP '[0-9.]+' | head -n 1 || true)
+              if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
                 echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
                 echo "comparison=Current pinned Cloud Foundry CLI version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the installed binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+                echo "Regression install result: Next version installed successfully on Arm64"
+                echo "Details: Current pinned Cloud Foundry CLI version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the installed binary reported version ${NEXT_INSTALLED_VERSION}."
                 echo "status=passed" >> "$GITHUB_OUTPUT"
               else
-                echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
+                echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned Cloud Foundry CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not report a usable version on Arm64." >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Cloud Foundry CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not report the expected version on Arm64." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
+                echo "Regression install result: Next version install failed on Arm64"
+                echo "Details: Current pinned Cloud Foundry CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not report the expected version on Arm64."
                 echo "status=failed" >> "$GITHUB_OUTPUT"
                 exit 1
               fi
             else
               echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
               echo "comparison=Current pinned Cloud Foundry CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not extract a usable Arm64 binary." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Cloud Foundry CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not extract a usable Arm64 binary."
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
             fi
           else
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
             echo "comparison=Current pinned Cloud Foundry CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Cloud Foundry CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -327,8 +352,10 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
           # Check cf-cli binary exists
@@ -336,6 +363,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
@@ -344,6 +372,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
@@ -352,6 +381,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
@@ -360,6 +390,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
@@ -368,6 +399,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
           # Regression Validation
@@ -382,13 +414,17 @@ jobs:
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ $CORE_FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
             echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
       - name: Generate test results JSON
@@ -397,7 +433,7 @@ jobs:
           JOB_ID="${{ github.job }}"
           JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
           if [ -z "$JOB_URL" ]; then
-            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}"
           fi
           mkdir -p test-results
           
@@ -465,6 +501,7 @@ jobs:
               ]
             },
             "metadata": {
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}",
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
@@ -513,7 +550,4 @@ jobs:
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.test6.outputs.comparison || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
 

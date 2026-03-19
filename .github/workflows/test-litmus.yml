@@ -1,206 +1,229 @@
-# Package Test Template
-#
-# This is a TEMPLATE file stored in the tests/ directory - it will not run as a workflow.
-# To use it:
-# 1. Copy this file to .github/workflows/test-<your-package>.yml
-# 2. Replace all Litmus placeholders with your package name (e.g., "Redis")
-# 3. Replace all litmus placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the appropriate trigger(s) in the 'on:' section
-#
-# See .github/workflows/test-nginx.yml and test-envoy.yml for real examples. Template
-#
-# This is a TEMPLATE file - it will not run automatically.
-# To use it:
-# 1. Copy this file to test-<your-package>.yml
-# 2. Replace all Litmus placeholders with your package name (e.g., "Redis")
-# 3. Replace all litmus placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the 'push:' trigger section below (remove the workflow_dispatch if desired)
-#
-# See test-nginx.yml and test-envoy.yml for real examples.
-
 name: Test Litmus on Arm64
 
-# This is a TEMPLATE - it has no triggers and will not run.
-# When you copy this file, uncomment the appropriate triggers below:
 on:
-  # workflow_dispatch:  # Uncomment for manual testing
+  workflow_dispatch:
   workflow_call:
   push:
     branches:
       - main
       - smoke_tests
     paths:
-      - 'content/opensource_packages/litmus.md'
-      - '.github/workflows/test-litmus.yml'
+      - "content/opensource_packages/litmus.md"
+      - ".github/workflows/test-litmus.yml"
 
 jobs:
   test-litmus:
     runs-on: ubuntu-24.04-arm
-    
+    env:
+      LITMUS_VERSION: "3.25.0"
+      LITMUS_MANIFEST: "/tmp/litmus-3.25.0-installation.yaml"
+      LITMUS_OPERATOR_IMAGE: "litmuschaos/chaos-operator:3.25.0"
+      LITMUS_RUNNER_IMAGE: "litmuschaos/chaos-runner:3.25.0"
+      LITMUS_PORTAL_FRONTEND_IMAGE: "litmuschaos/litmusportal-frontend:3.25.0"
+      LITMUS_PORTAL_SERVER_IMAGE: "litmuschaos/litmusportal-server:3.25.0"
+      LITMUS_PORTAL_AUTH_IMAGE: "litmuschaos/litmusportal-auth-server:3.25.0"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=litmus" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/litmus" >> $GITHUB_OUTPUT
-      
-      # ============================================================
-      # CUSTOMIZE THIS: Install your package
-      # ============================================================
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=litmus" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/litmus" >> "$GITHUB_OUTPUT"
+          echo "current_version=${LITMUS_VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: Install Litmus
         id: install
         run: |
-          echo "Installing Litmus..."
-          
-          # Example for apt packages:
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y litmus
-          
-          # Example for downloading binaries:
-          # sudo curl -L -o /usr/local/bin/litmus https://github.com/org/repo/releases/download/v1.0.0/litmus-linux-arm64
-          # sudo chmod +x /usr/local/bin/litmus
-          
-          # Verify installation
-          if command -v litmus &> /dev/null; then
-            echo "Litmus installed successfully"
-            echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-            echo "Litmus installation failed"
-            echo "install_status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-      
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
+          sudo apt-get install -y curl python3 docker.io
+          sudo systemctl start docker || sudo service docker start || true
+
+          curl -fsSL -o "${LITMUS_MANIFEST}" "https://github.com/litmuschaos/litmus/releases/download/${LITMUS_VERSION}/litmus-installation.yaml"
+
+          for ref in \
+            "${LITMUS_PORTAL_FRONTEND_IMAGE}" \
+            "${LITMUS_PORTAL_SERVER_IMAGE}" \
+            "${LITMUS_PORTAL_AUTH_IMAGE}"; do
+            grep -q "${ref}" "${LITMUS_MANIFEST}"
+          done
+
+          for image in \
+            "${LITMUS_OPERATOR_IMAGE}" \
+            "${LITMUS_RUNNER_IMAGE}" \
+            "${LITMUS_PORTAL_FRONTEND_IMAGE}" \
+            "${LITMUS_PORTAL_SERVER_IMAGE}" \
+            "${LITMUS_PORTAL_AUTH_IMAGE}"; do
+            sudo docker pull "${image}"
+          done
+
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
       - name: Get Litmus version
         id: version
         run: |
-          # Adjust this command based on how your package reports version
-          VERSION=$(litmus --version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Litmus version: $VERSION"
-      
-      # ============================================================
-      # ADD YOUR TESTS BELOW
-      # Each test should:
-      # 1. Have a unique id (test1, test2, etc.)
-      # 2. Track start/end time for duration
-      # 3. Set status=passed or status=failed
-      # 4. Exit 1 on failure
-      # ============================================================
-      
-      - name: Test 1 - Check litmus binary exists
+          set -euo pipefail
+          python3 <<'PY' > /tmp/litmus-version.env
+          import json
+          import urllib.request
+
+          def get_json(url):
+              return json.load(urllib.request.urlopen(url, timeout=30))
+
+          releases = get_json("https://api.github.com/repos/litmuschaos/litmus/releases")
+          latest_release = releases[0]["tag_name"].lstrip("v")
+
+          repos = [
+              "chaos-operator",
+              "chaos-runner",
+              "litmusportal-frontend",
+              "litmusportal-server",
+              "litmusportal-auth-server",
+          ]
+          repo_tags = {}
+          for repo in repos:
+              tags = get_json(f"https://hub.docker.com/v2/repositories/litmuschaos/{repo}/tags?page_size=100")
+              repo_tags[repo] = {item["name"] for item in tags.get("results", [])}
+
+          latest_installable = "unknown"
+          for release in releases:
+              tag = release["tag_name"].lstrip("v")
+              assets = {asset["name"] for asset in release.get("assets", [])}
+              if "litmus-installation.yaml" not in assets:
+                  continue
+              if all(tag in repo_tags[repo] for repo in repos):
+                  latest_installable = tag
+                  break
+
+          print(f"version=3.25.0")
+          print(f"latest={latest_installable}")
+          print(f"latest_release={latest_release}")
+          PY
+
+          cat /tmp/litmus-version.env >> "$GITHUB_OUTPUT"
+          . /tmp/litmus-version.env
+          echo "Detected Litmus baseline: ${version}"
+          echo "Detected latest fully installable Litmus stack: ${latest}"
+          echo "Detected latest GitHub release tag: ${latest_release}"
+
+      - name: Test 1 - Check release manifest and image pulls
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if command -v litmus &> /dev/null; then
-            echo "✓ litmus binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          ok=1
+
+          [ -f "${LITMUS_MANIFEST}" ] || ok=0
+
+          for ref in \
+            "${LITMUS_PORTAL_FRONTEND_IMAGE}" \
+            "${LITMUS_PORTAL_SERVER_IMAGE}" \
+            "${LITMUS_PORTAL_AUTH_IMAGE}"; do
+            grep -q "${ref}" "${LITMUS_MANIFEST}" || ok=0
+          done
+
+          for image in \
+            "${LITMUS_OPERATOR_IMAGE}" \
+            "${LITMUS_RUNNER_IMAGE}" \
+            "${LITMUS_PORTAL_FRONTEND_IMAGE}" \
+            "${LITMUS_PORTAL_SERVER_IMAGE}" \
+            "${LITMUS_PORTAL_AUTH_IMAGE}"; do
+            sudo docker image inspect "${image}" >/dev/null 2>&1 || ok=0
+          done
+
+          if [ "${ok}" -eq 1 ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ litmus binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Check litmus version command
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check chaos operator runtime probe
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if litmus --version 2>&1 | grep -q "version\|[0-9]"; then
-            echo "✓ litmus version command works"
-            litmus --version
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          OPERATOR_OUTPUT=$(timeout 20s sudo docker run --rm "${LITMUS_OPERATOR_IMAGE}" 2>&1 || true)
+          printf '%s\n' "${OPERATOR_OUTPUT}" | tee /tmp/litmus-operator.out
+
+          if printf '%s\n' "${OPERATOR_OUTPUT}" | grep -q "WATCH_NAMESPACE env is not set" \
+            && printf '%s\n' "${OPERATOR_OUTPUT}" | grep -q "Go OS/Arch: linux/arm64"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ litmus version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 3 - Check litmus help output
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check chaos runner runtime probe
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if litmus --help 2>&1 | grep -qi "usage\|help\|options"; then
-            echo "✓ litmus help command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          RUNNER_OUTPUT=$(timeout 20s sudo docker run --rm "${LITMUS_RUNNER_IMAGE}" 2>&1 || true)
+          printf '%s\n' "${RUNNER_OUTPUT}" | tee /tmp/litmus-runner.out
+
+          if printf '%s\n' "${RUNNER_OUTPUT}" | grep -q "invalid configuration: no configuration has been provided"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ litmus help command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      # Add more tests as needed (test4, test5, etc.)
-      # Examples:
-      # - Run a simple command
-      # - Check configuration files
-      # - Start/stop a service
-      # - Test basic functionality
-      
-      # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
-      # ============================================================
-      
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          echo "Checking system architecture..."
           ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if [ "${ARCH}" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Functional Validation
+      - name: Test 5 - Check portal image references and architecture
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if litmus --version > /dev/null 2>&1 || litmus --help > /dev/null 2>&1; then
-            echo "✓ Basic functional check passed"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          ok=1
+
+          for image in \
+            "${LITMUS_PORTAL_FRONTEND_IMAGE}" \
+            "${LITMUS_PORTAL_SERVER_IMAGE}" \
+            "${LITMUS_PORTAL_AUTH_IMAGE}"; do
+            ARCH=$(sudo docker image inspect "${image}" --format '{{.Architecture}}' | head -n 1)
+            if [ "${ARCH}" != "arm64" ]; then
+              ok=0
+            fi
+          done
+
+          if [ "${ok}" -eq 1 ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ Basic functional check failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
@@ -211,138 +234,187 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+          LATEST_RELEASE="${{ steps.version.outputs.latest_release || 'unknown' }}"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ -z "${LATEST}" ] || [ "${LATEST}" = "unknown" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Litmus stack ${CURRENT} passed manifest and image validation on Arm64, but a latest fully installable Litmus release could not be resolved." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_MANIFEST="/tmp/litmus-${LATEST}-installation.yaml"
+          NEXT_OPERATOR_IMAGE="${LITMUS_OPERATOR_IMAGE/${CURRENT}/${LATEST}}"
+          NEXT_RUNNER_IMAGE="${LITMUS_RUNNER_IMAGE/${CURRENT}/${LATEST}}"
+          NEXT_FRONTEND_IMAGE="${LITMUS_PORTAL_FRONTEND_IMAGE/${CURRENT}/${LATEST}}"
+          NEXT_SERVER_IMAGE="${LITMUS_PORTAL_SERVER_IMAGE/${CURRENT}/${LATEST}}"
+          NEXT_AUTH_IMAGE="${LITMUS_PORTAL_AUTH_IMAGE/${CURRENT}/${LATEST}}"
+
+          curl -fsSL -o "${NEXT_MANIFEST}" "https://github.com/litmuschaos/litmus/releases/download/${LATEST}/litmus-installation.yaml"
+
+          for ref in \
+            "${NEXT_FRONTEND_IMAGE}" \
+            "${NEXT_SERVER_IMAGE}" \
+            "${NEXT_AUTH_IMAGE}"; do
+            grep -q "${ref}" "${NEXT_MANIFEST}"
+          done
+
+          for image in \
+            "${NEXT_OPERATOR_IMAGE}" \
+            "${NEXT_RUNNER_IMAGE}" \
+            "${NEXT_FRONTEND_IMAGE}" \
+            "${NEXT_SERVER_IMAGE}" \
+            "${NEXT_AUTH_IMAGE}"; do
+            sudo docker pull "${image}"
+          done
+
+          NEXT_OPERATOR_OUTPUT=$(timeout 20s sudo docker run --rm "${NEXT_OPERATOR_IMAGE}" 2>&1 || true)
+          NEXT_RUNNER_OUTPUT=$(timeout 20s sudo docker run --rm "${NEXT_RUNNER_IMAGE}" 2>&1 || true)
+
+          printf '%s\n' "${NEXT_OPERATOR_OUTPUT}" | grep -q "WATCH_NAMESPACE env is not set"
+          printf '%s\n' "${NEXT_OPERATOR_OUTPUT}" | grep -q "Go OS/Arch: linux/arm64"
+          printf '%s\n' "${NEXT_RUNNER_OUTPUT}" | grep -q "invalid configuration: no configuration has been provided"
+
+          for image in \
+            "${NEXT_FRONTEND_IMAGE}" \
+            "${NEXT_SERVER_IMAGE}" \
+            "${NEXT_AUTH_IMAGE}"; do
+            ARCH=$(sudo docker image inspect "${image}" --format '{{.Architecture}}' | head -n 1)
+            if [ "${ARCH}" != "arm64" ]; then
+              echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Litmus stack ${CURRENT} passed manifest and image validation on Arm64, but the candidate portal image ${image} did not resolve to an Arm64 image." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          done
+
+          NOTE=""
+          if [ "${LATEST_RELEASE}" != "${LATEST}" ]; then
+            NOTE=" The newer GitHub release ${LATEST_RELEASE} was not selected because matching chaos-operator and chaos-runner image tags are not published for a fully installable Litmus stack."
+          fi
+
+          echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          if [ "${CURRENT}" = "${LATEST}" ]; then
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Litmus stack ${CURRENT} matches the latest fully installable Litmus stack on Arm64, and regression validation re-confirmed the manifest, operator image, runner image, and portal images.${NOTE}" >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+          else
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Litmus stack ${CURRENT} passed manifest and image validation on Arm64. Regression validation selected ${LATEST} as the latest fully installable Litmus stack and revalidated the release manifest, operator image, runner image, and portal images on Arm64.${NOTE}" >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Next version installed successfully on Arm64"
+          fi
           echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "Next version installed on Arm64: ${LATEST}"
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Show regression validation details
         if: always()
         run: |
-          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
-          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
-          if [ -z "$REGRESSION_RESULT" ]; then
-            case "$DECISION" in
-              next_install_validated|safe_to_upgrade)
-                REGRESSION_RESULT="Next version installed successfully on Arm64"
-                ;;
-              next_install_failed|next_lookup_failed)
-                REGRESSION_RESULT="Next version install failed on Arm64"
-                ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Current stable version already validated on Arm64"
-                ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
-              *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
-                ;;
-            esac
-          fi
-
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
-          echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check litmus binary exists
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          # Check litmus version command
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          # Check litmus help output
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Architecture Verification
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Functional Validation
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
-          
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
+          fi
+
           cat > test-results/litmus.json << EOF
           {
             "schema_version": "1.0",
             "package": {
               "name": "Litmus",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "Monitoring/Observability",
+              "language": "Containers / Kubernetes",
               "category": "Monitoring/Observability"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -357,17 +429,17 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check litmus binary exists",
+                  "name": "Check release manifest and image pulls",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check litmus version command",
+                  "name": "Check chaos operator runtime probe",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check litmus help output",
+                  "name": "Check chaos runner runtime probe",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
@@ -377,7 +449,7 @@ jobs:
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Functional Validation",
+                  "name": "Check portal image references and architecture",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 },
@@ -385,6 +457,12 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
@@ -394,14 +472,7 @@ jobs:
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/litmus.json
-      
-      # ============================================================
-      # STANDARD STEPS - Usually don't need to modify below here
-      # ============================================================
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -409,36 +480,30 @@ jobs:
           name: litmus-test-results
           path: test-results/litmus.json
           retention-days: 90
-      
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## Litmus Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check litmus binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check litmus version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check litmus help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
-          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
-
-
+          echo "## Litmus Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Test 1 - Check release manifest and image pulls: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Test 2 - Check chaos operator runtime probe: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Test 3 - Check chaos runner runtime probe: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Test 5 - Check portal image references and architecture: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

@@ -29,10 +29,11 @@ jobs:
       - name: Install Calico CLI
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Calico CLI (calicoctl)..."
-          
-          # Download binary
-          curl -L https://github.com/projectcalico/calico/releases/latest/download/calicoctl-linux-arm64 -o calicoctl
+          BASELINE_VERSION="v3.31.4"
+          echo "baseline_version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+          curl -fsSL "https://github.com/projectcalico/calico/releases/download/${BASELINE_VERSION}/calicoctl-linux-arm64" -o calicoctl
           
           chmod +x calicoctl
           sudo mv calicoctl /usr/local/bin/
@@ -43,7 +44,12 @@ jobs:
       - name: Get Calico version
         id: version
         run: |
-          VERSION=$(calicoctl version | grep "Client Version" | awk '{print $3}')
+          set -euo pipefail
+          RAW_VERSION=$(timeout 10s calicoctl version 2>&1 || true)
+          VERSION=$(printf '%s\n' "$RAW_VERSION" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Calico version: $VERSION"
       
@@ -72,7 +78,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if calicoctl --help 2>&1 | grep -qi "usage\|help\|options"; then
+          if timeout 10s calicoctl --help 2>&1 | grep -qiE "usage|help|options"; then
             echo "✓ calicoctl help command works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -90,7 +96,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if calicoctl version; then
+          if timeout 10s calicoctl version; then
             echo "✓ Version check passed"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -145,20 +151,26 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT_RAW="${{ steps.version.outputs.version || 'unknown' }}"
-          CURRENT=$(printf '%s' "$CURRENT_RAW" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1 | sed 's/^v//' || true)
-          LATEST_RAW=$(curl -fsSL https://api.github.com/repos/projectcalico/calico/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
-          LATEST="${LATEST_RAW#v}"
+          CURRENT=$(printf '%s' "$CURRENT_RAW" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+          if [ -z "$CURRENT" ]; then
+            CURRENT="${{ steps.install.outputs.baseline_version || 'unknown' }}"
+          fi
+          LATEST_RAW=$(GH_TOKEN=${{ github.token }} gh api repos/projectcalico/calico/releases/latest --jq .tag_name 2>/dev/null | tr -d '[:space:]' || true)
+          if [ -z "$LATEST_RAW" ]; then
+            LATEST_RAW=$(curl -fsSL https://api.github.com/repos/projectcalico/calico/releases/latest | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null | tr -d '[:space:]' || true)
+          fi
           NEXT_INSTALLED="not_installed"
           DECISION="next_lookup_failed"
           REGRESSION_RESULT="Next version install failed on Arm64"
           COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run, but the next regression candidate version could not be resolved automatically."
           STATUS="failed"
 
-          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
+          if [ -z "$LATEST_RAW" ] || [ "$LATEST_RAW" = "null" ]; then
             NEXT_INSTALLED="lookup_failed"
-          elif [ -n "$CURRENT" ] && [ "$CURRENT" = "$LATEST" ]; then
+          elif [ -n "$CURRENT" ] && [ "$CURRENT" = "$LATEST_RAW" ]; then
             NEXT_INSTALLED="$CURRENT"
             DECISION="current_is_latest_stable"
             REGRESSION_RESULT="Current stable version already validated on Arm64"
@@ -168,30 +180,30 @@ jobs:
             NEXT_BIN=$(mktemp /tmp/calicoctl-next-XXXXXX)
             if curl -fsSL -o "$NEXT_BIN" "https://github.com/projectcalico/calico/releases/download/${LATEST_RAW}/calicoctl-linux-arm64"; then
               chmod +x "$NEXT_BIN"
-              NEXT_RAW=$("$NEXT_BIN" version 2>&1 || true)
-              NEXT_INSTALLED_VERSION=$(printf '%s' "$NEXT_RAW" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1 | sed 's/^v//' || true)
-              if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
+              NEXT_RAW=$(timeout 10s "$NEXT_BIN" version 2>&1 || true)
+              NEXT_INSTALLED_VERSION=$(printf '%s' "$NEXT_RAW" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+              if [ "$NEXT_INSTALLED_VERSION" = "$LATEST_RAW" ]; then
                 NEXT_INSTALLED="$NEXT_INSTALLED_VERSION"
                 DECISION="next_install_validated"
                 REGRESSION_RESULT="Next version installed successfully on Arm64"
-                COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the downloaded binary reported version ${NEXT_INSTALLED_VERSION}."
+                COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run. Regression validation installed candidate version ${LATEST_RAW} on Arm64, and the downloaded binary reported version ${NEXT_INSTALLED_VERSION}."
                 STATUS="passed"
               else
                 NEXT_INSTALLED="${NEXT_INSTALLED_VERSION:-unknown}"
                 DECISION="next_install_failed"
                 REGRESSION_RESULT="Next version installed but reported a version mismatch on Arm64"
-                COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run, but the regression candidate ${LATEST} downloaded on Arm64 and reported version ${NEXT_INSTALLED} instead of the expected ${LATEST}."
+                COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run, but the regression candidate ${LATEST_RAW} downloaded on Arm64 and reported version ${NEXT_INSTALLED} instead of the expected ${LATEST_RAW}."
               fi
             else
               NEXT_INSTALLED="install_failed"
               DECISION="next_install_failed"
               REGRESSION_RESULT="Next version install failed on Arm64"
-              COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64."
+              COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run, but the regression candidate ${LATEST_RAW} could not be downloaded on Arm64."
             fi
           fi
 
           echo "current_version=${CURRENT:-$CURRENT_RAW}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST_RAW:-unknown}" >> "$GITHUB_OUTPUT"
           echo "next_installed_version=$NEXT_INSTALLED" >> "$GITHUB_OUTPUT"
           echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
           echo "regression_result=$REGRESSION_RESULT" >> "$GITHUB_OUTPUT"
@@ -200,7 +212,7 @@ jobs:
 
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT:-$CURRENT_RAW}"
-          echo "Next version targeted for install validation: $LATEST"
+          echo "Next version targeted for install validation: ${LATEST_RAW:-unknown}"
           echo "Next version installed on Arm64: $NEXT_INSTALLED"
           echo "Regression install result: $REGRESSION_RESULT"
           echo "Details: $COMPARISON"
@@ -253,8 +265,10 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
           # Test 1 - Check calicoctl binary architecture
@@ -262,6 +276,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
@@ -270,6 +285,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
@@ -278,6 +294,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
@@ -286,6 +303,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
@@ -294,6 +312,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
           # Regression Validation
@@ -308,13 +327,17 @@ jobs:
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ $CORE_FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
             echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
       - name: Generate test results JSON
@@ -336,8 +359,8 @@ jobs:
             "package": {
               "name": "Calico",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "Go",
+              "category": "Containers and Orchestration"
             },
             "run": {
               "id": "${{ github.run_id }}",
@@ -394,6 +417,7 @@ jobs:
               ]
             },
             "metadata": {
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}",
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
@@ -412,6 +436,24 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || 'manual_review_needed' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
+
           echo "## Calico Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
@@ -431,7 +473,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> Support badge remains tied to Tests 1-5. Test 6 reports next-version install readiness on Arm64." >> $GITHUB_STEP_SUMMARY

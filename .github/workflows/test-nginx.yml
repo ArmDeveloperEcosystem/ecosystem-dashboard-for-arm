@@ -1,16 +1,22 @@
-name: Test Nginx on Arm64
+name: Test NGINX on Arm64
+
 on:
+  workflow_dispatch:
   workflow_call:
   push:
     branches:
       - main
       - smoke_tests
     paths:
-      - 'content/opensource_packages/nginx.md'
-      - '.github/workflows/test-nginx.yml'
+      - "content/opensource_packages/nginx.md"
+      - ".github/workflows/test-nginx.yml"
+
 jobs:
   test-nginx:
     runs-on: ubuntu-24.04-arm
+    env:
+      NGINX_VERSION: "1.20.1"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -18,311 +24,320 @@ jobs:
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=nginx" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/nginx" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=nginx" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/nginx" >> "$GITHUB_OUTPUT"
+          echo "current_version=${NGINX_VERSION}" >> "$GITHUB_OUTPUT"
 
-      # ============================================================
-      # CUSTOMIZE THIS: Install your package
-      # ============================================================
-      - name: Install Nginx
+      - name: Install NGINX
         id: install
         run: |
-          echo "Installing Nginx..."
-          
-          # Install prerequisites and nginx
+          set -euo pipefail
           sudo apt-get update
-          if sudo apt-get install -y nginx; then
-             echo "Nginx installed successfully"
-             echo "install_status=success" >> $GITHUB_OUTPUT
+          sudo apt-get install -y build-essential curl ca-certificates libpcre3-dev zlib1g-dev libssl-dev
+
+          BUILD_DIR=$(mktemp -d)
+          PREFIX="/opt/nginx-${NGINX_VERSION}"
+          trap 'rm -rf "$BUILD_DIR"' EXIT
+
+          curl -fsSL "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" -o "$BUILD_DIR/nginx.tar.gz"
+          tar -xzf "$BUILD_DIR/nginx.tar.gz" -C "$BUILD_DIR"
+          cd "$BUILD_DIR/nginx-${NGINX_VERSION}"
+          ./configure --prefix="$PREFIX" --with-http_ssl_module --with-cc-opt='-Wno-deprecated-declarations' >/tmp/nginx-configure.log 2>&1
+          make -j"$(nproc)" >/tmp/nginx-make.log 2>&1
+          sudo rm -rf "$PREFIX"
+          sudo make install >/tmp/nginx-install.log 2>&1
+
+          if [ -x "$PREFIX/sbin/nginx" ]; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+            echo "NGINX_BIN=$PREFIX/sbin/nginx" >> "$GITHUB_ENV"
+            echo "NGINX_PREFIX=$PREFIX" >> "$GITHUB_ENV"
           else
-             echo "Nginx installation failed"
-             echo "install_status=failed" >> $GITHUB_OUTPUT
-             exit 1
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
 
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
-      - name: Get Nginx version
+      - name: Get NGINX version
         id: version
         run: |
-          if command -v nginx &> /dev/null; then
-             VERSION=$(nginx -v 2>&1 | awk -F/ '{print $2}' || echo "unknown")
-          else
-             VERSION="unknown"
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Nginx version: $VERSION"
-
-      # ============================================================
-      # ADD YOUR TESTS BELOW
-      # Each test should:
-      # 1. Have a unique id (test1, test2, etc.)
-      # 2. Track start/end time for duration
-      # 3. Set status=passed or status=failed
-      # 4. Exit 1 on failure
-      # ============================================================
+          set -euo pipefail
+          VERSION=$("$NGINX_BIN" -v 2>&1 | awk -F/ '{print $2}' | head -n 1 | tr -d '\r')
+          echo "version=${VERSION:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "Detected NGINX version: ${VERSION:-unknown}"
 
       - name: Test 1 - Check nginx binary
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if command -v nginx &> /dev/null; then
-            echo "✓ nginx binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if [ -x "$NGINX_BIN" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ nginx binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 2 - Check version command
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if nginx -v 2>&1 | grep -q "nginx"; then
-            echo "✓ version command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          REPORTED=$("$NGINX_BIN" -v 2>&1 | awk -F/ '{print $2}' | head -n 1 | tr -d '\r')
+          if [ "$REPORTED" = "${NGINX_VERSION}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 3 - Check help command
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if nginx -h 2>&1 | grep -q "Usage"; then
-             echo "✓ help command works"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          if "$NGINX_BIN" -h 2>&1 | grep -q "Usage"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ help command failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-             echo "✓ System architecture is ARM64 ($ARCH)"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          if [ "$(uname -m)" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ System architecture is NOT ARM64 ($ARCH)"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Start Service and Check Port
+      - name: Test 5 - Functional Validation
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Functional Validation
-          
-          sudo systemctl start nginx
-          sleep 5
-          
-          if ss -tuln | grep -q ":80"; then
-             echo "✓ Nginx listening on port 80"
-             
-             RESPONSE=$(curl -s -I http://127.0.0.1/)
-             STATUS_CODE=$(echo "$RESPONSE" | grep HTTP | awk '{print $2}')
-             SERVER_HEADER=$(echo "$RESPONSE" | grep -i "Server:" | grep -i "nginx")
-             
-             echo "Detected Status Code: $STATUS_CODE"
-             echo "Detected Server Header: $SERVER_HEADER"
+          RUNTIME_DIR=$(mktemp -d)
+          CONF_FILE="$RUNTIME_DIR/nginx.conf"
+          LOG_DIR="$RUNTIME_DIR/logs"
+          mkdir -p "$LOG_DIR"
+          cat > "$CONF_FILE" <<'EOF'
+          worker_processes  1;
+          pid logs/nginx.pid;
+          events { worker_connections  128; }
+          http {
+            access_log logs/access.log;
+            error_log logs/error.log;
+            server {
+              listen 8080;
+              location / {
+                default_type text/plain;
+                return 200 'nginx-arm-ok';
+              }
+            }
+          }
+          EOF
 
-             if [ "$STATUS_CODE" = "200" ] && [ -n "$SERVER_HEADER" ]; then
-                echo "✓ Nginx responded with 200 OK and correct Server header"
-                echo "status=passed" >> $GITHUB_OUTPUT
-             else
-                echo "✗ Professional validation failed (Status: $STATUS_CODE, Header: $SERVER_HEADER)"
-                echo "Verbose diagnostics:"
-                curl -v http://127.0.0.1/
-                echo "status=failed" >> $GITHUB_OUTPUT
-                exit 1
-             fi
+          cleanup() {
+            "$NGINX_BIN" -p "$RUNTIME_DIR" -c nginx.conf -s quit >/dev/null 2>&1 || true
+            rm -rf "$RUNTIME_DIR"
+          }
+          trap cleanup EXIT
+
+          "$NGINX_BIN" -p "$RUNTIME_DIR" -c "$CONF_FILE"
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8080/ >/tmp/nginx-response.txt; then
+              break
+            fi
+            sleep 1
+          done
+          if grep -Fq "nginx-arm-ok" /tmp/nginx-response.txt; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ Nginx not listening on port 80"
-             sudo journalctl -u nginx --no-pager | tail -n 20
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
+            cat "$LOG_DIR/error.log" || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-            # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
       - name: Test 6 - Regression Validation
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST=$(python3 - <<'PY'
+          import re, urllib.request
+          html = urllib.request.urlopen("https://nginx.org/en/download.html", timeout=20).read().decode("utf-8", "ignore")
+          match = re.search(r'Stable version</h4></center><table[^>]*>.*?/download/nginx-([0-9.]+)\.tar\.gz', html, re.S)
+          print(match.group(1) if match else "")
+          PY
+          )
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ -z "$LATEST" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NGINX version $CURRENT passed smoke tests in this run, but the latest stable NGINX release could not be resolved for Arm64 install validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          BUILD_DIR=$(mktemp -d)
+          PREFIX="$BUILD_DIR/nginx-$LATEST-prefix"
+          trap 'rm -rf "$BUILD_DIR"' EXIT
+          curl -fsSL "https://nginx.org/download/nginx-${LATEST}.tar.gz" -o "$BUILD_DIR/nginx.tar.gz"
+          tar -xzf "$BUILD_DIR/nginx.tar.gz" -C "$BUILD_DIR"
+          cd "$BUILD_DIR/nginx-$LATEST"
+          ./configure --prefix="$PREFIX" --with-http_ssl_module --with-cc-opt='-Wno-deprecated-declarations' >/tmp/nginx-next-configure.log 2>&1
+          make -j"$(nproc)" >/tmp/nginx-next-make.log 2>&1
+          make install >/tmp/nginx-next-install.log 2>&1
+
+          NEXT_BIN="$PREFIX/sbin/nginx"
+          NEXT_INSTALLED_VERSION=$("$NEXT_BIN" -v 2>&1 | awk -F/ '{print $2}' | head -n 1 | tr -d '\r')
+          echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
+          if [ -z "$NEXT_INSTALLED_VERSION" ]; then
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NGINX version $CURRENT passed smoke tests in this run, but the candidate Arm64 source build did not report a usable version after installation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: unknown"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          elif [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NGINX version $CURRENT passed smoke tests in this run. Regression validation built and installed candidate version $LATEST on Arm64, and the candidate binary reported version $NEXT_INSTALLED_VERSION." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NGINX version $CURRENT passed smoke tests in this run, but the candidate Arm64 source build reported version $NEXT_INSTALLED_VERSION instead of the expected latest stable version $LATEST." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Show regression validation details
         if: always()
         run: |
-          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
-          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
-          if [ -z "$REGRESSION_RESULT" ]; then
-            case "$DECISION" in
-              next_install_validated|safe_to_upgrade)
-                REGRESSION_RESULT="Next version installed successfully on Arm64"
-                ;;
-              next_install_failed|next_lookup_failed)
-                REGRESSION_RESULT="Next version install failed on Arm64"
-                ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Current stable version already validated on Arm64"
-                ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
-              *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
-                ;;
-            esac
-          fi
-
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
-          echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check nginx binary
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          # Check version command
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          # Check help command
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Architecture Verification
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Start Service and Check Port
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
-          # Fetch the direct job URL for deep-linking
+          set -euo pipefail
           JOB_ID="${{ github.job }}"
-          # Using GH_TOKEN to find the exact job URL. 
-          # Reusable workflows are often named "JobID / JobID" or just "JobID"
-          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
-          
-          # Fallback if URL calculation fails
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
           if [ -z "$JOB_URL" ]; then
-            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
 
           mkdir -p test-results
-          
-          cat > test-results/nginx.json << EOF
+          cat > test-results/nginx.json <<EOF
           {
             "schema_version": "1.0",
             "package": {
-              "name": "Nginx",
+              "name": "NGINX",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "C",
+              "category": "Web Server"
             },
             "run": {
               "id": "${{ github.run_id }}",
@@ -335,56 +350,37 @@ jobs:
               }
             },
             "tests": {
-              "passed": ${{ steps.summary.outputs.passed }},
-              "failed": ${{ steps.summary.outputs.failed }},
+              "passed": ${{ steps.summary.outputs.passed || 0 }},
+              "failed": ${{ steps.summary.outputs.failed || 0 }},
               "skipped": 0,
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
-                {
-                  "name": "Check nginx binary",
-                  "status": "${{ steps.test1.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Check version command",
-                  "status": "${{ steps.test2.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Check help command",
-                  "status": "${{ steps.test3.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Architecture Verification",
-                  "status": "${{ steps.test4.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Start Service and Check Port",
-                  "status": "${{ steps.test5.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
-                },
+                {"name": "Test 1 - Check nginx binary", "status": "${{ steps.test1.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}},
+                {"name": "Test 2 - Check version command", "status": "${{ steps.test2.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}},
+                {"name": "Test 3 - Check help command", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
+                {"name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
+                {"name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
                 {
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
                 }
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "core_failed": ${{ steps.summary.outputs.core_failed || 0 }}
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/nginx.json
-      # ============================================================
-      # STANDARD STEPS - Usually don't need to modify below here
-      # ============================================================
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -392,32 +388,22 @@ jobs:
           name: nginx-test-results
           path: test-results/nginx.json
           retention-days: 90
-      
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## Nginx Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Test 1 - Check nginx binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Test 2 - Check version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Test 3 - Check help command: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Start Service and Check Port: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
+          echo "## NGINX Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

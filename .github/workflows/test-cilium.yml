@@ -29,30 +29,37 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl tar
+          sudo apt-get install -y curl tar wget
       
       - name: Install Cilium CLI
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Cilium CLI..."
-          CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
-          VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g')
-          CLI_ARCH=arm64
-          if [ "$(uname -m)" = "x86_64" ]; then CLI_ARCH=amd64; fi
-          
-          curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
-          sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
-          sudo tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin
-          rm cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
-          
-          echo "install_status=success" >> $GITHUB_OUTPUT
+          CURRENT_VERSION="0.18.9"
+          echo "baseline_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          CLI_ARCH="arm64"
+          CILIUM_TAG="v${CURRENT_VERSION}"
+          curl -L --fail --remote-name-all "https://github.com/cilium/cilium-cli/releases/download/${CILIUM_TAG}/cilium-linux-${CLI_ARCH}.tar.gz"{,.sha256sum}
+          sha256sum --check "cilium-linux-${CLI_ARCH}.tar.gz.sha256sum"
+          sudo tar xzf "cilium-linux-${CLI_ARCH}.tar.gz" -C /usr/local/bin
+          rm -f "cilium-linux-${CLI_ARCH}.tar.gz" "cilium-linux-${CLI_ARCH}.tar.gz.sha256sum"
+          if command -v cilium >/dev/null 2>&1; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
       
       - name: Get Cilium version
         id: version
         run: |
-          VERSION=$(cilium version --client 2>&1 | grep "Client:" | awk '{print $2}' || echo "unknown")
-          VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          VERSION=$(timeout 10s cilium version --client 2>&1 | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1 | sed 's/^v//' || true)
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Cilium version: $VERSION"
       
       - name: Test 1 - Check Binary
@@ -79,7 +86,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if cilium help; then
+          if timeout 10s cilium help >/dev/null 2>&1; then
              echo "✓ cilium help works"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -97,7 +104,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if cilium version --client; then
+          if timeout 10s cilium version --client >/dev/null 2>&1; then
              echo "✓ cilium client version check passed"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -115,7 +122,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if cilium completion bash > /dev/null; then
+          if timeout 10s cilium completion bash > /dev/null; then
              echo "✓ cilium completion generation works"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -148,13 +155,90 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST=$(GH_TOKEN=${{ github.token }} gh api repos/cilium/cilium-cli/releases/latest --jq .tag_name 2>/dev/null | sed 's/^v//' || true)
+          if [ -z "$LATEST" ]; then
+            echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Cilium CLI version ${CURRENT} passed smoke tests in this run, but the latest stable candidate could not be resolved." >> "$GITHUB_OUTPUT"
+            echo "=== Regression Validation (Next Version Install) ==="
+            echo "Current version tested in Tests 1-5: $CURRENT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Cilium CLI version ${CURRENT} passed smoke tests in this run, but the latest stable candidate could not be resolved."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "$LATEST" = "$CURRENT" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Cilium CLI version ${CURRENT} passed smoke tests in this run and already matches the latest stable Cilium CLI Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Cilium CLI version ${CURRENT} passed smoke tests in this run and already matches the latest stable Cilium CLI Arm64 release."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            NEXT_DIR=$(mktemp -d)
+            NEXT_TAG="v${LATEST}"
+            NEXT_TGZ="${NEXT_DIR}/cilium-next.tar.gz"
+            NEXT_SHA="${NEXT_DIR}/cilium-next.tar.gz.sha256sum"
+            if curl -fsSL -o "$NEXT_TGZ" "https://github.com/cilium/cilium-cli/releases/download/${NEXT_TAG}/cilium-linux-arm64.tar.gz" && \
+               curl -fsSL -o "$NEXT_SHA" "https://github.com/cilium/cilium-cli/releases/download/${NEXT_TAG}/cilium-linux-arm64.tar.gz.sha256sum"; then
+              (cd "$NEXT_DIR" && sha256sum --check "$(basename "$NEXT_SHA")")
+              tar -xzf "$NEXT_TGZ" -C "$NEXT_DIR"
+              NEXT_INSTALLED=$(timeout 10s "$NEXT_DIR/cilium" version --client 2>&1 | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1 | sed 's/^v//' || true)
+              if [ -n "$NEXT_INSTALLED" ] && [ "$NEXT_INSTALLED" = "$LATEST" ]; then
+                echo "next_installed_version=$NEXT_INSTALLED" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Cilium CLI version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the candidate binary reported version ${NEXT_INSTALLED}." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: $NEXT_INSTALLED"
+                echo "Regression install result: Next version installed successfully on Arm64"
+                echo "Details: Current pinned Cilium CLI version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the candidate binary reported version ${NEXT_INSTALLED}."
+                echo "status=passed" >> "$GITHUB_OUTPUT"
+              else
+                echo "next_installed_version=${NEXT_INSTALLED:-unknown}" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Cilium CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not report the expected version on Arm64." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: ${NEXT_INSTALLED:-unknown}"
+                echo "Regression install result: Next version install failed on Arm64"
+                echo "Details: Current pinned Cilium CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not report the expected version on Arm64."
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                END_TIME=$(date +%s)
+                echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+            else
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Cilium CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Cilium CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -199,8 +283,10 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
           # Check Binary
@@ -208,6 +294,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
@@ -216,6 +303,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
@@ -224,6 +312,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
@@ -232,6 +321,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
@@ -241,6 +331,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
           # Regression Validation
@@ -255,18 +346,27 @@ jobs:
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ $CORE_FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
             echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
       - name: Generate test results JSON
         if: always()
         run: |
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}"
+          fi
           mkdir -p test-results
           
           cat > test-results/cilium.json << EOF
@@ -280,7 +380,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -324,10 +424,17 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
             "metadata": {
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}",
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
@@ -348,7 +455,31 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || 'manual_review_needed' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
           echo "## Cilium Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
           echo "1. Check Binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
@@ -363,16 +494,7 @@ jobs:
           echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
+          echo "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY
 
 
 

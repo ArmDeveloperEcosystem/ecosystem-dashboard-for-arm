@@ -196,22 +196,93 @@ jobs:
           CURRENT="${{ steps.version.outputs.version }}"
           LATEST_TAG="$(curl -fsSL https://api.github.com/repos/Unleash/unleash/releases/latest | jq -r '.tag_name')"
           LATEST="${LATEST_TAG#v}"
+          NEXT_IMAGE="unleashorg/unleash-server:${LATEST}"
+          NETWORK="unleash-regression-net"
+          DB_CONTAINER="unleash-regression-postgres"
+          APP_CONTAINER="unleash-regression-server"
+          NEXT_INSTALLED_VERSION="not_installed"
 
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
 
-          if [ "$LATEST" = "$CURRENT" ]; then
-            echo "decision=already_current" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned version ${CURRENT} is already the latest stable Unleash release and was smoke-tested successfully on Arm64 in this run." >> "$GITHUB_OUTPUT"
-          elif sudo docker manifest inspect "unleashorg/unleash-server:${LATEST}" | grep -q '"architecture":[[:space:]]*"arm64"'; then
-            echo "decision=upgrade_candidate_available" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned version ${CURRENT} passed smoke tests in this run. Latest stable ${LATEST} also publishes an arm64 image and is a candidate for the next version-bump validation." >> "$GITHUB_OUTPUT"
-          else
+          cleanup() {
+            sudo docker rm -f "$APP_CONTAINER" "$DB_CONTAINER" >/dev/null 2>&1 || true
+            sudo docker network rm "$NETWORK" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          if ! sudo docker manifest inspect "$NEXT_IMAGE" | grep -q '"architecture":[[:space:]]*"arm64"'; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=hold_current" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
             echo "comparison=Current pinned version ${CURRENT} passed smoke tests in this run. Latest stable ${LATEST} does not currently expose a usable arm64 image manifest, so the workflow should remain pinned." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
 
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          NEXT_INSTALLED_VERSION="$(sudo docker run --rm --entrypoint /bin/sh "$NEXT_IMAGE" -lc 'node -p "require(\"./package.json\").version"' | tr -d '\r')"
+          sudo docker network create "$NETWORK" >/dev/null
+          sudo docker run -d --network "$NETWORK" --name "$DB_CONTAINER" \
+            -e POSTGRES_PASSWORD=unleash \
+            -e POSTGRES_USER=unleash \
+            -e POSTGRES_DB=unleash \
+            postgres:14-alpine >/dev/null
+
+          for attempt in $(seq 1 30); do
+            if sudo docker exec "$DB_CONTAINER" pg_isready -U unleash -d unleash >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+
+          sudo docker run -d --network "$NETWORK" --name "$APP_CONTAINER" -p 4243:4242 \
+            -e DATABASE_URL=postgres://unleash:unleash@"$DB_CONTAINER":5432/unleash \
+            -e DATABASE_SSL=false \
+            -e LOG_LEVEL=warn \
+            "$NEXT_IMAGE" >/dev/null
+
+          for attempt in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:4243/health > /tmp/unleash-regression-health.json 2>/dev/null; then
+              break
+            fi
+            sleep 3
+          done
+
+          if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ] && grep -q '"health":"GOOD"' /tmp/unleash-regression-health.json; then
+            echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+            if [ "$LATEST" = "$CURRENT" ]; then
+              echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned version ${CURRENT} is already the latest stable Unleash release. Regression validation re-booted the official Arm64 image, confirmed it still reported version ${NEXT_INSTALLED_VERSION}, and passed the real /health smoke successfully." >> "$GITHUB_OUTPUT"
+              echo "Regression install result: Current stable version already validated on Arm64"
+            else
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned version ${CURRENT} passed smoke tests in this run. Regression validation booted candidate version ${LATEST} on Arm64, the official image reported version ${NEXT_INSTALLED_VERSION}, and the candidate passed the real /health smoke successfully." >> "$GITHUB_OUTPUT"
+              echo "Regression install result: Next version installed successfully on Arm64"
+            fi
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            sudo docker logs "$APP_CONTAINER" | tail -80 || true
+            echo "next_installed_version=${NEXT_INSTALLED_VERSION:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not complete the expected Arm64 boot-and-health validation." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -256,45 +327,68 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          check_test() {
+          check_core_test() {
             local status="$1"
             local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          check_test "${{ steps.test1.outputs.status || 'failed' }}" ${{ steps.test1.outputs.duration || 0 }}
-          check_test "${{ steps.test2.outputs.status || 'failed' }}" ${{ steps.test2.outputs.duration || 0 }}
-          check_test "${{ steps.test3.outputs.status || 'failed' }}" ${{ steps.test3.outputs.duration || 0 }}
-          check_test "${{ steps.test4.outputs.status || 'failed' }}" ${{ steps.test4.outputs.duration || 0 }}
-          check_test "${{ steps.test5.outputs.status || 'failed' }}" ${{ steps.test5.outputs.duration || 0 }}
-          check_test "${{ steps.test6.outputs.status || 'failed' }}" ${{ steps.test6.outputs.duration || 0 }}
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" ${{ steps.test1.outputs.duration || 0 }}
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" ${{ steps.test2.outputs.duration || 0 }}
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" ${{ steps.test3.outputs.duration || 0 }}
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" ${{ steps.test4.outputs.duration || 0 }}
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" ${{ steps.test5.outputs.duration || 0 }}
+
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
           if [ $FAILED -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
-            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
 
           cat > test-results/unleash.json << EOF
           {
@@ -307,7 +401,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -352,6 +446,7 @@ jobs:
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
                   "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
                   "latest_version": "${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
                   "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
                   "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
                   "comparison": "${{ steps.test6.outputs.comparison || 'Current pinned version passed smoke tests; latest-stable comparison still needs review.' }}"
@@ -360,7 +455,8 @@ jobs:
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "core_failed": ${{ steps.summary.outputs.core_failed || 0 }}
             }
           }
           EOF
@@ -376,6 +472,7 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
           echo "## Unleash Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
@@ -396,5 +493,6 @@ jobs:
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
-          echo "${{ steps.test6.outputs.comparison || 'Current pinned version passed smoke tests; latest-stable comparison still needs review.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Current pinned version passed smoke tests; latest-stable comparison still needs review.' }}" >> "$GITHUB_STEP_SUMMARY"

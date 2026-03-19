@@ -99,10 +99,10 @@ jobs:
             -p 4000:4000 \
             -p 10080:10080 \
             "${TIDB_IMAGE}" \
-            --store=unistore \
-            --path=/tmp/tidb-smoke-alt \
-            --status=10080 \
-            --port=4000 >/dev/null
+            -store=unistore \
+            -path=/tmp/tidb-smoke-alt \
+            -status=10080 \
+            -P=4000 >/dev/null
 
           for _ in $(seq 1 25); do
             if docker logs "${CONTAINER}" 2>&1 | grep -q "server is running MySQL protocol"; then
@@ -184,19 +184,86 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${TIDB_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${TIDB_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=${TIDB_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Current stable TiDB version already validated on Arm64" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned TiDB image ${TIDB_VERSION} was pulled and executed on Arm64, configuration overrides were accepted, and the live status endpoint reported TiDB-v${TIDB_VERSION#v}. The validated pinned image is already the current tested stable target for this workflow." >> "$GITHUB_OUTPUT"
-          echo "note=The workflow is pinned to the Arm-validated TiDB image used in this run." >> "$GITHUB_OUTPUT"
+          CURRENT="${TIDB_VERSION}"
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          LATEST_RAW=$(GH_TOKEN=${{ github.token }} gh api repos/pingcap/tidb/releases/latest --jq .tag_name 2>/dev/null || true)
+          LATEST="${LATEST_RAW}"
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${TIDB_VERSION}"
-          echo "Next version targeted for install validation: ${TIDB_VERSION}"
-          echo "Next version installed on Arm64: ${TIDB_VERSION}"
-          echo "Regression install result: Current stable TiDB version already validated on Arm64"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+
+          if [ -z "${LATEST}" ]; then
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned TiDB image ${CURRENT} passed smoke tests in this run, but the next stable TiDB release could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned TiDB image ${CURRENT} passed smoke tests in this run, but the next stable TiDB release could not be resolved automatically."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ "${CURRENT}" = "${LATEST}" ]; then
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable TiDB version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned TiDB image ${CURRENT} was pulled and executed on Arm64, configuration overrides were accepted, and the live status endpoint reported TiDB-${CURRENT}. The validated pinned image already matches the latest stable TiDB release." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${CURRENT}"
+            echo "Regression install result: Current stable TiDB version already validated on Arm64"
+            echo "Details: Current pinned TiDB image ${CURRENT} was pulled and executed on Arm64, configuration overrides were accepted, and the live status endpoint reported TiDB-${CURRENT}. The validated pinned image already matches the latest stable TiDB release."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_IMAGE="pingcap/tidb:${LATEST}"
+          if docker pull "${NEXT_IMAGE}" >/dev/null; then
+            NEXT_VERSION_OUTPUT=$(timeout 20s docker run --rm --entrypoint /tidb-server "${NEXT_IMAGE}" -V 2>&1 || true)
+            NEXT_INSTALLED_VERSION=$(printf '%s\n' "${NEXT_VERSION_OUTPUT}" | sed -n 's/^Release Version: //p' | head -1 | xargs || true)
+            if [ -n "${NEXT_INSTALLED_VERSION}" ] && [ "${NEXT_INSTALLED_VERSION}" = "${LATEST}" ]; then
+              echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned TiDB image ${CURRENT} passed smoke tests in this run. Regression validation pulled candidate image ${LATEST} on Arm64, and /tidb-server -V reported ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned TiDB image ${CURRENT} passed smoke tests in this run. Regression validation pulled candidate image ${LATEST} on Arm64, and /tidb-server -V reported ${NEXT_INSTALLED_VERSION}."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned TiDB image ${CURRENT} passed smoke tests in this run, but candidate image ${LATEST} reported version ${NEXT_INSTALLED_VERSION:-unknown}, which does not match the expected release." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned TiDB image ${CURRENT} passed smoke tests in this run, but candidate image ${LATEST} reported version ${NEXT_INSTALLED_VERSION:-unknown}, which does not match the expected release."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned TiDB image ${CURRENT} passed smoke tests in this run, but candidate image ${LATEST} could not be pulled on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned TiDB image ${CURRENT} passed smoke tests in this run, but candidate image ${LATEST} could not be pulled on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 

@@ -8,12 +8,15 @@ on:
       - main
       - smoke_tests
     paths:
-      - 'content/opensource_packages/nats.md'
-      - '.github/workflows/test-nats.yml'
+      - "content/opensource_packages/nats.md"
+      - ".github/workflows/test-nats.yml"
 
 jobs:
   test-nats:
     runs-on: ubuntu-24.04-arm
+    env:
+      SERVER_VERSION: "2.12.5"
+      CLI_VERSION: "0.3.1"
 
     steps:
       - name: Checkout repository
@@ -25,83 +28,99 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=nats" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/nats" >> "$GITHUB_OUTPUT"
+          echo "current_version=${SERVER_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install NATS
         id: install
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y wget unzip tar
+          sudo apt-get install -y curl unzip file
+          ROOT="$HOME/nats-smoke"
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"
+          cd "$ROOT"
 
-          SERVER_VERSION="2.12.5"
-          CLI_VERSION="0.3.1"
+          curl -fsSL -o nats-server.tgz "https://github.com/nats-io/nats-server/releases/download/v${SERVER_VERSION}/nats-server-v${SERVER_VERSION}-linux-arm64.tar.gz"
+          tar -xzf nats-server.tgz
+          install -m 0755 "nats-server-v${SERVER_VERSION}-linux-arm64/nats-server" "$ROOT/nats-server"
 
-          wget -q "https://github.com/nats-io/nats-server/releases/download/v${SERVER_VERSION}/nats-server-v${SERVER_VERSION}-linux-arm64.tar.gz"
-          tar -xzf "nats-server-v${SERVER_VERSION}-linux-arm64.tar.gz"
-          sudo install -m 0755 "nats-server-v${SERVER_VERSION}-linux-arm64/nats-server" /usr/local/bin/nats-server
+          curl -fsSL -o natscli.zip "https://github.com/nats-io/natscli/releases/download/v${CLI_VERSION}/nats-${CLI_VERSION}-linux-arm64.zip"
+          python3 - <<'PY'
+          import zipfile
+          zipfile.ZipFile("natscli.zip").extractall(".")
+          PY
+          chmod +x "nats-${CLI_VERSION}-linux-arm64/nats"
+          install -m 0755 "nats-${CLI_VERSION}-linux-arm64/nats" "$ROOT/nats"
 
-          wget -q "https://github.com/nats-io/natscli/releases/download/v${CLI_VERSION}/nats-${CLI_VERSION}-linux-arm64.zip"
-          unzip -q -o "nats-${CLI_VERSION}-linux-arm64.zip"
-          sudo install -m 0755 "nats-${CLI_VERSION}-linux-arm64/nats" /usr/local/bin/nats
-
-          if command -v nats-server >/dev/null 2>&1 && command -v nats >/dev/null 2>&1; then
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-          else
-            echo "install_status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
+          echo "install_root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get NATS version
         id: version
         run: |
-          VERSION=$(nats-server --version | sed -E 's/.*v([0-9]+\.[0-9]+\.[0-9]+).*/\1/' || echo "unknown")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          VERSION=$("${{ steps.install.outputs.install_root }}/nats-server" --version | sed -E 's/.*v([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          LATEST_SERVER=$(python3 - <<'PY'
+          import json
+          import urllib.request
 
-      - name: Test 1 - Check Binary Existence
+          data = json.load(urllib.request.urlopen("https://api.github.com/repos/nats-io/nats-server/releases/latest", timeout=20))
+          print(data["tag_name"].lstrip("v"))
+          PY
+          )
+          LATEST_CLI=$(python3 - <<'PY'
+          import json
+          import urllib.request
+
+          data = json.load(urllib.request.urlopen("https://api.github.com/repos/nats-io/natscli/releases/latest", timeout=20))
+          print(data["tag_name"].lstrip("v"))
+          PY
+          )
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST_SERVER" >> "$GITHUB_OUTPUT"
+          echo "latest_cli=$LATEST_CLI" >> "$GITHUB_OUTPUT"
+
+      - name: Test 1 - Binary Existence
         id: test1
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-
-          if command -v nats-server >/dev/null 2>&1 && command -v nats >/dev/null 2>&1; then
+          if [ -x "${{ steps.install.outputs.install_root }}/nats-server" ] && [ -x "${{ steps.install.outputs.install_root }}/nats" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Check Version Output
+      - name: Test 2 - Version Output
         id: test2
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-
-          if nats-server --version 2>&1 | grep -q '^nats-server: v' && \
-             nats --version 2>&1 | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; then
+          if "${{ steps.install.outputs.install_root }}/nats-server" --version 2>&1 | grep -Fq "v${SERVER_VERSION}" && \
+             "${{ steps.install.outputs.install_root }}/nats" --version 2>&1 | grep -Fq "${CLI_VERSION}"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Check Help Output
+      - name: Test 3 - Help Output Validation
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-
-          if nats --help 2>&1 | grep -qi '^usage:'; then
+          if "${{ steps.install.outputs.install_root }}/nats" --help 2>&1 | grep -qi '^usage:'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -110,15 +129,12 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          ARCH=$(uname -m)
-
-          if [ "$ARCH" = "aarch64" ]; then
+          if [ "$(uname -m)" = "aarch64" ] && file "${{ steps.install.outputs.install_root }}/nats-server" | grep -qiE 'arm aarch64|aarch64'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -126,33 +142,29 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-
-          nats-server -js -p 4222 > nats-server.log 2>&1 &
+          "${{ steps.install.outputs.install_root }}/nats-server" -js -p 4222 >"$HOME/nats-smoke/nats-server.log" 2>&1 &
           NATS_PID=$!
-          trap 'kill $NATS_PID 2>/dev/null || true' EXIT
-
+          cleanup() {
+            kill "$NATS_PID" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
           sleep 2
-          nats --server nats://127.0.0.1:4222 sub smoke.test --count 1 > nats-sub.txt 2>&1 &
+          "${{ steps.install.outputs.install_root }}/nats" --server nats://127.0.0.1:4222 sub smoke.test --count 1 >"$HOME/nats-smoke/sub.txt" 2>&1 &
           SUB_PID=$!
           sleep 1
-          nats --server nats://127.0.0.1:4222 pub smoke.test hello-arm64 > nats-pub.txt 2>&1
+          "${{ steps.install.outputs.install_root }}/nats" --server nats://127.0.0.1:4222 pub smoke.test hello-arm64 >"$HOME/nats-smoke/pub.txt" 2>&1
           wait "$SUB_PID"
-
-          if grep -q 'hello-arm64' nats-sub.txt; then
+          if grep -q 'hello-arm64' "$HOME/nats-smoke/sub.txt"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            cat nats-server.log || true
-            cat nats-sub.txt || true
-            cat nats-pub.txt || true
+            cat "$HOME/nats-smoke/nats-server.log" || true
+            cat "$HOME/nats-smoke/sub.txt" || true
+            cat "$HOME/nats-smoke/pub.txt" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
-          kill "$NATS_PID" 2>/dev/null || true
-          wait "$NATS_PID" 2>/dev/null || true
-          trap - EXIT
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -160,53 +172,81 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST=$(GH_TOKEN=${{ github.token }} gh api repos/nats-io/nats-server/releases/latest --jq .tag_name 2>/dev/null | sed 's/^v//')
-          if [ -z "$LATEST" ]; then
-            LATEST="2.12.1"
-          fi
+          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+          LATEST_CLI="${{ steps.version.outputs.latest_cli || 'unknown' }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
 
-          NEXT_TAR="/tmp/nats-server-regression.tar.gz"
-          NEXT_DIR=$(mktemp -d)
-          NEXT_URL="https://github.com/nats-io/nats-server/releases/download/v${LATEST}/nats-server-v${LATEST}-linux-arm64.tar.gz"
-          if wget -q -O "$NEXT_TAR" "$NEXT_URL"; then
-            tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
-            NEXT_BIN=$(find "$NEXT_DIR" -type f -name nats-server | head -n 1)
-            if [ -n "$NEXT_BIN" ]; then
-              chmod +x "$NEXT_BIN"
-              NEXT_INSTALLED_VERSION=$("$NEXT_BIN" --version 2>&1 | sed -E 's/.*v([0-9]+\.[0-9]+\.[0-9]+).*/\1/' | head -n 1 || true)
-              if [ -n "$NEXT_INSTALLED_VERSION" ]; then
-                echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
-                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned NATS version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the installed server binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
-                echo "status=passed" >> "$GITHUB_OUTPUT"
-              else
-                echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
-                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned NATS version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not report a usable version on Arm64." >> "$GITHUB_OUTPUT"
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-            else
-              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
-              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned NATS version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not extract a usable Arm64 binary." >> "$GITHUB_OUTPUT"
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          else
-            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned NATS version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+          if [ -z "$LATEST" ] || [ -z "$LATEST_CLI" ] || [ "$LATEST" = "unknown" ] || [ "$LATEST_CLI" = "unknown" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NATS server version $CURRENT passed smoke tests in this run, but the latest server or CLI release could not be resolved for Arm64 regression validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned NATS server version $CURRENT passed smoke tests in this run, but the latest server or CLI release could not be resolved for Arm64 regression validation."
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
+          TMPDIR=$(mktemp -d)
+          SERVER_TGZ="$TMPDIR/nats-server.tgz"
+          CLI_ZIP="$TMPDIR/natscli.zip"
+          curl -fsSL -o "$SERVER_TGZ" "https://github.com/nats-io/nats-server/releases/download/v${LATEST}/nats-server-v${LATEST}-linux-arm64.tar.gz"
+          tar -xzf "$SERVER_TGZ" -C "$TMPDIR"
+          curl -fsSL -o "$CLI_ZIP" "https://github.com/nats-io/natscli/releases/download/v${LATEST_CLI}/nats-${LATEST_CLI}-linux-arm64.zip"
+          python3 - <<PY
+          import zipfile
+          zipfile.ZipFile("$CLI_ZIP").extractall("$TMPDIR")
+          PY
+          NEXT_SERVER=$(find "$TMPDIR" -type f -name nats-server | head -n 1)
+          NEXT_CLI=$(find "$TMPDIR" -type f -path '*nats-*linux-arm64/nats' | head -n 1)
+          chmod +x "$NEXT_SERVER" "$NEXT_CLI"
+          NEXT_INSTALLED_VERSION=$("$NEXT_SERVER" --version 2>&1 | sed -E 's/.*v([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          NEXT_CLI_VERSION=$("$NEXT_CLI" --version 2>&1 | head -n 1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+
+          if file "$NEXT_SERVER" | grep -qiE 'arm aarch64|aarch64' && [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ] && [ "$NEXT_CLI_VERSION" = "$LATEST_CLI" ]; then
+            echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+            if [ "$CURRENT" = "$LATEST" ] && [ "$CLI_VERSION" = "$LATEST_CLI" ]; then
+              echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned NATS server version $CURRENT and CLI version ${CLI_VERSION} already match the latest stable Arm64 releases. Regression validation re-downloaded both candidate artifacts, and the staged binaries reported exact versions ${NEXT_INSTALLED_VERSION} and ${NEXT_CLI_VERSION}." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+              echo "Regression install result: Current stable version already validated on Arm64"
+              echo "Details: Current pinned NATS server version $CURRENT and CLI version ${CLI_VERSION} already match the latest stable Arm64 releases. Regression validation re-downloaded both candidate artifacts, and the staged binaries reported exact versions ${NEXT_INSTALLED_VERSION} and ${NEXT_CLI_VERSION}."
+            else
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned NATS server version $CURRENT passed smoke tests in this run. Regression validation re-downloaded the latest Arm64 server ${LATEST} and CLI ${LATEST_CLI}, and the staged binaries reported exact versions ${NEXT_INSTALLED_VERSION} and ${NEXT_CLI_VERSION}." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned NATS server version $CURRENT passed smoke tests in this run. Regression validation re-downloaded the latest Arm64 server ${LATEST} and CLI ${LATEST_CLI}, and the staged binaries reported exact versions ${NEXT_INSTALLED_VERSION} and ${NEXT_CLI_VERSION}."
+            fi
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "next_installed_version=${NEXT_INSTALLED_VERSION:-install_failed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NATS server version $CURRENT passed smoke tests in this run, but the latest Arm64 server or CLI artifact failed version or architecture validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-install_failed}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned NATS server version $CURRENT passed smoke tests in this run, but the latest Arm64 server or CLI artifact failed version or architecture validation."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Show regression validation details
         if: always()
@@ -221,65 +261,76 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
                 REGRESSION_RESULT="Current stable version already validated on Arm64"
                 ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
               *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
+                REGRESSION_RESULT="Regression validation failed"
                 ;;
             esac
           fi
 
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
           echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          CORE_FAILED=0
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
 
           check_test() {
-            local status=$1
-            local duration=$2
+            local status="$1"
+            local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
             fi
-            TOTAL_DURATION=$((TOTAL_DURATION + $duration))
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          check_test "${{ steps.test1.outputs.status }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status }}" "${{ steps.test5.outputs.duration || 0 }}"
-          check_test "${{ steps.test6.outputs.status }}" "${{ steps.test6.outputs.duration || 0 }}"
+          check_core() {
+            local status="$1"
+            local duration="$2"
+            check_test "$status" "$duration"
+            if [ "$status" != "passed" ]; then
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          }
 
+          check_core "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}"
+
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
           if [ "$FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
-            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 
@@ -287,19 +338,26 @@ jobs:
         if: always()
         run: |
           mkdir -p test-results
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          JOB_URL="$RUN_URL"
+          JOB_NAME="test-nats / test-nats"
+          RESOLVED_JOB_URL=$(GH_TOKEN=${{ github.token }} gh api "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"${JOB_NAME}\") | .html_url" 2>/dev/null | head -n 1 || true)
+          if [ -n "$RESOLVED_JOB_URL" ]; then
+            JOB_URL="$RESOLVED_JOB_URL"
+          fi
 
-          cat > test-results/nats.json << EOF
+          cat > test-results/nats.json <<EOF
           {
             "schema_version": "1.0",
             "package": {
               "name": "NATS",
               "version": "${{ steps.version.outputs.version }}",
               "language": "Go",
-              "category": "Messaging/Comms"
+              "category": "Messaging"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "${JOB_URL}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -313,47 +371,18 @@ jobs:
               "skipped": 0,
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
-                {
-                  "name": "Test 1 - Check Binary Existence",
-                  "status": "${{ steps.test1.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Test 2 - Check Version Output",
-                  "status": "${{ steps.test2.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Test 3 - Check Help Output",
-                  "status": "${{ steps.test3.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Test 4 - Architecture Verification",
-                  "status": "${{ steps.test4.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Test 5 - Functional Validation",
-                  "status": "${{ steps.test5.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Test 6 - Regression Validation",
-                  "status": "${{ steps.test6.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
-                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
-                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
-                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
-                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
-                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
-                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
-                }
+                {"name": "Test 1 - Binary Existence", "status": "${{ steps.test1.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}},
+                {"name": "Test 2 - Version Output", "status": "${{ steps.test2.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}},
+                {"name": "Test 3 - Help Output Validation", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
+                {"name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
+                {"name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
+                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}", "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}", "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}"}
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "core_failed": ${{ steps.summary.outputs.core_failed || 0 }}
             }
           }
           EOF
@@ -364,11 +393,12 @@ jobs:
         with:
           name: nats-test-results
           path: test-results/nats.json
-          retention-days: 10
+          retention-days: 90
 
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression result unavailable' }}"
           echo "## NATS Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
@@ -379,16 +409,17 @@ jobs:
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
-          echo "1. Test 1 - Check Binary Existence: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "2. Test 2 - Check Version Output: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "3. Test 3 - Check Help Output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Test 1 - Binary Existence: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Test 2 - Version Output: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Test 3 - Help Output Validation: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
-          echo "${{ steps.test6.outputs.comparison || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "  ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

@@ -16,7 +16,6 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       PG_MAJOR: "17"
-      PG_PORT: "5433"
       TIMESCALEDB_VERSION: "2.25.2"
 
     steps:
@@ -29,6 +28,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=timescaledb" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/timescaledb" >> "$GITHUB_OUTPUT"
+          echo "current_version=${TIMESCALEDB_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install TimescaleDB
         id: install
@@ -65,9 +65,16 @@ jobs:
       - name: Get TimescaleDB version
         id: version
         run: |
+          set -euo pipefail
           VERSION=$(dpkg-query -W -f='${Version}\n' "postgresql-${PG_MAJOR}-timescaledb" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+          LATEST=$(GH_TOKEN="${{ github.token }}" gh api repos/timescale/timescaledb/releases/latest --jq .tag_name 2>/dev/null | sed 's/^v//' || true)
+          if [ -z "${LATEST}" ]; then
+            LATEST="${TIMESCALEDB_VERSION}"
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
           echo "Detected TimescaleDB version: $VERSION"
+          echo "Detected latest TimescaleDB version: $LATEST"
 
       - name: Test 1 - Check extension assets exist
         id: test1
@@ -133,7 +140,15 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          TEST_PORT=$(python3 - <<'PY'
+          import socket
+          with socket.socket() as s:
+              s.bind(("", 0))
+              print(s.getsockname()[1])
+          PY
+          )
 
           cleanup() {
             sudo pg_dropcluster --stop "${PG_MAJOR}" tsdbtest >/dev/null 2>&1 || true
@@ -142,14 +157,14 @@ jobs:
 
           sudo pg_dropcluster --stop "${PG_MAJOR}" tsdbtest >/dev/null 2>&1 || true
           sudo rm -rf "/etc/postgresql/${PG_MAJOR}/tsdbtest" "/var/lib/postgresql/${PG_MAJOR}/tsdbtest" "/var/log/postgresql/postgresql-${PG_MAJOR}-tsdbtest.log"
-          sudo pg_createcluster "${PG_MAJOR}" tsdbtest -p "${PG_PORT}" --start >/tmp/timescaledb-cluster.log 2>&1
+          sudo pg_createcluster "${PG_MAJOR}" tsdbtest -p "${TEST_PORT}" --start >/tmp/timescaledb-cluster.log 2>&1
           echo "shared_preload_libraries = 'timescaledb'" | sudo tee "/etc/postgresql/${PG_MAJOR}/tsdbtest/conf.d/timescaledb.conf" >/dev/null
           sudo systemctl restart "postgresql@${PG_MAJOR}-tsdbtest" >/tmp/timescaledb-restart.log 2>&1
 
-          sudo -u postgres psql -p "${PG_PORT}" -d postgres -c "CREATE EXTENSION IF NOT EXISTS timescaledb;" >/tmp/timescaledb-create-extension.txt
-          sudo -u postgres psql -p "${PG_PORT}" -d postgres -c "SELECT extversion FROM pg_extension WHERE extname = 'timescaledb';" >/tmp/timescaledb-extversion.txt
-          sudo -u postgres psql -p "${PG_PORT}" -d postgres -c "CREATE TABLE IF NOT EXISTS metrics(time timestamptz NOT NULL, value double precision);" >/tmp/timescaledb-create-table.txt
-          sudo -u postgres psql -p "${PG_PORT}" -d postgres -c "SELECT create_hypertable('metrics', 'time', if_not_exists => TRUE);" >/tmp/timescaledb-hypertable.txt
+          sudo -u postgres psql -p "${TEST_PORT}" -d postgres -c "CREATE EXTENSION IF NOT EXISTS timescaledb;" >/tmp/timescaledb-create-extension.txt
+          sudo -u postgres psql -p "${TEST_PORT}" -d postgres -c "SELECT extversion FROM pg_extension WHERE extname = 'timescaledb';" >/tmp/timescaledb-extversion.txt
+          sudo -u postgres psql -p "${TEST_PORT}" -d postgres -c "CREATE TABLE IF NOT EXISTS metrics(time timestamptz NOT NULL, value double precision);" >/tmp/timescaledb-create-table.txt
+          sudo -u postgres psql -p "${TEST_PORT}" -d postgres -c "SELECT create_hypertable('metrics', 'time', if_not_exists => TRUE);" >/tmp/timescaledb-hypertable.txt
 
           if grep -q "${TIMESCALEDB_VERSION}" /tmp/timescaledb-extversion.txt && grep -q "metrics" /tmp/timescaledb-hypertable.txt; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -169,13 +184,117 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || env.TIMESCALEDB_VERSION }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=2.25.2" >> "$GITHUB_OUTPUT"
-          echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned TimescaleDB 2.25.2 was smoke-tested in this run and it already matches the latest stable extension package published for PostgreSQL 17 during validation." >> "$GITHUB_OUTPUT"
-          echo "note=TimescaleDB metadata recommends 2.16.0 for Arm, and the workflow now pins the latest stable extension release within the current supported release window." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || env.TIMESCALEDB_VERSION }}"
+          LATEST="${{ steps.version.outputs.latest }}"
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST:-lookup_failed}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+
+          if [ -z "${LATEST}" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned TimescaleDB ${CURRENT} passed smoke tests in this run, but the next stable TimescaleDB release could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned TimescaleDB ${CURRENT} passed smoke tests in this run, but the next stable TimescaleDB release could not be resolved automatically."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ "${CURRENT}" = "${LATEST}" ]; then
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable TimescaleDB version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned TimescaleDB ${CURRENT} was smoke-tested in this run, including package metadata, extension creation, and hypertable creation on PostgreSQL ${PG_MAJOR}. The validated pinned package already matches the latest stable TimescaleDB release." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${CURRENT}"
+            echo "Regression install result: Current stable TimescaleDB version already validated on Arm64"
+            echo "Details: Current pinned TimescaleDB ${CURRENT} was smoke-tested in this run, including package metadata, extension creation, and hypertable creation on PostgreSQL ${PG_MAJOR}. The validated pinned package already matches the latest stable TimescaleDB release."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CANDIDATE_PACKAGE=$(apt-cache madison "postgresql-${PG_MAJOR}-timescaledb" | awk -v want="${LATEST}" '$3 ~ "^"want { print $3; exit }')
+          if [ -z "${CANDIDATE_PACKAGE}" ]; then
+            echo "next_installed_version=package_unavailable" >> "$GITHUB_OUTPUT"
+            echo "decision=hold_current_arm_dependency_gap" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned TimescaleDB ${CURRENT} passed smoke tests in this run, but the candidate ${LATEST} package is not currently available in the configured Arm64 apt repository for PostgreSQL ${PG_MAJOR}." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: package_unavailable"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned TimescaleDB ${CURRENT} passed smoke tests in this run, but the candidate ${LATEST} package is not currently available in the configured Arm64 apt repository for PostgreSQL ${PG_MAJOR}."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get install -y --allow-downgrades "postgresql-${PG_MAJOR}-timescaledb=${CANDIDATE_PACKAGE}" >/tmp/timescaledb-candidate-install.log 2>&1
+          NEXT_INSTALLED=$(dpkg-query -W -f='${Version}\n' "postgresql-${PG_MAJOR}-timescaledb" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+          REG_PORT=$(python3 - <<'PY'
+          import socket
+          with socket.socket() as s:
+              s.bind(("", 0))
+              print(s.getsockname()[1])
+          PY
+          )
+
+          cleanup_candidate() {
+            sudo pg_dropcluster --stop "${PG_MAJOR}" tsdbreg >/dev/null 2>&1 || true
+          }
+          trap cleanup_candidate EXIT
+
+          sudo pg_dropcluster --stop "${PG_MAJOR}" tsdbreg >/dev/null 2>&1 || true
+          sudo rm -rf "/etc/postgresql/${PG_MAJOR}/tsdbreg" "/var/lib/postgresql/${PG_MAJOR}/tsdbreg" "/var/log/postgresql/postgresql-${PG_MAJOR}-tsdbreg.log"
+          sudo pg_createcluster "${PG_MAJOR}" tsdbreg -p "${REG_PORT}" --start >/tmp/timescaledb-reg-cluster.log 2>&1
+          echo "shared_preload_libraries = 'timescaledb'" | sudo tee "/etc/postgresql/${PG_MAJOR}/tsdbreg/conf.d/timescaledb.conf" >/dev/null
+          sudo systemctl restart "postgresql@${PG_MAJOR}-tsdbreg" >/tmp/timescaledb-reg-restart.log 2>&1
+          sudo -u postgres psql -p "${REG_PORT}" -d postgres -c "CREATE EXTENSION IF NOT EXISTS timescaledb;" >/tmp/timescaledb-reg-create-extension.txt
+          sudo -u postgres psql -p "${REG_PORT}" -d postgres -c "SELECT extversion FROM pg_extension WHERE extname = 'timescaledb';" >/tmp/timescaledb-reg-extversion.txt
+          sudo -u postgres psql -p "${REG_PORT}" -d postgres -c "CREATE TABLE IF NOT EXISTS metrics(time timestamptz NOT NULL, value double precision);" >/tmp/timescaledb-reg-create-table.txt
+          sudo -u postgres psql -p "${REG_PORT}" -d postgres -c "SELECT create_hypertable('metrics', 'time', if_not_exists => TRUE);" >/tmp/timescaledb-reg-hypertable.txt
+
+          if [ "${NEXT_INSTALLED}" = "${LATEST}" ] && \
+             grep -q "${LATEST}" /tmp/timescaledb-reg-extversion.txt && \
+             grep -q "metrics" /tmp/timescaledb-reg-hypertable.txt; then
+            echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned TimescaleDB ${CURRENT} passed smoke tests in this run. Regression validation installed candidate ${LATEST} from the Arm64 apt repository, created the extension, and created the hypertable successfully on PostgreSQL ${PG_MAJOR}." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_INSTALLED}"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned TimescaleDB ${CURRENT} passed smoke tests in this run. Regression validation installed candidate ${LATEST} from the Arm64 apt repository, created the extension, and created the hypertable successfully on PostgreSQL ${PG_MAJOR}."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/timescaledb-candidate-install.log || true
+            cat /tmp/timescaledb-reg-cluster.log || true
+            cat /tmp/timescaledb-reg-restart.log || true
+            cat /tmp/timescaledb-reg-extversion.txt || true
+            cat /tmp/timescaledb-reg-hypertable.txt || true
+            echo "next_installed_version=${NEXT_INSTALLED:-install_failed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned TimescaleDB ${CURRENT} passed smoke tests in this run, but candidate ${LATEST} did not complete the expected Arm64 package install and extension validation path." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_INSTALLED:-install_failed}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned TimescaleDB ${CURRENT} passed smoke tests in this run, but candidate ${LATEST} did not complete the expected Arm64 package install and extension validation path."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -222,44 +341,28 @@ jobs:
         run: |
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          if [ "${{ steps.test1.outputs.status }}" = "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          if [ "${{ steps.test2.outputs.status }}" = "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          if [ "${{ steps.test3.outputs.status }}" = "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          if [ "${{ steps.test4.outputs.status }}" = "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          if [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-
-          if [ "${{ steps.test6.outputs.status }}" = "passed" ]; then
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -268,22 +371,28 @@ jobs:
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          if [ "$CORE_FAILED" -eq 0 ]; then
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -eq 0 ] && [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           JOB_ID="${{ github.job }}"
-          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
           if [ -z "$JOB_URL" ]; then
             JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
           fi
@@ -319,7 +428,7 @@ jobs:
                 {"name": "Check control metadata", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
                 {"name": "Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
                 {"name": "Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
-                {"name": "Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}}
+                {"name": "Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}", "latest_version": "${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || 'unknown' }}", "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}"}
               ]
             },
             "metadata": {
@@ -361,5 +470,6 @@ jobs:
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests.' }}" >> "$GITHUB_STEP_SUMMARY"

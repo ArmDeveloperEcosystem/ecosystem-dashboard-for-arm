@@ -1,8 +1,7 @@
 name: Test Docker-Compose on Arm64
 
-# When you copy this file, uncomment the appropriate triggers below:
 on:
-  workflow_dispatch:  # Uncomment for manual testing
+  workflow_dispatch:
   workflow_call:
   push:
     branches:
@@ -15,170 +14,141 @@ on:
 jobs:
   test-docker_compose:
     runs-on: ubuntu-24.04-arm
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=docker_compose" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/docker_compose" >> $GITHUB_OUTPUT
-      
-      # ============================================================
-      # CUSTOMIZE THIS: Install your package
-      # ============================================================
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=docker_compose" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/docker_compose" >> "$GITHUB_OUTPUT"
+
       - name: Install Docker-Compose
         id: install
         run: |
-          echo "Installing Docker-Compose..."
-          # Check if docker compose plugin is available or install standalone binary
-          
-          if docker compose version &> /dev/null; then
-             echo "Docker Compose plugin already installed"
-             echo "install_status=success" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          BASELINE_VERSION="2.38.2"
+          BASELINE_TAG="v${BASELINE_VERSION}"
+          BASELINE_URL="https://github.com/docker/compose/releases/download/${BASELINE_TAG}/docker-compose-linux-aarch64"
+
+          echo "baseline_version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+          curl -fsSL -o /tmp/docker-compose "$BASELINE_URL"
+          chmod +x /tmp/docker-compose
+          sudo install -m 0755 /tmp/docker-compose /usr/local/bin/docker-compose
+
+          if command -v docker-compose >/dev/null 2>&1; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
-             echo "Downloading Docker Compose binary..."
-             LATEST_TAG=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-             if [ -z "$LATEST_TAG" ]; then LATEST_TAG="v2.29.1"; fi
-             
-             sudo curl -L "https://github.com/docker/compose/releases/download/${LATEST_TAG}/docker-compose-linux-aarch64" -o /usr/local/bin/docker-compose
-             sudo chmod +x /usr/local/bin/docker-compose
-             
-             echo "install_status=success" >> $GITHUB_OUTPUT
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-      
+
       - name: Get Docker-Compose version
         id: version
         run: |
-          # Try getting version from docker-compose binary or docker compose plugin
-          # We need to be careful to extract just the version number (e.g., v2.29.1 or 2.29.1)
-          
-          VERSION="unknown"
-          
-          if command -v docker-compose &> /dev/null; then
-             RAW_VERSION=$(docker-compose --version 2>&1)
-             # Extract simple version number vX.Y.Z or X.Y.Z
-             VERSION=$(echo "$RAW_VERSION" | grep -oE "v?[0-9]+\.[0-9]+\.[0-9]+" | head -n1 || echo "unknown")
-          elif docker compose version &> /dev/null; then
-             RAW_VERSION=$(docker compose version 2>&1)
-             VERSION=$(echo "$RAW_VERSION" | grep -oE "v?[0-9]+\.[0-9]+\.[0-9]+" | head -n1 || echo "unknown")
+          set -euo pipefail
+          VERSION=$(timeout 10s docker-compose version --short 2>/dev/null | tr -d '\r\n' || true)
+          if [ -z "$VERSION" ]; then
+            VERSION=$(timeout 10s docker-compose --version 2>&1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 | sed 's/^v//' || true)
           fi
-          
-          if [ "$VERSION" = "unknown" ] || [ -z "$VERSION" ]; then
-             echo "Could not detect version, setting default"
-             VERSION="unknown"
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
           fi
-
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Docker-Compose version: $VERSION"
-      
-      - name: Test 1 - Check binary exists
+
+      - name: Test 1 - Check docker-compose binary exists
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if command -v docker-compose &> /dev/null; then
-             echo "✓ docker-compose binary found"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          elif docker compose version &> /dev/null; then
-             echo "✓ docker compose plugin found"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          if command -v docker-compose >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ docker-compose/plugin not found"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Check version command
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check docker-compose version output
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if (docker-compose --version &> /dev/null) || (docker compose version &> /dev/null); then
-            echo "✓ version command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          VERSION=$(timeout 10s docker-compose version --short 2>/dev/null | tr -d '\r\n' || true)
+          if [ -z "$VERSION" ]; then
+            VERSION=$(timeout 10s docker-compose --version 2>&1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 | sed 's/^v//' || true)
+          fi
+          if [ "$VERSION" = "${{ steps.install.outputs.baseline_version }}" ]; then
+            docker-compose version
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "Expected Docker-Compose version ${{ steps.install.outputs.baseline_version }}, got ${VERSION:-unknown}"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 3 - Check help output
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check docker-compose help output
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if (docker-compose --help &> /dev/null) || (docker compose --help &> /dev/null); then
-            echo "✓ help command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if timeout 10s docker-compose --help 2>&1 | grep -qiE 'usage|commands|options'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ help command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      # Add more tests as needed (test4, test5, etc.)
-      # Examples:
-      # - Run a simple command
-      # - Check configuration files
-      # - Start/stop a service
-      # - Test basic functionality
-      
-      # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
-      # ============================================================
-      
-      - name: Test 4 - Architecture Verification
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Functional Validation (config help)
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          echo "Checking system architecture..."
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if timeout 10s docker-compose config --help 2>&1 | grep -qiE 'usage|options|config'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Functional Validation
+      - name: Test 5 - Verify Arm64 binary
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if (docker-compose --version &> /dev/null) || (docker compose version &> /dev/null); then
-            echo "✓ Basic functional check passed"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if [ "$(uname -m)" = "aarch64" ] && file /usr/local/bin/docker-compose | grep -qi 'ARM aarch64'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ Basic functional check failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            file /usr/local/bin/docker-compose || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -186,50 +156,96 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          NORMALIZED_CURRENT="${CURRENT#v}"
-          LATEST=$(GH_TOKEN=${{ github.token }} gh api repos/docker/compose/releases/latest --jq '.tag_name' 2>/dev/null || true)
-          if [ -z "$LATEST" ]; then
-            LATEST="v2.40.2"
+          LATEST_TAG=$(GH_TOKEN=${{ github.token }} gh api repos/docker/compose/releases/latest --jq '.tag_name' 2>/dev/null | tr -d '[:space:]' || true)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG=$(curl -fsSL https://api.github.com/repos/docker/compose/releases/latest | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null | tr -d '[:space:]' || true)
           fi
-          NORMALIZED_LATEST="${LATEST#v}"
+          LATEST_VERSION="${LATEST_TAG#v}"
+
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$NORMALIZED_LATEST" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: ${LATEST_VERSION:-unknown}"
+
+          if [ -z "$LATEST_TAG" ] || [ -z "$LATEST_VERSION" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Docker-Compose version ${CURRENT} passed smoke tests in this run, but the next regression candidate could not be resolved from the official GitHub releases feed." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Docker-Compose version ${CURRENT} passed smoke tests in this run, but the next regression candidate could not be resolved from the official GitHub releases feed."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "$CURRENT" = "$LATEST_VERSION" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Docker-Compose version ${CURRENT} passed smoke tests in this run and is already the latest official Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Docker-Compose version ${CURRENT} passed smoke tests in this run and is already the latest official Arm64 release."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           NEXT_DIR=$(mktemp -d)
           NEXT_BIN="$NEXT_DIR/docker-compose"
-          NEXT_URL="https://github.com/docker/compose/releases/download/${LATEST}/docker-compose-linux-aarch64"
+          NEXT_URL="https://github.com/docker/compose/releases/download/${LATEST_TAG}/docker-compose-linux-aarch64"
           if curl -fsSL "$NEXT_URL" -o "$NEXT_BIN"; then
             chmod +x "$NEXT_BIN"
-            NEXT_INSTALLED_VERSION=$("$NEXT_BIN" version 2>&1 | grep -oE "v?[0-9]+\.[0-9]+\.[0-9]+" | head -n1 || true)
-            if [ -x "$NEXT_BIN" ] && [ -n "$NEXT_INSTALLED_VERSION" ]; then
+            NEXT_INSTALLED_VERSION=$(timeout 10s "$NEXT_BIN" version --short 2>/dev/null | tr -d '\r\n' || true)
+            if [ -z "$NEXT_INSTALLED_VERSION" ]; then
+              NEXT_INSTALLED_VERSION=$(timeout 10s "$NEXT_BIN" --version 2>&1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 | sed 's/^v//' || true)
+            fi
+            if [ "$NEXT_INSTALLED_VERSION" = "$LATEST_VERSION" ] && file "$NEXT_BIN" | grep -qi 'ARM aarch64'; then
               echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
-              if [ "${NORMALIZED_CURRENT#v}" = "$NORMALIZED_LATEST" ]; then
-                echo "decision=already_at_latest" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current Docker Compose version ${CURRENT} passed smoke tests in this run and already matches the latest published Arm64 release. Regression validation re-staged ${NEXT_INSTALLED_VERSION} on Arm64 successfully." >> "$GITHUB_OUTPUT"
-              else
-                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current Docker Compose version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${NORMALIZED_LATEST} on Arm64, and the staged binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
-              fi
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Docker-Compose version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST_VERSION} on Arm64, and the staged binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned Docker-Compose version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST_VERSION} on Arm64, and the staged binary reported version ${NEXT_INSTALLED_VERSION}."
               echo "status=passed" >> "$GITHUB_OUTPUT"
             else
-              echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=${NEXT_INSTALLED_VERSION:-install_failed}" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current Docker Compose version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NORMALIZED_LATEST} did not report a usable installed version on Arm64." >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Docker-Compose version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST_VERSION} did not complete bounded version and architecture validation on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-install_failed}"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Docker-Compose version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST_VERSION} did not complete bounded version and architecture validation on Arm64."
               echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
               exit 1
             fi
           else
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current Docker Compose version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NORMALIZED_LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Docker-Compose version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST_VERSION} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Docker-Compose version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST_VERSION} could not be downloaded on Arm64."
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Show regression validation details
         if: always()
@@ -261,8 +277,8 @@ jobs:
           fi
 
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
           echo "Regression install result: ${REGRESSION_RESULT}"
           echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
@@ -273,48 +289,49 @@ jobs:
         run: |
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check binary exists
           if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Check version command
           if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Check help output
           if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Architecture Verification
           if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
-          # Functional Validation
           if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
+
           if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -322,24 +339,34 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ $CORE_FAILED -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}"
+          fi
+
           mkdir -p test-results
-          
+
           cat > test-results/docker_compose.json << EOF
           {
             "schema_version": "1.0",
@@ -351,7 +378,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -366,27 +393,27 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check binary exists",
+                  "name": "Check docker-compose binary exists",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check version command",
+                  "name": "Check docker-compose version output",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check help output",
+                  "name": "Check docker-compose help output",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Architecture Verification",
+                  "name": "Functional Validation (config help)",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Functional Validation",
+                  "name": "Verify Arm64 binary",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 },
@@ -394,12 +421,12 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
-                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
-                  "latest_version": "${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}",
-                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
                   "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
                   "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
-                  "comparison": "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}"
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
@@ -409,14 +436,7 @@ jobs:
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/docker_compose.json
-      
-      # ============================================================
-      # STANDARD STEPS - Usually don't need to modify below here
-      # ============================================================
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -424,35 +444,50 @@ jobs:
           name: docker_compose-test-results
           path: test-results/docker_compose.json
           retention-days: 90
-      
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## Docker-Compose Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check docker_compose binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check docker_compose version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check docker_compose help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || 'manual_review_needed' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
 
-          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
-
+          echo "## Docker-Compose Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Check docker-compose binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Check docker-compose version output: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Check docker-compose help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Functional Validation (config help): ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Verify Arm64 binary: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> Support badge remains tied to Tests 1-5. Test 6 reports next-version install readiness on Arm64." >> "$GITHUB_STEP_SUMMARY"

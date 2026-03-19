@@ -1,16 +1,20 @@
-name: Test Apache Ignite on Arm64
+name: Test Ignite on Arm64
+
 on:
+  workflow_dispatch:
   workflow_call:
   push:
     branches:
       - main
       - smoke_tests
     paths:
-      - 'content/opensource_packages/ignite.md'
-      - '.github/workflows/test-ignite.yml'
+      - "content/opensource_packages/ignite.md"
+      - ".github/workflows/test-ignite.yml"
+
 jobs:
   test-ignite:
     runs-on: ubuntu-24.04-arm
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -18,200 +22,248 @@ jobs:
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=ignite" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/ignite" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=ignite" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/ignite" >> "$GITHUB_OUTPUT"
 
-      # ============================================================
-      # CUSTOMIZE THIS: Install your package
-      # ============================================================
-      - name: Install Apache Ignite
+      - name: Install Ignite
         id: install
         run: |
-          echo "Installing Apache Ignite..."
-          
-          # Install Java
-          sudo apt-get update
-          sudo apt-get install -y openjdk-11-jdk wget unzip
-          
-          # Download Ignite
-          # Using a stable version, e.g., 2.16.0
-          VERSION="2.16.0"
-          URL="https://archive.apache.org/dist/ignite/${VERSION}/apache-ignite-${VERSION}-bin.zip"
-          
-          if wget -q $URL -O ignite.zip; then
-             echo "Downloaded successfully"
-          else
-             echo "Download failed"
-             exit 1
-          fi
-          
-          # Extract
-          unzip -q ignite.zip
-          mv apache-ignite-${VERSION}-bin ignite
-          
-          # Verify installation
-          if [ -f "ignite/bin/ignite.sh" ]; then
-             echo "Ignite script found"
-             echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-             echo "Ignite script not found"
-             echo "install_status=failed" >> $GITHUB_OUTPUT
-             exit 1
-          fi
+          set -euo pipefail
+          CURRENT_VERSION="0.5.0"
+          WORK_DIR=$(mktemp -d)
+          IGNITE_BIN="${WORK_DIR}/ignite"
+          IGNITED_BIN="${WORK_DIR}/ignited"
 
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
+          curl -fsSL "https://github.com/weaveworks/ignite/releases/download/v${CURRENT_VERSION}/ignite-arm64" -o "$IGNITE_BIN"
+          curl -fsSL "https://github.com/weaveworks/ignite/releases/download/v${CURRENT_VERSION}/ignited-arm64" -o "$IGNITED_BIN"
+          chmod +x "$IGNITE_BIN" "$IGNITED_BIN"
+
+          sudo install -m 0755 "$IGNITE_BIN" /usr/local/bin/ignite
+          sudo install -m 0755 "$IGNITED_BIN" /usr/local/bin/ignited
+
+          echo "baseline_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "ignite_binary_path=/usr/local/bin/ignite" >> "$GITHUB_OUTPUT"
+          echo "ignited_binary_path=/usr/local/bin/ignited" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
       - name: Get Ignite version
         id: version
         run: |
-          VERSION="2.16.0"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          VERSION=$(sudo ignite version 2>&1 | sed -n 's/.*GitVersion:"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1 || true)
+          if [ -z "$VERSION" ]; then
+            VERSION="unknown"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Ignite version: $VERSION"
 
-      # ============================================================
-      # ADD YOUR TESTS BELOW
-      # Each test should:
-      # 1. Have a unique id (test1, test2, etc.)
-      # 2. Track start/end time for duration
-      # 3. Set status=passed or status=failed
-      # 4. Exit 1 on failure
-      # ============================================================
-
-      - name: Test 1 - Check ignite.sh exists
+      - name: Test 1 - Check Ignite binaries exist
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if [ -x "ignite/bin/ignite.sh" ]; then
-            echo "✓ ignite.sh found and executable"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if command -v ignite >/dev/null 2>&1 \
+            && command -v ignited >/dev/null 2>&1 \
+            && [ -x "${{ steps.install.outputs.ignite_binary_path }}" ] \
+            && [ -x "${{ steps.install.outputs.ignited_binary_path }}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ ignite.sh not found or not executable"
-            # Try chmod
-            if [ -f "ignite/bin/ignite.sh" ]; then
-                chmod +x ignite/bin/ignite.sh
-                echo "✓ ignite.sh found and made executable"
-                echo "status=passed" >> $GITHUB_OUTPUT
-            else
-                echo "status=failed" >> $GITHUB_OUTPUT
-                exit 1
-            fi
+            ls -l /usr/local/bin/ignite /usr/local/bin/ignited || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Check sqlline.sh exists
+      - name: Test 2 - Check ignite version output
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if [ -f "ignite/bin/sqlline.sh" ]; then
-            echo "✓ sqlline.sh found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          EXPECTED="${{ steps.install.outputs.baseline_version }}"
+          REPORTED=$(sudo ignite version 2>&1 | sed -n 's/.*GitVersion:"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1 || true)
+          if [ "$REPORTED" = "$EXPECTED" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ sqlline.sh not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            sudo ignite version || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Check libs directory
+      - name: Test 3 - Check ignited version output
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if [ -d "ignite/libs" ]; then
-            echo "✓ libs directory found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          EXPECTED="${{ steps.install.outputs.baseline_version }}"
+          REPORTED=$(sudo ignited version 2>&1 | sed -n 's/.*GitVersion:"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1 || true)
+          if [ "$REPORTED" = "$EXPECTED" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ libs directory not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            sudo ignited version || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 4 - Run Ignite (short run)
+      - name: Test 4 - Validate Ignite CLI help output
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # Run ignite in background for 15 seconds
-          # It usually takes some time to start up
-          
-          export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))
-          
-          timeout 15s ignite/bin/ignite.sh > ignite.log 2>&1 || true
-          
-          if grep -q "Ignite node started OK" ignite.log || grep -q "Topology snapshot" ignite.log || [ -s ignite.log ]; then
-             echo "✓ Ignite started (or produced logs)"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          sudo ignite --help >/tmp/ignite-help.log 2>&1
+          sudo ignited --help >/tmp/ignited-help.log 2>&1
+          if grep -Eqi 'image|kernel|vm|Firecracker' /tmp/ignite-help.log \
+            && grep -Eqi 'daemon|gitops|help|Usage' /tmp/ignited-help.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ Ignite failed to start"
-             cat ignite.log
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            cat /tmp/ignite-help.log || true
+            cat /tmp/ignited-help.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Check version via sqlline (optional/dry run)
+      - name: Test 5 - Architecture verification
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Functional Validation
-          
-          # sqlline requires a running node or connection
-          # We can just check if it runs and shows help/usage
-          
-          if ignite/bin/sqlline.sh --help > /dev/null 2>&1 || true; then
-             echo "✓ sqlline.sh runs"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          if [ "$(uname -m)" = "aarch64" ] \
+            && file "${{ steps.install.outputs.ignite_binary_path }}" | grep -Eqi 'aarch64|arm64' \
+            && file "${{ steps.install.outputs.ignited_binary_path }}" | grep -Eqi 'aarch64|arm64'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ sqlline.sh failed to run"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
-          # Architecture Verification
-          ARCH=$(uname -m)
-          if [ "$ARCH" != "aarch64" ]; then
-            echo "status=failed" >> $GITHUB_OUTPUT
+            file "${{ steps.install.outputs.ignite_binary_path }}" || true
+            file "${{ steps.install.outputs.ignited_binary_path }}" || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-            # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
       - name: Test 6 - Regression Validation
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version }}"
+          LATEST="$(
+            python3 - <<'PY'
+          import json, urllib.request
+          req = urllib.request.Request(
+              'https://api.github.com/repos/weaveworks/ignite/releases/latest',
+              headers={'User-Agent': 'github-actions'},
+          )
+          print(json.load(urllib.request.urlopen(req))['tag_name'].lstrip('v'))
+          PY
+          )"
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ -z "$LATEST" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Ignite version ${CURRENT} passed smoke tests in this run, but the latest upstream Arm64 release could not be resolved for candidate validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Ignite version ${CURRENT} passed smoke tests in this run, but the latest upstream Arm64 release could not be resolved for candidate validation."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Ignite version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 candidate for this workflow." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Ignite version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 candidate for this workflow."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_DIR=$(mktemp -d)
+          NEXT_IGNITE="${NEXT_DIR}/ignite"
+          NEXT_IGNITED="${NEXT_DIR}/ignited"
+
+          curl -fsSL "https://github.com/weaveworks/ignite/releases/download/v${LATEST}/ignite-arm64" -o "$NEXT_IGNITE"
+          curl -fsSL "https://github.com/weaveworks/ignite/releases/download/v${LATEST}/ignited-arm64" -o "$NEXT_IGNITED"
+          chmod +x "$NEXT_IGNITE" "$NEXT_IGNITED"
+
+          NEXT_IGNITE_REPORTED=$(sudo "$NEXT_IGNITE" version 2>&1 | sed -n 's/.*GitVersion:"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1 || true)
+          NEXT_IGNITED_REPORTED=$(sudo "$NEXT_IGNITED" version 2>&1 | sed -n 's/.*GitVersion:"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1 || true)
+
+          sudo "$NEXT_IGNITE" --help >/tmp/ignite-next-help.log 2>&1
+          sudo "$NEXT_IGNITED" --help >/tmp/ignited-next-help.log 2>&1
+
+          if [ "$NEXT_IGNITE_REPORTED" = "$LATEST" ] \
+            && [ "$NEXT_IGNITED_REPORTED" = "$LATEST" ] \
+            && file "$NEXT_IGNITE" | grep -Eqi 'aarch64|arm64' \
+            && file "$NEXT_IGNITED" | grep -Eqi 'aarch64|arm64' \
+            && grep -Eqi 'image|kernel|vm|Firecracker' /tmp/ignite-next-help.log \
+            && grep -Eqi 'daemon|gitops|help|Usage' /tmp/ignited-next-help.log; then
+            echo "next_installed_version=$NEXT_IGNITE_REPORTED" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Ignite version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the next official Arm64 release ${LATEST}, and both candidate binaries reported version ${NEXT_IGNITE_REPORTED} while exposing the expected CLI and daemon help output on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_IGNITE_REPORTED"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned Ignite version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the next official Arm64 release ${LATEST}, and both candidate binaries reported version ${NEXT_IGNITE_REPORTED} while exposing the expected CLI and daemon help output on Arm64."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            sudo "$NEXT_IGNITE" version || true
+            sudo "$NEXT_IGNITED" version || true
+            cat /tmp/ignite-next-help.log || true
+            cat /tmp/ignited-next-help.log || true
+            file "$NEXT_IGNITE" || true
+            file "$NEXT_IGNITED" || true
+            echo "next_installed_version=${NEXT_IGNITE_REPORTED:-install_failed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Ignite version ${CURRENT} passed smoke tests in this run, but the candidate release ${LATEST} did not validate as a usable Arm64 Ignite and ignited binary pair." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_IGNITE_REPORTED:-install_failed}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Ignite version ${CURRENT} passed smoke tests in this run, but the candidate release ${LATEST} did not validate as a usable Arm64 Ignite and ignited binary pair."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Show regression validation details
         if: always()
@@ -243,97 +295,110 @@ jobs:
           fi
 
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
           echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check ignite.sh exists
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test1.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Check sqlline.sh exists
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test2.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Check libs directory
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test3.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Run Ignite (short run)
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test4.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
-          # Check version via sqlline (optional/dry run)
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
+
+          if [ "${{ steps.test6.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
+          fi
+
           mkdir -p test-results
-          
-          cat > test-results/ignite.json << EOF
+
+          cat > test-results/ignite.json <<EOF
           {
             "schema_version": "1.0",
             "package": {
-              "name": "Apache Ignite",
+              "name": "Ignite",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "Go",
+              "category": "Miscellaneous"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -348,27 +413,27 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check ignite.sh exists",
+                  "name": "Check Ignite binaries exist",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check sqlline.sh exists",
+                  "name": "Check ignite version output",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check libs directory",
+                  "name": "Check ignited version output",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Run Ignite (short run)",
+                  "name": "Validate Ignite CLI help output",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check version via sqlline (optional/dry run)",
+                  "name": "Architecture verification",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 },
@@ -376,57 +441,26 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
                 }
               ]
             },
             "metadata": {
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}",
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/ignite.json
-      # ============================================================
-      # STANDARD STEPS - Usually don't need to modify below here
-      # ============================================================
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ignite-test-results
           path: test-results/ignite.json
-          retention-days: 90
-      
-      - name: Create test summary
-        if: always()
-        run: |
-          echo "## Apache Ignite Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Test 1 - Check ignite.sh exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Test 2 - Check sqlline.sh exists: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Test 3 - Check libs directory: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Run Ignite (short run): ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Check version via sqlline (optional/dry run): ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
-

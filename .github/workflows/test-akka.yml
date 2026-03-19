@@ -176,13 +176,86 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST=$(python3 - <<'PY'
+          import re, urllib.request, xml.etree.ElementTree as ET
+          root = ET.fromstring(urllib.request.urlopen('https://repo1.maven.org/maven2/com/typesafe/akka/akka-actor_2.13/maven-metadata.xml').read())
+          versions = [v.text for v in root.findall('./versioning/versions/version') if v.text]
+          stable = [v for v in versions if re.fullmatch(r'\d+\.\d+\.\d+', v)]
+          print(stable[-1] if stable else '')
+          PY
+          )
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          if [ -z "$LATEST" ]; then
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Akka version ${CURRENT} passed smoke tests in this run, but the next stable Maven release could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "=== Regression Validation (Next Version Install) ==="
+            echo "Current version tested in Tests 1-5: $CURRENT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Akka version ${CURRENT} passed smoke tests in this run, but the next stable Maven release could not be resolved automatically."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Akka version ${CURRENT} passed smoke tests in this run and is already the latest stable Scala 2.13 artifact." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Akka version ${CURRENT} passed smoke tests in this run and is already the latest stable Scala 2.13 artifact."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_JAR=$(mktemp /tmp/akka-next-XXXXXX.jar)
+          if curl -fsSL -o "$NEXT_JAR" "https://repo1.maven.org/maven2/com/typesafe/akka/akka-actor_2.13/${LATEST}/akka-actor_2.13-${LATEST}.jar"; then
+            if jar tf "$NEXT_JAR" | grep -q "akka/actor/ActorSystem.class"; then
+              echo "next_installed_version=$LATEST" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Akka version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the Scala 2.13 candidate artifact ${LATEST} on Arm64, and the JAR exposed akka.actor classes." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $LATEST"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned Akka version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the Scala 2.13 candidate artifact ${LATEST} on Arm64, and the JAR exposed akka.actor classes."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=$LATEST" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Akka version ${CURRENT} passed smoke tests in this run, but the candidate artifact ${LATEST} did not expose the expected akka.actor classes after download on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $LATEST"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Akka version ${CURRENT} passed smoke tests in this run, but the candidate artifact ${LATEST} did not expose the expected akka.actor classes after download on Arm64."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Akka version ${CURRENT} passed smoke tests in this run, but the candidate artifact ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Akka version ${CURRENT} passed smoke tests in this run, but the candidate artifact ${LATEST} could not be downloaded on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -283,7 +356,11 @@ jobs:
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ "${{ steps.test1.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test2.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test3.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test4.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
@@ -361,6 +438,12 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
@@ -404,10 +487,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Note:** Tests 1-5 decide the pinned-version Arm support result. Test 6 reports upgrade-install readiness separately." >> $GITHUB_STEP_SUMMARY
 
 

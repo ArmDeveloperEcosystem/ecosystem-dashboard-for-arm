@@ -35,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y php-cli php-curl php-xml php-mbstring php-zip curl tar
+          sudo apt-get install -y php-cli php-curl php-xml php-mbstring php-zip php-mysql curl tar
           TMP_DIR=$(mktemp -d)
           curl -fsSL -o "${TMP_DIR}/${WORDPRESS_ARCHIVE}" "${WORDPRESS_URL}"
           tar -xzf "${TMP_DIR}/${WORDPRESS_ARCHIVE}" -C "${TMP_DIR}"
@@ -53,8 +53,22 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(php -r 'include "wordpress/wp-includes/version.php"; echo $wp_version;')
+          LATEST=$(python3 - <<'PY'
+          import json
+          import urllib.request
+
+          data = json.load(urllib.request.urlopen("https://api.wordpress.org/core/version-check/1.7/", timeout=20))
+          for offer in data.get("offers", []):
+              current = offer.get("current")
+              if current:
+                  print(current)
+                  break
+          else:
+              print("unknown")
+          PY
+          )
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest=${WORDPRESS_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Binary Existence
         id: test1
@@ -123,7 +137,7 @@ jobs:
           WP_PID=$!
           READY=0
           for _ in $(seq 1 20); do
-            if curl -sS http://127.0.0.1:18081/wp-admin/install.php >/tmp/wordpress-body.txt 2>/dev/null; then
+            if curl -fsSL http://127.0.0.1:18081/wp-admin/install.php >/tmp/wordpress-body.txt 2>/dev/null; then
               READY=1
               break
             fi
@@ -146,13 +160,80 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${WORDPRESS_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${WORDPRESS_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "decision=hold_current" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version matches the Arm-recommended WordPress release from package metadata. This run validated the pinned 6.8 source tarball and install page on Arm64." >> "$GITHUB_OUTPUT"
-          echo "note=The pinned WordPress 6.8 release remained healthy for PHP lint and installer-page smoke validation on Arm64." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ -z "${LATEST}" ] || [ "${LATEST}" = "unknown" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned WordPress version ${CURRENT} passed source tarball validation in this run, but the latest stable WordPress release could not be resolved for isolated regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          TMP_DIR=$(mktemp -d)
+          cleanup() {
+            if [ -n "${WP_PID:-}" ] && kill -0 "${WP_PID}" 2>/dev/null; then
+              kill "${WP_PID}" 2>/dev/null || true
+              wait "${WP_PID}" 2>/dev/null || true
+            fi
+            rm -rf "${TMP_DIR}"
+          }
+          trap cleanup EXIT
+
+          NEXT_ARCHIVE="${TMP_DIR}/wordpress-${LATEST}.tar.gz"
+          NEXT_DIR="${TMP_DIR}/wordpress"
+          curl -fsSL -o "${NEXT_ARCHIVE}" "https://wordpress.org/wordpress-${LATEST}.tar.gz"
+          tar -xzf "${NEXT_ARCHIVE}" -C "${TMP_DIR}"
+          php -l "${NEXT_DIR}/index.php" >/tmp/wordpress-next-lint.log 2>&1
+          php -S 127.0.0.1:18082 -t "${NEXT_DIR}" >/tmp/wordpress-next-server.log 2>&1 &
+          WP_PID=$!
+
+          READY=0
+          for _ in $(seq 1 20); do
+            if curl -fsSL http://127.0.0.1:18082/wp-admin/install.php >/tmp/wordpress-next-body.txt 2>/dev/null; then
+              READY=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$READY" -eq 1 ] && grep -qi 'WordPress' /tmp/wordpress-next-body.txt; then
+            echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            if [ "${CURRENT}" = "${LATEST}" ]; then
+              echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned WordPress version ${CURRENT} already matches the latest stable release. Regression validation re-downloaded the official source tarball and reconfirmed PHP lint plus installer-page smoke on Arm64." >> "$GITHUB_OUTPUT"
+            else
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned WordPress version ${CURRENT} passed source tarball validation in this run, and candidate release ${LATEST} also passed PHP lint plus installer-page smoke on Arm64 from a fresh isolated install." >> "$GITHUB_OUTPUT"
+            fi
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/wordpress-next-lint.log || true
+            cat /tmp/wordpress-next-server.log || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned WordPress version ${CURRENT} passed source tarball validation in this run, but candidate release ${LATEST} did not complete the isolated PHP lint plus installer-page smoke on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 

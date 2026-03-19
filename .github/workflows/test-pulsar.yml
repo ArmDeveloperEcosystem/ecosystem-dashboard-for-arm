@@ -1,166 +1,151 @@
 name: Test Apache Pulsar on Arm64
 
 on:
-  workflow_call:
   workflow_dispatch:
+  workflow_call:
   push:
     branches:
       - main
       - smoke_tests
     paths:
-      - 'content/opensource_packages/pulsar.md'
-      - '.github/workflows/test-pulsar.yml'
+      - "content/opensource_packages/pulsar.md"
+      - ".github/workflows/test-pulsar.yml"
 
 jobs:
   test-pulsar:
     runs-on: ubuntu-24.04-arm
-    
+    env:
+      PULSAR_VERSION: "3.2.0"
+      PULSAR_TOPIC: "persistent://public/default/arm-smoke"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=pulsar" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/pulsar" >> $GITHUB_OUTPUT
-      
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=pulsar" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/pulsar" >> "$GITHUB_OUTPUT"
+          echo "current_version=${PULSAR_VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: Install Apache Pulsar
         id: install
         run: |
-          echo "Installing Apache Pulsar via Docker..."
-          
-          # Using version 3.2.0 (released Feb 2024)
-          # Official Pulsar images support arm64
-          
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y docker.io
+
+          sudo systemctl start docker
+          sudo usermod -aG docker "$USER" || true
+          docker pull "apachepulsar/pulsar:${PULSAR_VERSION}"
+          docker rm -f pulsar >/dev/null 2>&1 || true
           docker run -d --name pulsar \
             -p 6650:6650 \
             -p 8080:8080 \
-            apachepulsar/pulsar:3.2.0 \
+            "apachepulsar/pulsar:${PULSAR_VERSION}" \
             bin/pulsar standalone
-            
-          # Wait for startup (Pulsar standalone can take a bit)
-          sleep 30
-          
-          echo "install_status=success" >> $GITHUB_OUTPUT
-      
+
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
       - name: Get Pulsar version
         id: version
         run: |
-          VERSION="3.2.0"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Pulsar version: $VERSION"
-      
+          set -euo pipefail
+          echo "version=${PULSAR_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected Pulsar version: ${PULSAR_VERSION}"
+
       - name: Test 1 - Check container running
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if docker ps | grep -q "pulsar"; then
-            echo "✓ pulsar container running"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if docker ps --format '{{.Names}}' | grep -qx pulsar; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ pulsar container not running"
             docker logs pulsar || true
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Test 2 - Check Admin API
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if curl -s http://localhost:8080/admin/v2/clusters | grep -q "standalone"; then
-            echo "✓ admin api reachable"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ admin api unreachable"
-            curl -v http://localhost:8080/admin/v2/clusters || true
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
+          for _ in $(seq 1 40); do
+            ADMIN_OUTPUT=$(docker exec pulsar bin/pulsar-admin clusters list 2>/tmp/pulsar-admin.log || true)
+            printf '%s\n' "$ADMIN_OUTPUT" > /tmp/pulsar-admin.out
+            if printf '%s\n' "$ADMIN_OUTPUT" | grep -q "standalone"; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
-          
+            sleep 3
+          done
+          cat /tmp/pulsar-admin.log || true
+          docker logs pulsar || true
+          echo "status=failed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          exit 1
 
       - name: Test 3 - Produce Message
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # Use pulsar-client inside container
-          if docker exec pulsar bin/pulsar-client produce my-topic --messages "hello-pulsar"; then
-             echo "✓ message produced"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          if timeout 30s docker exec pulsar bin/pulsar-client produce "${PULSAR_TOPIC}" --messages "hello-pulsar"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ message produce failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            docker logs pulsar || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 4 - Consume Message
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # Consume the message we just produced (subscription 'my-sub')
-          # -n 1 means consume 1 message then exit
-          OUTPUT=$(docker exec pulsar bin/pulsar-client consume my-topic -s my-sub -n 1 -p Earliest)
-          
-          if echo "$OUTPUT" | grep -q "hello-pulsar"; then
-             echo "✓ message consumed"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          OUTPUT=$(timeout 30s docker exec pulsar bin/pulsar-client consume "${PULSAR_TOPIC}" -s arm-sub -n 1 -p Earliest 2>&1 || true)
+          printf '%s\n' "$OUTPUT" > /tmp/pulsar-consume.log
+          if printf '%s\n' "$OUTPUT" | grep -q "hello-pulsar"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ message consume failed"
-             echo "Output: $OUTPUT"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            cat /tmp/pulsar-consume.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Check Broker Stats
+      - name: Test 5 - Check Topic Stats
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Functional Validation
-          
-          # Retry loop for broker stats (can take a moment to populate)
-          for i in {1..20}; do
-            if curl -s http://localhost:8080/admin/v2/broker-stats/topics | grep -q "my-topic"; then
-               echo "✓ broker stats works"
-               echo "status=passed" >> $GITHUB_OUTPUT
-               exit 0
-            fi
-            echo "Waiting for broker stats..."
-            sleep 3
-          done
-          
-          echo "✗ broker stats failed"
-          echo "status=failed" >> $GITHUB_OUTPUT
-          exit 1
-          
-          # Architecture Verification
-          ARCH=$(uname -m)
-          if [ "$ARCH" != "aarch64" ]; then
-            echo "status=failed" >> $GITHUB_OUTPUT
+          STATS_OUTPUT=$(docker exec pulsar bin/pulsar-admin topics stats "${PULSAR_TOPIC}" 2>/tmp/pulsar-stats.log || true)
+          printf '%s\n' "$STATS_OUTPUT" > /tmp/pulsar-stats.out
+          if printf '%s\n' "$STATS_OUTPUT" | grep -q "msgInCounter"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/pulsar-stats.log || true
+            cat /tmp/pulsar-stats.out || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -168,138 +153,201 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST=$(GH_TOKEN="${{ github.token }}" gh api repos/apache/pulsar/releases/latest --jq .tag_name 2>/dev/null | sed 's/^v//')
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: ${LATEST:-unknown}"
+
+          if [ -z "${LATEST}" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Pulsar version $CURRENT passed smoke tests in this run, but the latest stable Docker tag could not be resolved for Arm64 regression validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_NAME="pulsar-next"
+          NEXT_PORT_HTTP=8081
+          NEXT_PORT_TCP=6651
+          cleanup() {
+            docker rm -f "$NEXT_NAME" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker pull "apachepulsar/pulsar:${LATEST}"
+          docker rm -f "$NEXT_NAME" >/dev/null 2>&1 || true
+          docker run -d --name "$NEXT_NAME" \
+            -p ${NEXT_PORT_TCP}:6650 \
+            -p ${NEXT_PORT_HTTP}:8080 \
+            "apachepulsar/pulsar:${LATEST}" \
+            bin/pulsar standalone >/tmp/pulsar-next.cid
+
+          for _ in $(seq 1 50); do
+            NEXT_ADMIN_OUTPUT=$(docker exec "$NEXT_NAME" bin/pulsar-admin clusters list 2>/tmp/pulsar-next-admin.log || true)
+            printf '%s\n' "$NEXT_ADMIN_OUTPUT" > /tmp/pulsar-next-admin.out
+            if printf '%s\n' "$NEXT_ADMIN_OUTPUT" | grep -q "standalone"; then
+              break
+            fi
+            sleep 3
+          done
+
+          NEXT_ADMIN_OUTPUT=$(docker exec "$NEXT_NAME" bin/pulsar-admin clusters list 2>/tmp/pulsar-next-admin.log || true)
+          printf '%s\n' "$NEXT_ADMIN_OUTPUT" > /tmp/pulsar-next-admin.out
+          if ! printf '%s\n' "$NEXT_ADMIN_OUTPUT" | grep -q "standalone"; then
+            cat /tmp/pulsar-next-admin.log || true
+            cat /tmp/pulsar-next-admin.out || true
+            docker logs "$NEXT_NAME" || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Pulsar version $CURRENT passed smoke tests in this run, but the candidate Docker image tag $LATEST did not reach a healthy admin API on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          timeout 30s docker exec "$NEXT_NAME" bin/pulsar-client produce "${PULSAR_TOPIC}" --messages "hello-pulsar-next" >/tmp/pulsar-next-produce.log 2>&1
+          NEXT_OUTPUT=$(timeout 30s docker exec "$NEXT_NAME" bin/pulsar-client consume "${PULSAR_TOPIC}" -s arm-sub-next -n 1 -p Earliest 2>&1 || true)
+          if ! printf '%s\n' "$NEXT_OUTPUT" | grep -q "hello-pulsar-next"; then
+            cat /tmp/pulsar-next-produce.log || true
+            printf '%s\n' "$NEXT_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Pulsar version $CURRENT passed smoke tests in this run, but the candidate Docker image tag $LATEST did not complete a real produce/consume validation on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_STATS_OUTPUT=$(docker exec "$NEXT_NAME" bin/pulsar-admin topics stats "${PULSAR_TOPIC}" 2>/tmp/pulsar-next-stats.log || true)
+          printf '%s\n' "$NEXT_STATS_OUTPUT" > /tmp/pulsar-next-stats.out
+          if ! printf '%s\n' "$NEXT_STATS_OUTPUT" | grep -q "msgInCounter"; then
+            cat /tmp/pulsar-next-stats.log || true
+            cat /tmp/pulsar-next-stats.out || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Pulsar version $CURRENT passed smoke tests in this run, but the candidate Docker image tag $LATEST did not expose usable topic stats on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "next_installed_version=$LATEST" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Pulsar version $CURRENT matches the latest stable container tag. Regression validation re-ran the official Arm64 candidate image and confirmed admin API plus produce/consume behavior successfully." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+          else
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Pulsar version $CURRENT passed smoke tests in this run. Regression validation started candidate tag $LATEST on Arm64 and confirmed admin API plus produce/consume behavior successfully." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Next version installed successfully on Arm64"
+          fi
+          echo "Next version installed on Arm64: $LATEST"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-
       - name: Show regression validation details
         if: always()
         run: |
-          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
-          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
-          if [ -z "$REGRESSION_RESULT" ]; then
-            case "$DECISION" in
-              next_install_validated|safe_to_upgrade)
-                REGRESSION_RESULT="Next version installed successfully on Arm64"
-                ;;
-              next_install_failed|next_lookup_failed)
-                REGRESSION_RESULT="Next version install failed on Arm64"
-                ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Current stable version already validated on Arm64"
-                ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
-              *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
-                ;;
-            esac
-          fi
-
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
-          echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check container running
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          # Check Admin API
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          # Produce Message
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Consume Message
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Check Broker Stats
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
-          # Fetch the direct job URL for deep-linking
+          set -euo pipefail
           JOB_ID="${{ github.job }}"
-          # Using GH_TOKEN to find the exact job URL. 
-          # Reusable workflows are often named "JobID / JobID" or just "JobID"
-          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
-          
-          # Fallback if URL calculation fails
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
           if [ -z "$JOB_URL" ]; then
             JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
           fi
 
           mkdir -p test-results
-          
-          cat > test-results/pulsar.json << EOF
+          cat > test-results/pulsar.json <<EOF
           {
             "schema_version": "1.0",
             "package": {
@@ -319,8 +367,8 @@ jobs:
               }
             },
             "tests": {
-              "passed": ${{ steps.summary.outputs.passed }},
-              "failed": ${{ steps.summary.outputs.failed }},
+              "passed": ${{ steps.summary.outputs.passed || 0 }},
+              "failed": ${{ steps.summary.outputs.failed || 0 }},
               "skipped": 0,
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
@@ -345,7 +393,7 @@ jobs:
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check Broker Stats",
+                  "name": "Check Topic Stats",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 },
@@ -353,19 +401,23 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
                 }
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "core_failed": ${{ steps.summary.outputs.core_failed || 0 }}
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/pulsar.json
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -373,33 +425,31 @@ jobs:
           name: pulsar-test-results
           path: test-results/pulsar.json
           retention-days: 90
-      
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## Apache Pulsar Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check container running: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check Admin API: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Produce Message: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Consume Message: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Check Broker Stats: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "## Apache Pulsar Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Test 1 - Check container running: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Test 2 - Check Admin API: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Test 3 - Produce Message: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Test 4 - Consume Message: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Test 5 - Check Topic Stats: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

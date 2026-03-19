@@ -16,7 +16,6 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       ROCKETMQ_VERSION: "5.3.2"
-      ROCKETMQ_LATEST_VERSION: "5.4.0"
       ROCKETMQ_HOME: /opt/rocketmq-smoke
 
     steps:
@@ -169,13 +168,122 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${ROCKETMQ_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${ROCKETMQ_LATEST_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version 5.3.2 from the metadata-aligned Arm recommended baseline was smoke-tested in this run. A newer stable RocketMQ release 5.4.0 exists upstream but was not executed in this run, so it still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=RocketMQ 5.3.2 passed the current Arm64 smoke path; upgrade-candidate validation for 5.4.0 is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${ROCKETMQ_VERSION}"
+          LATEST=$(python3 - <<'PY'
+          import json, re, urllib.request
+
+          releases = json.load(urllib.request.urlopen("https://api.github.com/repos/apache/rocketmq/releases?per_page=20"))
+          for release in releases:
+              if release.get("draft") or release.get("prerelease"):
+                  continue
+              tag = (release.get("tag_name") or "").strip()
+              match = re.fullmatch(r"rocketmq-all-([0-9]+\.[0-9]+\.[0-9]+)", tag)
+              if match:
+                  print(match.group(1))
+                  break
+          else:
+              raise SystemExit("Unable to determine latest stable RocketMQ release")
+          PY
+          )
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")
+          export JAVA_HOME
+
+          NEXT_DIR=$(mktemp -d)
+          NEXT_ZIP="/tmp/rocketmq-regression-${LATEST}.zip"
+          NEXT_URL="https://downloads.apache.org/rocketmq/${LATEST}/rocketmq-all-${LATEST}-bin-release.zip"
+
+          if curl -fsSL "$NEXT_URL" -o "$NEXT_ZIP"; then
+            echo "Next version download status: passed"
+            unzip -q "$NEXT_ZIP" -d "$NEXT_DIR"
+            NEXT_HOME=$(find "$NEXT_DIR" -maxdepth 1 -type d -name "rocketmq-all-${LATEST}-bin-release" | head -n 1)
+            NEXT_ADMIN="$NEXT_HOME/bin/mqadmin"
+            NEXT_NAMESRV="$NEXT_HOME/bin/mqnamesrv"
+            NEXT_INSTALLED_VERSION=$(find "$NEXT_HOME/lib" -maxdepth 1 -type f -name 'rocketmq-common-*.jar' | sed -E 's#^.*/rocketmq-common-([0-9.]+)\.jar$#\1#' | head -n 1)
+
+            if [ -x "$NEXT_ADMIN" ] && [ -x "$NEXT_NAMESRV" ] && [ -n "${NEXT_INSTALLED_VERSION:-}" ]; then
+              nohup sh "$NEXT_NAMESRV" > /tmp/rocketmq-next-namesrv.log 2>&1 &
+              NEXT_PID=$!
+              cleanup() {
+                kill "$NEXT_PID" >/dev/null 2>&1 || true
+              }
+              trap cleanup EXIT
+
+              for _ in {1..30}; do
+                if grep -q "The Name Server boot success" /tmp/rocketmq-next-namesrv.log 2>/dev/null; then
+                  break
+                fi
+                sleep 2
+              done
+
+              sh "$NEXT_ADMIN" clusterList -n 127.0.0.1:9876 > /tmp/rocketmq-next-cluster.out 2>&1 || true
+
+              if grep -q "The Name Server boot success" /tmp/rocketmq-next-namesrv.log && grep -q "#Cluster Name" /tmp/rocketmq-next-cluster.out; then
+                echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+                if [ "${NEXT_INSTALLED_VERSION}" = "${LATEST}" ]; then
+                  if [ "${LATEST}" = "${CURRENT}" ]; then
+                    echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+                    echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+                    echo "comparison=Current pinned RocketMQ release ${CURRENT} already matches the latest stable upstream release. Regression validation re-downloaded the official binary release on Arm64, the extracted lib payload reported ${NEXT_INSTALLED_VERSION}, and the candidate nameserver passed the real clusterList smoke." >> "$GITHUB_OUTPUT"
+                    echo "Regression install result: Current stable version already validated on Arm64"
+                  else
+                    echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                    echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+                    echo "comparison=Current pinned RocketMQ release ${CURRENT} passed smoke tests in this run. Regression validation downloaded candidate ${LATEST}, the extracted lib payload reported ${NEXT_INSTALLED_VERSION}, and the candidate nameserver passed the real clusterList smoke on Arm64." >> "$GITHUB_OUTPUT"
+                    echo "Regression install result: Next version installed successfully on Arm64"
+                  fi
+                  echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
+                  echo "status=passed" >> "$GITHUB_OUTPUT"
+                else
+                  echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+                  echo "regression_result=Next version installed but reported a version mismatch on Arm64" >> "$GITHUB_OUTPUT"
+                  echo "comparison=Current pinned RocketMQ release ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} extracted on Arm64 and reported ${NEXT_INSTALLED_VERSION}, which does not match the requested upgrade target." >> "$GITHUB_OUTPUT"
+                  echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
+                  echo "Regression install result: Next version installed but reported a version mismatch on Arm64"
+                  echo "status=failed" >> "$GITHUB_OUTPUT"
+                  exit 1
+                fi
+              else
+                cat /tmp/rocketmq-next-namesrv.log || true
+                cat /tmp/rocketmq-next-cluster.out || true
+                echo "next_installed_version=${NEXT_INSTALLED_VERSION:-install_failed}" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned RocketMQ release ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not pass the Arm64 nameserver and clusterList smoke." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-install_failed}"
+                echo "Regression install result: Next version install failed on Arm64"
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+            else
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned RocketMQ release ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not extract a usable Arm64 binary layout." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned RocketMQ release ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded from the official binary release path." >> "$GITHUB_OUTPUT"
+            echo "Next version download status: failed"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -283,9 +391,9 @@ jobs:
         if: always()
         run: |
           JOB_ID="${{ github.job }}"
-          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
           if [ -z "$JOB_URL" ]; then
-            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
 
           mkdir -p test-results
@@ -341,6 +449,7 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression comparison summary unavailable.' }}"
           echo "## RocketMQ Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
@@ -360,6 +469,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || env.ROCKETMQ_VERSION }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || env.ROCKETMQ_LATEST_VERSION }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests.' }}" >> "$GITHUB_STEP_SUMMARY"

@@ -34,6 +34,9 @@ jobs:
         id: install
         run: |
           set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y curl jq tar
+
           TMP_DIR=$(mktemp -d)
           curl -fsSL -o "${TMP_DIR}/${PACKETBEAT_TARBALL}" "${PACKETBEAT_URL}"
           tar -xzf "${TMP_DIR}/${PACKETBEAT_TARBALL}" -C "${TMP_DIR}"
@@ -50,22 +53,28 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          echo "version=${PACKETBEAT_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest=metadata_review_required" >> "$GITHUB_OUTPUT"
+          VERSION=$(packetbeat version 2>&1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+          if [ -z "$VERSION" ]; then
+            VERSION="$PACKETBEAT_VERSION"
+          fi
+          LATEST=$(curl -fsSL "https://api.github.com/repos/elastic/beats/releases?per_page=20" | jq -r '[.[] | select(.draft == false and .prerelease == false) | .tag_name | sub("^v"; "")] | sort_by(split(".") | map(tonumber? // .)) | last // empty')
+          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
+            LATEST="unknown"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Binary Existence
         id: test1
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-
           if command -v packetbeat >/dev/null 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -74,30 +83,26 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-
           if packetbeat version 2>&1 | grep -q "${PACKETBEAT_VERSION}"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Check Help Output or Configuration
+      - name: Test 3 - Check Help Output
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-
-          if packetbeat help test 2>&1 | grep -q 'test config'; then
+          if packetbeat help test 2>&1 | grep -q "test config"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -106,15 +111,12 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          ARCH=$(uname -m)
-
-          if [ "$ARCH" = "aarch64" ]; then
+          if [ "$(uname -m)" = "aarch64" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -145,7 +147,6 @@ jobs:
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -157,17 +158,13 @@ jobs:
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
-          CURRENT_URL="${PACKETBEAT_URL}"
-          BASELINE_RAW="${PACKETBEAT_VERSION}"
-          BASELINE_CLEAN="${CURRENT#v}"
-          LATEST_CLEAN="${LATEST#v}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $LATEST"
 
-          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ] || [ "$LATEST" = "not_yet_checked" ]; then
+          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ] || [ "$LATEST" = "null" ]; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
@@ -181,16 +178,10 @@ jobs:
             exit 1
           fi
 
-          NEXT_URL="${CURRENT_URL//$BASELINE_RAW/$LATEST}"
-          NEXT_URL="${NEXT_URL//$BASELINE_CLEAN/$LATEST_CLEAN}"
-
+          NEXT_URL="https://artifacts.elastic.co/downloads/beats/packetbeat/packetbeat-${LATEST}-linux-arm64.tar.gz"
           TMPDIR=$(mktemp -d)
-          cleanup() {
-            rm -rf "$TMPDIR"
-          }
-          trap cleanup EXIT
-          ARCHIVE_NAME=$(basename "${NEXT_URL%%\?*}")
-          ARCHIVE_PATH="$TMPDIR/$ARCHIVE_NAME"
+          trap 'rm -rf "$TMPDIR"' EXIT
+          ARCHIVE_PATH="$TMPDIR/packetbeat-next.tgz"
 
           if curl -fsSL "$NEXT_URL" -o "$ARCHIVE_PATH"; then
             echo "Next version download status: passed"
@@ -198,7 +189,7 @@ jobs:
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Packetbeat version $CURRENT passed smoke tests in this run, but the candidate artifact $NEXT_URL could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Packetbeat version $CURRENT passed smoke tests in this run, but the candidate Arm64 artifact from $NEXT_URL could not be downloaded." >> "$GITHUB_OUTPUT"
             echo "Next version download status: failed"
             echo "Next version installed on Arm64: not_installed"
             echo "Regression install result: Next version install failed on Arm64"
@@ -208,40 +199,74 @@ jobs:
             exit 1
           fi
 
-          case "$ARCHIVE_NAME" in
-            *.tar.gz|*.tgz)
-              tar -xzf "$ARCHIVE_PATH" -C "$TMPDIR"
-              ;;
-            *.tar.xz)
-              tar -xJf "$ARCHIVE_PATH" -C "$TMPDIR"
-              ;;
-            *.zip)
-              unzip -q "$ARCHIVE_PATH" -d "$TMPDIR"
-              ;;
-            *)
-              chmod +x "$ARCHIVE_PATH" || true
-              ;;
-          esac
+          tar -xzf "$ARCHIVE_PATH" -C "$TMPDIR"
+          NEXT_BIN=$(find "$TMPDIR" -type f -name packetbeat | head -n 1)
 
-          NEXT_INSTALLED_VERSION="$LATEST"
-          echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
-          if [ "$CURRENT" = "$LATEST" ] || [ "$BASELINE_CLEAN" = "$LATEST_CLEAN" ]; then
-            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Packetbeat version $CURRENT matches the latest stable candidate. Regression validation re-downloaded and extracted the Arm64 artifact from $NEXT_URL successfully." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
-            echo "Regression install result: Current stable version already validated on Arm64"
-          else
-            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Packetbeat version $CURRENT passed smoke tests in this run. Regression validation downloaded and extracted the candidate Arm64 artifact from $NEXT_URL successfully." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
-            echo "Regression install result: Next version installed successfully on Arm64"
+          cat > /tmp/packetbeat-next.yml <<'EOF'
+          packetbeat.interfaces.device: any
+          packetbeat.flows:
+            timeout: 30s
+            period: 10s
+          output.console:
+            enabled: true
+            pretty: false
+          setup.template.enabled: false
+          logging.to_files: false
+          logging.to_syslog: false
+          EOF
+
+          if [ -z "$NEXT_BIN" ]; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Packetbeat version $CURRENT passed smoke tests in this run, but the candidate Arm64 archive from $NEXT_URL did not contain a usable packetbeat binary." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+
+          chmod +x "$NEXT_BIN"
+          NEXT_INSTALLED_VERSION=$("$NEXT_BIN" version 2>&1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+          "$NEXT_BIN" help test >/tmp/packetbeat-next-help.log 2>&1 || true
+          if [ -n "$NEXT_INSTALLED_VERSION" ] && \
+             [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ] && \
+             grep -q "test config" /tmp/packetbeat-next-help.log && \
+             "$NEXT_BIN" test config --strict.perms=false -c /tmp/packetbeat-next.yml -e >/tmp/packetbeat-next-test.log 2>&1; then
+            echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+            if [ "$CURRENT" = "$LATEST" ]; then
+              echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Packetbeat version $CURRENT already matches the latest stable release. Regression validation re-downloaded the Arm64 artifact from $NEXT_URL, and the candidate binary reported version $NEXT_INSTALLED_VERSION while passing help and config validation." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+              echo "Regression install result: Current stable version already validated on Arm64"
+            else
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Packetbeat version $CURRENT passed smoke tests in this run. Regression validation downloaded the candidate Arm64 artifact from $NEXT_URL, and the extracted binary reported version $NEXT_INSTALLED_VERSION while passing help and config validation." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+              echo "Regression install result: Next version installed successfully on Arm64"
+            fi
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/packetbeat-next-help.log || true
+            cat /tmp/packetbeat-next-test.log || true
+            echo "next_installed_version=${NEXT_INSTALLED_VERSION:-install_failed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Packetbeat version $CURRENT passed smoke tests in this run, but the candidate Arm64 artifact from $NEXT_URL did not complete exact version/help/config validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-install_failed}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Show regression validation details
         if: always()
@@ -256,28 +281,21 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
                 REGRESSION_RESULT="Current stable version already validated on Arm64"
                 ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
               *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
+                REGRESSION_RESULT="Pending regression install validation"
                 ;;
             esac
           fi
 
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
           echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
@@ -286,47 +304,58 @@ jobs:
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
+          CORE_FAILED=0
 
           check_test() {
             local status="$1"
             local duration="$2"
+            local is_core="$3"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
+              if [ "$is_core" = "yes" ]; then
+                CORE_FAILED=1
+              fi
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          check_test "${{ steps.test1.outputs.status || 'skipped' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status || 'skipped' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status || 'skipped' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status || 'skipped' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status || 'skipped' }}" "${{ steps.test5.outputs.duration || 0 }}"
-          check_test "${{ steps.test6.outputs.status || 'skipped' }}" "${{ steps.test6.outputs.duration || 0 }}"
+          check_test "${{ steps.test1.outputs.status || 'skipped' }}" "${{ steps.test1.outputs.duration || 0 }}" yes
+          check_test "${{ steps.test2.outputs.status || 'skipped' }}" "${{ steps.test2.outputs.duration || 0 }}" yes
+          check_test "${{ steps.test3.outputs.status || 'skipped' }}" "${{ steps.test3.outputs.duration || 0 }}" yes
+          check_test "${{ steps.test4.outputs.status || 'skipped' }}" "${{ steps.test4.outputs.duration || 0 }}" yes
+          check_test "${{ steps.test5.outputs.status || 'skipped' }}" "${{ steps.test5.outputs.duration || 0 }}" yes
+          check_test "${{ steps.test6.outputs.status || 'skipped' }}" "${{ steps.test6.outputs.duration || 0 }}" no
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ steps.test1.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test2.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test3.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test4.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
+          if [ $FAILED -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
-            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            if [ $CORE_FAILED -eq 0 ]; then
+              echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+            else
+              echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            fi
             exit 1
           fi
 
       - name: Generate test results JSON
         if: always()
         run: |
-          mkdir -p test-results
+          set -euo pipefail
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
+          fi
 
+          mkdir -p test-results
           cat > test-results/packetbeat.json <<EOF
           {
             "schema_version": "1.0",
@@ -338,7 +367,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -352,12 +381,12 @@ jobs:
               "skipped": 0,
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
-                {"name": "Test 1 - Check Binary Existence", "status": "${{ steps.test1.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}},
-                {"name": "Test 2 - Check Version Output", "status": "${{ steps.test2.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}},
-                {"name": "Test 3 - Check Help Output or Configuration", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
-                {"name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
-                {"name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
-                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}}
+                { "name": "Test 1 - Check Binary Existence", "status": "${{ steps.test1.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test1.outputs.duration || 0 }} },
+                { "name": "Test 2 - Check Version Output", "status": "${{ steps.test2.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test2.outputs.duration || 0 }} },
+                { "name": "Test 3 - Check Help Output", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }} },
+                { "name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }} },
+                { "name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }} },
+                { "name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}", "latest_version": "${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || 'unknown' }}", "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}" }
               ]
             },
             "metadata": {
@@ -373,31 +402,50 @@ jobs:
         with:
           name: packetbeat-test-results
           path: test-results/packetbeat.json
-          retention-days: 90
+          retention-days: 10
 
       - name: Create test summary
         if: always()
         run: |
-          {
-            echo "## Packetbeat Test Summary"
-            echo ""
-            echo "- Version: ${{ steps.version.outputs.version }}"
-            echo "- Passed: ${{ steps.summary.outputs.passed }}"
-            echo "- Failed: ${{ steps.summary.outputs.failed }}"
-            echo "- Overall Status: ${{ steps.summary.outputs.overall_status }}"
-            echo ""
-            echo "### Test Results"
-            echo "- Test 1 - Check Binary Existence: ${{ steps.test1.outputs.status || 'skipped' }}"
-            echo "- Test 2 - Check Version Output: ${{ steps.test2.outputs.status || 'skipped' }}"
-            echo "- Test 3 - Check Help Output or Configuration: ${{ steps.test3.outputs.status || 'skipped' }}"
-            echo "- Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}"
-            echo "- Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}"
-            echo "- Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}"
-            echo ""
-            echo "### Regression Validation (Next Version Install)"
-            echo "- Current (Pinned): ${{ steps.test6.outputs.current_version }}"
-            echo "- Next (Latest Stable): ${{ steps.test6.outputs.latest_version }}"
-            echo "- **Regression install result:** ${REGRESSION_RESULT}"
-            echo "- Comparison: ${{ steps.test6.outputs.comparison }}"
-            echo "- Note: ${{ steps.test6.outputs.note }}"
-          } >> "$GITHUB_STEP_SUMMARY"
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
+
+          echo "## Packetbeat Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Check Binary Existence: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Check Version Output: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Check Help Output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

@@ -29,38 +29,47 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git curl build-essential cargo rustc
+          sudo apt-get install -y git curl build-essential pkg-config libssl-dev
+
+      - name: Set up Rust toolchain
+        run: |
+          set -euo pipefail
+          export CARGO_HOME="$HOME/.cargo"
+          export RUSTUP_HOME="$HOME/.rustup"
+          if [ ! -x "$CARGO_HOME/bin/cargo" ]; then
+            curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+          fi
+          . "$CARGO_HOME/env"
+          cargo --version
+          rustc --version
       
       - name: Clone and Build Chisel-Operator
         id: build
         run: |
+          set -euo pipefail
           echo "Cloning Chisel-Operator..."
-          git clone https://github.com/FyraLabs/chisel-operator.git
+          CURRENT_TAG="v0.7.0"
+          echo "baseline_version=${CURRENT_TAG#v}" >> "$GITHUB_OUTPUT"
+          git clone --depth 1 --branch "$CURRENT_TAG" https://github.com/FyraLabs/chisel-operator.git
           cd chisel-operator
-          
-          echo "Repo structure:"
-          ls -F
-          
-          echo "Building with Cargo..."
-          if [ -f "Cargo.toml" ]; then
-             cargo build --release
-             echo "Cargo build succeeded"
-             echo "build_status=success" >> $GITHUB_OUTPUT
+          . "$HOME/.cargo/env"
+          cargo build --release
+          BINARY=$(find target/release -maxdepth 1 -type f \( -name 'chisel-operator' -o -name 'manager' \) | head -n 1)
+          if [ -n "$BINARY" ]; then
+            echo "binary_name=$(basename "$BINARY")" >> "$GITHUB_OUTPUT"
+            echo "Cargo build succeeded"
+            echo "build_status=success" >> "$GITHUB_OUTPUT"
           else
-             echo "Cargo.toml not found. Please ensure you're in the right directory."
-             ls -R
-             exit 1
+            echo "Cargo build did not produce a usable binary"
+            echo "build_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
       
       - name: Get Version
         id: version
         run: |
-          # Since we build from source/main, we might not have a version command
-          # We'll check the go.mod or git tag
-          cd chisel-operator
-          VERSION=$(git describe --tags --always || echo "unknown")
-          VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          VERSION="${{ steps.build.outputs.baseline_version || 'unknown' }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Chisel-Operator version: $VERSION"
       
       - name: Test 1 - Check Binary
@@ -90,24 +99,31 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           cd chisel-operator
-          
-          # The manager binary usually runs the operator. 
-          # We can try --help or --version
-          # Try running the binary if we can find it
-          if [ -f "target/release/chisel-operator" ]; then
-             ./target/release/chisel-operator --help || true
-             echo "✓ help command ran"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          elif [ -f "target/release/manager" ]; then
-             ./target/release/manager --help || true
-             echo "✓ help command ran"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          . "$HOME/.cargo/env"
+          BINARY=$(find target/release -maxdepth 1 -type f \( -name 'chisel-operator' -o -name 'manager' \) | head -n 1)
+          if [ -z "$BINARY" ]; then
+            echo "✗ no built binary found"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if timeout 10s "$BINARY" --version >/tmp/chisel-version.txt 2>&1; then
+            echo "✓ version/help command ran"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          elif timeout 10s "$BINARY" --help >/tmp/chisel-help.txt 2>&1 || [ -s /tmp/chisel-help.txt ]; then
+            echo "✓ help command ran"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             # Fallback if we can't run it but built it
-             echo "✓ help check skipped (binary location uncertain)"
-             echo "status=passed" >> $GITHUB_OUTPUT
+            echo "✗ help/version command failed"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
           
           END_TIME=$(date +%s)
@@ -173,13 +189,78 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST=$(GH_TOKEN=${{ github.token }} gh api repos/FyraLabs/chisel-operator/releases/latest --jq .tag_name 2>/dev/null | sed 's/^v//' || true)
+          if [ -z "$LATEST" ]; then
+            echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Chisel-Operator source tag ${CURRENT} passed smoke tests in this run, but the latest stable release tag could not be resolved." >> "$GITHUB_OUTPUT"
+            echo "=== Regression Validation (Next Version Install) ==="
+            echo "Current version tested in Tests 1-5: $CURRENT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Chisel-Operator source tag ${CURRENT} passed smoke tests in this run, but the latest stable release tag could not be resolved."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "$LATEST" = "$CURRENT" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Chisel-Operator source tag ${CURRENT} passed smoke tests in this run and already matches the latest stable release tag." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Chisel-Operator source tag ${CURRENT} passed smoke tests in this run and already matches the latest stable release tag."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            NEXT_DIR=$(mktemp -d)
+            git clone --depth 1 --branch "v${LATEST}" https://github.com/FyraLabs/chisel-operator.git "$NEXT_DIR/repo"
+            (
+              . "$HOME/.cargo/env"
+              cd "$NEXT_DIR/repo"
+              cargo build --release >/tmp/chisel-regression-build.log 2>&1
+            )
+            NEXT_BIN=$(find "$NEXT_DIR/repo/target/release" -maxdepth 1 -type f \( -name 'chisel-operator' -o -name 'manager' \) | head -n 1)
+            NEXT_REPORTED=$(timeout 10s "$NEXT_BIN" --version 2>/tmp/chisel-next-version.log | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+            if [ -n "$NEXT_BIN" ] && { [ -n "$NEXT_REPORTED" ] || timeout 10s "$NEXT_BIN" --help >/tmp/chisel-next-help.txt 2>&1 || [ -s /tmp/chisel-next-help.txt ]; }; then
+              NEXT_INSTALLED="${NEXT_REPORTED:-$LATEST}"
+              echo "next_installed_version=$NEXT_INSTALLED" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Chisel-Operator source tag ${CURRENT} passed smoke tests in this run. Regression validation built the candidate source tag ${LATEST} on Arm64 and validated the resulting operator binary with a real help/version probe." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_INSTALLED"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned Chisel-Operator source tag ${CURRENT} passed smoke tests in this run. Regression validation built the candidate source tag ${LATEST} on Arm64 and validated the resulting operator binary with a real help/version probe."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Chisel-Operator source tag ${CURRENT} passed smoke tests in this run, but the candidate source tag ${LATEST} could not be built into a usable Arm64 operator binary." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Chisel-Operator source tag ${CURRENT} passed smoke tests in this run, but the candidate source tag ${LATEST} could not be built into a usable Arm64 operator binary."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -224,8 +305,10 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
           # Check Binary
@@ -233,6 +316,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
@@ -241,6 +325,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
@@ -249,6 +334,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
@@ -257,6 +343,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
@@ -266,6 +353,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
           # Regression Validation
@@ -280,18 +368,27 @@ jobs:
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ $CORE_FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
             echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
       - name: Generate test results JSON
         if: always()
         run: |
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}"
+          fi
           mkdir -p test-results
           
           cat > test-results/chisel-operator.json << EOF
@@ -300,12 +397,12 @@ jobs:
             "package": {
               "name": "Chisel-Operator",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "Go",
+              "language": "Rust",
               "category": "Networking"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -349,10 +446,17 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
             "metadata": {
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}",
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
@@ -373,6 +477,23 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || 'manual_review_needed' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
           echo "## Chisel-Operator Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
@@ -391,11 +512,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
+          echo "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY
 
 

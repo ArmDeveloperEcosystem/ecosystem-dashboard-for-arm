@@ -9,7 +9,7 @@ on:
       - smoke_tests
     paths:
       - "content/opensource_packages/open-policy-agent.md"
-      - ".github/workflows/test-open-policy-agent.yml"
+      - ".github/workflows/test-Open-Policy-Agent.yml"
 
 jobs:
   test-open-policy-agent:
@@ -125,12 +125,51 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || '1.14.1' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=1.14.1" >> "$GITHUB_OUTPUT"
-          echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
-          echo "comparison=OPA metadata recommends 1.0.0 for the Arm-capable v1 line, but the workflow now validates OPA 1.14.1 on Arm and that pin already matches the latest stable upstream release checked during remediation." >> "$GITHUB_OUTPUT"
-          echo "note=The Arm64 static binary was validated with real policy evaluation on this runner." >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || '1.14.1' }}"
+          LATEST_TAG=$(GH_TOKEN="${{ github.token }}" gh api repos/open-policy-agent/opa/releases/latest --jq '.tag_name' 2>/dev/null || true)
+          LATEST="${LATEST_TAG#v}"
+          if [ -z "$LATEST" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Failed to resolve the latest stable Open Policy Agent release from GitHub during regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          if [ "$LATEST" = "$CURRENT" ]; then
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=OPA ${CURRENT} already matches the latest stable upstream release, and the Arm64 static binary was validated with real policy evaluation in this run." >> "$GITHUB_OUTPUT"
+          else
+            curl -fsSL -o /tmp/opa-next "https://github.com/open-policy-agent/opa/releases/download/${LATEST_TAG}/opa_linux_arm64_static"
+            chmod +x /tmp/opa-next
+            NEXT_VERSION=$(/tmp/opa-next version 2>&1 | awk '/^Version:/ {print $2}' | sed 's/^v//' | head -1)
+            if [ "$NEXT_VERSION" = "$LATEST" ]; then
+              echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Candidate OPA ${LATEST} downloaded successfully on Arm64 and the static binary reported version ${NEXT_VERSION}." >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=${NEXT_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Candidate OPA ${LATEST} did not report the expected version after Arm64 download." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+          echo "note=The Arm64 static binary path was used for regression validation." >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -245,7 +284,7 @@ jobs:
                 {"name": "Test 3 - Check help output", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
                 {"name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
                 {"name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
-                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}}
+                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}", "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}", "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "comparison": "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || '' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}"}
               ]
             },
             "metadata": {
@@ -266,6 +305,7 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Pending regression install validation' }}"
           echo "## Open Policy Agent Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
@@ -284,5 +324,6 @@ jobs:
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests.' }}" >> "$GITHUB_STEP_SUMMARY"

@@ -14,161 +14,157 @@ on:
 jobs:
   test-bytebase:
     runs-on: ubuntu-24.04-arm
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "package_slug=bytebase" >> $GITHUB_OUTPUT
-          echo "dashboard_link=/opensource_packages/bytebase" >> $GITHUB_OUTPUT
-      
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=bytebase" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/bytebase" >> "$GITHUB_OUTPUT"
+
       - name: Install Bytebase
         id: install
         run: |
-          echo "Installing Bytebase..."
-          
-          # Using a known recent version that supports ARM64
-          # Bump to 3.2.0 or newer based on search
-          BB_VERSION="3.3.0"
-          # Try GitHub releases first
-          URL="https://github.com/bytebase/bytebase/releases/download/${BB_VERSION}/bytebase_${BB_VERSION}_Linux_arm64.tar.gz"
-          
-          echo "Downloading $URL..."
-          wget -q "$URL" -O bytebase.tar.gz || wget -q "https://github.com/bytebase/bytebase/releases/download/${BB_VERSION}/bytebase_${BB_VERSION}_linux_arm64.tar.gz" -O bytebase.tar.gz
-          
-          if [ -s bytebase.tar.gz ]; then
-              tar -xzf bytebase.tar.gz
-              # Binary is usually in the root of the tarball or a folder
-              # Find it safely
-              FOUND=$(find . -name "bytebase" -type f | head -n 1)
-              
-              if [ -n "$FOUND" ]; then
-                  chmod +x "$FOUND"
-                  sudo mv "$FOUND" /usr/local/bin/bytebase
-                  echo "Bytebase binary moved to /usr/local/bin"
-              else
-                  echo "Bytebase binary not found in archive"
-                  ls -R
-                  exit 1
-              fi
+          set -euo pipefail
+          echo "Installing Bytebase via the official multi-arch container image..."
+
+          BYTEBASE_VERSION="3.15.1"
+          BYTEBASE_IMAGE="bytebase/bytebase:${BYTEBASE_VERSION}"
+          echo "baseline_version=$BYTEBASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "baseline_image=$BYTEBASE_IMAGE" >> "$GITHUB_OUTPUT"
+
+          docker pull "$BYTEBASE_IMAGE"
+
+          if docker image inspect "$BYTEBASE_IMAGE" >/dev/null 2>&1; then
+            echo "Bytebase image pulled successfully"
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
-              echo "Failed to download Bytebase or empty file."
-              exit 1
+            echo "Bytebase image pull failed"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          
-          if command -v bytebase &> /dev/null; then
-             echo "Bytebase installed successfully"
-             echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-             echo "Bytebase installation failed"
-             echo "install_status=failed" >> $GITHUB_OUTPUT
-             exit 1
-          fi
-      
+
       - name: Get Bytebase version
         id: version
         run: |
-          VERSION=$(bytebase --version 2>&1 | grep -oP 'bytebase version \K[0-9.]+' | head -1 || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Bytebase version: $VERSION"
-      
-      - name: Test 1 - Check binary exists
+
+      - name: Test 1 - Check image exists
         id: test1
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          if command -v bytebase &> /dev/null; then
-            echo "✓ bytebase binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          if docker image inspect "${{ steps.install.outputs.baseline_image }}" >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ bytebase binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Check version command
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Start Bytebase current container
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if bytebase --version 2>&1 | grep -q "bytebase"; then
-            echo "✓ version command works"
-            bytebase --version
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
+          CONTAINER_NAME="bytebase-current"
+          PORT="18080"
+
+          docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+          docker run -d --rm --name "$CONTAINER_NAME" -p "${PORT}:8080" "${{ steps.install.outputs.baseline_image }}" >/dev/null
+
+          for _ in $(seq 1 45); do
+            if curl -fsS "http://127.0.0.1:${PORT}" >/tmp/bytebase-current-page 2>/dev/null; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
-          
+            sleep 2
+          done
+
+          docker logs "$CONTAINER_NAME" | tail -n 40
+          echo "status=failed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 3 - Check help command
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Test 3 - Check current Bytebase HTTP response
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
-          if bytebase --help 2>&1 | grep -qi "Usage"; then
-            echo "✓ help command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          if curl -fsS "http://127.0.0.1:18080" | grep -qi "<!DOCTYPE html>"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ help command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 4 - Generate Config (Dry Run)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Check current version in logs
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # Try to generate a config or run a command that doesn't require DB
-          # 'bytebase help' is safe, but let's try something more specific if possible
-          # 'bytebase version' is already tested.
-          # Let's check if we can run 'bytebase' without args and expect help or error
-          
-          if bytebase 2>&1 | grep -qi "Usage"; then
-             echo "✓ bytebase runs without args"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          LOG_OUTPUT=$(docker logs bytebase-current 2>&1 || true)
+          VERSION_IN_LOGS=$(printf '%s\n' "$LOG_OUTPUT" | grep -oE 'Version [0-9]+\.[0-9]+\.[0-9]+' | head -n 1 | awk '{print $2}' || true)
+
+          if [ -n "$VERSION_IN_LOGS" ] && [ "$VERSION_IN_LOGS" = "${{ steps.version.outputs.version }}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ bytebase failed to run"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            printf '%s\n' "$LOG_OUTPUT" | tail -n 40
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Test 5 - Architecture Verification
         id: test5
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          # Functional Validation
           ARCH=$(uname -m)
 
           if [ "$ARCH" = "aarch64" ]; then
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Stop current Bytebase container
+        if: always()
+        run: |
+          docker rm -f bytebase-current >/dev/null 2>&1 || true
 
       - name: Test 6 - Regression Validation
         id: test6
@@ -176,78 +172,102 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          CURRENT="$(echo "${{ steps.version.outputs.version || 'unknown' }}" | tr -d '[:space:]' | sed 's/^v//')"
           LATEST_TAG=$(GH_TOKEN=${{ github.token }} gh api repos/bytebase/bytebase/releases/latest --jq .tag_name 2>/dev/null || true)
           if [ -z "$LATEST_TAG" ]; then
-            echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            LATEST_TAG=$(curl -fsSL https://api.github.com/repos/bytebase/bytebase/releases/latest | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true)
+          fi
+          LATEST="$(echo "$LATEST_TAG" | sed 's/^v//')"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST:-lookup_failed}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: ${LATEST:-unknown}"
+
+          if [ -z "$LATEST" ]; then
             echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned bytebase version $CURRENT passed smoke tests in this run, but the next regression candidate version could not be resolved automatically from upstream releases." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Bytebase version ${CURRENT} passed smoke tests in this run, but the next regression candidate version could not be resolved automatically from upstream releases." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Bytebase version ${CURRENT} passed smoke tests in this run, but the next regression candidate version could not be resolved automatically from upstream releases."
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          LATEST=$(echo "$LATEST_TAG" | sed "s/^v//")
-          TARGET_VERSION=$LATEST
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
-          echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: $CURRENT"
-          echo "Next version targeted for install validation: $TARGET_VERSION"
-          NEXT_DIR=$(mktemp -d)
-          NEXT_URL="https://github.com/bytebase/bytebase/releases/download/${LATEST}/bytebase_${LATEST}_linux_arm64.tar.gz"
-          NEXT_ASSET="$NEXT_DIR/bytebase.tar.gz"
-          if wget -q -O "$NEXT_ASSET" "$NEXT_URL"; then
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Bytebase version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 candidate for this workflow." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Current stable version already validated on Arm64"
+            echo "Details: Current pinned Bytebase version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 candidate for this workflow."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_IMAGE="bytebase/bytebase:${LATEST}"
+          NEXT_NAME="bytebase-next"
+          NEXT_PORT="18081"
+          docker rm -f "$NEXT_NAME" >/dev/null 2>&1 || true
+
+          if docker pull "$NEXT_IMAGE" >/dev/null; then
             echo "Next version download status: passed"
-            tar -xzf "$NEXT_ASSET" -C "$NEXT_DIR"
-            NEXT_BIN=$(find "$NEXT_DIR" -type f -name "bytebase" | head -n 1)
-            if [ -z "$NEXT_BIN" ]; then NEXT_BIN=$(find "$NEXT_DIR" -type f -perm -111 | head -n 1); fi
-            if [ -n "$NEXT_BIN" ] && [ -f "$NEXT_BIN" ]; then chmod +x "$NEXT_BIN" || true; fi
-            if [ -n "$NEXT_BIN" ] && [ -x "$NEXT_BIN" ]; then
-              NEXT_INSTALLED_VERSION=$({
-                "$NEXT_BIN" version --short 2>&1 ||
-                "$NEXT_BIN" version 2>&1 ||
-                "$NEXT_BIN" --version 2>&1 ||
-                "$NEXT_BIN" -v 2>&1 ||
-                "$NEXT_BIN" -version 2>&1 || true
-              } | grep -oE "[0-9]+(\.[0-9]+)+([-+._A-Za-z0-9]+)?" | head -n 1 || true)
-              if [ -n "$NEXT_INSTALLED_VERSION" ]; then
-                echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
-                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-                echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned bytebase version $CURRENT passed smoke tests in this run. Regression validation installed candidate version $TARGET_VERSION on Arm64, and the installed binary reported version $NEXT_INSTALLED_VERSION." >> "$GITHUB_OUTPUT"
-                echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
-                echo "Regression install result: Next version installed successfully on Arm64"
-                echo "status=passed" >> "$GITHUB_OUTPUT"
-              else
-                echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
-                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-                echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned bytebase version $CURRENT passed smoke tests in this run, but the regression candidate $TARGET_VERSION did not report a usable version on Arm64." >> "$GITHUB_OUTPUT"
-                echo "Regression install result: Next version install failed on Arm64"
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
+            docker run -d --rm --name "$NEXT_NAME" -p "${NEXT_PORT}:8080" "$NEXT_IMAGE" >/dev/null
+            for _ in $(seq 1 45); do
+              if curl -fsS "http://127.0.0.1:${NEXT_PORT}" >/tmp/bytebase-next-page 2>/dev/null; then
+                break
               fi
+              sleep 2
+            done
+            NEXT_LOGS=$(docker logs "$NEXT_NAME" 2>&1 || true)
+            NEXT_INSTALLED_VERSION=$(printf '%s\n' "$NEXT_LOGS" | grep -oE 'Version [0-9]+\.[0-9]+\.[0-9]+' | head -n 1 | awk '{print $2}' || true)
+            if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ] && [ -f /tmp/bytebase-next-page ]; then
+              echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Bytebase version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the container startup logs reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned Bytebase version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the container startup logs reported version ${NEXT_INSTALLED_VERSION}."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
             else
-              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              printf '%s\n' "$NEXT_LOGS" | tail -n 40
+              echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned bytebase version $CURRENT passed smoke tests in this run, but the regression candidate $TARGET_VERSION did not extract a usable Arm64 binary." >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Bytebase version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not complete a healthy Arm64 startup with a matching reported version." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
               echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Bytebase version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not complete a healthy Arm64 startup with a matching reported version."
               echo "status=failed" >> "$GITHUB_OUTPUT"
+              docker rm -f "$NEXT_NAME" >/dev/null 2>&1 || true
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
               exit 1
             fi
+            docker rm -f "$NEXT_NAME" >/dev/null 2>&1 || true
           else
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned bytebase version $CURRENT passed smoke tests in this run, but the regression candidate $TARGET_VERSION could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Bytebase version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be pulled as an Arm64 image." >> "$GITHUB_OUTPUT"
             echo "Next version download status: failed"
+            echo "Next version installed on Arm64: install_failed"
             echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Bytebase version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be pulled as an Arm64 image."
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -267,75 +287,69 @@ jobs:
               current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Current stable version already validated on Arm64"
                 ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
               *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
+                REGRESSION_RESULT="Pending regression install validation"
                 ;;
             esac
           fi
 
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
           echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check binary exists
           if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Check version command
           if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Check help command
           if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Generate Config (Dry Run)
           if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
-
-          # Architecture Verification
           if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
+
           if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -343,24 +357,34 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ $CORE_FAILED -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}"
+          fi
+
           mkdir -p test-results
-          
+
           cat > test-results/bytebase.json << EOF
           {
             "schema_version": "1.0",
@@ -372,7 +396,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -387,25 +411,24 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check binary exists",
+                  "name": "Check image exists",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check version command",
+                  "name": "Start Bytebase current container",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check help command",
+                  "name": "Check current Bytebase HTTP response",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Generate Config (Dry Run)",
+                  "name": "Check current version in logs",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
-                
                 },
                 {
                   "name": "Test 5 - Architecture Verification",
@@ -416,19 +439,26 @@ jobs:
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
             "metadata": {
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}",
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
           }
           EOF
-          
+
           echo "Generated test results:"
           cat test-results/bytebase.json
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -436,34 +466,50 @@ jobs:
           name: bytebase-test-results
           path: test-results/bytebase.json
           retention-days: 90
-      
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## Bytebase Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check help command: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Generate Config (Dry Run): ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || 'manual_review_needed' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
 
-
-
-
+          echo "## Bytebase Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Check image exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Start Bytebase current container: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Check current Bytebase HTTP response: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Check current version in logs: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Test 5 - Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> Support badge reflects Tests 1-5. Test 6 records upgrade-install readiness on Arm64." >> "$GITHUB_STEP_SUMMARY"

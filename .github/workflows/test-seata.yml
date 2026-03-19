@@ -203,15 +203,31 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST_RAW=$(GH_TOKEN=${{ github.token }} gh api repos/seata/seata/releases/latest --jq .tag_name 2>/dev/null)
-          LATEST="${LATEST_RAW#v}"
+          LATEST="$(
+            python3 - <<'PY'
+          import json
+          import urllib.request
+
+          req = urllib.request.Request(
+              "https://api.github.com/repos/apache/incubator-seata/releases/latest",
+              headers={"Accept": "application/vnd.github+json", "User-Agent": "codex"},
+          )
+          with urllib.request.urlopen(req, timeout=20) as response:
+              release = json.load(response)
+
+          print(release.get("tag_name", "").lstrip("v"))
+          PY
+          )"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
 
           if [ -z "$LATEST" ]; then
             echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
             echo "comparison=Current pinned Seata version ${CURRENT} passed smoke tests in this run, but the next regression candidate version could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -219,7 +235,14 @@ jobs:
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
           NEXT_TAR="/tmp/seata-regression.tar.gz"
           NEXT_DIR=$(mktemp -d)
-          NEXT_URL="https://github.com/seata/seata/releases/download/v${LATEST}/seata-server-${LATEST}.tar.gz"
+          case "$LATEST" in
+            2.*)
+              NEXT_URL="https://archive.apache.org/dist/incubator/seata/${LATEST}/apache-seata-${LATEST}-incubating-bin.tar.gz"
+              ;;
+            *)
+              NEXT_URL="https://github.com/apache/incubator-seata/releases/download/v${LATEST}/seata-server-${LATEST}.tar.gz"
+              ;;
+          esac
 
           if wget -q -O "$NEXT_TAR" "$NEXT_URL"; then
             tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
@@ -227,29 +250,44 @@ jobs:
             if [ -n "$NEXT_SCRIPT" ]; then
               NEXT_HOME=$(dirname "$(dirname "$NEXT_SCRIPT")")
               NEXT_INSTALLED_VERSION=$(find "$NEXT_HOME/lib" -maxdepth 1 -name 'seata-server-*.jar' -printf '%f\n' 2>/dev/null | head -n 1 | sed -E 's/^seata-server-(.*)\.jar$/\1/' || true)
+              if [ -z "$NEXT_INSTALLED_VERSION" ]; then
+                NEXT_INSTALLED_VERSION=$(basename "$NEXT_HOME" | sed -E 's/^apache-seata-([0-9.]+)-incubating$/\1/; s/^seata-([0-9.]+)$/\1/' || true)
+              fi
               if [ -n "$NEXT_INSTALLED_VERSION" ]; then
                 echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
                 echo "comparison=Current pinned Seata version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the extracted package reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
+                echo "Regression install result: Next version installed successfully on Arm64"
                 echo "status=passed" >> "$GITHUB_OUTPUT"
               else
                 echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
                 echo "comparison=Current pinned Seata version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not expose a usable installed version on Arm64." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: unknown"
+                echo "Regression install result: Next version install failed on Arm64"
                 echo "status=failed" >> "$GITHUB_OUTPUT"
                 exit 1
               fi
             else
               echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
               echo "comparison=Current pinned Seata version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not extract a usable Arm64 installation." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
             fi
           else
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
             echo "comparison=Current pinned Seata version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -299,6 +337,7 @@ jobs:
         run: |
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
           # Check Seata Script
@@ -306,6 +345,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
@@ -314,6 +354,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
@@ -322,6 +363,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
@@ -330,6 +372,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
@@ -338,6 +381,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
           # Regression Validation
@@ -351,20 +395,30 @@ jobs:
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ $CORE_FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
             echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status }}" != "passed" ]; then
             exit 1
           fi
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "${JOB_URL}" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
           
           cat > test-results/seata.json << EOF
           {
@@ -377,7 +431,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "${JOB_URL}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -478,8 +532,5 @@ jobs:
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.test6.outputs.comparison || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
 
 

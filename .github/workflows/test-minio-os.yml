@@ -26,19 +26,21 @@ jobs:
           echo "package_slug=minio-os" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/minio-os" >> "$GITHUB_OUTPUT"
           echo "current_version=RELEASE.2025-09-07T16-13-09Z" >> "$GITHUB_OUTPUT"
-          echo "latest_version=RELEASE.2025-09-07T16-13-09Z" >> "$GITHUB_OUTPUT"
 
       - name: Install MinIO
         id: install
         run: |
           set -euo pipefail
           VERSION="${{ steps.metadata.outputs.current_version }}"
+          URL="https://dl.min.io/server/minio/release/linux-arm64/archive/minio.${VERSION}"
+
           sudo apt-get update
-          sudo apt-get install -y wget curl
-          wget -q "https://dl.min.io/server/minio/release/linux-arm64/archive/minio.${VERSION}" -O /tmp/minio
+          sudo apt-get install -y wget curl file
+          wget -q -O /tmp/minio "$URL"
           chmod +x /tmp/minio
-          sudo mv /tmp/minio /usr/local/bin/minio
-          if command -v minio >/dev/null 2>&1; then
+          sudo install /tmp/minio /usr/local/bin/minio
+
+          if [ -x /usr/local/bin/minio ]; then
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
@@ -51,75 +53,92 @@ jobs:
           set -euo pipefail
           VERSION=$(minio --version 2>&1 | awk '{print $3; exit}')
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected MinIO version: ${VERSION}"
 
-      - name: Test 1 - Check Binary Existence
+      - name: Test 1 - Check binary exists and architecture
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if command -v minio >/dev/null 2>&1; then
+          if command -v minio >/dev/null 2>&1 && file "$(command -v minio)" | grep -qiE 'arm aarch64|aarch64'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            file "$(command -v minio)" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Check Version Output
+      - name: Test 2 - Check version output
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if minio --version 2>&1 | grep -q "${{ steps.metadata.outputs.current_version }}"; then
+          REPORTED=$(minio --version 2>&1 | awk '{print $3; exit}')
+          if [ "$REPORTED" = "${{ steps.metadata.outputs.current_version }}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            minio --version || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Check Help Output
+      - name: Test 3 - Check help output
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if minio --help 2>&1 | grep -q "USAGE"; then
+          if minio --help 2>&1 | grep -qiE "usage|MinIO Object Storage Server"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 4 - Architecture Verification
+      - name: Test 4 - Check server subcommand help
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
+          if minio server --help 2>&1 | grep -qiE "usage|start object storage server"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Functional Validation
+      - name: Test 5 - Functional validation
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          mkdir -p /tmp/minio-smoke/data
-          cd /tmp/minio-smoke
-          MINIO_ROOT_USER=admin MINIO_ROOT_PASSWORD=password minio server data --address :9001 >/tmp/minio.log 2>&1 &
+          DATA_DIR=$(mktemp -d)
+          LOG_FILE=$(mktemp)
+          MINIO_ROOT_USER=admin MINIO_ROOT_PASSWORD=password minio server "$DATA_DIR" --address :9001 --console-address :9002 >"$LOG_FILE" 2>&1 &
           MINIO_PID=$!
           cleanup() {
             kill "$MINIO_PID" >/dev/null 2>&1 || true
+            rm -rf "$DATA_DIR" "$LOG_FILE"
           }
           trap cleanup EXIT
 
@@ -135,8 +154,10 @@ jobs:
           if [ "$HTTP_CODE" = "200" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            cat /tmp/minio.log || true
+            cat "$LOG_FILE" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           END_TIME=$(date +%s)
@@ -146,16 +167,92 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || steps.metadata.outputs.current_version }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${{ steps.metadata.outputs.latest_version }}" >> "$GITHUB_OUTPUT"
-          echo "decision=pinned_is_latest" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version is the validated latest stable MinIO release exercised in this run. The older Arm recommendation was not retained because it failed MinIO self-tests on this Arm environment." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version was smoke-tested successfully and matches the latest validated release." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+
+          NEXT_DIR=$(mktemp -d)
+          NEXT_BIN="$NEXT_DIR/minio"
+          curl -fsSL https://dl.min.io/server/minio/release/linux-arm64/minio -o "$NEXT_BIN"
+          chmod +x "$NEXT_BIN"
+          LATEST=$("$NEXT_BIN" --version 2>&1 | awk '{print $3; exit}' || true)
+
+          if [ -z "$LATEST" ]; then
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MinIO server version ${CURRENT} passed smoke tests in this run, but the latest published Arm64 server binary did not report a usable release version." >> "$GITHUB_OUTPUT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned MinIO server version ${CURRENT} passed smoke tests in this run, but the latest published Arm64 server binary did not report a usable release version."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          DATA_DIR=$(mktemp -d)
+          LOG_FILE=$(mktemp)
+          MINIO_ROOT_USER=admin MINIO_ROOT_PASSWORD=password "$NEXT_BIN" server "$DATA_DIR" --address :9012 --console-address :9013 >"$LOG_FILE" 2>&1 &
+          NEXT_PID=$!
+          cleanup() {
+            kill "$NEXT_PID" >/dev/null 2>&1 || true
+            rm -rf "$NEXT_DIR" "$DATA_DIR" "$LOG_FILE"
+          }
+          trap cleanup EXIT
+
+          HTTP_CODE=""
+          for _ in $(seq 1 30); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9012/minio/health/live || true)
+            if [ "$HTTP_CODE" = "200" ]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if file "$NEXT_BIN" | grep -qiE 'arm aarch64|aarch64' && "$NEXT_BIN" --help >/dev/null 2>&1 && [ "$HTTP_CODE" = "200" ]; then
+            echo "next_installed_version=$LATEST" >> "$GITHUB_OUTPUT"
+            if [ "$CURRENT" = "$LATEST" ]; then
+              echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned MinIO server version ${CURRENT} passed smoke tests in this run and already matches the latest published Arm64 server binary. Regression validation re-staged ${LATEST} on Arm64 and the live health endpoint returned HTTP 200." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $LATEST"
+              echo "Regression install result: Current stable version already validated on Arm64"
+              echo "Details: Current pinned MinIO server version ${CURRENT} passed smoke tests in this run and already matches the latest published Arm64 server binary. Regression validation re-staged ${LATEST} on Arm64 and the live health endpoint returned HTTP 200."
+            else
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned MinIO server version ${CURRENT} passed smoke tests in this run. Regression validation staged candidate version ${LATEST} on Arm64, and the candidate server reached the live health endpoint successfully." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $LATEST"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned MinIO server version ${CURRENT} passed smoke tests in this run. Regression validation staged candidate version ${LATEST} on Arm64, and the candidate server reached the live health endpoint successfully."
+            fi
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat "$LOG_FILE" || true
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MinIO server version ${CURRENT} passed smoke tests in this run, but the latest published Arm64 server binary failed architecture, help, or live health validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned MinIO server version ${CURRENT} passed smoke tests in this run, but the latest published Arm64 server binary failed architecture, help, or live health validation."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Show regression validation details
         if: always()
@@ -170,36 +267,31 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
                 REGRESSION_RESULT="Current stable version already validated on Arm64"
                 ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
               *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
+                REGRESSION_RESULT="Regression validation failed"
                 ;;
             esac
           fi
 
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
           echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          CORE_FAILED=0
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
+
           check_test() {
             local status="$1"
             local duration="$2"
@@ -211,23 +303,40 @@ jobs:
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_core() {
+            local status="$1"
+            local duration="$2"
+            check_test "$status" "$duration"
+            if [ "$status" != "passed" ]; then
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          }
+
+          check_core "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
           check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}"
 
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
           if [ "$FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
-            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 
@@ -235,6 +344,14 @@ jobs:
         if: always()
         run: |
           mkdir -p test-results
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          JOB_URL="$RUN_URL"
+          JOB_NAME="test-minio-os / test-minio-os"
+          RESOLVED_JOB_URL=$(GH_TOKEN=${{ github.token }} gh api "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"${JOB_NAME}\") | .html_url" 2>/dev/null | head -n 1 || true)
+          if [ -n "$RESOLVED_JOB_URL" ]; then
+            JOB_URL="$RESOLVED_JOB_URL"
+          fi
+
           cat > test-results/minio-os.json <<EOF
           {
             "schema_version": "1.0",
@@ -246,7 +363,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "${JOB_URL}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -260,17 +377,18 @@ jobs:
               "skipped": 0,
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
-                {"name": "Test 1 - Check Binary Existence", "status": "${{ steps.test1.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}},
-                {"name": "Test 2 - Check Version Output", "status": "${{ steps.test2.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}},
-                {"name": "Test 3 - Check Help Output", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
-                {"name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
-                {"name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
-                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version }}", "latest_version": "${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version }}", "decision": "${{ steps.test6.outputs.decision || 'pinned_is_latest' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}"}
+                {"name": "Test 1 - Check binary exists and architecture", "status": "${{ steps.test1.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}},
+                {"name": "Test 2 - Check version output", "status": "${{ steps.test2.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}},
+                {"name": "Test 3 - Check help output", "status": "${{ steps.test3.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
+                {"name": "Test 4 - Check server subcommand help", "status": "${{ steps.test4.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
+                {"name": "Test 5 - Functional validation", "status": "${{ steps.test5.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
+                {"name": "Test 6 - Regression Validation", "status": "${{ steps.test6.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}, "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}", "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}", "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}", "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}", "regression_result": "${{ steps.test6.outputs.regression_result || '' }}", "comparison": "${{ steps.test6.outputs.comparison || '' }}"}
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "core_failed": ${{ steps.summary.outputs.core_failed || 0 }}
             }
           }
           EOF
@@ -286,16 +404,27 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression result unavailable' }}"
           echo "## MinIO OS Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Test 6:** ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Test 1 - Check binary exists and architecture: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Test 2 - Check version output: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Test 3 - Check help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Test 4 - Check server subcommand help: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Test 5 - Functional validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Current pinned version:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Latest stable candidate:** ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Comparison:** ${{ steps.test6.outputs.comparison || 'Current pinned version was smoke-tested in this run.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
