@@ -16,9 +16,12 @@ jobs:
     runs-on: ubuntu-24.04-arm
 
     env:
-      BASELINE_VERSION: "v10.4.0"
-      RELEASE_SUFFIX: "release-10"
-      CURRENT_RELEASE_LABEL: "v10.4.0-release-10"
+      BASELINE_VERSION: "v10.3.0"
+      BASELINE_SUFFIX: ""
+      CURRENT_RELEASE_LABEL: "v10.3.0"
+      CANDIDATE_VERSION: "v10.4.0"
+      CANDIDATE_SUFFIX: "release-10"
+      CANDIDATE_RELEASE_LABEL: "v10.4.0-release-10"
 
     steps:
       - name: Checkout repository
@@ -39,9 +42,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y wget tar file
 
+          build_tarball_name() {
+            local prefix="$1"
+            local version="$2"
+            local suffix="$3"
+            local stem="${prefix}-${version}"
+            if [ -n "$suffix" ]; then
+              stem="${stem}-${suffix}"
+            fi
+            printf '%s.linux.arm64.tar.gz' "$stem"
+          }
+
           WORK_DIR="$(mktemp -d)"
-          SERVER_TARBALL="heketi-${BASELINE_VERSION}-${RELEASE_SUFFIX}.linux.arm64.tar.gz"
-          CLIENT_TARBALL="heketi-client-${BASELINE_VERSION}-${RELEASE_SUFFIX}.linux.arm64.tar.gz"
+          SERVER_TARBALL="$(build_tarball_name heketi "${BASELINE_VERSION}" "${BASELINE_SUFFIX}")"
+          CLIENT_TARBALL="$(build_tarball_name heketi-client "${BASELINE_VERSION}" "${BASELINE_SUFFIX}")"
 
           wget -q "https://github.com/heketi/heketi/releases/download/${BASELINE_VERSION}/${SERVER_TARBALL}" -O "${WORK_DIR}/server.tgz"
           wget -q "https://github.com/heketi/heketi/releases/download/${BASELINE_VERSION}/${CLIENT_TARBALL}" -O "${WORK_DIR}/client.tgz"
@@ -184,8 +198,19 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version }}"
-          LATEST="${CURRENT_RELEASE_LABEL}"
+          CURRENT="${CURRENT_RELEASE_LABEL}"
+          LATEST="${CANDIDATE_RELEASE_LABEL}"
+
+          build_tarball_name() {
+            local prefix="$1"
+            local version="$2"
+            local suffix="$3"
+            local stem="${prefix}-${version}"
+            if [ -n "$suffix" ]; then
+              stem="${stem}-${suffix}"
+            fi
+            printf '%s.linux.arm64.tar.gz' "$stem"
+          }
 
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
@@ -193,14 +218,60 @@ jobs:
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $LATEST"
 
-          echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned Heketi release ${CURRENT} passed the offline database import/export smoke test on Arm64, and no newer stable Arm64 Heketi release is published upstream beyond ${LATEST}." >> "$GITHUB_OUTPUT"
-          echo "Next version installed on Arm64: $CURRENT"
-          echo "Regression install result: Current stable version already validated on Arm64"
-          echo "Details: Current pinned Heketi release ${CURRENT} passed the offline database import/export smoke test on Arm64, and no newer stable Arm64 Heketi release is published upstream beyond ${LATEST}."
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          WORK_DIR="$(mktemp -d)"
+          SERVER_TARBALL="$(build_tarball_name heketi "${CANDIDATE_VERSION}" "${CANDIDATE_SUFFIX}")"
+          CLIENT_TARBALL="$(build_tarball_name heketi-client "${CANDIDATE_VERSION}" "${CANDIDATE_SUFFIX}")"
+
+          wget -q "https://github.com/heketi/heketi/releases/download/${CANDIDATE_VERSION}/${SERVER_TARBALL}" -O "${WORK_DIR}/server.tgz"
+          wget -q "https://github.com/heketi/heketi/releases/download/${CANDIDATE_VERSION}/${CLIENT_TARBALL}" -O "${WORK_DIR}/client.tgz"
+
+          tar -xzf "${WORK_DIR}/server.tgz" -C "${WORK_DIR}"
+          tar -xzf "${WORK_DIR}/client.tgz" -C "${WORK_DIR}"
+
+          NEXT_SERVER="${WORK_DIR}/heketi/heketi"
+          NEXT_CLI="${WORK_DIR}/heketi/heketi-cli"
+          NEXT_SHARE="${WORK_DIR}/heketi-client/share/heketi"
+          NEXT_SERVER_VERSION=$("$NEXT_SERVER" --version | awk '{print $2}')
+          NEXT_CLI_VERSION=$("$NEXT_CLI" --version | awk '{print $2}')
+          "$NEXT_SERVER" --help >/tmp/heketi-next-help.txt 2>&1
+          "$NEXT_CLI" --help >/tmp/heketi-next-cli-help.txt 2>&1
+
+          TEST_DIR="$(mktemp -d)"
+          cp "${NEXT_SHARE}/topology-sample.json" "${TEST_DIR}/topology.json"
+          "$NEXT_SERVER" db import --jsonfile="${TEST_DIR}/topology.json" --dbfile="${TEST_DIR}/heketi.db" > "${TEST_DIR}/import.log" 2>&1
+          "$NEXT_SERVER" db export --dbfile="${TEST_DIR}/heketi.db" --jsonfile="${TEST_DIR}/export.json" > "${TEST_DIR}/export.log" 2>&1
+          "$NEXT_SERVER" db consistency-check --dbfile="${TEST_DIR}/heketi.db" > "${TEST_DIR}/check.log" 2>&1
+
+          if [ "$NEXT_SERVER_VERSION" = "$LATEST" ] \
+            && [ "$NEXT_CLI_VERSION" = "$LATEST" ] \
+            && grep -q '^Usage:' /tmp/heketi-next-help.txt \
+            && grep -q 'Command line program for Heketi' /tmp/heketi-next-cli-help.txt \
+            && [ -f "${TEST_DIR}/heketi.db" ] \
+            && grep -q '"clusterentries"' "${TEST_DIR}/export.json"; then
+            echo "next_installed_version=$NEXT_SERVER_VERSION" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Heketi release ${CURRENT} passed smoke tests in this run. Regression validation installed candidate release ${LATEST} on Arm64, confirmed exact server and CLI versions, and re-ran the offline database import/export path successfully." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_SERVER_VERSION"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned Heketi release ${CURRENT} passed smoke tests in this run. Regression validation installed candidate release ${LATEST} on Arm64, confirmed exact server and CLI versions, and re-ran the offline database import/export path successfully."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat "${TEST_DIR}/import.log" || true
+            cat "${TEST_DIR}/export.log" || true
+            cat "${TEST_DIR}/check.log" || true
+            echo "next_installed_version=${NEXT_SERVER_VERSION:-install_failed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Heketi release ${CURRENT} passed smoke tests in this run, but candidate release ${LATEST} did not complete the expected Arm64 version/help/database validation path." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_SERVER_VERSION:-install_failed}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Heketi release ${CURRENT} passed smoke tests in this run, but candidate release ${LATEST} did not complete the expected Arm64 version/help/database validation path."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
