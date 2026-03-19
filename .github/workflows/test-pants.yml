@@ -66,10 +66,11 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(
+          VERSION_OUTPUT=$(
             cd "$PANTS_PROJECT_DIR"
-            "$PANTS_BIN_DIR/pants" --version 2>&1 | awk '/^[0-9]+\.[0-9]+\.[0-9]+$/ {print $1; exit}'
+            "$PANTS_BIN_DIR/pants" --version 2>&1
           )
+          VERSION=$(printf '%s\n' "$VERSION_OUTPUT" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | tail -1 || true)
           LATEST=$(curl -fsSL "https://api.github.com/repos/pantsbuild/pants/releases?per_page=30" | jq -r '[.[] | select(.draft == false and .prerelease == false) | .tag_name | sub("^release_"; "") | sub("^v"; "")] | map(select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))) | sort_by(split(".") | map(tonumber)) | last // empty')
           if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
             LATEST="unknown"
@@ -104,8 +105,9 @@ jobs:
             cd "$PANTS_PROJECT_DIR"
             "$PANTS_BIN_DIR/pants" --version 2>&1
           )
+          ACTUAL_VERSION=$(printf '%s\n' "$VERSION_OUTPUT" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | tail -1 || true)
           echo "$VERSION_OUTPUT"
-          if printf '%s\n' "$VERSION_OUTPUT" | grep -Eq '^2\.31\.0$'; then
+          if [ "$ACTUAL_VERSION" = "$PANTS_VERSION" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -190,6 +192,17 @@ jobs:
             exit 1
           fi
 
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned Pants baseline ${CURRENT} already matches the latest stable upstream release ${LATEST}. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           curl -fsSL https://static.pantsbuild.org/setup/get-pants.sh -o /tmp/get-pants-regression.sh
           sudo rm -rf "$PANTS_REGRESSION_BIN_DIR"
           sudo mkdir -p "$PANTS_REGRESSION_BIN_DIR"
@@ -205,27 +218,23 @@ jobs:
           printf '%s\n' 'print("hello from pants regression")' > "$PANTS_REGRESSION_PROJECT_DIR/src/python/demo/app.py"
           printf '%s\n' 'python_sources()' > "$PANTS_REGRESSION_PROJECT_DIR/src/python/demo/BUILD"
 
-          NEXT_INSTALLED_VERSION=$(
+          NEXT_VERSION_OUTPUT=$(
             cd "$PANTS_REGRESSION_PROJECT_DIR"
-            "$PANTS_REGRESSION_BIN_DIR/pants" --version 2>&1 | awk '/^[0-9]+\.[0-9]+\.[0-9]+$/ {print $1; exit}'
+            "$PANTS_REGRESSION_BIN_DIR/pants" --version 2>&1
           )
+          NEXT_INSTALLED_VERSION=$(printf '%s\n' "$NEXT_VERSION_OUTPUT" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | tail -1 || true)
           LIST_OUTPUT=$(
             cd "$PANTS_REGRESSION_PROJECT_DIR"
             "$PANTS_REGRESSION_BIN_DIR/pants" list src/python/demo:: 2>&1
           )
 
+          echo "$NEXT_VERSION_OUTPUT"
           echo "$LIST_OUTPUT"
           if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ] && printf '%s\n' "$LIST_OUTPUT" | grep -q "src/python/demo/app.py"; then
             echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
-            if [ "$CURRENT" = "$LATEST" ]; then
-              echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned Pants version ${CURRENT} passed smoke tests in this run and also matches the latest stable upstream release. Regression validation reinstalled Pants into an isolated Arm64 directory, and the candidate binary reported version ${NEXT_INSTALLED_VERSION} while a real target listing succeeded." >> "$GITHUB_OUTPUT"
-            else
-              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned Pants version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} into an isolated Arm64 directory, the candidate binary reported version ${NEXT_INSTALLED_VERSION}, and a real target listing succeeded." >> "$GITHUB_OUTPUT"
-            fi
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Pants version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} into an isolated Arm64 directory, the candidate binary reported version ${NEXT_INSTALLED_VERSION}, and a real target listing succeeded." >> "$GITHUB_OUTPUT"
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "next_installed_version=${NEXT_INSTALLED_VERSION:-not_installed}" >> "$GITHUB_OUTPUT"

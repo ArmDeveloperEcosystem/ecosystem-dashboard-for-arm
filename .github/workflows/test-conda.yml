@@ -167,27 +167,39 @@ jobs:
           STATUS="failed"
 
           if [ "$CURRENT" = "$EXPECTED_LATEST" ]; then
-            DECISION="current_is_latest_stable"
-            REGRESSION_RESULT="Current stable version already validated on Arm64"
-            COMPARISON="Current pinned Conda version ${CURRENT} already matches the latest stable Miniforge Arm64 bundle ${LATEST_TAG}, so there is no newer version to install in Test 6."
-            STATUS="passed"
+            NEXT_INSTALLED="not_installed"
+            DECISION="baseline_matches_latest_stable"
+            REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+            COMPARISON="Pinned Conda baseline ${CURRENT} already matches the latest stable Miniforge Arm64 bundle ${LATEST_TAG}. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release."
+            STATUS="failed"
           else
-            NEXT_PREFIX=$(mktemp -d /tmp/miniforge-next-XXXXXX)
-            NEXT_INSTALLER=$(mktemp /tmp/miniforge-next-XXXXXX.sh)
+            NEXT_PREFIX="${RUNNER_TEMP}/miniforge-next"
+            NEXT_ENV="${RUNNER_TEMP}/miniforge-next-env"
+            NEXT_INSTALLER="${RUNNER_TEMP}/Miniforge-next.sh"
+            rm -rf "$NEXT_PREFIX" "$NEXT_ENV" "$NEXT_INSTALLER"
 
             if curl -fsSL -o "$NEXT_INSTALLER" "https://github.com/conda-forge/miniforge/releases/download/${LATEST_TAG}/Miniforge3-${LATEST_TAG}-Linux-aarch64.sh"; then
               if bash "$NEXT_INSTALLER" -b -p "$NEXT_PREFIX" >/tmp/conda-next-install.log 2>&1; then
-                NEXT_INSTALLED=$("$NEXT_PREFIX/bin/conda" --version 2>&1 | awk '{print $2}' || echo "unknown")
+                if "$NEXT_PREFIX/bin/conda" create -p "$NEXT_ENV" -y python=3.12 >/tmp/conda-next-create.log 2>&1 && \
+                   "$NEXT_PREFIX/bin/conda" run -p "$NEXT_ENV" python -c "import platform; print(platform.machine())" >/tmp/conda-next-machine.txt 2>&1; then
+                  NEXT_INSTALLED=$("$NEXT_PREFIX/bin/conda" --version 2>&1 | awk '{print $2}' || echo "unknown")
 
-                if [ "$NEXT_INSTALLED" = "$EXPECTED_LATEST" ]; then
-                  DECISION="next_install_validated"
-                  REGRESSION_RESULT="Next version installed successfully on Arm64"
-                  COMPARISON="Current pinned Conda version ${CURRENT} passed smoke tests in this run. Regression validation installed Miniforge bundle ${LATEST_TAG} on Arm64, and the installed conda binary reported version ${NEXT_INSTALLED}."
-                  STATUS="passed"
+                  if [ "$NEXT_INSTALLED" = "$EXPECTED_LATEST" ] && grep -q '^aarch64$' /tmp/conda-next-machine.txt; then
+                    DECISION="next_install_validated"
+                    REGRESSION_RESULT="Next version installed successfully on Arm64"
+                    COMPARISON="Current pinned Conda version ${CURRENT} passed smoke tests in this run. Regression validation installed Miniforge bundle ${LATEST_TAG} on Arm64, and the installed conda binary reported version ${NEXT_INSTALLED} while a fresh Python environment reported architecture aarch64."
+                    STATUS="passed"
+                  else
+                    DECISION="next_install_failed"
+                    REGRESSION_RESULT="Next version installed but reported a version mismatch on Arm64"
+                    COMPARISON="Current pinned Conda version ${CURRENT} passed smoke tests in this run, but the regression candidate bundle ${LATEST_TAG} installed on Arm64 and reported conda version ${NEXT_INSTALLED} instead of the expected ${EXPECTED_LATEST}, or the fresh environment did not report aarch64."
+                    STATUS="failed"
+                  fi
                 else
+                  NEXT_INSTALLED="install_failed"
                   DECISION="next_install_failed"
-                  REGRESSION_RESULT="Next version installed but reported a version mismatch on Arm64"
-                  COMPARISON="Current pinned Conda version ${CURRENT} passed smoke tests in this run, but the regression candidate bundle ${LATEST_TAG} installed on Arm64 and reported conda version ${NEXT_INSTALLED} instead of the expected ${EXPECTED_LATEST}."
+                  REGRESSION_RESULT="Next version install failed on Arm64"
+                  COMPARISON="Current pinned Conda version ${CURRENT} passed smoke tests in this run, but the regression candidate bundle ${LATEST_TAG} installed on Arm64 and failed the fresh environment smoke path."
                   STATUS="failed"
                 fi
               else
@@ -204,6 +216,16 @@ jobs:
               COMPARISON="Current pinned Conda version ${CURRENT} passed smoke tests in this run, but the regression candidate bundle ${LATEST_TAG} could not be downloaded on Arm64."
               STATUS="failed"
             fi
+          fi
+
+          if [ "$DECISION" = "next_install_failed" ] && [ -f /tmp/conda-next-install.log ]; then
+            cat /tmp/conda-next-install.log || true
+          fi
+          if [ "$DECISION" = "next_install_failed" ] && [ -f /tmp/conda-next-create.log ]; then
+            cat /tmp/conda-next-create.log || true
+          fi
+          if [ "$DECISION" = "next_install_failed" ] && [ -f /tmp/conda-next-machine.txt ]; then
+            cat /tmp/conda-next-machine.txt || true
           fi
 
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
