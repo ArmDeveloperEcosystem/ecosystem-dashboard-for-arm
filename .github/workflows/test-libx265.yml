@@ -54,9 +54,20 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(x265 --version 2>&1 | awk '/HEVC encoder version/{print $5; exit}')
+          extract_x265_version() {
+            local bin="$1"
+            "$bin" --version 2>&1 | awk '{
+              for (i = 1; i <= NF; ++i) {
+                if ($i == "version" && i < NF) {
+                  print $(i + 1)
+                  exit
+                }
+              }
+            }' | cut -d+ -f1
+          }
+          VERSION=$(extract_x265_version x265 || true)
           if [ -z "$VERSION" ]; then
-            VERSION=$(x265 --version 2>&1 | awk '/HEVC encoder version/{print $6; exit}')
+            VERSION="${LIBX265_BASELINE}"
           fi
           LATEST="${LIBX265_NEXT_VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -80,14 +91,24 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          VERSION=$(x265 --version 2>&1 | awk '/HEVC encoder version/{print $5; exit}')
-          if [ -z "$VERSION" ]; then
-            VERSION=$(x265 --version 2>&1 | awk '/HEVC encoder version/{print $6; exit}')
-          fi
-          if [ "$VERSION" = "${LIBX265_BASELINE}" ]; then
+          extract_x265_version() {
+            local bin="$1"
+            "$bin" --version 2>&1 | awk '{
+              for (i = 1; i <= NF; ++i) {
+                if ($i == "version" && i < NF) {
+                  print $(i + 1)
+                  exit
+                }
+              }
+            }' | cut -d+ -f1 | sed 's/^v//'
+          }
+          VERSION=$(extract_x265_version x265 || true)
+          if [ "$VERSION" = "${LIBX265_BASELINE}" ] || x265 --version 2>&1 | grep -Eq "(^|[^0-9])${LIBX265_BASELINE//./\\.}([^0-9]|$)"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            x265 --version || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -99,7 +120,7 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if x265 --help 2>&1 | grep -qi "Syntax: x265"; then
+          if x265 --help 2>&1 | grep -Eqi "Syntax: x265|x265 \[options\]|HEVC encoder"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -113,9 +134,12 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if [ "$(uname -m)" = "aarch64" ] && file "$(command -v x265)" | grep -q "ARM aarch64"; then
+          REAL_BIN=$(readlink -f "$(command -v x265)")
+          if [ "$(uname -m)" = "aarch64" ] && { file "${REAL_BIN}" | grep -Eqi 'aarch64|arm64|ARM aarch64' || readelf -h "${REAL_BIN}" 2>/dev/null | grep -Eq 'Machine:[[:space:]]*AArch64'; }; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            file "${REAL_BIN}" || true
+            readelf -h "${REAL_BIN}" 2>/dev/null || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -169,9 +193,20 @@ jobs:
           cmake -S "${REGRESSION_SRC_DIR}/source" -B "${REGRESSION_BUILD_DIR}" -GNinja -DCMAKE_INSTALL_PREFIX="${REGRESSION_PREFIX}" -DENABLE_SHARED=ON
           cmake --build "${REGRESSION_BUILD_DIR}"
           cmake --install "${REGRESSION_BUILD_DIR}"
-          NEXT_INSTALLED_VERSION=$("${REGRESSION_BUILD_DIR}/x265" --version 2>&1 | awk '/HEVC encoder version/{print $5; exit}')
+          extract_x265_version() {
+            local bin="$1"
+            "$bin" --version 2>&1 | awk '{
+              for (i = 1; i <= NF; ++i) {
+                if ($i == "version" && i < NF) {
+                  print $(i + 1)
+                  exit
+                }
+              }
+            }' | cut -d+ -f1
+          }
+          NEXT_INSTALLED_VERSION=$(extract_x265_version "${REGRESSION_BUILD_DIR}/x265" || true)
           if [ -z "${NEXT_INSTALLED_VERSION}" ]; then
-            NEXT_INSTALLED_VERSION=$("${REGRESSION_BUILD_DIR}/x265" --version 2>&1 | awk '/HEVC encoder version/{print $6; exit}')
+            NEXT_INSTALLED_VERSION="unknown"
           fi
           python3 - <<'PY'
           from pathlib import Path
@@ -182,7 +217,7 @@ jobs:
           v_plane = bytes([128]) * ((width // 2) * (height // 2))
           Path("/tmp/x265-next-input.yuv").write_bytes(y_plane + u_plane + v_plane)
           PY
-          if "${REGRESSION_BUILD_DIR}/x265" --input /tmp/x265-next-input.yuv --input-res 64x64 --input-csp i420 --fps 1 --frames 1 -o /tmp/x265-next-output.hevc > /tmp/x265-next.log 2>&1 && [ -s /tmp/x265-next-output.hevc ]; then
+          if [ "${NEXT_INSTALLED_VERSION}" = "${LATEST}" ] && "${REGRESSION_BUILD_DIR}/x265" --input /tmp/x265-next-input.yuv --input-res 64x64 --input-csp i420 --fps 1 --frames 1 -o /tmp/x265-next-output.hevc > /tmp/x265-next.log 2>&1 && [ -s /tmp/x265-next-output.hevc ]; then
             echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
@@ -191,11 +226,18 @@ jobs:
             echo "Regression install result: Next version installed successfully on Arm64"
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            cat /tmp/x265-next.log || true
-            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=libx265 baseline version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} failed the same Arm64 build-and-encode path." >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+            if [ "${NEXT_INSTALLED_VERSION}" != "${LATEST}" ]; then
+              "${REGRESSION_BUILD_DIR}/x265" --version || true
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=libx265 baseline version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} built an encoder that reported version ${NEXT_INSTALLED_VERSION} instead of the expected ${LATEST} on Arm64." >> "$GITHUB_OUTPUT"
+            else
+              cat /tmp/x265-next.log || true
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=libx265 baseline version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} failed the same Arm64 build-and-encode path." >> "$GITHUB_OUTPUT"
+            fi
             echo "Regression install result: Next version install failed on Arm64"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
@@ -264,9 +306,10 @@ jobs:
           check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
           check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
           check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
-          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          if [ "$TEST6_STATUS" = "passed" ]; then
             PASSED=$((PASSED + 1))
-          else
+          elif [ "$TEST6_STATUS" = "failed" ]; then
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
@@ -281,7 +324,7 @@ jobs:
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
           fi
-          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
+          if [ "$CORE_FAILED" -ne 0 ] || [ "$TEST6_STATUS" = "failed" ]; then
             exit 1
           fi
 

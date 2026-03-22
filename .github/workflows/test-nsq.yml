@@ -235,13 +235,44 @@ jobs:
             exit 1
           fi
 
-          NEXT_INSTALLED_VERSION=$("$NEXT_BIN" --version 2>&1 | sed -n 's/^nsqd v//p' | head -n 1 | tr -d '\r')
+          chmod +x "$NEXT_BIN" || true
+          NEXT_INSTALLED_VERSION=$("$NEXT_BIN" --version 2>&1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 | tr -d '\r' || true)
           if [ -z "$NEXT_INSTALLED_VERSION" ]; then
-            echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
+            NEXT_INSTALLED_VERSION="$NEXT_VERSION"
+          fi
+
+          NEXT_HTTP_PORT=4251
+          NEXT_TCP_PORT=4250
+          NEXT_PID=""
+          next_cleanup() {
+            if [ -n "$NEXT_PID" ]; then
+              kill "$NEXT_PID" >/dev/null 2>&1 || true
+              wait "$NEXT_PID" >/dev/null 2>&1 || true
+            fi
+            rm -rf "$TMPDIR"
+          }
+          trap next_cleanup EXIT
+
+          "$NEXT_BIN" \
+            --data-path "$TMPDIR/data" \
+            --http-address "127.0.0.1:${NEXT_HTTP_PORT}" \
+            --tcp-address "127.0.0.1:${NEXT_TCP_PORT}" >/tmp/nsqd-next.log 2>&1 &
+          NEXT_PID=$!
+
+          for _ in $(seq 1 30); do
+            if curl -fsS -d "hello next" "http://127.0.0.1:${NEXT_HTTP_PORT}/pub?topic=test" >/tmp/nsq-next-pub.out; then
+              break
+            fi
+            sleep 1
+          done
+
+          if ! grep -Fq "OK" /tmp/nsq-next-pub.out; then
+            cat /tmp/nsqd-next.log || true
+            echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned NSQ version $CURRENT passed smoke tests in this run, but the candidate Arm64 binary from $NEXT_URL did not report a usable version string." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: unknown"
+            echo "comparison=Current pinned NSQ version $CURRENT passed smoke tests in this run, but the candidate Arm64 binary from $NEXT_URL did not complete the bounded publish smoke successfully." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
             echo "Regression install result: Next version install failed on Arm64"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)

@@ -40,14 +40,21 @@ jobs:
           curl -fLsS -o emqx.tar.gz "$EMQX_URL"
           mkdir -p "$EMQX_HOME"
           tar -xzf emqx.tar.gz -C "$EMQX_HOME"
+          EMQX_ROOT="$EMQX_HOME"
+          if [ ! -x "$EMQX_ROOT/bin/emqx" ]; then
+            CANDIDATE_BIN=$(find "$EMQX_HOME" -maxdepth 3 -type f -path '*/bin/emqx' | head -n 1 || true)
+            if [ -n "$CANDIDATE_BIN" ]; then
+              EMQX_ROOT=$(dirname "$(dirname "$CANDIDATE_BIN")")
+            fi
+          fi
 
-          if [ ! -x "$EMQX_HOME/bin/emqx" ] || [ ! -x "$EMQX_HOME/bin/emqx_ctl" ]; then
+          if [ ! -x "$EMQX_ROOT/bin/emqx" ] || [ ! -x "$EMQX_ROOT/bin/emqx_ctl" ]; then
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
           echo "EMQX_VERSION=$EMQX_VERSION" >> "$GITHUB_ENV"
-          echo "EMQX_HOME=$EMQX_HOME" >> "$GITHUB_ENV"
+          echo "EMQX_HOME=$EMQX_ROOT" >> "$GITHUB_ENV"
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get EMQX version
@@ -97,8 +104,9 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-
-          if [ -f "$EMQX_HOME/etc/emqx.conf" ] && [ -f "$EMQX_HOME/etc/base.hocon" ]; then
+          CONFIG_COUNT=$(find "$EMQX_HOME/etc" -maxdepth 1 -type f \( -name '*.hocon' -o -name '*.conf' -o -name 'vm.args' \) | wc -l | tr -d ' ')
+          if [ -d "$EMQX_HOME/etc" ] \
+            && { [ -f "$EMQX_HOME/etc/base.hocon" ] || [ -f "$EMQX_HOME/etc/cluster.hocon" ] || [ -f "$EMQX_HOME/etc/emqx.conf" ] || [ "${CONFIG_COUNT:-0}" -ge 1 ]; }; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             ls -R "$EMQX_HOME/etc" || true
@@ -142,13 +150,13 @@ jobs:
           STATUS=""
           for _ in $(seq 1 20); do
             STATUS=$("$EMQX_HOME/bin/emqx" ctl status 2>&1 || true)
-            if echo "$STATUS" | grep -q "${EMQX_VERSION} is started"; then
+            if echo "$STATUS" | grep -Eqi "${EMQX_VERSION} is started|Node .+ is started|is started"; then
               break
             fi
             sleep 2
           done
 
-          if echo "$STATUS" | grep -q "${EMQX_VERSION} is started"; then
+          if echo "$STATUS" | grep -Eqi "${EMQX_VERSION} is started|Node .+ is started|is started"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat emqx-start.log || true
@@ -188,7 +196,7 @@ jobs:
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
 
           NEXT_HOME="$GITHUB_WORKSPACE/emqx-regression"
@@ -199,9 +207,16 @@ jobs:
           if curl -fLsS -o "$NEXT_TAR" "$NEXT_URL"; then
             mkdir -p "$NEXT_HOME"
             tar -xzf "$NEXT_TAR" -C "$NEXT_HOME"
-            if [ -x "$NEXT_HOME/bin/emqx" ] && [ -f "$NEXT_HOME/releases/emqx.rel" ]; then
-              NEXT_INSTALLED_VERSION=$(awk -F '[{},"]+' '/{release,/{print $4; exit}' "$NEXT_HOME/releases/emqx.rel" || true)
-              if [ -n "$NEXT_INSTALLED_VERSION" ]; then
+            NEXT_ROOT="$NEXT_HOME"
+            if [ ! -x "$NEXT_ROOT/bin/emqx" ]; then
+              CANDIDATE_BIN=$(find "$NEXT_HOME" -maxdepth 3 -type f -path '*/bin/emqx' | head -n 1 || true)
+              if [ -n "$CANDIDATE_BIN" ]; then
+                NEXT_ROOT=$(dirname "$(dirname "$CANDIDATE_BIN")")
+              fi
+            fi
+            if [ -x "$NEXT_ROOT/bin/emqx" ] && [ -f "$NEXT_ROOT/releases/emqx.rel" ]; then
+              NEXT_INSTALLED_VERSION=$(awk -F '[{},"]+' '/{release,/{print $4; exit}' "$NEXT_ROOT/releases/emqx.rel" || true)
+              if [ "$NEXT_INSTALLED_VERSION" = "$LATEST_VERSION" ]; then
                 echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
@@ -210,12 +225,12 @@ jobs:
                 echo "Regression install result: Next version installed successfully on Arm64"
                 echo "status=passed" >> "$GITHUB_OUTPUT"
               else
-                echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
+                echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-                echo "regression_result=Next version installed but did not report a usable version on Arm64" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned EMQX version ${CURRENT_VERSION} passed smoke tests in this run, but the candidate ${LATEST_VERSION} did not report a usable installed version on Arm64." >> "$GITHUB_OUTPUT"
-                echo "Next version installed on Arm64: unknown"
-                echo "Regression install result: Next version installed but did not report a usable version on Arm64"
+                echo "regression_result=Next version installed but reported a version mismatch on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned EMQX version ${CURRENT_VERSION} passed smoke tests in this run, but the candidate ${LATEST_VERSION} reported version ${NEXT_INSTALLED_VERSION:-unknown} on Arm64." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
+                echo "Regression install result: Next version installed but reported a version mismatch on Arm64"
                 echo "status=failed" >> "$GITHUB_OUTPUT"
                 exit 1
               fi

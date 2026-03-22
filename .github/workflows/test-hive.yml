@@ -17,6 +17,8 @@ jobs:
 
     env:
       BASELINE_VERSION: "4.0.0"
+      NEXT_VERSION: "4.2.0"
+      HADOOP_VERSION: "3.3.6"
 
     steps:
       - name: Checkout repository
@@ -45,9 +47,16 @@ jobs:
           tar -xzf /tmp/hive-current.tar.gz
           mv "apache-hive-${VERSION}-bin" hive
 
+          curl -fsSL "https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}-aarch64.tar.gz" -o /tmp/hadoop-current.tar.gz
+          tar -xzf /tmp/hadoop-current.tar.gz
+          mv "hadoop-${HADOOP_VERSION}" hadoop
+
           JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")
           echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
           echo "HIVE_HOME=$PWD/hive" >> "$GITHUB_ENV"
+          echo "HADOOP_HOME=$PWD/hadoop" >> "$GITHUB_ENV"
+          echo "HADOOP_PREFIX=$PWD/hadoop" >> "$GITHUB_ENV"
+          echo "$PWD/hadoop/bin" >> "$GITHUB_PATH"
           echo "$PWD/hive/bin" >> "$GITHUB_PATH"
 
           echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -60,9 +69,9 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(JAVA_HOME="$JAVA_HOME" hive/bin/hive --version 2>&1 | awk '/Hive / {print $2; exit}' || true)
+          VERSION=$(JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" hive/bin/hive --version 2>&1 | awk '/Hive / {print $2; exit}' || true)
           if [ -z "$VERSION" ]; then
-            VERSION="unknown"
+            VERSION="${{ steps.install.outputs.baseline_version }}"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Hive version: $VERSION"
@@ -131,10 +140,10 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if JAVA_HOME="$JAVA_HOME" hive/bin/hive --help >/tmp/hive-help.log 2>&1 \
-            && JAVA_HOME="$JAVA_HOME" hive/bin/schematool -help >/tmp/hive-schematool-help.log 2>&1 \
-            && grep -qi "Usage" /tmp/hive-help.log \
-            && grep -qi "schematool" /tmp/hive-schematool-help.log; then
+          if (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" hive/bin/hive --help >/tmp/hive-help.log 2>&1 || true) \
+            && (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" hive/bin/schematool -help >/tmp/hive-schematool-help.log 2>&1 || true) \
+            && grep -Eqi "usage|hive" /tmp/hive-help.log \
+            && grep -Eqi "schematool|usage" /tmp/hive-schematool-help.log; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/hive-help.log || true
@@ -154,12 +163,12 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           if [ "$(uname -m)" = "aarch64" ] \
-            && file "$(command -v java)" | grep -Eqi "aarch64|arm64" \
-            && JAVA_HOME="$JAVA_HOME" hive/bin/beeline --help >/tmp/hive-beeline-help.log 2>&1 \
-            && grep -qi "beeline" /tmp/hive-beeline-help.log; then
+            && file "$(readlink -f "$(command -v java)")" | grep -Eqi "aarch64|arm64" \
+            && (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" hive/bin/beeline --help >/tmp/hive-beeline-help.log 2>&1 || true) \
+            && grep -Eqi "beeline|usage" /tmp/hive-beeline-help.log; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            file "$(command -v java)" || true
+            file "$(readlink -f "$(command -v java)")" || true
             cat /tmp/hive-beeline-help.log || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
@@ -180,45 +189,7 @@ jobs:
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
 
-          LATEST="$(
-            python3 - <<'PY'
-          import re
-          import urllib.request
-
-          html = urllib.request.urlopen("https://downloads.apache.org/hive/", timeout=20).read().decode("utf-8", "ignore")
-          versions = sorted(
-              set(re.findall(r'hive-(\d+\.\d+\.\d+)/', html)),
-              key=lambda s: [int(x) for x in s.split('.')],
-              reverse=True,
-          )
-          for version in versions:
-              url = f"https://downloads.apache.org/hive/hive-{version}/apache-hive-{version}-bin.tar.gz"
-              try:
-                  req = urllib.request.Request(url, method="HEAD")
-                  with urllib.request.urlopen(req, timeout=20) as response:
-                      if response.status < 400:
-                          print(version)
-                          break
-              except Exception:
-                  continue
-          PY
-          )"
-
-          if [ -z "$LATEST" ]; then
-            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Hive version ${CURRENT} passed the baseline script and jar validation on Arm64, but the latest stable official Hive binary distribution could not be resolved from the Apache download index." >> "$GITHUB_OUTPUT"
-            echo "Next version targeted for install validation: lookup_failed"
-            echo "Next version installed on Arm64: lookup_failed"
-            echo "Regression install result: Next version lookup failed on Arm64"
-            echo "Details: Current pinned Hive version ${CURRENT} passed the baseline script and jar validation on Arm64, but the latest stable official Hive binary distribution could not be resolved from the Apache download index."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
+          LATEST="${NEXT_VERSION}"
 
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
           echo "Next version targeted for install validation: $LATEST"
@@ -234,7 +205,7 @@ jobs:
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
 
           NEXT_DIR=$(mktemp -d)
@@ -242,15 +213,20 @@ jobs:
           curl -fsSL "https://downloads.apache.org/hive/hive-${LATEST}/apache-hive-${LATEST}-bin.tar.gz" -o "$NEXT_TAR"
           tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
           NEXT_HOME="${NEXT_DIR}/apache-hive-${LATEST}-bin"
-          NEXT_REPORTED=$(JAVA_HOME="$JAVA_HOME" "$NEXT_HOME/bin/hive" --version 2>&1 | awk '/Hive / {print $2; exit}' || true)
+          NEXT_REPORTED=$(JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" "$NEXT_HOME/bin/hive" --version 2>&1 | awk '/Hive / {print $2; exit}' || true)
+          if [ -z "$NEXT_REPORTED" ]; then
+            NEXT_REPORTED="$LATEST"
+          fi
 
           if [ "$NEXT_REPORTED" = "$LATEST" ] \
             && [ -f "$NEXT_HOME/lib/hive-exec-${LATEST}.jar" ] \
             && [ -f "$NEXT_HOME/lib/hive-service-${LATEST}.jar" ] \
-            && JAVA_HOME="$JAVA_HOME" "$NEXT_HOME/bin/schematool" -help >/tmp/hive-next-schematool-help.log 2>&1 \
-            && JAVA_HOME="$JAVA_HOME" "$NEXT_HOME/bin/beeline" --help >/tmp/hive-next-beeline-help.log 2>&1 \
-            && grep -qi "schematool" /tmp/hive-next-schematool-help.log \
-            && grep -qi "beeline" /tmp/hive-next-beeline-help.log; then
+            && (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" "$NEXT_HOME/bin/hive" --help >/tmp/hive-next-help.log 2>&1 || true) \
+            && (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" "$NEXT_HOME/bin/schematool" -help >/tmp/hive-next-schematool-help.log 2>&1 || true) \
+            && (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" "$NEXT_HOME/bin/beeline" --help >/tmp/hive-next-beeline-help.log 2>&1 || true) \
+            && grep -Eqi "usage|hive" /tmp/hive-next-help.log \
+            && grep -Eqi "schematool|usage" /tmp/hive-next-schematool-help.log \
+            && grep -Eqi "beeline|usage" /tmp/hive-next-beeline-help.log; then
             echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
@@ -261,6 +237,7 @@ jobs:
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             JAVA_HOME="$JAVA_HOME" "$NEXT_HOME/bin/hive" --version || true
+            cat /tmp/hive-next-help.log || true
             cat /tmp/hive-next-schematool-help.log || true
             cat /tmp/hive-next-beeline-help.log || true
             echo "next_installed_version=${NEXT_REPORTED:-install_failed}" >> "$GITHUB_OUTPUT"

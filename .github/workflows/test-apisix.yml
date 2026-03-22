@@ -56,7 +56,20 @@ jobs:
               --initial-cluster-state=new
 
           echo "Waiting for etcd to start..."
-          sleep 25
+          ETCD_OK=0
+          for _ in $(seq 1 30); do
+            ETCD_STATUS=$(curl -sS --connect-timeout 2 --max-time 5 http://127.0.0.1:2379/health || true)
+            if printf '%s' "$ETCD_STATUS" | grep -q '"health":"true"'; then
+              ETCD_OK=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ETCD_OK" -ne 1 ]; then
+            docker logs etcd || true
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           ######################################################
           # 2) Start a LOCAL upstream instead of real httpbin.org
@@ -80,7 +93,7 @@ jobs:
             "apache/apisix:${BASELINE_TAG}"
 
           echo "Waiting for APISIX to start..."
-          sleep 25
+          sleep 35
 
           echo "baseline_tag=${BASELINE_TAG}" >> $GITHUB_OUTPUT
           echo "install_status=success" >> $GITHUB_OUTPUT
@@ -137,16 +150,28 @@ jobs:
           START_TIME=$(date +%s)
 
           # Default admin key is edd1c9f034335f136f87ad84b625c8f1
-          if curl -s -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" \
-               http://127.0.0.1:9180/apisix/admin/routes | grep -q "list"; then
+          OK=0
+          for _ in $(seq 1 60); do
+            HTTP_CODE=$(curl -sS --connect-timeout 2 --max-time 5 -o /tmp/apisix-admin-routes.json -w "%{http_code}" \
+              -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" \
+              http://127.0.0.1:9180/apisix/admin/routes || true)
+            if [ "$HTTP_CODE" = "200" ] && [ -s /tmp/apisix-admin-routes.json ] && grep -Eqi '^\s*[\{\[]|"list"|"total"|"value"|"key"' /tmp/apisix-admin-routes.json; then
+              OK=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$OK" -eq 1 ]; then
             echo "✓ admin api works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
             echo "✗ admin api failed"
+            cat /tmp/apisix-admin-routes.json || true
             docker logs apisix || true
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
-            fi
+          fi
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -158,7 +183,7 @@ jobs:
           START_TIME=$(date +%s)
 
           # Create a route that forwards /get to LOCAL httpbin upstream on 127.0.0.1:8080
-          RESPONSE=$(curl -s -X PUT \
+          HTTP_CODE=$(curl -sS -o /tmp/apisix-route-put.json -w "%{http_code}" -X PUT \
             -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" \
             http://127.0.0.1:9180/apisix/admin/routes/1 \
             -d '{
@@ -169,17 +194,18 @@ jobs:
                   "127.0.0.1:8080": 1
                 }
               }
-            }')
+            }' || true)
 
-          if echo "$RESPONSE" | grep -q "key"; then
+          if { [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; } && grep -Eqi '"key"|"/get"' /tmp/apisix-route-put.json; then
              echo "✓ route creation works"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
              echo "✗ route creation failed"
-             echo "Response: $RESPONSE"
+             echo "HTTP code: $HTTP_CODE"
+             cat /tmp/apisix-route-put.json || true
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
-            fi
+          fi
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -191,11 +217,20 @@ jobs:
           START_TIME=$(date +%s)
 
           # Give it a moment to sync
-          sleep 3
+          sleep 5
 
-          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9080/get)
+          OK=0
+          STATUS_CODE="000"
+          for _ in $(seq 1 20); do
+            STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9080/get || true)
+            if [ "$STATUS_CODE" = "200" ]; then
+              OK=1
+              break
+            fi
+            sleep 2
+          done
 
-          if [ "$STATUS_CODE" = "200" ]; then
+          if [ "$OK" -eq 1 ]; then
              echo "✓ route access works (HTTP 200)"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -219,17 +254,32 @@ jobs:
           # Functional Validation
 
           # Simple, known-good endpoint: list routes again
-          RESPONSE=$(curl -s -o /tmp/apisix_routes.json -w "%{http_code}" \
+          RESPONSE=$(curl -sS -o /tmp/apisix_routes.json -w "%{http_code}" \
             -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" \
-            http://127.0.0.1:9180/apisix/admin/routes)
+            http://127.0.0.1:9180/apisix/admin/routes || true)
 
           HTTP_CODE="$RESPONSE"
+          OK=0
+          if [ "$HTTP_CODE" = "200" ] && [ -s /tmp/apisix_routes.json ]; then
+            OK=1
+          else
+            for _ in $(seq 1 20); do
+              sleep 2
+              HTTP_CODE=$(curl -sS -o /tmp/apisix_routes.json -w "%{http_code}" \
+                -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" \
+                http://127.0.0.1:9180/apisix/admin/routes || true)
+              if [ "$HTTP_CODE" = "200" ] && [ -s /tmp/apisix_routes.json ]; then
+                OK=1
+                break
+              fi
+            done
+          fi
 
           echo "HTTP code from /apisix/admin/routes: $HTTP_CODE"
           echo "Response body:"
           cat /tmp/apisix_routes.json || true
 
-          if [ "$HTTP_CODE" = "200" ]; then
+          if [ "$OK" -eq 1 ]; then
             echo "✓ admin routes endpoint healthy"
             echo "status=passed" >> $GITHUB_OUTPUT
           else

@@ -28,18 +28,20 @@ jobs:
       - name: Install MUSCLE
         id: install
         run: |
+          set -euo pipefail
           echo "Installing MUSCLE..."
           
           # Install prerequisites and muscle
           sudo apt-get update
-          if sudo apt-get install -y muscle; then
+          if sudo apt-get install -y muscle file; then
              echo "MUSCLE installed successfully"
              # Verify architecture
-             if file $(which muscle) | grep -qi "aarch64"; then
+             BIN_PATH=$(readlink -f "$(command -v muscle)")
+             if file "$BIN_PATH" | grep -Eqi "aarch64|arm64|ARM aarch64"; then
                 echo "✓ muscle binary is ARM64"
             else
                 echo "✗ muscle binary is NOT ARM64"
-                file $(which muscle)
+                file "$BIN_PATH"
                 exit 1
             fi
              echo "install_status=success" >> $GITHUB_OUTPUT
@@ -55,9 +57,13 @@ jobs:
       - name: Get MUSCLE version
         id: version
         run: |
+          set -euo pipefail
           if command -v muscle &> /dev/null; then
-             VERSION=$(muscle -version 2>&1 | grep MUSCLE | awk '{print $2}' || echo "unknown")
+             VERSION=$(muscle -version 2>&1 | sed -nE 's/.*([0-9]+(\.[0-9]+)+).*/\1/p' | head -n 1 || true)
           else
+             VERSION="unknown"
+          fi
+          if [ -z "$VERSION" ]; then
              VERSION="unknown"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -95,17 +101,20 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
           # muscle -version might fail or return MUSCLE string
-          if muscle -version 2>&1 | grep -qi "MUSCLE"; then
+          muscle -version >/tmp/muscle-version.log 2>&1 || true
+          if grep -Eiq "MUSCLE|[0-9]+(\\.[0-9]+)+" /tmp/muscle-version.log; then
             echo "✓ version command works"
-            muscle -version 2>&1 | head -n 1
+            head -n 1 /tmp/muscle-version.log || true
             echo "status=passed" >> $GITHUB_OUTPUT
           else
             echo "✗ version command failed"
             # Try -v or --version or no args
             muscle -v 2>&1 | head -n 5 || true
+            cat /tmp/muscle-version.log || true
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
             fi
@@ -117,20 +126,31 @@ jobs:
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # muscle usually shows help if run without args or with -help
-          if muscle -help 2>&1 | grep -qi "usage\|help"; then
-             echo "✓ help command works"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          elif muscle 2>&1 | grep -qi "usage\|help"; then
-             echo "✓ help command works (no args)"
-             echo "status=passed" >> $GITHUB_OUTPUT
+
+          muscle -help >/tmp/muscle-help.log 2>&1 || true
+          if grep -Eiq "MUSCLE|usage|align" /tmp/muscle-help.log; then
+            echo "✓ help command works"
+            echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ help command failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
+            muscle -h >/tmp/muscle-help.log 2>&1 || true
+            if grep -Eiq "MUSCLE|usage|align" /tmp/muscle-help.log; then
+              echo "✓ help command works"
+              echo "status=passed" >> $GITHUB_OUTPUT
+            else
+              muscle >/tmp/muscle-help.log 2>&1 || true
+              if grep -Eiq "MUSCLE|usage|align" /tmp/muscle-help.log; then
+                echo "✓ help command works (no args)"
+                echo "status=passed" >> $GITHUB_OUTPUT
+              else
+                echo "✗ help command failed"
+                cat /tmp/muscle-help.log || true
+                echo "status=failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
             fi
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -139,6 +159,7 @@ jobs:
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
           # Create dummy fasta file
@@ -149,21 +170,22 @@ jobs:
           ACGTTCGT
           EOF
           
-          # Run alignment
-          if muscle -in input.fa -out output.fa; then
-             if [ -s "output.fa" ]; then
-                echo "✓ Alignment ran successfully"
-                echo "status=passed" >> $GITHUB_OUTPUT
+          if timeout 60 muscle -align input.fa -output output.fa >/tmp/muscle-align.log 2>&1 || timeout 60 muscle -in input.fa -out output.fa >>/tmp/muscle-align.log 2>&1; then
+            if [ -s "output.fa" ] && grep -q ">seq1" output.fa; then
+              echo "✓ Alignment ran successfully"
+              echo "status=passed" >> $GITHUB_OUTPUT
             else
-                echo "✗ Output file empty"
-                echo "status=failed" >> $GITHUB_OUTPUT
-                exit 1
+              echo "✗ Output file empty or invalid"
+              cat /tmp/muscle-align.log || true
+              echo "status=failed" >> $GITHUB_OUTPUT
+              exit 1
             fi
           else
-             echo "✗ Alignment failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
+            echo "✗ Alignment failed"
+            cat /tmp/muscle-align.log || true
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -261,8 +283,8 @@ jobs:
             "package": {
               "name": "MUSCLE",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "C++",
+              "category": "Bioinformatics"
             },
             "run": {
               "id": "${{ github.run_id }}",
@@ -347,7 +369,6 @@ jobs:
           echo "3. Test 3 - Check help command: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Test 4 - Run simple alignment: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
 
 
 

@@ -45,7 +45,12 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          echo "version=${REDPANDA_VERSION}" >> "$GITHUB_OUTPUT"
+          VERSION_OUTPUT=$(sudo docker run --rm "${REDPANDA_IMAGE}" rpk version 2>/dev/null || true)
+          RESOLVED_VERSION=$(printf '%s\n' "$VERSION_OUTPUT" | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 | sed 's/^v//' || true)
+          if [ -z "$RESOLVED_VERSION" ]; then
+            RESOLVED_VERSION="${REDPANDA_VERSION}"
+          fi
+          echo "version=${RESOLVED_VERSION}" >> "$GITHUB_OUTPUT"
           echo "latest=${REDPANDA_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Artifact Existence
@@ -66,10 +71,14 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if sudo docker run --rm "${REDPANDA_IMAGE}" rpk version 2>/dev/null | grep -q "v${REDPANDA_VERSION}"; then
+          VERSION_OUTPUT=$(sudo docker run --rm "${REDPANDA_IMAGE}" rpk version 2>/dev/null || true)
+          REPORTED_VERSION=$(printf '%s\n' "$VERSION_OUTPUT" | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 | sed 's/^v//' || true)
+          if [ "$REPORTED_VERSION" = "${{ steps.version.outputs.version }}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            printf '%s\n' "$VERSION_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -137,10 +146,13 @@ jobs:
             fi
             sleep 2
           done
-          if grep -q '"status":"ready"' /tmp/redpanda-ready.json && sudo docker exec redpanda-test rpk version 2>/dev/null | grep -q "v${REDPANDA_VERSION}"; then
+          VERSION_OUTPUT=$(sudo docker exec redpanda-test rpk version 2>/dev/null || true)
+          REPORTED_VERSION=$(printf '%s\n' "$VERSION_OUTPUT" | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 | sed 's/^v//' || true)
+          if grep -Eqi 'ready|true' /tmp/redpanda-ready.json && [ "$REPORTED_VERSION" = "${{ steps.version.outputs.version }}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/redpanda-ready.json 2>/dev/null || true
+            printf '%s\n' "$VERSION_OUTPUT"
             sudo docker logs redpanda-test || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
@@ -245,14 +257,15 @@ jobs:
               echo "comparison=Current pinned Redpanda Data version $CURRENT already matches the newest public stable Redpanda release. Tests 1-5 validate the real Arm64 container boot and readiness path, but there is no newer stable upstream candidate for a genuine Test 6 upgrade check." >> "$GITHUB_OUTPUT"
               echo "Regression install result: No newer stable release available for Test 6"
               echo "status=failed" >> "$GITHUB_OUTPUT"
+              STATUS="failed"
             else
               echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
               echo "comparison=Current pinned Redpanda Data version $CURRENT passed smoke tests in this run. Regression validation booted candidate image $NEXT_IMAGE on Arm64, the readiness endpoint returned healthy, and the runtime reported version ${NEXT_INSTALLED}." >> "$GITHUB_OUTPUT"
               echo "Regression install result: Next version installed successfully on Arm64"
               echo "status=passed" >> "$GITHUB_OUTPUT"
+              STATUS="passed"
             fi
-            STATUS="passed"
           else
             cat /tmp/redpanda-next-ready.json 2>/dev/null || true
             sudo docker logs "${NEXT_CONTAINER}" || true

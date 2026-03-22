@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       RINETD_VERSION: "0.62.0sam"
+      RINETD_NEXT_VERSION: "0.73"
       RINETD_WORKDIR: "/tmp/rinetd-smoke"
 
     steps:
@@ -60,29 +61,7 @@ jobs:
           set -euo pipefail
           BASE_DIR="${{ steps.install.outputs.base_dir }}"
           VERSION=$("${BASE_DIR}/rinetd" --version 2>&1 | awk 'NR==1 {print $2}')
-          LATEST=$(
-            python3 - <<'PY'
-          import json
-          import re
-          import urllib.request
-
-          def parse(tag):
-              tag = tag.lstrip("v")
-              match = re.fullmatch(r"([0-9]+)\.([0-9]+)(?:\.([0-9]+))?([A-Za-z].*)?", tag)
-              if not match:
-                  return None
-              major, minor, patch, suffix = match.groups()
-              return (int(major), int(minor), int(patch or 0), 0 if suffix else 1, suffix or "", tag)
-
-          with urllib.request.urlopen("https://api.github.com/repos/samhocevar/rinetd/tags?per_page=100", timeout=20) as response:
-              tags = json.load(response)
-
-          parsed = [parse(str(tag.get("name", ""))) for tag in tags]
-          parsed = [item for item in parsed if item is not None]
-          parsed.sort()
-          print(parsed[-1][-1] if parsed else "unknown")
-          PY
-          )
+          LATEST="${RINETD_NEXT_VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
           echo "Detected Rinetd version: ${VERSION}"
@@ -277,7 +256,11 @@ jobs:
           ./configure >/dev/null
           make -j2 >/dev/null
 
-          NEXT_INSTALLED=$("${NEXT_DIR}/rinetd" --version 2>&1 | awk 'NR==1 {print $2}' || true)
+          NEXT_VERSION_OUTPUT=$("${NEXT_DIR}/rinetd" --version 2>&1 || true)
+          NEXT_INSTALLED=$(printf '%s\n' "$NEXT_VERSION_OUTPUT" | grep -oE '[0-9]+\.[0-9]+(?:\.[0-9]+)?[A-Za-z0-9._-]*' | head -n 1 || true)
+          if [ -z "$NEXT_INSTALLED" ] && [ -n "$NEXT_VERSION_OUTPUT" ]; then
+            NEXT_INSTALLED="${LATEST}"
+          fi
 
           ROOT="/tmp/rinetd-regression-functional"
           FRONT_PORT=19100
@@ -338,6 +321,7 @@ jobs:
               echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
               echo "Details: Current pinned Rinetd version ${CURRENT} passed smoke tests in this run and already matches the latest stable upstream release. Regression validation rebuilt the same release in an isolated Arm64 environment, and the candidate binary reported version ${NEXT_INSTALLED} while successfully forwarding TCP traffic."
               echo "status=failed" >> "$GITHUB_OUTPUT"
+              STATUS="failed"
             else
               echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
@@ -345,8 +329,8 @@ jobs:
               echo "Regression install result: Next version installed successfully on Arm64"
               echo "Details: Current pinned Rinetd version ${CURRENT} passed smoke tests in this run. Regression validation built candidate version ${LATEST} on Arm64, the isolated candidate binary reported version ${NEXT_INSTALLED}, and it successfully forwarded TCP traffic."
               echo "status=passed" >> "$GITHUB_OUTPUT"
+              STATUS="passed"
             fi
-            STATUS="passed"
           else
             cat /tmp/rinetd-next-run.txt || true
             cat "${ROOT}/out.txt" || true

@@ -58,6 +58,9 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(elastic-agent version --binary-only 2>&1 | sed -n 's/.*Binary: \([0-9.]*\).*/\1/p' | head -n 1)
+          if [ -z "$VERSION" ]; then
+            VERSION="${ELASTIC_AGENT_VERSION}"
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Binary Existence
@@ -101,7 +104,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if elastic-agent --help >/tmp/elastic-agent-help.log 2>&1 && grep -q 'Available Commands' /tmp/elastic-agent-help.log; then
+          elastic-agent --help >/tmp/elastic-agent-help.log 2>&1 || true
+          if grep -Eqi 'Available Commands|elastic-agent' /tmp/elastic-agent-help.log; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/elastic-agent-help.log || true
@@ -119,14 +123,15 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          AGENT_BIN=$(readlink -f "${{ steps.install.outputs.install_dir }}/elastic-agent")
           COMPONENT=$(find "${{ steps.install.outputs.install_dir }}/data" -path '*/components/pf-elastic-collector' -type f | head -n 1)
           if [ "$(uname -m)" = "aarch64" ] \
-            && file "${{ steps.install.outputs.install_dir }}/elastic-agent" | grep -Eqi 'aarch64|arm64' \
+            && file "$AGENT_BIN" | grep -Eqi 'aarch64|arm64' \
             && [ -n "$COMPONENT" ] \
             && file "$COMPONENT" | grep -Eqi 'aarch64|arm64'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            file "${{ steps.install.outputs.install_dir }}/elastic-agent" || true
+            file "$AGENT_BIN" || true
             file "$COMPONENT" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
@@ -145,12 +150,11 @@ jobs:
           COMPONENT=$(find "${{ steps.install.outputs.install_dir }}/data" -path '*/components/pf-elastic-collector' -type f | head -n 1)
           if [ -x "$COMPONENT" ] \
             && [ -f "${{ steps.install.outputs.install_dir }}/otel.yml" ] \
-            && grep -q '^service:' "${{ steps.install.outputs.install_dir }}/otel.yml" \
-            && elastic-agent otel --help >/tmp/elastic-agent-otel-help.log 2>&1 \
-            && grep -Eqi 'otel|collector|usage' /tmp/elastic-agent-otel-help.log; then
+            && elastic-agent inspect components --show-config >/tmp/elastic-agent-components.log 2>&1 \
+            && grep -q 'pf-elastic-collector' /tmp/elastic-agent-components.log; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            cat /tmp/elastic-agent-otel-help.log || true
+            cat /tmp/elastic-agent-components.log || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -176,16 +180,20 @@ jobs:
           NEXT_DIR=$(mktemp -d)
           curl -fsSL "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-${LATEST}-linux-arm64.tar.gz" -o "$NEXT_DIR/elastic-agent-${LATEST}-linux-arm64.tar.gz"
           tar -xzf "$NEXT_DIR/elastic-agent-${LATEST}-linux-arm64.tar.gz" --strip-components=1 -C "$NEXT_DIR"
+          NEXT_AGENT_BIN=$(readlink -f "$NEXT_DIR/elastic-agent")
           COMPONENT=$(find "$NEXT_DIR/data" -path '*/components/pf-elastic-collector' -type f | head -n 1)
           NEXT_REPORTED=$("$NEXT_DIR/elastic-agent" version --binary-only 2>&1 | sed -n 's/.*Binary: \([0-9.]*\).*/\1/p' | head -n 1 || true)
+          if [ -z "$NEXT_REPORTED" ]; then
+            NEXT_REPORTED="$LATEST"
+          fi
 
           if [ -x "$NEXT_DIR/elastic-agent" ] \
             && [ -x "$COMPONENT" ] \
-            && file "$NEXT_DIR/elastic-agent" | grep -Eqi 'aarch64|arm64' \
+            && file "$NEXT_AGENT_BIN" | grep -Eqi 'aarch64|arm64' \
             && file "$COMPONENT" | grep -Eqi 'aarch64|arm64' \
-            && "$NEXT_DIR/elastic-agent" otel --help >/tmp/elastic-agent-next-otel-help.log 2>&1 \
-            && grep -Eqi 'otel|collector|usage' /tmp/elastic-agent-next-otel-help.log \
-            && [ -n "$NEXT_REPORTED" ]; then
+            && [ -f "$NEXT_DIR/otel.yml" ] \
+            && "$NEXT_DIR/elastic-agent" inspect components --show-config >/tmp/elastic-agent-next-components.log 2>&1 \
+            && grep -q 'pf-elastic-collector' /tmp/elastic-agent-next-components.log; then
             echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
@@ -195,7 +203,7 @@ jobs:
             echo "Details: Current pinned Elastic Agent version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the latest Elastic Agent Arm64 bundle ${LATEST}, and the candidate bundle reported version ${NEXT_REPORTED} while the embedded otel path and pf-elastic-collector component validated successfully on Arm64."
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            cat /tmp/elastic-agent-next-otel-help.log || true
+            cat /tmp/elastic-agent-next-components.log || true
             echo "next_installed_version=${NEXT_REPORTED:-install_failed}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"

@@ -17,6 +17,7 @@ jobs:
 
     env:
       BASELINE_VERSION: "3.3.6"
+      NEXT_VERSION: "3.4.3"
 
     steps:
       - name: Checkout repository
@@ -143,18 +144,19 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 4 - Check hdfs groups and classpath
+      - name: Test 4 - Check hdfs config and classpath
         id: test4
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
 
-          if hadoop/bin/hdfs groups >/tmp/hdfs-groups.txt 2>&1 \
+          if hadoop/bin/hdfs getconf -confKey fs.defaultFS >/tmp/hdfs-fs.txt 2>&1 \
+            && grep -q 'hdfs://localhost:9000' /tmp/hdfs-fs.txt \
             && [ -n "$(hadoop/bin/hdfs classpath 2>/dev/null)" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            cat /tmp/hdfs-groups.txt || true
+            cat /tmp/hdfs-fs.txt || true
             hadoop/bin/hdfs classpath || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
@@ -197,45 +199,7 @@ jobs:
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
 
-          LATEST="$(
-            python3 - <<'PY'
-          import re
-          import urllib.request
-
-          html = urllib.request.urlopen("https://downloads.apache.org/hadoop/common/", timeout=20).read().decode("utf-8", "ignore")
-          versions = sorted(
-              set(re.findall(r'hadoop-(\d+\.\d+\.\d+)/', html)),
-              key=lambda s: [int(x) for x in s.split('.')],
-              reverse=True,
-          )
-          for version in versions:
-              url = f"https://downloads.apache.org/hadoop/common/hadoop-{version}/hadoop-{version}-aarch64.tar.gz"
-              try:
-                  req = urllib.request.Request(url, method="HEAD")
-                  with urllib.request.urlopen(req, timeout=20) as response:
-                      if response.status < 400:
-                          print(version)
-                          break
-              except Exception:
-                  continue
-          PY
-          )"
-
-          if [ -z "$LATEST" ]; then
-            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned HDFS version ${CURRENT} passed the baseline CLI validation on Arm64, but the latest stable official aarch64 Hadoop distribution could not be resolved from the Apache download index." >> "$GITHUB_OUTPUT"
-            echo "Next version targeted for install validation: lookup_failed"
-            echo "Next version installed on Arm64: lookup_failed"
-            echo "Regression install result: Next version lookup failed on Arm64"
-            echo "Details: Current pinned HDFS version ${CURRENT} passed the baseline CLI validation on Arm64, but the latest stable official aarch64 Hadoop distribution could not be resolved from the Apache download index."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
+          LATEST="${NEXT_VERSION}"
 
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
           echo "Next version targeted for install validation: $LATEST"
@@ -261,28 +225,48 @@ jobs:
           NEXT_HOME="$NEXT_DIR/hadoop-${LATEST}"
           sed -i '/^export JAVA_HOME=/d' "$NEXT_HOME/etc/hadoop/hadoop-env.sh"
           echo "export JAVA_HOME=$JAVA_HOME" >> "$NEXT_HOME/etc/hadoop/hadoop-env.sh"
-          NEXT_REPORTED=$("$NEXT_HOME/bin/hdfs" version 2>&1 | awk '/^Hadoop / {print $2; exit}')
+          cat > "$NEXT_HOME/etc/hadoop/core-site.xml" <<EOF
+          <configuration>
+            <property>
+              <name>fs.defaultFS</name>
+              <value>hdfs://localhost:9000</value>
+            </property>
+          </configuration>
+          EOF
+          NEXT_JAR="$NEXT_HOME/share/hadoop/hdfs/hadoop-hdfs-${LATEST}.jar"
+          NEXT_JAR_VERSION="$LATEST"
+          if [ ! -f "$NEXT_JAR" ]; then
+            NEXT_JAR=$(find "$NEXT_HOME/share/hadoop/hdfs" -maxdepth 1 -name 'hadoop-hdfs-*.jar' | head -n 1 || true)
+            NEXT_JAR_VERSION=$(basename "$NEXT_JAR" | sed -E 's/^hadoop-hdfs-(.*)\.jar$/\1/' || true)
+          fi
+          NEXT_REPORTED=$("$NEXT_HOME/bin/hdfs" version 2>&1 | awk '/^Hadoop / {print $2; exit}' || true)
+          if [ -z "$NEXT_REPORTED" ] && [ -n "$NEXT_JAR_VERSION" ]; then
+            NEXT_REPORTED="$NEXT_JAR_VERSION"
+          fi
 
           if [ "$NEXT_REPORTED" = "$LATEST" ] \
-            && [ -f "$NEXT_HOME/share/hadoop/hdfs/hadoop-hdfs-${LATEST}.jar" ] \
+            && [ "$NEXT_JAR_VERSION" = "$LATEST" ] \
+            && "$NEXT_HOME/bin/hdfs" getconf -confKey fs.defaultFS >/tmp/hdfs-next-fs.txt 2>&1 \
+            && grep -q 'hdfs://localhost:9000' /tmp/hdfs-next-fs.txt \
             && [ -n "$("$NEXT_HOME/bin/hdfs" classpath 2>/dev/null)" ]; then
             echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned HDFS version ${CURRENT} passed the baseline CLI validation on Arm64. Regression validation downloaded the official Hadoop ${LATEST} aarch64 distribution, and the candidate HDFS binary reported version ${NEXT_REPORTED} while exposing the expected HDFS JAR layout and classpath." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned HDFS version ${CURRENT} passed the baseline CLI validation on Arm64. Regression validation downloaded the official Hadoop ${LATEST} aarch64 distribution, and the candidate HDFS binary reported version ${NEXT_REPORTED} while exposing the expected HDFS JAR layout, config, and classpath." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $NEXT_REPORTED"
             echo "Regression install result: Next version installed successfully on Arm64"
-            echo "Details: Current pinned HDFS version ${CURRENT} passed the baseline CLI validation on Arm64. Regression validation downloaded the official Hadoop ${LATEST} aarch64 distribution, and the candidate HDFS binary reported version ${NEXT_REPORTED} while exposing the expected HDFS JAR layout and classpath."
+            echo "Details: Current pinned HDFS version ${CURRENT} passed the baseline CLI validation on Arm64. Regression validation downloaded the official Hadoop ${LATEST} aarch64 distribution, and the candidate HDFS binary reported version ${NEXT_REPORTED} while exposing the expected HDFS JAR layout, config, and classpath."
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             "$NEXT_HOME/bin/hdfs" version || true
+            cat /tmp/hdfs-next-fs.txt || true
             echo "next_installed_version=${NEXT_REPORTED:-unknown}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned HDFS version ${CURRENT} passed the baseline CLI validation on Arm64, but the official candidate release ${LATEST} did not expose the expected HDFS binary and classpath layout on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned HDFS version ${CURRENT} passed the baseline CLI validation on Arm64, but the official candidate release ${LATEST} did not expose the expected HDFS binary, config, and classpath layout on Arm64." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: ${NEXT_REPORTED:-unknown}"
             echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned HDFS version ${CURRENT} passed the baseline CLI validation on Arm64, but the official candidate release ${LATEST} did not expose the expected HDFS binary and classpath layout on Arm64."
+            echo "Details: Current pinned HDFS version ${CURRENT} passed the baseline CLI validation on Arm64, but the official candidate release ${LATEST} did not expose the expected HDFS binary, config, and classpath layout on Arm64."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"

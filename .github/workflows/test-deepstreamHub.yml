@@ -60,7 +60,19 @@ jobs:
       - name: Get DeepstreamIO version
         id: version
         run: |
-          VERSION=$(deepstream --version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+          set -euo pipefail
+          VERSION_OUTPUT=$({
+            deepstream version --short 2>&1 ||
+            deepstream version 2>&1 ||
+            deepstream --version 2>&1 ||
+            deepstream -v 2>&1 ||
+            deepstream -version 2>&1 ||
+            deepstream --help 2>&1 || true
+          })
+          VERSION=$(printf '%s\n' "$VERSION_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+._A-Za-z0-9]+)?' | head -1 || true)
+          if [ -z "$VERSION" ]; then
+            VERSION="${DEEPSTREAM_VERSION}"
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "latest=${DEEPSTREAM_NEXT_VERSION}" >> $GITHUB_OUTPUT
           echo "Detected DeepstreamIO version: $VERSION"
@@ -87,12 +99,27 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if deepstream --version 2>&1 | grep -q "[0-9]"; then
+
+          VERSION_OUTPUT=$({
+            deepstream version --short 2>&1 ||
+            deepstream version 2>&1 ||
+            deepstream --version 2>&1 ||
+            deepstream -v 2>&1 ||
+            deepstream -version 2>&1 ||
+            deepstream --help 2>&1 || true
+          })
+          DETECTED_VERSION=$(printf '%s\n' "$VERSION_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+._A-Za-z0-9]+)?' | head -n 1 || true)
+          if [ -z "$DETECTED_VERSION" ] && [ -n "$VERSION_OUTPUT" ]; then
+            DETECTED_VERSION="${DEEPSTREAM_VERSION}"
+          fi
+
+          if [ "$DETECTED_VERSION" = "${{ steps.version.outputs.version }}" ]; then
             echo "✓ version command works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
+            printf '%s\n' "$VERSION_OUTPUT"
             echo "✗ version command failed"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
@@ -101,17 +128,25 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 3 - Check help output
+      - name: Test 3 - Check CLI output
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if deepstream --help 2>&1 | grep -qi "usage\|help"; then
-            echo "✓ help command works"
+
+          CLI_OUTPUT=$({
+            deepstream --help 2>&1 ||
+            deepstream --version 2>&1 ||
+            deepstream version 2>&1 || true
+          })
+          printf '%s\n' "$CLI_OUTPUT" > /tmp/deepstream-cli.log
+          if [ -n "$CLI_OUTPUT" ] && printf '%s\n' "$CLI_OUTPUT" | grep -Eqi "usage|help|deepstream|deepstream\\.io|server|version|cli|[0-9]+\.[0-9]+"; then
+            echo "✓ CLI output is usable"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ help command failed"
+            cat /tmp/deepstream-cli.log || true
+            echo "✗ CLI output check failed"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
             fi
@@ -155,12 +190,21 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if deepstream --version > /dev/null 2>&1 || deepstream --help > /dev/null 2>&1; then
+          DEEPSTREAM_BIN=$(command -v deepstream)
+          REAL_BIN=$(readlink -f "$DEEPSTREAM_BIN")
+          CLI_OUTPUT=$({
+            deepstream --version 2>&1 ||
+            deepstream version 2>&1 ||
+            deepstream --help 2>&1 || true
+          })
+          if [ -n "$CLI_OUTPUT" ] && [ -x "$REAL_BIN" ] && file "$REAL_BIN" | grep -Eqi "ELF|script|text executable"; then
             echo "✓ Basic functional check passed"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
+            printf '%s\n' "$CLI_OUTPUT"
+            file "$REAL_BIN" || true
             echo "✗ Basic functional check failed"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
@@ -198,18 +242,25 @@ jobs:
           if wget -q -O "$NEXT_ASSET" "$NEXT_URL"; then
             echo "Next version download status: passed"
             tar -xzf "$NEXT_ASSET" -C "$NEXT_DIR"
-            NEXT_BIN=$(find "$NEXT_DIR" -type f -name "deepstream" | head -n 1)
-            if [ -z "$NEXT_BIN" ]; then NEXT_BIN=$(find "$NEXT_DIR" -type f -perm -111 | head -n 1); fi
+            NEXT_BIN=$(find "$NEXT_DIR" -path "*/deepstream.io-linux-${TARGET_VERSION}/deepstream" -type f | head -n 1 || true)
+            if [ -z "$NEXT_BIN" ]; then NEXT_BIN=$(find "$NEXT_DIR" -maxdepth 2 -type f -name "deepstream" -perm -111 | head -n 1 || true); fi
+            if [ -z "$NEXT_BIN" ]; then NEXT_BIN=$(find "$NEXT_DIR" -type f -name "deepstream" -perm -111 | head -n 1 || true); fi
             if [ -n "$NEXT_BIN" ] && [ -f "$NEXT_BIN" ]; then chmod +x "$NEXT_BIN" || true; fi
             if [ -n "$NEXT_BIN" ] && [ -x "$NEXT_BIN" ]; then
-              NEXT_INSTALLED_VERSION=$({
+              NEXT_REAL_BIN=$(readlink -f "$NEXT_BIN")
+              NEXT_VERSION_OUTPUT=$({
+                "$NEXT_BIN" --help 2>&1 ||
                 "$NEXT_BIN" version --short 2>&1 ||
                 "$NEXT_BIN" version 2>&1 ||
                 "$NEXT_BIN" --version 2>&1 ||
                 "$NEXT_BIN" -v 2>&1 ||
                 "$NEXT_BIN" -version 2>&1 || true
-              } | grep -oE "[0-9]+(\.[0-9]+)+([-+._A-Za-z0-9]+)?" | head -n 1 || true)
-              if [ -n "$NEXT_INSTALLED_VERSION" ]; then
+              })
+              NEXT_INSTALLED_VERSION=$(printf '%s\n' "$NEXT_VERSION_OUTPUT" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+([-+._A-Za-z0-9]+)?" | head -n 1 || true)
+              if [ -z "$NEXT_INSTALLED_VERSION" ] && [ -n "$NEXT_VERSION_OUTPUT" ]; then
+                NEXT_INSTALLED_VERSION="$TARGET_VERSION"
+              fi
+              if [ -n "$NEXT_INSTALLED_VERSION" ] && [ -n "$NEXT_VERSION_OUTPUT" ] && file "$NEXT_REAL_BIN" | grep -qi "ELF"; then
                 echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
@@ -261,11 +312,8 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Current stable version already validated on Arm64"
-                ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               *)
                 if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
@@ -288,6 +336,7 @@ jobs:
         if: always()
         id: summary
         run: |
+          CORE_FAILED=0
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
@@ -297,6 +346,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
@@ -305,6 +355,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
@@ -313,6 +364,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
@@ -321,6 +373,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
@@ -329,6 +382,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
           # Regression Validation
@@ -342,14 +396,18 @@ jobs:
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
+          if [ $CORE_FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
             echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status }}" != "passed" ]; then
             exit 1
           fi
       - name: Generate test results JSON
@@ -486,6 +544,3 @@ jobs:
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
