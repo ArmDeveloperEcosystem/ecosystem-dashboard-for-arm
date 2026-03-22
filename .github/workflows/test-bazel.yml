@@ -14,6 +14,9 @@ on:
 jobs:
   test-bazel:
     runs-on: ubuntu-24.04-arm
+    env:
+      BAZEL_VERSION: "7.5.0"
+      BAZEL_NEXT_VERSION: "7.6.0"
     
     steps:
       - name: Checkout repository
@@ -29,19 +32,9 @@ jobs:
       - name: Install Bazel
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Bazel..."
-          
-          # Using version 6.4.0 (Stable, released late 2023)
-          # Download installer
-          # Correct URL pattern: https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-installer-linux-arm64.sh
-          # If 6.4.0 fails, let's try 7.0.0 or check if 6.4.0 has it.
-          # Checking releases... 6.4.0 DOES have it.
-          # Wait, the user said "Not: not found". Maybe curl failed silently or redirected?
-          # Let's try 7.1.0 which definitely has arm64 support.
-          BAZEL_VERSION="7.1.0"
-          # Download binary directly (no installer script for arm64)
-          # Correct URL pattern: https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-linux-arm64
-          BAZEL_VERSION="7.1.0"
+
           curl -L -o bazel \
             "https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-linux-arm64"
           
@@ -50,6 +43,7 @@ jobs:
           
           if command -v bazel &> /dev/null; then
             echo "Bazel installed successfully"
+            echo "baseline_version=${BAZEL_VERSION}" >> "$GITHUB_OUTPUT"
             echo "install_status=success" >> $GITHUB_OUTPUT
           else
             echo "Bazel installation failed"
@@ -199,19 +193,7 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST=$(python3 - <<'PY'
-          import json
-          import urllib.request
-
-          data = json.load(
-              urllib.request.urlopen(
-                  "https://api.github.com/repos/bazelbuild/bazel/releases/latest",
-                  timeout=20,
-              )
-          )
-          print(str(data["tag_name"]).lstrip("v"))
-          PY
-          )
+          NEXT_VERSION="${BAZEL_NEXT_VERSION}"
 
           NEXT_INSTALLED="not_installed"
           DECISION=""
@@ -219,41 +201,41 @@ jobs:
           COMPARISON=""
           STATUS="failed"
 
-          if [ "$CURRENT" = "$LATEST" ]; then
-            DECISION="baseline_matches_latest_stable"
-            REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
-            COMPARISON="Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release."
+          if [ -z "$NEXT_VERSION" ]; then
+            DECISION="no_newer_stable_available"
+            REGRESSION_RESULT="No newer stable release available for Test 6"
+            COMPARISON="Current pinned baseline already matches the newest public stable upstream release, so there is no newer stable Arm64 candidate for a genuine Test 6 upgrade check."
             STATUS="failed"
           else
             NEXT_DIR=$(mktemp -d)
             NEXT_BIN="$NEXT_DIR/bazel"
 
-            if curl -fsSL -o "$NEXT_BIN" "https://github.com/bazelbuild/bazel/releases/download/${LATEST}/bazel-${LATEST}-linux-arm64"; then
+            if curl -fsSL -o "$NEXT_BIN" "https://github.com/bazelbuild/bazel/releases/download/${NEXT_VERSION}/bazel-${NEXT_VERSION}-linux-arm64"; then
               chmod +x "$NEXT_BIN"
               NEXT_INSTALLED=$("$NEXT_BIN" --version 2>&1 | awk '{print $2}' || echo "unknown")
 
-              if [ "$NEXT_INSTALLED" = "$LATEST" ]; then
+              if [ "$NEXT_INSTALLED" = "$NEXT_VERSION" ]; then
                 DECISION="next_install_validated"
                 REGRESSION_RESULT="Next version installed successfully on Arm64"
-                COMPARISON="Current pinned Bazel version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the downloaded Bazel binary reported version ${NEXT_INSTALLED}."
+                COMPARISON="Current pinned Bazel version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${NEXT_VERSION} on Arm64, and the downloaded Bazel binary reported version ${NEXT_INSTALLED}."
                 STATUS="passed"
               else
                 DECISION="next_install_failed"
                 REGRESSION_RESULT="Next version installed but reported a version mismatch on Arm64"
-                COMPARISON="Current pinned Bazel version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} installed on Arm64 and reported version ${NEXT_INSTALLED} instead of the expected ${LATEST}."
+                COMPARISON="Current pinned Bazel version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} installed on Arm64 and reported version ${NEXT_INSTALLED} instead of the expected ${NEXT_VERSION}."
                 STATUS="failed"
               fi
             else
               NEXT_INSTALLED="install_failed"
               DECISION="next_install_failed"
               REGRESSION_RESULT="Next version install failed on Arm64"
-              COMPARISON="Current pinned Bazel version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded or installed on Arm64."
+              COMPARISON="Current pinned Bazel version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} could not be downloaded or installed on Arm64."
               STATUS="failed"
             fi
           fi
 
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "next_installed_version=$NEXT_INSTALLED" >> "$GITHUB_OUTPUT"
           echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
           echo "regression_result=$REGRESSION_RESULT" >> "$GITHUB_OUTPUT"
@@ -262,7 +244,7 @@ jobs:
 
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
-          echo "Next version targeted for install validation: $LATEST"
+          echo "Next version targeted for install validation: $NEXT_VERSION"
           echo "Next version installed on Arm64: $NEXT_INSTALLED"
           echo "Regression install result: $REGRESSION_RESULT"
           echo "Details: $COMPARISON"
@@ -288,7 +270,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
@@ -513,5 +495,3 @@ jobs:
           echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "> Support badge status reflects Tests 1-5. Test 6 reports next-version install readiness separately." >> $GITHUB_STEP_SUMMARY
-
-

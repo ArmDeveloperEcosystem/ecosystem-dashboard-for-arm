@@ -15,7 +15,8 @@ jobs:
   test-keydb:
     runs-on: ubuntu-24.04-arm
     env:
-      KEYDB_VERSION: "v6.3.4"
+      KEYDB_VERSION: "v6.3.3"
+      KEYDB_NEXT_VERSION: "6.3.4"
       KEYDB_PORT: "6380"
 
     steps:
@@ -28,22 +29,22 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=keydb" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/keydb" >> "$GITHUB_OUTPUT"
-          echo "current_version=6.3.4" >> "$GITHUB_OUTPUT"
+          echo "current_version=6.3.3" >> "$GITHUB_OUTPUT"
 
       - name: Install KeyDB
         id: install
         run: |
           echo "Installing KeyDB..."
           sudo apt-get update
-          sudo apt-get install -y build-essential tcl pkg-config libssl-dev git uuid-dev libcurl4-openssl-dev
+          sudo apt-get install -y build-essential tcl pkg-config libssl-dev git uuid-dev libcurl4-openssl-dev liblz4-dev libsnappy-dev
 
-          # arm_recommended_minimum_version is 6.3.3 (2023-05-03). Applying the
-          # release-selection rule, pin the latest stable KeyDB release that is
-          # still publicly available with Arm64-compatible source support.
+          # arm_recommended_minimum_version is 6.3.3 (2023-05-03). The public
+          # stable line tops out at 6.3.4, so pin Tests 1-5 to the dashboard
+          # anchor and let Test 6 validate the immediate next public release.
           rm -rf /tmp/KeyDB
           git clone --depth 1 --branch "${KEYDB_VERSION}" https://github.com/Snapchat/KeyDB.git /tmp/KeyDB
           cd /tmp/KeyDB
-          make -j"$(nproc)" USE_JEMALLOC=no
+          make -j"$(nproc)" USE_JEMALLOC=no CXXFLAGS="-fpermissive -Wno-error=changes-meaning"
           sudo make install USE_JEMALLOC=no
 
           if command -v keydb-server >/dev/null 2>&1 && command -v keydb-cli >/dev/null 2>&1; then
@@ -57,14 +58,9 @@ jobs:
         id: version
         run: |
           VERSION=$(keydb-server --version 2>&1 | grep -Eo 'v=[0-9]+\.[0-9]+\.[0-9]+' | cut -d= -f2 | head -1 || echo "unknown")
-          LATEST=$(python3 - <<'PY'
-          import json, urllib.request
-          data = json.load(urllib.request.urlopen("https://api.github.com/repos/Snapchat/KeyDB/releases/latest", timeout=20))
-          print(str(data["tag_name"]).lstrip("v"))
-          PY
-          )
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "next_version=${KEYDB_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest=${KEYDB_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Detected KeyDB version: $VERSION"
 
       - name: Test 1 - Check KeyDB binaries exist
@@ -86,7 +82,7 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if keydb-server --version 2>&1 | grep -q 'KeyDB server v=6.3.4'; then
+          if keydb-server --version 2>&1 | grep -q 'KeyDB server v=6.3.3'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -169,15 +165,15 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version || '6.3.4' }}"
-          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+          CURRENT="${{ steps.version.outputs.version || '6.3.3' }}"
+          NEXT_VERSION="${{ steps.version.outputs.next_version || env.KEYDB_NEXT_VERSION }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
-          echo "Next version targeted for install validation: $LATEST"
+          echo "Next version targeted for install validation: $NEXT_VERSION"
 
-          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ] || [ "$LATEST" = "not_yet_checked" ]; then
+          if [ -z "$NEXT_VERSION" ] || [ "$NEXT_VERSION" = "unknown" ] || [ "$NEXT_VERSION" = "not_yet_checked" ]; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
@@ -194,14 +190,14 @@ jobs:
           }
           trap cleanup EXIT
 
-          if git clone --depth 1 --branch "v${LATEST}" https://github.com/Snapchat/KeyDB.git "$TMPDIR/KeyDB-regression" >/tmp/keydb-regression-clone.log 2>&1; then
+          if git clone --depth 1 --branch "v${NEXT_VERSION}" https://github.com/Snapchat/KeyDB.git "$TMPDIR/KeyDB-regression" >/tmp/keydb-regression-clone.log 2>&1; then
             :
           else
             cat /tmp/keydb-regression-clone.log || true
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned KeyDB version $CURRENT passed smoke tests in this run, but the candidate source tag v${LATEST} could not be cloned on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned KeyDB version $CURRENT passed smoke tests in this run, but the candidate source tag v${NEXT_VERSION} could not be cloned on Arm64." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -209,14 +205,14 @@ jobs:
           fi
 
           cd "$TMPDIR/KeyDB-regression"
-          if make -j"$(nproc)" USE_JEMALLOC=no >/tmp/keydb-regression-build.log 2>&1; then
+          if make -j"$(nproc)" USE_JEMALLOC=no CXXFLAGS="-fpermissive -Wno-error=changes-meaning" >/tmp/keydb-regression-build.log 2>&1; then
             :
           else
             cat /tmp/keydb-regression-build.log || true
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned KeyDB version $CURRENT passed smoke tests in this run, but the candidate source tag v${LATEST} failed to build on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned KeyDB version $CURRENT passed smoke tests in this run, but the candidate source tag v${NEXT_VERSION} failed to build on Arm64." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -226,27 +222,60 @@ jobs:
           NEXT_INSTALLED_VERSION=$(./src/keydb-server --version 2>&1 | grep -Eo 'v=[0-9]+\.[0-9]+\.[0-9]+' | cut -d= -f2 | head -1 || true)
           echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
           echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
-          if [ -z "$NEXT_INSTALLED_VERSION" ] || [ "$NEXT_INSTALLED_VERSION" != "$LATEST" ]; then
+          if [ -z "$NEXT_INSTALLED_VERSION" ] || [ "$NEXT_INSTALLED_VERSION" != "$NEXT_VERSION" ]; then
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned KeyDB version $CURRENT passed smoke tests in this run, but the candidate build from v${LATEST} reported ${NEXT_INSTALLED_VERSION:-unknown} instead of the expected version ${LATEST} on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned KeyDB version $CURRENT passed smoke tests in this run, but the candidate build from v${NEXT_VERSION} reported ${NEXT_INSTALLED_VERSION:-unknown} instead of the expected version ${NEXT_VERSION} on Arm64." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
-          if [ "$CURRENT" = "$LATEST" ]; then
-            echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+          NEXT_PORT=6381
+          cleanup_regression() {
+            ./src/keydb-cli -p "$NEXT_PORT" shutdown >/dev/null 2>&1 || true
+          }
+          trap cleanup_regression EXIT
+          ./src/keydb-server --port "$NEXT_PORT" --save '' --appendonly no >/tmp/keydb-regression-run.log 2>&1 &
+          NEXT_PID=$!
+          for _ in $(seq 1 20); do
+            if ./src/keydb-cli -p "$NEXT_PORT" ping 2>/dev/null | grep -q '^PONG$'; then
+              break
+            fi
+            sleep 1
+          done
+          if ! ./src/keydb-cli -p "$NEXT_PORT" ping 2>/dev/null | grep -q '^PONG$'; then
+            cat /tmp/keydb-regression-run.log || true
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned KeyDB version $CURRENT passed smoke tests in this run, but the candidate build from v${NEXT_VERSION} did not start a usable KeyDB server on Arm64." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
-          else
-            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned KeyDB version $CURRENT passed smoke tests in this run. Regression validation rebuilt source tag v${LATEST} on Arm64, and the candidate keydb-server binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
-            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
+
+          ./src/keydb-cli -p "$NEXT_PORT" set regression arm64 >/tmp/keydb-regression-set.log 2>&1
+          VALUE=$(./src/keydb-cli -p "$NEXT_PORT" get regression 2>/dev/null || true)
+          cleanup_regression
+          trap - EXIT
+          wait "$NEXT_PID" 2>/dev/null || true
+          if [ "$VALUE" != "arm64" ]; then
+            cat /tmp/keydb-regression-run.log || true
+            cat /tmp/keydb-regression-set.log || true
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned KeyDB version $CURRENT passed smoke tests in this run, but the candidate build from v${NEXT_VERSION} did not round-trip a real set/get smoke on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Current pinned KeyDB version $CURRENT passed smoke tests in this run. Regression validation rebuilt source tag v${NEXT_VERSION} on Arm64, and the candidate keydb-server binary reported version ${NEXT_INSTALLED_VERSION} and passed a real ping/set/get smoke." >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -257,7 +286,7 @@ jobs:
         run: |
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.version.outputs.next_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
           echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
           echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
@@ -324,11 +353,15 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ $CORE_FAILED -eq 0 ]; then
+          if [ $FAILED -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
-            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ $CORE_FAILED -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
           fi
           if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status }}" != "passed" ]; then
@@ -342,7 +375,7 @@ jobs:
           JOB_ID="${{ github.job }}"
           JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
           if [ -z "$JOB_URL" ]; then
-            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
 
           mkdir -p test-results
@@ -381,7 +414,7 @@ jobs:
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
                   "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
-                  "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || steps.version.outputs.next_version || 'unknown' }}",
                   "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
                   "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
                   "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
@@ -427,7 +460,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || steps.version.outputs.next_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

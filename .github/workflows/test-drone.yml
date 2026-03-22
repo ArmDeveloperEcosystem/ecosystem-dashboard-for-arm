@@ -14,6 +14,9 @@ on:
 jobs:
   test-drone:
     runs-on: ubuntu-24.04-arm
+    env:
+      DRONE_VERSION: "1.8.0"
+      DRONE_NEXT_VERSION: "1.9.0"
 
     steps:
       - name: Checkout repository
@@ -25,11 +28,13 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=drone" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/drone" >> "$GITHUB_OUTPUT"
+          echo "current_version=${DRONE_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install Drone CLI
         id: install
         run: |
-          curl -fsSL https://github.com/harness/drone-cli/releases/latest/download/drone_linux_arm64.tar.gz -o drone.tar.gz
+          set -euo pipefail
+          curl -fsSL "https://github.com/harness/drone-cli/releases/download/v${DRONE_VERSION}/drone_linux_arm64.tar.gz" -o drone.tar.gz
           tar -xzf drone.tar.gz
           sudo install -m 0755 drone /usr/local/bin/drone
 
@@ -43,8 +48,10 @@ jobs:
       - name: Get Drone version
         id: version
         run: |
+          set -euo pipefail
           VERSION=$(drone --version | awk '{print $3}')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=${DRONE_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Binary Existence
         id: test1
@@ -68,7 +75,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
 
-          if drone --version | grep -Eq '^drone version [0-9]'; then
+          if drone --version | grep -Eq "^drone version ${DRONE_VERSION}(\\b|$)"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -144,13 +151,84 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+          NEXT_DIR=$(mktemp -d)
+          NEXT_TAR="${NEXT_DIR}/drone.tar.gz"
+          NEXT_URL="https://github.com/harness/drone-cli/releases/download/v${LATEST}/drone_linux_arm64.tar.gz"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ -z "${LATEST}" ] || [ "${LATEST}" = "unknown" ] || [ "${LATEST}" = "not_yet_checked" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Drone version ${CURRENT} passed smoke tests in this run, but the next stable version could not be resolved for Arm64 install validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if ! curl -fsSL "${NEXT_URL}" -o "${NEXT_TAR}"; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Drone version ${CURRENT} passed smoke tests in this run, but the candidate artifact ${NEXT_URL} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          tar -xzf "${NEXT_TAR}" -C "${NEXT_DIR}"
+          NEXT_BIN="${NEXT_DIR}/drone"
+          if [ ! -x "${NEXT_BIN}" ]; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Drone version ${CURRENT} passed smoke tests in this run, but the candidate archive ${NEXT_URL} did not expose a usable Arm64 drone binary." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_VERSION=$("${NEXT_BIN}" --version | awk '{print $3}' || true)
+          if [ "${NEXT_VERSION}" = "${LATEST}" ] \
+            && "${NEXT_BIN}" --help >/tmp/drone-next-help.txt 2>&1 \
+            && grep -q '^USAGE:' /tmp/drone-next-help.txt \
+            && "${NEXT_BIN}" lint .drone.yml >/tmp/drone-next-lint.txt 2>&1; then
+            echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            if [ "${CURRENT}" = "${LATEST}" ]; then
+              echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+              echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            else
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Drone version ${CURRENT} passed smoke tests in this run. Regression validation downloaded candidate version ${LATEST} for Arm64, and the extracted binary reported version ${NEXT_VERSION} while successfully completing help and lint checks on Arm64." >> "$GITHUB_OUTPUT"
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            cat /tmp/drone-next-help.txt || true
+            cat /tmp/drone-next-lint.txt || true
+            echo "next_installed_version=${NEXT_VERSION:-install_failed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Drone version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not complete the isolated Arm64 validation path successfully." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 

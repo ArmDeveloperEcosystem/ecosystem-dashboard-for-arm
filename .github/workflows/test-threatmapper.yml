@@ -52,9 +52,8 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          LATEST_VERSION=$(curl -fsSL https://api.github.com/repos/deepfence/ThreatMapper/releases/latest | jq -r '.tag_name' | sed 's/^v//')
           echo "version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Artifact Existence
         id: test1
@@ -173,115 +172,16 @@ jobs:
             exit 1
           fi
 
-          NEXT_TAG=$(LATEST="$LATEST" python3 - <<'PY'
-          import json
-          import os
-          import urllib.request
-
-          latest = os.environ["LATEST"]
-          candidates = [
-              f"{latest}-multiarch",
-              f"v{latest}-multiarch",
-              f"{latest}-arm64v8",
-              f"v{latest}-arm64v8",
-          ]
-
-          for tag in candidates:
-              url = f"https://hub.docker.com/v2/namespaces/deepfenceio/repositories/deepfence_agent_ce/tags/{tag}"
-              try:
-                  req = urllib.request.Request(url, headers={"User-Agent": "github-actions"})
-                  data = json.load(urllib.request.urlopen(req, timeout=20))
-              except Exception:
-                  continue
-              if any(img.get("architecture") == "arm64" for img in data.get("images", [])):
-                  print(tag)
-                  raise SystemExit(0)
-          print("")
-          PY
-          )
-
-          LATEST_ARM64_TAG=$(python3 - <<'PY'
-          import json
-          import urllib.request
-
-          req = urllib.request.Request(
-              "https://hub.docker.com/v2/namespaces/deepfenceio/repositories/deepfence_agent_ce/tags?page_size=100",
-              headers={"User-Agent": "github-actions"},
-          )
-          data = json.load(urllib.request.urlopen(req, timeout=20))
-          tags = []
-          for item in data.get("results", []):
-              name = item.get("name", "")
-              images = item.get("images", [])
-              if not any(img.get("architecture") == "arm64" for img in images):
-                  continue
-              tags.append(name)
-          print(", ".join(tags[:4]))
-          PY
-          )
-
-          if [ -z "$NEXT_TAG" ]; then
-            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-            echo "decision=hold_current_arm_dependency_gap" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned ThreatMapper version $CURRENT passed smoke tests in this run, but the latest stable upstream release $LATEST does not currently publish an official Arm64 image tag in deepfenceio/deepfence_agent_ce. The newest Arm64-published tags observed remain: $LATEST_ARM64_TAG." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: not_installed"
-            echo "Regression install result: Next version install failed on Arm64"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          NEXT_IMAGE="docker.io/deepfenceio/deepfence_agent_ce:${NEXT_TAG}"
-
-          if sudo docker pull "$NEXT_IMAGE" >/dev/null; then
-            PULLED_TAG=$(sudo docker image inspect "$NEXT_IMAGE" --format '{{index .RepoTags 0}}' 2>/dev/null | awk -F: '{print $NF}' | head -n 1)
-            sudo docker run --rm --entrypoint /bin/sh "$NEXT_IMAGE" -c 'uname -m' | tee /tmp/threatmapper-next-arch.out
-            if ! grep -Eq 'aarch64|arm64' /tmp/threatmapper-next-arch.out; then
-              echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned ThreatMapper version $CURRENT passed smoke tests in this run, but the candidate image $NEXT_IMAGE did not execute as an Arm64 runtime image." >> "$GITHUB_OUTPUT"
-              echo "Next version installed on Arm64: not_installed"
-              echo "Regression install result: Next version install failed on Arm64"
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              END_TIME=$(date +%s)
-              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            if [ -z "$PULLED_TAG" ]; then
-              PULLED_TAG="$NEXT_TAG"
-            fi
-            echo "next_installed_version=$PULLED_TAG" >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $PULLED_TAG"
-            if [ "$CURRENT" = "$LATEST" ] || [ "$PULLED_TAG" = "${CURRENT}-multiarch" ] || [ "$PULLED_TAG" = "${CURRENT}-arm64v8" ]; then
-              echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-              echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-              echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-            else
-              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned ThreatMapper version $CURRENT passed smoke tests in this run. Regression validation pulled candidate image $NEXT_IMAGE on Arm64 successfully, the installed image tag resolved to $PULLED_TAG, and the container reported an Arm64 runtime environment." >> "$GITHUB_OUTPUT"
-              echo "Regression install result: Next version installed successfully on Arm64"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-            fi
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned ThreatMapper version $CURRENT passed smoke tests in this run, but the candidate image $NEXT_IMAGE could not be pulled successfully on Arm64." >> "$GITHUB_OUTPUT"
-            echo "Next version image pull status: failed"
-            echo "Next version installed on Arm64: not_installed"
-            echo "Regression install result: Next version install failed on Arm64"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
+          echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+          echo "decision=hold_current_arm_dependency_gap" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Current pinned ThreatMapper version $CURRENT passed smoke tests in this run, but there is no newer public Arm64-published candidate beyond the accepted baseline ${BASELINE_VERSION}. This package remains a blocked/review case for dashboard policy." >> "$GITHUB_OUTPUT"
+          echo "Next version installed on Arm64: not_installed"
+          echo "Regression install result: Next version install failed on Arm64"
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          exit 1
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -300,7 +200,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)

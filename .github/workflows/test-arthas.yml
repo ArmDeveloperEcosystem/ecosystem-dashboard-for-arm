@@ -14,6 +14,9 @@ on:
 jobs:
   test-arthas:
     runs-on: ubuntu-24.04-arm
+    env:
+      ARTHAS_VERSION: "4.0.5"
+      ARTHAS_NEXT_VERSION: "4.1.0"
     
     steps:
       - name: Checkout repository
@@ -35,23 +38,26 @@ jobs:
       - name: Install Arthas
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Arthas..."
-          # Download arthas-boot.jar
-          curl -O https://arthas.aliyun.com/arthas-boot.jar
-          
+          BASELINE_VERSION="${ARTHAS_VERSION}"
+          BASELINE_TAG="arthas-all-${BASELINE_VERSION}"
+          curl -fsSLo arthas-bin.zip "https://github.com/alibaba/arthas/releases/download/${BASELINE_TAG}/arthas-bin.zip"
+          unzip -q arthas-bin.zip -d arthas-current
+
+          echo "baseline_version=${BASELINE_VERSION}" >> $GITHUB_OUTPUT
+          echo "baseline_tag=${BASELINE_TAG}" >> $GITHUB_OUTPUT
+          echo "baseline_home=$PWD/arthas-current" >> $GITHUB_OUTPUT
           echo "install_status=success" >> $GITHUB_OUTPUT
       
       - name: Get Arthas version
         id: version
         run: |
-          # Run help to get version or just use jar version
-          # Pinning to 3.7.2 for stability
-          OUTPUT=$(java -jar arthas-boot.jar --use-version 3.7.2 --help)
-          VERSION=$(echo "$OUTPUT" | grep -oE "3\.7\.2" | head -n1)
+          VERSION=$(unzip -p "${{ steps.install.outputs.baseline_home }}/arthas-core.jar" META-INF/MANIFEST.MF | awk -F': ' '/^Implementation-Version:/ {print $2; exit}')
           
           if [ -z "$VERSION" ]; then 
-             echo "Could not detect version from output: $OUTPUT"
-             VERSION="3.7.2"
+             echo "Could not detect version from extracted manifest"
+             VERSION="${{ steps.install.outputs.baseline_version }}"
           fi
           
           echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -63,12 +69,12 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if java -jar arthas-boot.jar --use-version 3.7.2 --help | grep -q "arthas-boot"; then
+          if java -jar "${{ steps.install.outputs.baseline_home }}/arthas-boot.jar" --help | grep -q "arthas-boot"; then
             echo "✓ arthas-boot executes"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
             echo "✗ arthas-boot execution failed"
-            java -jar arthas-boot.jar --use-version 3.7.2 --help
+            java -jar "${{ steps.install.outputs.baseline_home }}/arthas-boot.jar" --help
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
             fi
@@ -128,7 +134,7 @@ jobs:
           # but we can try to run it and check output.
           
           # Using --help as a proxy for functionality if attach is restricted
-          if java -jar arthas-boot.jar --use-version 3.7.2 --help | grep -q "Usage"; then
+          if java -jar "${{ steps.install.outputs.baseline_home }}/arthas-boot.jar" --help | grep -q "Usage"; then
              echo "✓ arthas help works (proxy for functionality)"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -176,7 +182,7 @@ jobs:
           echo "Performing generic functional check..."
           
           # Since we installed arthas-boot.jar, we should check if we can execute it
-          if java -jar arthas-boot.jar --help > /dev/null 2>&1; then
+          if java -jar "${{ steps.install.outputs.baseline_home }}/arthas-boot.jar" --help > /dev/null 2>&1; then
             echo "✓ arthas-boot.jar is executable"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -195,11 +201,9 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST_TAG=$(GH_TOKEN=${{ github.token }} gh api repos/alibaba/arthas/releases/latest --jq .tag_name 2>/dev/null || true)
-          LATEST="${LATEST_TAG#arthas-all-}"
-          LATEST="${LATEST#v}"
+          NEXT_VERSION="${ARTHAS_NEXT_VERSION}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          if [ -z "$LATEST" ]; then
+          if [ -z "$NEXT_VERSION" ]; then
             echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
@@ -215,45 +219,52 @@ jobs:
             exit 1
           fi
 
-          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
-          echo "Next version targeted for install validation: $LATEST"
-
-          if [ "$CURRENT" = "$LATEST" ]; then
-            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $CURRENT"
-            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-            echo "Details: Current pinned Arthas version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 candidate for this workflow."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          echo "Next version targeted for install validation: $NEXT_VERSION"
 
           REGRESSION_LOG="/tmp/arthas-regression.log"
-          if java -jar arthas-boot.jar --use-version "$LATEST" --help >"$REGRESSION_LOG" 2>&1; then
-            echo "next_installed_version=$LATEST" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Arthas version ${CURRENT} passed smoke tests in this run. Regression validation used arthas-boot with --use-version ${LATEST} on Arm64, and the candidate help path completed successfully." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $LATEST"
-            echo "Regression install result: Next version installed successfully on Arm64"
-            echo "Details: Current pinned Arthas version ${CURRENT} passed smoke tests in this run. Regression validation used arthas-boot with --use-version ${LATEST} on Arm64, and the candidate help path completed successfully."
-            echo "status=passed" >> "$GITHUB_OUTPUT"
+          NEXT_DIR=$(mktemp -d)
+          NEXT_TAG="arthas-all-${NEXT_VERSION}"
+          NEXT_ZIP="$NEXT_DIR/arthas-bin.zip"
+          if curl -fsSLo "$NEXT_ZIP" "https://github.com/alibaba/arthas/releases/download/${NEXT_TAG}/arthas-bin.zip"; then
+            unzip -q "$NEXT_ZIP" -d "$NEXT_DIR/extracted"
+            NEXT_HOME="$NEXT_DIR/extracted"
+            NEXT_BOOT="$NEXT_HOME/arthas-boot.jar"
+            NEXT_CORE="$NEXT_HOME/arthas-core.jar"
+            NEXT_INSTALLED_VERSION=$(unzip -p "$NEXT_CORE" META-INF/MANIFEST.MF | awk -F': ' '/^Implementation-Version:/ {print $2; exit}' || true)
+            if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_INSTALLED_VERSION" = "$NEXT_VERSION" ] && \
+               java -jar "$NEXT_BOOT" --help >"$REGRESSION_LOG" 2>&1; then
+              echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Arthas version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the versioned release asset ${NEXT_TAG} on Arm64, the extracted manifest reported ${NEXT_INSTALLED_VERSION}, and the candidate help path completed successfully." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned Arthas version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the versioned release asset ${NEXT_TAG} on Arm64, the extracted manifest reported ${NEXT_INSTALLED_VERSION}, and the candidate help path completed successfully."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=${NEXT_INSTALLED_VERSION:-install_failed}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Arthas version ${CURRENT} passed smoke tests in this run, but the versioned release asset ${NEXT_TAG} did not validate cleanly on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-install_failed}"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Arthas version ${CURRENT} passed smoke tests in this run, but the versioned release asset ${NEXT_TAG} did not validate cleanly on Arm64."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              cat "$REGRESSION_LOG" || true
+              exit 1
+            fi
           else
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Arthas version ${CURRENT} passed smoke tests in this run, but arthas-boot failed to resolve or execute candidate version ${LATEST} on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Arthas version ${CURRENT} passed smoke tests in this run, but the versioned release asset ${NEXT_TAG} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: install_failed"
             echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned Arthas version ${CURRENT} passed smoke tests in this run, but arthas-boot failed to resolve or execute candidate version ${LATEST} on Arm64."
+            echo "Details: Current pinned Arthas version ${CURRENT} passed smoke tests in this run, but the versioned release asset ${NEXT_TAG} could not be downloaded on Arm64."
             echo "status=failed" >> "$GITHUB_OUTPUT"
-            cat "$REGRESSION_LOG" || true
             exit 1
           fi
 
@@ -274,7 +285,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
@@ -496,6 +507,3 @@ jobs:
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "- **Support badge is based on Tests 1-5:** yes" >> $GITHUB_STEP_SUMMARY
           echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-

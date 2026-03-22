@@ -15,6 +15,11 @@ on:
 jobs:
   test-deepstreamhub:
     runs-on: ubuntu-24.04-arm
+    env:
+      DEEPSTREAM_VERSION: "8.0.0"
+      DEEPSTREAM_URL: "https://github.com/deepstreamIO/deepstream.io/releases/download/v8.0.0/deepstream.io-linux-8.0.0.tar.gz"
+      DEEPSTREAM_NEXT_VERSION: "9.0.0"
+      DEEPSTREAM_NEXT_URL: "https://github.com/deepstreamIO/deepstream.io/releases/download/v9.0.0/deepstream.io-linux-9.0.0.tar.gz"
     
     steps:
       - name: Checkout repository
@@ -33,18 +38,18 @@ jobs:
       - name: Install DeepstreamIO
         id: install
         run: |
+          set -euo pipefail
           echo "Installing DeepstreamIO..."
-          # Download binary from GitHub releases
-          # Use a newer version that has ARM64 binaries
-          VERSION="7.0.0" 
-          if wget -q "https://github.com/deepstreamIO/deepstream.io/releases/download/v${VERSION}/deepstream.io-linux-arm64-${VERSION}.tar.gz"; then
-            tar -xzf "deepstream.io-linux-arm64-${VERSION}.tar.gz"
-            # Binary is in the extracted folder
-            if [ -d "deepstream.io-linux-arm64-${VERSION}" ]; then
-               sudo cp "deepstream.io-linux-arm64-${VERSION}/deepstream" /usr/local/bin/deepstream
+          VERSION="${DEEPSTREAM_VERSION}"
+          ASSET="deepstream.io-linux-${VERSION}.tar.gz"
+          if wget -q -O "$ASSET" "${DEEPSTREAM_URL}"; then
+            tar -xzf "$ASSET"
+            if [ -d "deepstream.io-linux-${VERSION}" ]; then
+               sudo cp "deepstream.io-linux-${VERSION}/deepstream" /usr/local/bin/deepstream
             else
                find . -name "deepstream" -type f -exec sudo cp {} /usr/local/bin/deepstream \;
             fi
+            sudo chmod +x /usr/local/bin/deepstream
             echo "install_status=success" >> $GITHUB_OUTPUT
           else
             echo "DeepstreamIO installation failed (404/Network)"
@@ -57,6 +62,7 @@ jobs:
         run: |
           VERSION=$(deepstream --version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "latest=${DEEPSTREAM_NEXT_VERSION}" >> $GITHUB_OUTPUT
           echo "Detected DeepstreamIO version: $VERSION"
       
       - name: Test 1 - Check deepstream binary exists
@@ -170,27 +176,25 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST_TAG=$(GH_TOKEN=${{ github.token }} gh api repos/deepstreamIO/deepstream.io/releases/latest --jq .tag_name 2>/dev/null || true)
-          if [ -z "$LATEST_TAG" ]; then
-            echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned deepstream version $CURRENT passed smoke tests in this run, but the next regression candidate version could not be resolved automatically from upstream releases." >> "$GITHUB_OUTPUT"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          LATEST=$(echo "$LATEST_TAG" | sed "s/^v//")
-          TARGET_VERSION=$LATEST
+          TARGET_VERSION="${{ steps.version.outputs.latest || env.DEEPSTREAM_NEXT_VERSION }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $TARGET_VERSION"
+          if [ "$TARGET_VERSION" = "$CURRENT" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           NEXT_DIR=$(mktemp -d)
-          NEXT_URL="https://github.com/deepstreamIO/deepstream.io/releases/download/v${LATEST}/deepstream.io-linux-arm64-${LATEST}.tar.gz"
-          NEXT_ASSET="$NEXT_DIR/deepstream.io-linux-arm64-${LATEST}.tar.gz"
+          NEXT_URL="${DEEPSTREAM_NEXT_URL}"
+          NEXT_ASSET="$NEXT_DIR/deepstream.io-linux-${TARGET_VERSION}.tar.gz"
           if wget -q -O "$NEXT_ASSET" "$NEXT_URL"; then
             echo "Next version download status: passed"
             tar -xzf "$NEXT_ASSET" -C "$NEXT_DIR"
@@ -351,6 +355,12 @@ jobs:
       - name: Generate test results JSON
         if: always()
         run: |
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --paginate --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}"
+          fi
+
           mkdir -p test-results
           
           cat > test-results/deepstreamHub.json << EOF
@@ -364,7 +374,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -406,7 +416,7 @@ jobs:
                 {
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}
                 }
               ]
             },
@@ -435,6 +445,23 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || '' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              *)
+                REGRESSION_RESULT="Regression validation status unavailable"
+                ;;
+            esac
+          fi
           echo "## DeepstreamIO Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
@@ -459,9 +486,6 @@ jobs:
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
 
 
 

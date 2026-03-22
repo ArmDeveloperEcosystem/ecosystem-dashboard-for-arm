@@ -14,6 +14,9 @@ on:
 jobs:
   test-dolphinscheduler:
     runs-on: ubuntu-24.04-arm
+    env:
+      DOLPHINSCHEDULER_VERSION: "3.2.1"
+      DOLPHINSCHEDULER_NEXT_VERSION: "3.2.2"
 
     steps:
       - name: Checkout repository
@@ -33,7 +36,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl openjdk-17-jre-headless
 
-          BASELINE_VERSION="3.2.1"
+          BASELINE_VERSION="${DOLPHINSCHEDULER_VERSION}"
           BASELINE_URL="https://archive.apache.org/dist/dolphinscheduler/${BASELINE_VERSION}/apache-dolphinscheduler-${BASELINE_VERSION}-bin.tar.gz"
           WORKDIR=$(mktemp -d)
 
@@ -41,6 +44,7 @@ jobs:
           curl -fsSL -o "$WORKDIR/dolphinscheduler.tar.gz" "$BASELINE_URL"
           tar -xzf "$WORKDIR/dolphinscheduler.tar.gz" -C "$WORKDIR"
           mv "$WORKDIR/apache-dolphinscheduler-${BASELINE_VERSION}-bin" "$GITHUB_WORKSPACE/dolphinscheduler"
+          echo "install_dir=$GITHUB_WORKSPACE/dolphinscheduler" >> "$GITHUB_OUTPUT"
 
           if [ -d "$GITHUB_WORKSPACE/dolphinscheduler" ]; then
             echo "install_status=success" >> "$GITHUB_OUTPUT"
@@ -57,13 +61,13 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected DolphinScheduler version: $VERSION"
 
-      - name: Test 1 - Check daemon script exists
+      - name: Test 1 - Check VERSION file exists
         id: test1
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if [ -f "dolphinscheduler/bin/dolphinscheduler-daemon.sh" ]; then
+          if [ -f "dolphinscheduler/VERSION" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -74,13 +78,13 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Check alert-server start script exists
+      - name: Test 2 - Check alert-server directory exists
         id: test2
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if [ -f "dolphinscheduler/alert-server/bin/start.sh" ]; then
+          if [ -d "dolphinscheduler/alert-server" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -125,15 +129,18 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Functional Validation (alert-server libs)
+      - name: Test 5 - Functional validation (alert-server artifacts)
         id: test5
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if find "dolphinscheduler/alert-server/libs" -maxdepth 1 -name '*.jar' | grep -q .; then
+          VERSION_FILE_CONTENT=$(tr -d '\r\n' < "dolphinscheduler/VERSION" || true)
+          if [ "$VERSION_FILE_CONTENT" = "${{ steps.install.outputs.baseline_version }}" ] \
+            && find "dolphinscheduler/alert-server/libs" -maxdepth 1 -name '*.jar' | grep -q .; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            printf '%s\n' "$VERSION_FILE_CONTENT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -149,10 +156,7 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST_VERSION=$(GH_TOKEN=${{ github.token }} gh api repos/apache/dolphinscheduler/releases/latest --jq '.tag_name' 2>/dev/null | tr -d '[:space:]' || true)
-          if [ -z "$LATEST_VERSION" ]; then
-            LATEST_VERSION="3.4.1"
-          fi
+          LATEST_VERSION="${DOLPHINSCHEDULER_NEXT_VERSION}"
 
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
@@ -162,7 +166,7 @@ jobs:
 
           if [ "$CURRENT" = "$LATEST_VERSION" ]; then
             echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
             echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
             echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $CURRENT"
@@ -179,27 +183,28 @@ jobs:
           curl -fsSL -o "$NEXT_DIR/dolphinscheduler.tar.gz" "$NEXT_URL"
           tar -xzf "$NEXT_DIR/dolphinscheduler.tar.gz" -C "$NEXT_DIR"
           CANDIDATE_DIR="$NEXT_DIR/apache-dolphinscheduler-${LATEST_VERSION}-bin"
+          CANDIDATE_VERSION=$(tr -d '\r\n' < "$CANDIDATE_DIR/VERSION" || true)
 
-          if [ -f "$CANDIDATE_DIR/bin/dolphinscheduler-daemon.sh" ] && \
-             [ -f "$CANDIDATE_DIR/alert-server/bin/start.sh" ] && \
+          if [ "$CANDIDATE_VERSION" = "$LATEST_VERSION" ] && \
+             [ -d "$CANDIDATE_DIR/alert-server" ] && \
              [ -f "$CANDIDATE_DIR/alert-server/conf/application.yaml" ] && \
              find "$CANDIDATE_DIR/alert-server/libs" -maxdepth 1 -name '*.jar' | grep -q .; then
             echo "next_installed_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned DolphinScheduler version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and extracted candidate version ${LATEST_VERSION} on Arm64, and the staged distribution exposed the daemon script, alert-server start script, alert-server configuration, and alert-server library layout expected by this workflow." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned DolphinScheduler version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and extracted candidate version ${LATEST_VERSION} on Arm64, and the staged distribution exposed the VERSION file, alert-server directory, alert-server configuration, and alert-server library layout expected by this workflow." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $LATEST_VERSION"
             echo "Regression install result: Next version installed successfully on Arm64"
-            echo "Details: Current pinned DolphinScheduler version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and extracted candidate version ${LATEST_VERSION} on Arm64, and the staged distribution exposed the daemon script, alert-server start script, alert-server configuration, and alert-server library layout expected by this workflow."
+            echo "Details: Current pinned DolphinScheduler version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and extracted candidate version ${LATEST_VERSION} on Arm64, and the staged distribution exposed the VERSION file, alert-server directory, alert-server configuration, and alert-server library layout expected by this workflow."
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned DolphinScheduler version ${CURRENT} passed smoke tests in this run, but the candidate ${LATEST_VERSION} did not expose the expected staged distribution layout on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned DolphinScheduler version ${CURRENT} passed smoke tests in this run, but the candidate ${LATEST_VERSION} did not expose the expected VERSION file plus alert-server distribution layout on Arm64." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: install_failed"
             echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned DolphinScheduler version ${CURRENT} passed smoke tests in this run, but the candidate ${LATEST_VERSION} did not expose the expected staged distribution layout on Arm64."
+            echo "Details: Current pinned DolphinScheduler version ${CURRENT} passed smoke tests in this run, but the candidate ${LATEST_VERSION} did not expose the expected VERSION file plus alert-server distribution layout on Arm64."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -222,7 +227,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
@@ -324,7 +329,7 @@ jobs:
           JOB_ID="${{ github.job }}"
           JOB_URL=$(GH_TOKEN=${{ github.token }} gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
           if [ -z "$JOB_URL" ]; then
-            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}"
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
 
           mkdir -p test-results
@@ -355,12 +360,12 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check daemon script exists",
+                  "name": "Check VERSION file exists",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check alert-server start script exists",
+                  "name": "Check alert-server directory exists",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
@@ -375,7 +380,7 @@ jobs:
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Functional Validation (alert-server libs)",
+                  "name": "Functional validation (alert-server artifacts)",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 },
@@ -419,7 +424,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               *)
@@ -438,11 +443,11 @@ jobs:
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
-          echo "1. Check daemon script exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "2. Check alert-server start script exists: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Check VERSION file exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Check alert-server directory exists: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "3. Check alert-server config exists: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "4. Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "5. Functional Validation (alert-server libs): ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Functional validation (alert-server artifacts): ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"

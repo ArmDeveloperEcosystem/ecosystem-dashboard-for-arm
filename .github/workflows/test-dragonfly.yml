@@ -33,7 +33,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl tar
 
-          BASELINE_VERSION="v2.2.0"
+          BASELINE_VERSION="v2.2.1"
+          NEXT_VERSION="v2.2.2"
           BASELINE_ASSET_VERSION="${BASELINE_VERSION#v}"
           BASELINE_URL="https://github.com/dragonflyoss/Dragonfly2/releases/download/${BASELINE_VERSION}/dragonfly-${BASELINE_ASSET_VERSION}-linux-arm64.tar.gz"
 
@@ -49,6 +50,7 @@ jobs:
 
           echo "/opt/dragonfly/bin" >> "$GITHUB_PATH"
           echo "DRAGONFLY_VERSION=$BASELINE_VERSION" >> "$GITHUB_ENV"
+          echo "DRAGONFLY_NEXT_VERSION=$NEXT_VERSION" >> "$GITHUB_ENV"
           echo "baseline_version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
 
           if command -v /opt/dragonfly/bin/dfget >/dev/null 2>&1 && [ -x /opt/dragonfly/bin/scheduler ]; then
@@ -68,6 +70,7 @@ jobs:
             VERSION="${{ steps.install.outputs.baseline_version }}"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "next_version=${DRAGONFLY_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Detected Dragonfly version: $VERSION"
 
       - name: Test 1 - Check Binary Existence
@@ -180,18 +183,15 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || steps.install.outputs.baseline_version || 'unknown' }}"
-          LATEST_TAG=$(GH_TOKEN=${{ github.token }} gh api repos/dragonflyoss/Dragonfly2/releases/latest --jq .tag_name 2>/dev/null | tr -d '[:space:]' || true)
-          if [ -z "$LATEST_TAG" ]; then
-            LATEST_TAG=$(curl -fsSL https://api.github.com/repos/dragonflyoss/Dragonfly2/releases/latest | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null | tr -d '[:space:]' || true)
-          fi
+          NEXT_TAG="${{ steps.version.outputs.next_version || 'unknown' }}"
 
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${LATEST_TAG:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${NEXT_TAG:-unknown}" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
-          echo "Next version targeted for install validation: ${LATEST_TAG:-unknown}"
+          echo "Next version targeted for install validation: ${NEXT_TAG:-unknown}"
 
-          if [ -z "$LATEST_TAG" ]; then
+          if [ -z "$NEXT_TAG" ] || [ "$NEXT_TAG" = "unknown" ]; then
             echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
@@ -205,9 +205,9 @@ jobs:
             exit 1
           fi
 
-          if [ "$CURRENT" = "$LATEST_TAG" ]; then
+          if [ "$CURRENT" = "$NEXT_TAG" ]; then
             echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
             echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
             echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $CURRENT"
@@ -216,12 +216,12 @@ jobs:
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
 
-          NEXT_VERSION="${LATEST_TAG#v}"
+          NEXT_VERSION="${NEXT_TAG#v}"
           NEXT_DIR=$(mktemp -d)
-          NEXT_URL="https://github.com/dragonflyoss/Dragonfly2/releases/download/${LATEST_TAG}/dragonfly-${NEXT_VERSION}-linux-arm64.tar.gz"
+          NEXT_URL="https://github.com/dragonflyoss/Dragonfly2/releases/download/${NEXT_TAG}/dragonfly-${NEXT_VERSION}-linux-arm64.tar.gz"
           curl -fsSL -o "$NEXT_DIR/dragonfly.tar.gz" "$NEXT_URL"
           tar -xzf "$NEXT_DIR/dragonfly.tar.gz" -C "$NEXT_DIR"
 
@@ -229,10 +229,10 @@ jobs:
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Dragonfly release ${CURRENT} passed smoke tests in this run, but the latest official Arm64 tarball ${LATEST_TAG} did not extract the expected manager and scheduler binaries." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Dragonfly release ${CURRENT} passed smoke tests in this run, but the candidate Arm64 tarball ${NEXT_TAG} did not extract the expected manager and scheduler binaries." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: install_failed"
             echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned Dragonfly release ${CURRENT} passed smoke tests in this run, but the latest official Arm64 tarball ${LATEST_TAG} did not extract the expected manager and scheduler binaries."
+            echo "Details: Current pinned Dragonfly release ${CURRENT} passed smoke tests in this run, but the candidate Arm64 tarball ${NEXT_TAG} did not extract the expected manager and scheduler binaries."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -242,23 +242,23 @@ jobs:
           NEXT_MANAGER_VERSION=$(timeout 10s "$NEXT_DIR/manager" version 2>&1 | awk '/GitVersion:/ {print $2}' | head -n 1 | tr -d '\r' || true)
           NEXT_SCHEDULER_VERSION=$(timeout 10s "$NEXT_DIR/scheduler" version 2>&1 | awk '/GitVersion:/ {print $2}' | head -n 1 | tr -d '\r' || true)
 
-          if [ "$NEXT_MANAGER_VERSION" = "$LATEST_TAG" ] && [ "$NEXT_SCHEDULER_VERSION" = "$LATEST_TAG" ]; then
-            echo "next_installed_version=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+          if [ "$NEXT_MANAGER_VERSION" = "$NEXT_TAG" ] && [ "$NEXT_SCHEDULER_VERSION" = "$NEXT_TAG" ]; then
+            echo "next_installed_version=$NEXT_TAG" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Dragonfly release ${CURRENT} passed smoke tests in this run. Regression validation downloaded the latest official Arm64 bundle ${LATEST_TAG}; the current bundle layout now ships manager and scheduler binaries, and both reported ${LATEST_TAG} on Arm64." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $LATEST_TAG"
+            echo "comparison=Current pinned Dragonfly release ${CURRENT} passed smoke tests in this run. Regression validation downloaded candidate Arm64 bundle ${NEXT_TAG}; the current bundle layout ships manager and scheduler binaries, and both reported ${NEXT_TAG} on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_TAG"
             echo "Regression install result: Next version installed successfully on Arm64"
-            echo "Details: Current pinned Dragonfly release ${CURRENT} passed smoke tests in this run. Regression validation downloaded the latest official Arm64 bundle ${LATEST_TAG}; the current bundle layout now ships manager and scheduler binaries, and both reported ${LATEST_TAG} on Arm64."
+            echo "Details: Current pinned Dragonfly release ${CURRENT} passed smoke tests in this run. Regression validation downloaded candidate Arm64 bundle ${NEXT_TAG}; the current bundle layout ships manager and scheduler binaries, and both reported ${NEXT_TAG} on Arm64."
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "next_installed_version=${NEXT_MANAGER_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Dragonfly release ${CURRENT} passed smoke tests in this run, but the latest official Arm64 bundle ${LATEST_TAG} did not report the expected manager and scheduler versions." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Dragonfly release ${CURRENT} passed smoke tests in this run, but the candidate Arm64 bundle ${NEXT_TAG} did not report the expected manager and scheduler versions." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: ${NEXT_MANAGER_VERSION:-unknown}"
             echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned Dragonfly release ${CURRENT} passed smoke tests in this run, but the latest official Arm64 bundle ${LATEST_TAG} did not report the expected manager and scheduler versions."
+            echo "Details: Current pinned Dragonfly release ${CURRENT} passed smoke tests in this run, but the candidate Arm64 bundle ${NEXT_TAG} did not report the expected manager and scheduler versions."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -281,7 +281,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
@@ -478,7 +478,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               *)

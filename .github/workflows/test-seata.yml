@@ -14,6 +14,9 @@ on:
 jobs:
   test-seata:
     runs-on: ubuntu-24.04-arm
+    env:
+      SEATA_VERSION: "2.2.0"
+      SEATA_NEXT_VERSION: "2.3.0"
     
     steps:
       - name: Checkout repository
@@ -25,6 +28,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "package_slug=seata" >> $GITHUB_OUTPUT
           echo "dashboard_link=/opensource_packages/seata" >> $GITHUB_OUTPUT
+          echo "current_version=${SEATA_VERSION}" >> $GITHUB_OUTPUT
       
       # ============================================================
       # CUSTOMIZE THIS: Install your package
@@ -32,38 +36,38 @@ jobs:
       - name: Install Seata
         id: install
         run: |
-          echo "Installing Seata..."
-          
-          # Install dependencies
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y default-jre wget tar
-          
-          # Download Seata Server
-          # Using 1.8.0 as it's a stable release or 2.0.0
-          VERSION="1.8.0"
-          URL="https://github.com/seata/seata/releases/download/v${VERSION}/seata-server-${VERSION}.tar.gz"
-          
-          echo "Downloading $URL..."
-          if wget -q $URL -O seata.tar.gz; then
-             tar -xzf seata.tar.gz
-             sudo mv seata /opt/seata
-             # Fix for newer java if needed, or just standard path
-             
-             # Seata startup script
-             sudo ln -s /opt/seata/bin/seata-server.sh /usr/local/bin/seata-server
-             
-             if [ -f "/opt/seata/bin/seata-server.sh" ]; then
-                echo "Seata installed successfully"
-                echo "install_status=success" >> $GITHUB_OUTPUT
-             else
-                echo "Seata binary not found"
-                echo "install_status=failed" >> $GITHUB_OUTPUT
-                exit 1
-             fi
+          VERSION="${SEATA_VERSION}"
+          case "$VERSION" in
+            2.*)
+              URL="https://archive.apache.org/dist/incubator/seata/${VERSION}/apache-seata-${VERSION}-incubating-bin.tar.gz"
+              ;;
+            *)
+              URL="https://github.com/apache/incubator-seata/releases/download/v${VERSION}/seata-server-${VERSION}.tar.gz"
+              ;;
+          esac
+
+          rm -rf /opt/seata seata.tar.gz apache-seata-* seata
+          wget -q "$URL" -O seata.tar.gz
+          tar --warning=no-unknown-keyword -xzf seata.tar.gz
+
+          EXTRACTED_SCRIPT=$(find . -type f -path '*/bin/seata-server.sh' | head -n 1)
+          if [ -z "$EXTRACTED_SCRIPT" ]; then
+            echo "install_status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          EXTRACTED_DIR=$(dirname "$(dirname "$EXTRACTED_SCRIPT")")
+          sudo mv "$EXTRACTED_DIR" /opt/seata
+          sudo ln -sf /opt/seata/bin/seata-server.sh /usr/local/bin/seata-server
+
+          if [ -f "/opt/seata/bin/seata-server.sh" ]; then
+            echo "install_status=success" >> $GITHUB_OUTPUT
           else
-             echo "Failed to download Seata"
-             echo "install_status=failed" >> $GITHUB_OUTPUT
-             exit 1
+            echo "install_status=failed" >> $GITHUB_OUTPUT
+            exit 1
           fi
 
       # ============================================================
@@ -72,9 +76,8 @@ jobs:
       - name: Get Seata version
         id: version
         run: |
-          # Seata is java, complex to get version from cli sometimes without starting
           if [ -f "/opt/seata/bin/seata-server.sh" ]; then
-             VERSION="1.8.0"
+             VERSION="${SEATA_VERSION}"
           else
              VERSION="unknown"
           fi
@@ -203,21 +206,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST="$(
-            python3 - <<'PY'
-          import json
-          import urllib.request
-
-          req = urllib.request.Request(
-              "https://api.github.com/repos/apache/incubator-seata/releases/latest",
-              headers={"Accept": "application/vnd.github+json", "User-Agent": "codex"},
-          )
-          with urllib.request.urlopen(req, timeout=20) as response:
-              release = json.load(response)
-
-          print(release.get("tag_name", "").lstrip("v"))
-          PY
-          )"
+          LATEST="${SEATA_NEXT_VERSION}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
 
           if [ -z "$LATEST" ]; then
@@ -245,11 +234,14 @@ jobs:
           esac
 
           if wget -q -O "$NEXT_TAR" "$NEXT_URL"; then
-            tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
+            tar --warning=no-unknown-keyword -xzf "$NEXT_TAR" -C "$NEXT_DIR"
             NEXT_SCRIPT=$(find "$NEXT_DIR" -type f -path '*/bin/seata-server.sh' | head -n 1)
             if [ -n "$NEXT_SCRIPT" ]; then
               NEXT_HOME=$(dirname "$(dirname "$NEXT_SCRIPT")")
-              NEXT_INSTALLED_VERSION=$(find "$NEXT_HOME/lib" -maxdepth 1 -name 'seata-server-*.jar' -printf '%f\n' 2>/dev/null | head -n 1 | sed -E 's/^seata-server-(.*)\.jar$/\1/' || true)
+              NEXT_INSTALLED_VERSION=$(find "$NEXT_HOME/lib" -maxdepth 1 -name 'seata-core-*.jar' -printf '%f\n' 2>/dev/null | head -n 1 | sed -E 's/^seata-core-(.*)\.jar$/\1/' || true)
+              if [ -z "$NEXT_INSTALLED_VERSION" ]; then
+                NEXT_INSTALLED_VERSION=$(find "$NEXT_HOME/lib" -maxdepth 1 -name 'seata-server-*.jar' -printf '%f\n' 2>/dev/null | head -n 1 | sed -E 's/^seata-server-(.*)\.jar$/\1/' || true)
+              fi
               if [ -z "$NEXT_INSTALLED_VERSION" ]; then
                 NEXT_INSTALLED_VERSION=$(basename "$NEXT_HOME" | sed -E 's/^apache-seata-([0-9.]+)-incubating$/\1/; s/^seata-([0-9.]+)$/\1/' || true)
               fi
@@ -309,7 +301,7 @@ jobs:
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
               current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Current stable version already validated on Arm64"
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
                 REGRESSION_RESULT="Pending regression install validation"
@@ -532,5 +524,3 @@ jobs:
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.test6.outputs.comparison || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-

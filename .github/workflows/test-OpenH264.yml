@@ -8,12 +8,17 @@ on:
       - main
       - smoke_tests
     paths:
-      - 'content/opensource_packages/openh264.md'
-      - '.github/workflows/test-openh264.yml'
+      - 'content/opensource_packages/OpenH264.md'
+      - '.github/workflows/test-OpenH264.yml'
 
 jobs:
   test-openh264:
     runs-on: ubuntu-24.04-arm
+    env:
+      OPENH264_VERSION: "2.5.1"
+      OPENH264_SOURCE_URL: "https://github.com/cisco/openh264/archive/refs/tags/2.5.1.tar.gz"
+      OPENH264_NEXT_VERSION: "2.6.0"
+      OPENH264_NEXT_SOURCE_URL: "https://github.com/cisco/openh264/archive/refs/tags/v2.6.0.tar.gz"
 
     steps:
       - name: Checkout repository
@@ -25,28 +30,32 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=openh264" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/openh264" >> "$GITHUB_OUTPUT"
+          echo "current_version=${OPENH264_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install OpenH264
         id: install
         run: |
+          set -euo pipefail
           echo "Installing OpenH264..."
           sudo apt-get update
           sudo apt-get install -y curl make g++ nasm
 
-          # arm_recommended_minimum_version is 2.5.0 (2024-11-08). Applying the
-          # 1-year rule, pin the latest stable release available within the last year.
-          VERSION="2.6.0"
-          curl -L "https://github.com/cisco/openh264/archive/refs/tags/v${VERSION}.tar.gz" -o openh264.tar.gz
+          # arm_recommended_minimum_version is 2.5.0 (2024-11-08). Apply the
+          # agreed rule by pinning an aged stable release above that anchor.
+          VERSION="${OPENH264_VERSION}"
+          SOURCE_URL="${OPENH264_SOURCE_URL}"
+          curl -fsSL -o openh264.tar.gz "${SOURCE_URL}"
+          EXTRACT_DIR="openh264-${VERSION}"
           tar -xzf openh264.tar.gz
-          mv "openh264-${VERSION}" openh264-src
+          mv "$EXTRACT_DIR" openh264-src
           echo "OPENH264_DIR=$PWD/openh264-src" >> "$GITHUB_ENV"
 
           make -C openh264-src -j"$(nproc)"
           sudo install -m 0755 openh264-src/h264enc /usr/local/bin/h264enc
           sudo install -m 0755 openh264-src/h264dec /usr/local/bin/h264dec
-          sudo install -m 0755 openh264-src/libopenh264.so.2.6.0 /usr/local/lib/libopenh264.so.2.6.0
-          sudo ln -sf /usr/local/lib/libopenh264.so.2.6.0 /usr/local/lib/libopenh264.so.8
-          sudo ln -sf /usr/local/lib/libopenh264.so.2.6.0 /usr/local/lib/libopenh264.so
+          sudo install -m 0755 "openh264-src/libopenh264.so.${VERSION}" "/usr/local/lib/libopenh264.so.${VERSION}"
+          sudo ln -sf "/usr/local/lib/libopenh264.so.${VERSION}" /usr/local/lib/libopenh264.so.8
+          sudo ln -sf "/usr/local/lib/libopenh264.so.${VERSION}" /usr/local/lib/libopenh264.so
           sudo ldconfig
 
           if command -v h264enc >/dev/null 2>&1 && command -v h264dec >/dev/null 2>&1; then
@@ -61,6 +70,7 @@ jobs:
         run: |
           VERSION=$(find "$OPENH264_DIR" -maxdepth 1 -name 'libopenh264.so.*' | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=${OPENH264_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Detected OpenH264 version: $VERSION"
 
       - name: Test 1 - Check encoder and decoder binaries exist
@@ -68,7 +78,7 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if command -v h264enc >/dev/null 2>&1 && command -v h264dec >/dev/null 2>&1 && [ -f /usr/local/lib/libopenh264.so.2.6.0 ]; then
+          if command -v h264enc >/dev/null 2>&1 && command -v h264dec >/dev/null 2>&1 && [ -f "/usr/local/lib/libopenh264.so.${{ steps.metadata.outputs.current_version }}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -82,7 +92,7 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if ls /usr/local/lib/libopenh264.so.2.6.0 >/dev/null 2>&1; then
+          if ls "/usr/local/lib/libopenh264.so.${{ steps.metadata.outputs.current_version }}" >/dev/null 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -142,8 +152,8 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST_TAG=$(GH_TOKEN="${{ github.token }}" gh api repos/cisco/openh264/releases/latest --jq '.tag_name' 2>/dev/null || true)
-          LATEST="${LATEST_TAG#v}"
+          STATUS="failed"
+          LATEST="${OPENH264_NEXT_VERSION}"
           if [ -z "$LATEST" ]; then
             echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
             echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
@@ -160,23 +170,31 @@ jobs:
           echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
           if [ "$LATEST" = "$CURRENT" ]; then
             echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-            echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Workflow metadata review required" >> "$GITHUB_OUTPUT"
+            echo "comparison=Configured OpenH264 Tests 1-5 baseline ${CURRENT} matches the configured Test 6 candidate ${LATEST}. Repin Tests 1-5 to an older dashboard-aligned release so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
           else
             cd /tmp
             rm -rf openh264-next openh264-next.tar.gz
-            curl -fsSL "https://github.com/cisco/openh264/archive/refs/tags/v${LATEST}.tar.gz" -o openh264-next.tar.gz
+            NEXT_URL="${OPENH264_NEXT_SOURCE_URL}"
+            curl -fsSL "$NEXT_URL" -o openh264-next.tar.gz
+            NEXT_EXTRACT_DIR=$(python3 - <<'PY'
+            import tarfile
+
+            with tarfile.open("openh264-next.tar.gz", "r:gz") as tar:
+                print(tar.getmembers()[0].name.split("/", 1)[0])
+            PY
+            )
             tar -xzf openh264-next.tar.gz
-            mv "openh264-${LATEST}" openh264-next
+            mv "$NEXT_EXTRACT_DIR" openh264-next
             make -C openh264-next -j"$(nproc)"
             if [ -x /tmp/openh264-next/h264enc ] && [ -x /tmp/openh264-next/h264dec ] && [ -f "/tmp/openh264-next/libopenh264.so.${LATEST}" ]; then
               echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
               echo "comparison=Candidate OpenH264 ${LATEST} built successfully on Arm64 and exposed the expected encoder, decoder, and versioned shared library." >> "$GITHUB_OUTPUT"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
+              STATUS="passed"
             else
               echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
@@ -189,9 +207,13 @@ jobs:
             fi
           fi
           echo "note=OpenH264 regression validation uses the official source tarball path on Arm64." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+          if [ "$STATUS" != "passed" ]; then
+            exit 1
+          fi
 
 
       - name: Show regression validation details
@@ -207,7 +229,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)

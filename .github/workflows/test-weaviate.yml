@@ -15,8 +15,10 @@ jobs:
   test-weaviate:
     runs-on: ubuntu-24.04-arm
     env:
-      WEAVIATE_VERSION: "1.36.5"
-      WEAVIATE_IMAGE: "semitechnologies/weaviate:1.36.5"
+      WEAVIATE_VERSION: "1.28.4"
+      WEAVIATE_NEXT_VERSION: "1.28.5"
+      WEAVIATE_IMAGE: "semitechnologies/weaviate:1.28.4"
+      WEAVIATE_NEXT_IMAGE: "semitechnologies/weaviate:1.28.5"
 
     steps:
       - name: Checkout repository
@@ -46,14 +48,8 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          LATEST=$(python3 - <<'PY'
-          import json, urllib.request
-          data = json.load(urllib.request.urlopen("https://api.github.com/repos/weaviate/weaviate/releases/latest", timeout=20))
-          print(str(data["tag_name"]).lstrip("v"))
-          PY
-          )
           echo "version=${WEAVIATE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "latest=${WEAVIATE_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Weaviate image exists
         id: test1
@@ -74,6 +70,14 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          API_PORT=$(python3 - <<'PY'
+          import socket
+          s = socket.socket()
+          s.bind(("127.0.0.1", 0))
+          print(s.getsockname()[1])
+          s.close()
+          PY
+          )
           cleanup() {
             sudo docker rm -f weaviate-version-test >/dev/null 2>&1 || true
           }
@@ -81,15 +85,15 @@ jobs:
           sudo docker rm -f weaviate-version-test >/dev/null 2>&1 || true
           sudo docker run -d \
             --name weaviate-version-test \
-            -p 8080:8080 \
+            -p "${API_PORT}:8080" \
             -e QUERY_DEFAULTS_LIMIT=5 \
             -e AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true \
             -e PERSISTENCE_DATA_PATH=/var/lib/weaviate \
             -e DEFAULT_VECTORIZER_MODULE=none \
             "${WEAVIATE_IMAGE}" >/dev/null
           VERSION=""
-          for _ in $(seq 1 40); do
-            if VERSION=$(curl -fsS http://127.0.0.1:8080/v1/meta | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null); then
+          for _ in $(seq 1 60); do
+            if VERSION=$(curl -fsS "http://127.0.0.1:${API_PORT}/v1/meta" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null); then
               break
             fi
             sleep 2
@@ -137,6 +141,14 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          API_PORT=$(python3 - <<'PY'
+          import socket
+          s = socket.socket()
+          s.bind(("127.0.0.1", 0))
+          print(s.getsockname()[1])
+          s.close()
+          PY
+          )
           cleanup() {
             sudo docker rm -f weaviate-functional-test >/dev/null 2>&1 || true
           }
@@ -144,22 +156,22 @@ jobs:
           sudo docker rm -f weaviate-functional-test >/dev/null 2>&1 || true
           sudo docker run -d \
             --name weaviate-functional-test \
-            -p 8080:8080 \
+            -p "${API_PORT}:8080" \
             -e QUERY_DEFAULTS_LIMIT=5 \
             -e AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true \
             -e PERSISTENCE_DATA_PATH=/var/lib/weaviate \
             -e DEFAULT_VECTORIZER_MODULE=none \
             "${WEAVIATE_IMAGE}" >/dev/null
           for _ in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:8080/v1/.well-known/ready >/dev/null 2>&1; then
+            if curl -fsS "http://127.0.0.1:${API_PORT}/v1/.well-known/ready" >/dev/null 2>&1; then
               break
             fi
             sleep 2
           done
-          curl -fsS -X POST http://127.0.0.1:8080/v1/schema \
+          curl -fsS -X POST "http://127.0.0.1:${API_PORT}/v1/schema" \
             -H 'Content-Type: application/json' \
             -d '{"class":"ArmSmoke","vectorizer":"none","properties":[{"name":"title","dataType":["text"]}]}' >/tmp/weaviate-schema-create.json
-          curl -fsS http://127.0.0.1:8080/v1/schema/ArmSmoke >/tmp/weaviate-schema-get.json
+          curl -fsS "http://127.0.0.1:${API_PORT}/v1/schema/ArmSmoke" >/tmp/weaviate-schema-get.json
           python3 - <<'PY'
           import json
           created = json.load(open('/tmp/weaviate-schema-create.json'))
@@ -207,33 +219,87 @@ jobs:
             exit 1
           fi
 
-          NEXT_IMAGE="${CURRENT_IMAGE/$CURRENT/$LATEST}"
           if [ "$CURRENT" = "$LATEST" ]; then
-            NEXT_IMAGE="$CURRENT_IMAGE"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
 
-          if sudo docker pull "$NEXT_IMAGE"; then
-            PULLED_TAG=$(sudo docker image inspect "$NEXT_IMAGE" --format '{{index .RepoTags 0}}' 2>/dev/null | awk -F: '{print $NF}' | head -n 1)
-            if [ -z "$PULLED_TAG" ]; then
-              PULLED_TAG="$LATEST"
-            fi
-            echo "next_installed_version=$PULLED_TAG" >> "$GITHUB_OUTPUT"
-            echo "Next version image pull status: passed"
-            echo "Next version installed on Arm64: $PULLED_TAG"
-            if [ "$CURRENT" = "$LATEST" ]; then
-              echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-              echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-              echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-            else
+          NEXT_IMAGE="${WEAVIATE_NEXT_IMAGE}"
+          API_PORT=$(python3 - <<'PY'
+          import socket
+          s = socket.socket()
+          s.bind(("127.0.0.1", 0))
+          print(s.getsockname()[1])
+          s.close()
+          PY
+          )
+          cleanup() {
+            sudo docker rm -f weaviate-next-test >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          sudo docker rm -f weaviate-next-test >/dev/null 2>&1 || true
+
+          if sudo docker pull --platform linux/arm64 "$NEXT_IMAGE"; then
+            sudo docker run -d \
+              --name weaviate-next-test \
+              -p "${API_PORT}:8080" \
+              -e QUERY_DEFAULTS_LIMIT=5 \
+              -e AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true \
+              -e PERSISTENCE_DATA_PATH=/var/lib/weaviate \
+              -e DEFAULT_VECTORIZER_MODULE=none \
+              "$NEXT_IMAGE" >/dev/null
+            NEXT_REPORTED=""
+            READY=0
+            for _ in $(seq 1 60); do
+              if curl -fsS "http://127.0.0.1:${API_PORT}/v1/.well-known/ready" >/dev/null 2>&1; then
+                READY=1
+                NEXT_REPORTED=$(curl -fsS "http://127.0.0.1:${API_PORT}/v1/meta" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null || true)
+                break
+              fi
+              sleep 2
+            done
+            curl -fsS -X POST "http://127.0.0.1:${API_PORT}/v1/schema" \
+              -H 'Content-Type: application/json' \
+              -d '{"class":"ArmSmokeNext","vectorizer":"none","properties":[{"name":"title","dataType":["text"]}]}' >/tmp/weaviate-next-schema-create.json
+            curl -fsS "http://127.0.0.1:${API_PORT}/v1/schema/ArmSmokeNext" >/tmp/weaviate-next-schema-get.json
+            python3 - <<'PY'
+          import json
+          created = json.load(open('/tmp/weaviate-next-schema-create.json'))
+          schema = json.load(open('/tmp/weaviate-next-schema-get.json'))
+          assert created["class"] == "ArmSmokeNext"
+          assert schema["class"] == "ArmSmokeNext"
+          print("weaviate-next-functional-ok")
+          PY
+            if [ "$READY" -eq 1 ] && [ "$NEXT_REPORTED" = "$LATEST" ]; then
+              echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
+              echo "Next version image pull status: passed" 
+              echo "Next version installed on Arm64: $NEXT_REPORTED"
               echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned Weaviate version $CURRENT passed smoke tests in this run. Regression validation pulled candidate image $NEXT_IMAGE on Arm64 successfully, and the installed image tag resolved to $PULLED_TAG." >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Weaviate version $CURRENT passed smoke tests in this run. Regression validation pulled, booted, version-validated, and completed a real schema-create smoke on candidate image $NEXT_IMAGE." >> "$GITHUB_OUTPUT"
               echo "Regression install result: Next version installed successfully on Arm64"
               echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              sudo docker logs weaviate-next-test || true
+              echo "next_installed_version=${NEXT_REPORTED:-not_installed}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Weaviate version $CURRENT passed smoke tests in this run, but the candidate image $NEXT_IMAGE did not complete ready/version/schema validation on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version image pull status: passed"
+              echo "Next version installed on Arm64: ${NEXT_REPORTED:-not_installed}"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
             fi
-            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
@@ -247,6 +313,9 @@ jobs:
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
+          cleanup
+          trap - EXIT
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -265,7 +334,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)

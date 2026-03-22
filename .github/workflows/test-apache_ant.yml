@@ -1,37 +1,7 @@
-# Package Test Template
-#
-# This is a TEMPLATE file stored in the tests/ directory - it will not run as a workflow.
-# To use it:
-# 1. Copy this file to .github/workflows/test-<your-package>.yml
-# 2. Replace all Apache Ant placeholders with your package name (e.g., "Redis")
-# 3. Replace all apache_ant placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the appropriate trigger(s) in the 'on:' section
-#
-# See .github/workflows/test-nginx.yml and test-envoy.yml for real examples. Template
-#
-# This is a TEMPLATE file - it will not run automatically.
-# To use it:
-# 1. Copy this file to test-<your-package>.yml
-# 2. Replace all Apache Ant placeholders with your package name (e.g., "Redis")
-# 3. Replace all apache_ant placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the 'push:' trigger section below (remove the workflow_dispatch if desired)
-#
-# See test-nginx.yml and test-envoy.yml for real examples.
-
 name: Test Apache Ant on Arm64
 
-# This is a TEMPLATE - it has no triggers and will not run.
-# When you copy this file, uncomment the appropriate triggers below:
 on:
-  # workflow_dispatch:  # Uncomment for manual testing
+  workflow_dispatch:
   workflow_call:
   push:
     branches:
@@ -44,6 +14,9 @@ on:
 jobs:
   test-apache_ant:
     runs-on: ubuntu-24.04-arm
+    env:
+      ANT_VERSION: "1.10.14"
+      ANT_NEXT_VERSION: "1.10.15"
     
     steps:
       - name: Checkout repository
@@ -56,23 +29,25 @@ jobs:
           echo "package_slug=apache_ant" >> $GITHUB_OUTPUT
           echo "dashboard_link=/opensource_packages/apache_ant" >> $GITHUB_OUTPUT
       
-      # ============================================================
-      # CUSTOMIZE THIS: Install your package
-      # ============================================================
       - name: Install Apache Ant
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Apache Ant..."
-          
-          # Example for apt packages:
           sudo apt-get update
-          sudo apt-get install -y ant
-          
-          # Example for downloading binaries:
-          # sudo curl -L -o /usr/local/bin/apache_ant https://github.com/org/repo/releases/download/v1.0.0/apache_ant-linux-arm64
-          # sudo chmod +x /usr/local/bin/apache_ant
-          
-          # Verify installation
+          sudo apt-get install -y curl tar openjdk-17-jre-headless
+
+          BASELINE_VERSION="${ANT_VERSION}"
+          BASELINE_URL="https://archive.apache.org/dist/ant/binaries/apache-ant-${BASELINE_VERSION}-bin.tar.gz"
+          curl -fsSL -o /tmp/apache-ant.tar.gz "$BASELINE_URL"
+          sudo rm -rf "/opt/apache-ant-${BASELINE_VERSION}" /opt/apache-ant-current
+          sudo tar -xzf /tmp/apache-ant.tar.gz -C /opt
+          sudo ln -sfn "/opt/apache-ant-${BASELINE_VERSION}" /opt/apache-ant-current
+          sudo ln -sfn /opt/apache-ant-current/bin/ant /usr/local/bin/ant
+          JAVA_BIN=$(readlink -f "$(command -v java)")
+          echo "JAVA_HOME=$(dirname "$(dirname "$JAVA_BIN")")" >> "$GITHUB_ENV"
+          echo "baseline_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
+
           if command -v ant &> /dev/null; then
             echo "Apache Ant installed successfully"
             echo "install_status=success" >> $GITHUB_OUTPUT
@@ -82,25 +57,16 @@ jobs:
             exit 1
           fi
       
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
       - name: Get Apache Ant version
         id: version
         run: |
-          # Adjust this command based on how your package reports version
-          VERSION=$(ant -version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+          set -euo pipefail
+          VERSION=$(ant -version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Apache Ant version: $VERSION"
-      
-      # ============================================================
-      # ADD YOUR TESTS BELOW
-      # Each test should:
-      # 1. Have a unique id (test1, test2, etc.)
-      # 2. Track start/end time for duration
-      # 3. Set status=passed or status=failed
-      # 4. Exit 1 on failure
-      # ============================================================
       
       - name: Test 1 - Check ant binary exists
         id: test1
@@ -157,18 +123,6 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      # Add more tests as needed (test4, test5, etc.)
-      # Examples:
-      # - Run a simple command
-      # - Check configuration files
-      # - Start/stop a service
-      # - Test basic functionality
-      
-      # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
-      # ============================================================
-      
       - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
@@ -194,11 +148,18 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if ant -version > /dev/null 2>&1 || ant --help > /dev/null 2>&1; then
+          cat > build.xml <<'EOF'
+          <project name="arm-validation" default="hello">
+            <target name="hello">
+              <echo message="Apache Ant Arm64 validation"/>
+            </target>
+          </project>
+          EOF
+          if ant -f build.xml hello > /tmp/apache-ant-functional.log 2>&1; then
             echo "✓ Basic functional check passed"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
+            cat /tmp/apache-ant-functional.log || true
             echo "✗ Basic functional check failed"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
@@ -214,18 +175,24 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST=$(python3 - <<'PY'
-          import re, urllib.request
-          html = urllib.request.urlopen('https://downloads.apache.org/ant/binaries/').read().decode()
-          versions = sorted(
-              set(re.findall(r'apache-ant-([0-9]+\.[0-9]+\.[0-9]+)-bin\.tar\.gz', html)),
-              key=lambda s: [int(x) for x in s.split('.')]
-          )
-          print(versions[-1] if versions else '')
-          PY
-          )
+          NEXT_VERSION="${ANT_NEXT_VERSION}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          if [ -z "$LATEST" ]; then
+          if [ "$CURRENT" = "$NEXT_VERSION" ]; then
+            echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Workflow metadata review required" >> "$GITHUB_OUTPUT"
+            echo "comparison=Configured Apache Ant Tests 1-5 baseline ${CURRENT} matches the configured Test 6 candidate ${NEXT_VERSION}. Repin Tests 1-5 to an older dashboard-aligned release so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "=== Regression Validation (Next Version Install) ==="
+            echo "Current version tested in Tests 1-5: $CURRENT"
+            echo "Next version targeted for install validation: $NEXT_VERSION"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Workflow metadata review required"
+            echo "Details: Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run, but the configured Test 6 candidate is not newer than the baseline."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ -z "$NEXT_VERSION" ]; then
             echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
@@ -241,50 +208,44 @@ jobs:
             exit 1
           fi
 
-          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
-          echo "Next version targeted for install validation: $LATEST"
-
-          if [ "$CURRENT" = "$LATEST" ]; then
-            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $CURRENT"
-            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-            echo "Details: Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 candidate for this workflow."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          echo "Next version targeted for install validation: $NEXT_VERSION"
 
           NEXT_TAR="/tmp/apache-ant-regression.tar.gz"
           NEXT_DIR=$(mktemp -d)
-          NEXT_URL="https://downloads.apache.org/ant/binaries/apache-ant-${LATEST}-bin.tar.gz"
+          NEXT_URL="https://archive.apache.org/dist/ant/binaries/apache-ant-${NEXT_VERSION}-bin.tar.gz"
           if curl -fsSL -o "$NEXT_TAR" "$NEXT_URL"; then
             tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
             NEXT_BIN=$(find "$NEXT_DIR" -maxdepth 3 -type f -path "*/bin/ant" | head -n 1)
             if [ -n "$NEXT_BIN" ] && [ -x "$NEXT_BIN" ]; then
-              NEXT_INSTALLED_VERSION=$("$NEXT_BIN" -version 2>&1 | grep -oP '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
-              if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
+              NEXT_INSTALLED_VERSION=$("$NEXT_BIN" -version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+              cat > "$NEXT_DIR/build.xml" <<'EOF'
+          <project name="arm-validation" default="hello">
+            <target name="hello">
+              <echo message="Apache Ant Arm64 regression validation"/>
+            </target>
+          </project>
+          EOF
+              if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_INSTALLED_VERSION" = "$NEXT_VERSION" ] && "$NEXT_BIN" -f "$NEXT_DIR/build.xml" hello > /tmp/apache-ant-next-functional.log 2>&1; then
                 echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the extracted Ant binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${NEXT_VERSION} on Arm64, and the extracted Ant binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
                 echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
                 echo "Regression install result: Next version installed successfully on Arm64"
-                echo "Details: Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the extracted Ant binary reported version ${NEXT_INSTALLED_VERSION}."
+                echo "Details: Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${NEXT_VERSION} on Arm64, and the extracted Ant binary reported version ${NEXT_INSTALLED_VERSION}."
                 echo "status=passed" >> "$GITHUB_OUTPUT"
               else
+                cat /tmp/apache-ant-next-functional.log || true
                 echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Next version installed but reported a version mismatch on Arm64" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} extracted on Arm64 and reported version ${NEXT_INSTALLED_VERSION:-unknown}, which does not match the requested upgrade target." >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} extracted on Arm64 and reported version ${NEXT_INSTALLED_VERSION:-unknown}, which does not match the requested upgrade target." >> "$GITHUB_OUTPUT"
                 echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
                 echo "Regression install result: Next version installed but reported a version mismatch on Arm64"
-                echo "Details: Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} extracted on Arm64 and reported version ${NEXT_INSTALLED_VERSION:-unknown}, which does not match the requested upgrade target."
+                echo "Details: Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} extracted on Arm64 and reported version ${NEXT_INSTALLED_VERSION:-unknown}, which does not match the requested upgrade target."
                 echo "status=failed" >> "$GITHUB_OUTPUT"
                 exit 1
               fi
@@ -292,10 +253,10 @@ jobs:
               echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not extract a usable Arm64 binary." >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} did not extract a usable Arm64 binary." >> "$GITHUB_OUTPUT"
               echo "Next version installed on Arm64: install_failed"
               echo "Regression install result: Next version install failed on Arm64"
-              echo "Details: Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not extract a usable Arm64 binary."
+              echo "Details: Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} did not extract a usable Arm64 binary."
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
             fi
@@ -303,10 +264,10 @@ jobs:
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: install_failed"
             echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64."
+            echo "Details: Current pinned Apache Ant version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} could not be downloaded on Arm64."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -328,7 +289,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
@@ -355,8 +316,10 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
           # Check ant binary exists
@@ -364,6 +327,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
@@ -372,6 +336,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
@@ -380,6 +345,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
@@ -388,6 +354,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
@@ -396,6 +363,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
           # Regression Validation
@@ -410,17 +378,17 @@ jobs:
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ steps.test1.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test2.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test3.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test4.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
+          if [ $CORE_FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
             echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
       - name: Generate test results JSON
@@ -550,6 +518,3 @@ jobs:
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "- **Support badge is based on Tests 1-5:** yes" >> $GITHUB_STEP_SUMMARY
           echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-

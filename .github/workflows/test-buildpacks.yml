@@ -14,6 +14,9 @@ on:
 jobs:
   test-buildpacks:
     runs-on: ubuntu-24.04-arm
+    env:
+      PACK_VERSION: "0.37.0"
+      PACK_NEXT_VERSION: "0.38.0"
     
     steps:
       - name: Checkout repository
@@ -31,9 +34,9 @@ jobs:
         run: |
           set -euo pipefail
           echo "Installing pack CLI..."
-          
-          # Using version 0.32.1
-          PACK_VERSION="0.32.1"
+
+          # Dashboard-aligned aged stable baseline above the Arm recommended minimum.
+          PACK_VERSION="${PACK_VERSION}"
           echo "baseline_version=$PACK_VERSION" >> "$GITHUB_OUTPUT"
           wget -q "https://github.com/buildpacks/pack/releases/download/v${PACK_VERSION}/pack-v${PACK_VERSION}-linux-arm64.tgz" -O pack.tgz
           
@@ -60,6 +63,7 @@ jobs:
             VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "latest=${PACK_NEXT_VERSION}" >> $GITHUB_OUTPUT
           echo "Detected pack version: $VERSION"
       
       - name: Test 1 - Check binary exists
@@ -159,11 +163,8 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="$(echo "${{ steps.version.outputs.version || 'unknown' }}" | tr -d '[:space:]' | sed 's/^v//')"
-          LATEST_TAG=$(GH_TOKEN=${{ github.token }} gh api repos/buildpacks/pack/releases/latest --jq .tag_name 2>/dev/null || true)
-          if [ -z "$LATEST_TAG" ]; then
-            LATEST_TAG=$(curl -fsSL https://api.github.com/repos/buildpacks/pack/releases/latest | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true)
-          fi
-          if [ -z "$LATEST_TAG" ]; then
+          TARGET_VERSION="${{ steps.version.outputs.latest || 'unknown' }}"
+          if [ -z "$TARGET_VERSION" ] || [ "$TARGET_VERSION" = "unknown" ] || [ "$TARGET_VERSION" = "not_yet_checked" ]; then
             echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
             echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
@@ -173,8 +174,6 @@ jobs:
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          LATEST=$(echo "$LATEST_TAG" | sed "s/^v//")
-          TARGET_VERSION=$LATEST
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
@@ -182,19 +181,19 @@ jobs:
           echo "Next version targeted for install validation: $TARGET_VERSION"
           if [ "$CURRENT" = "$TARGET_VERSION" ]; then
             echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Dashboard metadata review required before Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Configured pack baseline and Test 6 candidate currently resolve to the same version. Review the dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $CURRENT"
-            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-            echo "Details: Current pinned pack version $CURRENT passed smoke tests in this run and is already the latest stable Arm64 candidate for this workflow."
+            echo "Regression install result: Dashboard metadata review required before Test 6"
+            echo "Details: Current pinned pack version $CURRENT passed smoke tests in this run, but the configured baseline and Test 6 candidate are identical. Review the dashboard-aligned baseline/candidate pair."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
           NEXT_DIR=$(mktemp -d)
-          NEXT_URL="https://github.com/buildpacks/pack/releases/download/v${LATEST}/pack-v${LATEST}-linux-arm64.tgz"
+          NEXT_URL="https://github.com/buildpacks/pack/releases/download/v${TARGET_VERSION}/pack-v${TARGET_VERSION}-linux-arm64.tgz"
           NEXT_ASSET="$NEXT_DIR/pack.tgz"
           if wget -q -O "$NEXT_ASSET" "$NEXT_URL"; then
             echo "Next version download status: passed"
@@ -203,14 +202,15 @@ jobs:
             if [ -z "$NEXT_BIN" ]; then NEXT_BIN=$(find "$NEXT_DIR" -type f -perm -111 | head -n 1); fi
             if [ -n "$NEXT_BIN" ] && [ -f "$NEXT_BIN" ]; then chmod +x "$NEXT_BIN" || true; fi
             if [ -n "$NEXT_BIN" ] && [ -x "$NEXT_BIN" ]; then
-              NEXT_INSTALLED_VERSION=$({
+              NEXT_REPORTED_VERSION=$({
                 "$NEXT_BIN" version --short 2>&1 ||
                 "$NEXT_BIN" version 2>&1 ||
                 "$NEXT_BIN" --version 2>&1 ||
                 "$NEXT_BIN" -v 2>&1 ||
                 "$NEXT_BIN" -version 2>&1 || true
-              } | grep -oE "[0-9]+(\.[0-9]+)+([-+._A-Za-z0-9]+)?" | head -n 1 || true)
-              if [ -n "$NEXT_INSTALLED_VERSION" ]; then
+              } | tr -d '\r')
+              NEXT_INSTALLED_VERSION=$(printf '%s\n' "$NEXT_REPORTED_VERSION" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+              if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_INSTALLED_VERSION" = "$TARGET_VERSION" ]; then
                 echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
@@ -223,10 +223,10 @@ jobs:
                 echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned pack version $CURRENT passed smoke tests in this run, but the regression candidate $TARGET_VERSION did not report a usable version on Arm64." >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned pack version $CURRENT passed smoke tests in this run, but the regression candidate $TARGET_VERSION reported ${NEXT_INSTALLED_VERSION:-unknown} on Arm64 instead of the expected target version." >> "$GITHUB_OUTPUT"
                 echo "Next version installed on Arm64: unknown"
                 echo "Regression install result: Next version install failed on Arm64"
-                echo "Details: Current pinned pack version $CURRENT passed smoke tests in this run, but the regression candidate $TARGET_VERSION did not report a usable version on Arm64."
+                echo "Details: Current pinned pack version $CURRENT passed smoke tests in this run, but the regression candidate $TARGET_VERSION reported ${NEXT_INSTALLED_VERSION:-unknown} on Arm64 instead of the expected target version."
                 echo "status=failed" >> "$GITHUB_OUTPUT"
                 exit 1
               fi
@@ -269,7 +269,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
@@ -477,7 +477,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               *)
@@ -511,5 +511,3 @@ jobs:
           echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "> Support badge reflects Tests 1-5. Test 6 records upgrade-install readiness on Arm64." >> $GITHUB_STEP_SUMMARY
-
-

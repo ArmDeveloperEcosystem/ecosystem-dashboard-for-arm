@@ -31,10 +31,32 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y thrift-compiler
-          if command -v thrift >/dev/null 2>&1; then
+          sudo apt-get install -y flex bison cmake g++ make libssl-dev pkg-config curl
+          THRIFT_VERSION="0.21.0"
+          THRIFT_TAR="/tmp/thrift-${THRIFT_VERSION}.tar.gz"
+          THRIFT_URL="https://downloads.apache.org/thrift/${THRIFT_VERSION}/thrift-${THRIFT_VERSION}.tar.gz"
+          THRIFT_ROOT="$PWD/thrift-${THRIFT_VERSION}"
+          THRIFT_BUILD="$THRIFT_ROOT/codex-build"
+          curl -fsSL -o "$THRIFT_TAR" "$THRIFT_URL"
+          tar -xzf "$THRIFT_TAR" -C "$PWD"
+          mkdir -p "$THRIFT_BUILD"
+          (
+            cd "$THRIFT_BUILD"
+            cmake .. \
+              -DBUILD_COMPILER=ON \
+              -DBUILD_LIBRARIES=OFF \
+              -DBUILD_TESTING=OFF \
+              -DBUILD_TUTORIALS=OFF >/tmp/thrift-baseline-cmake.log 2>&1
+            cmake --build . --target thrift-compiler -j"$(nproc)" >/tmp/thrift-baseline-build.log 2>&1
+          )
+          THRIFT_BIN="$THRIFT_BUILD/compiler/cpp/bin/thrift"
+          if [ -x "$THRIFT_BIN" ]; then
             echo "install_status=success" >> "$GITHUB_OUTPUT"
+            echo "baseline_version=${THRIFT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "thrift_bin=${THRIFT_BIN}" >> "$GITHUB_OUTPUT"
           else
+            cat /tmp/thrift-baseline-cmake.log || true
+            cat /tmp/thrift-baseline-build.log || true
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -43,9 +65,9 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(thrift --version 2>&1 | grep -oP '[0-9]+(\.[0-9]+)+' | head -1 || true)
+          VERSION=$("${{ steps.install.outputs.thrift_bin }}" --version 2>&1 | grep -oP '[0-9]+(\.[0-9]+)+' | head -1 || true)
           if [ -z "$VERSION" ]; then
-            VERSION="unknown"
+            VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Apache Thrift version: $VERSION"
@@ -55,7 +77,7 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if command -v thrift >/dev/null 2>&1; then
+          if [ -x "${{ steps.install.outputs.thrift_bin }}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -69,8 +91,8 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if thrift --version 2>&1 | grep -qE 'Thrift version|[0-9]+\.[0-9]+'; then
-            thrift --version
+          if "${{ steps.install.outputs.thrift_bin }}" --version 2>&1 | grep -qE 'Thrift version|[0-9]+\.[0-9]+'; then
+            "${{ steps.install.outputs.thrift_bin }}" --version
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -84,7 +106,7 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if thrift --help 2>&1 | grep -qiE 'usage|options|help'; then
+          if "${{ steps.install.outputs.thrift_bin }}" --help 2>&1 | grep -qiE 'usage|options|help'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -126,7 +148,7 @@ jobs:
             Ping ping(1: Ping request)
           }
           EOF
-          thrift --gen cpp -out "$WORKDIR/out" "$WORKDIR/simple.thrift"
+          "${{ steps.install.outputs.thrift_bin }}" --gen cpp -out "$WORKDIR/out" "$WORKDIR/simple.thrift"
           if [ -f "$WORKDIR/out/codex_types.h" ] && [ -f "$WORKDIR/out/Echo.cpp" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -144,23 +166,27 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST=$(python3 - <<'PY'
+          NEXT_VERSION=$(CURRENT="$CURRENT" python3 - <<'PY'
           import re
+          import os
           import urllib.request
 
+          current = os.environ['CURRENT']
           html = urllib.request.urlopen('https://downloads.apache.org/thrift/').read().decode()
           versions = sorted(
               set(re.findall(r'>([0-9]+\.[0-9]+\.[0-9]+)/<', html)),
               key=lambda s: [int(x) for x in s.split('.')]
           )
-          print(versions[-1] if versions else '')
+          current_key = [int(x) for x in current.split('.')]
+          candidates = [v for v in versions if [int(x) for x in v.split('.')] > current_key]
+          print(candidates[0] if candidates else '')
           PY
           )
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
 
-          if [ -z "$LATEST" ]; then
+          if [ -z "$NEXT_VERSION" ]; then
             echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
@@ -176,30 +202,16 @@ jobs:
             exit 1
           fi
 
-          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
-          echo "Next version targeted for install validation: $LATEST"
-
-          if [ "$CURRENT" = "$LATEST" ]; then
-            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $CURRENT"
-            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-            echo "Details: Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 candidate for this workflow."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: $NEXT_VERSION"
 
           sudo apt-get update
           sudo apt-get install -y flex bison cmake g++ make libssl-dev pkg-config
 
           NEXT_DIR=$(mktemp -d)
-          NEXT_TAR="$NEXT_DIR/thrift-${LATEST}.tar.gz"
-          NEXT_URL="https://downloads.apache.org/thrift/${LATEST}/thrift-${LATEST}.tar.gz"
-          NEXT_SRC="$NEXT_DIR/thrift-${LATEST}"
+          NEXT_TAR="$NEXT_DIR/thrift-${NEXT_VERSION}.tar.gz"
+          NEXT_URL="https://downloads.apache.org/thrift/${NEXT_VERSION}/thrift-${NEXT_VERSION}.tar.gz"
+          NEXT_SRC="$NEXT_DIR/thrift-${NEXT_VERSION}"
           NEXT_BUILD="$NEXT_SRC/codex-build"
           CMAKE_LOG="$NEXT_DIR/thrift-next-cmake.log"
           BUILD_LOG="$NEXT_DIR/thrift-next-build.log"
@@ -222,14 +234,14 @@ jobs:
                 NEXT_INSTALLED_VERSION=$("$NEXT_BIN" --version 2>&1 | grep -oP '[0-9]+(\.[0-9]+)+' | head -1 || true)
               fi
 
-              if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
+              if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_INSTALLED_VERSION" = "$NEXT_VERSION" ]; then
                 echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run. Regression validation built candidate version ${LATEST} from source on Arm64, and the generated thrift compiler reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run. Regression validation built candidate version ${NEXT_VERSION} from source on Arm64, and the generated thrift compiler reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
                 echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
                 echo "Regression install result: Next version installed successfully on Arm64"
-                echo "Details: Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run. Regression validation built candidate version ${LATEST} from source on Arm64, and the generated thrift compiler reported version ${NEXT_INSTALLED_VERSION}."
+                echo "Details: Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run. Regression validation built candidate version ${NEXT_VERSION} from source on Arm64, and the generated thrift compiler reported version ${NEXT_INSTALLED_VERSION}."
                 echo "status=passed" >> "$GITHUB_OUTPUT"
               else
                 cat "$CMAKE_LOG" || true
@@ -237,10 +249,10 @@ jobs:
                 echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Next version installed but reported a version mismatch on Arm64" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} built on Arm64 and reported version ${NEXT_INSTALLED_VERSION:-unknown}, which does not match the requested upgrade target." >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} built on Arm64 and reported version ${NEXT_INSTALLED_VERSION:-unknown}, which does not match the requested upgrade target." >> "$GITHUB_OUTPUT"
                 echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
                 echo "Regression install result: Next version installed but reported a version mismatch on Arm64"
-                echo "Details: Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} built on Arm64 and reported version ${NEXT_INSTALLED_VERSION:-unknown}, which does not match the requested upgrade target."
+                echo "Details: Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} built on Arm64 and reported version ${NEXT_INSTALLED_VERSION:-unknown}, which does not match the requested upgrade target."
                 echo "status=failed" >> "$GITHUB_OUTPUT"
                 exit 1
               fi
@@ -250,10 +262,10 @@ jobs:
               echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not build into a usable Arm64 compiler." >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} did not build into a usable Arm64 compiler." >> "$GITHUB_OUTPUT"
               echo "Next version installed on Arm64: install_failed"
               echo "Regression install result: Next version install failed on Arm64"
-              echo "Details: Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not build into a usable Arm64 compiler."
+              echo "Details: Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} did not build into a usable Arm64 compiler."
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
             fi
@@ -261,10 +273,10 @@ jobs:
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: install_failed"
             echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64."
+            echo "Details: Current pinned Apache Thrift version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} could not be downloaded on Arm64."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -285,7 +297,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
@@ -372,6 +384,13 @@ jobs:
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "${{ steps.test1.outputs.status }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status }}" != "passed" ] || \
+             [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 

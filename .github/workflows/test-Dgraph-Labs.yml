@@ -15,6 +15,8 @@ on:
 jobs:
   test-dgraph-labs:
     runs-on: ubuntu-24.04-arm
+    env:
+      DGRAPH_NEXT_VERSION: "24.1.1"
     
     steps:
       - name: Checkout repository
@@ -26,6 +28,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "package_slug=Dgraph-Labs" >> $GITHUB_OUTPUT
           echo "dashboard_link=/opensource_packages/Dgraph-Labs" >> $GITHUB_OUTPUT
+          echo "current_version=24.1.0" >> $GITHUB_OUTPUT
       
       # ============================================================
       # CUSTOMIZE THIS: Install your package
@@ -33,19 +36,11 @@ jobs:
       - name: Install Dgraph Labs
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Dgraph Labs..."
-          # The default install script often fails on ARM64 or puts binaries in non-standard paths.
-          # We will download the official ARM64 release directly.
-          
-          # Try to get latest tag, or fallback to known good version
-          LATEST_TAG=$(curl -s https://api.github.com/repos/dgraph-io/dgraph/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-          if [ -z "$LATEST_TAG" ]; then
-             LATEST_TAG="v23.1.0"
-          fi
-          
-          echo "Downloading Dgraph $LATEST_TAG for ARM64..."
-          URL="https://github.com/dgraph-io/dgraph/releases/download/${LATEST_TAG}/dgraph-linux-arm64.tar.gz"
-          
+          BASELINE_TAG="v${{ steps.metadata.outputs.current_version }}"
+          echo "Downloading pinned Dgraph baseline ${BASELINE_TAG} for ARM64..."
+          URL="https://github.com/dgraph-io/dgraph/releases/download/${BASELINE_TAG}/dgraph-linux-arm64.tar.gz"
           curl -L -o dgraph.tar.gz "$URL"
           
           if file dgraph.tar.gz | grep -q "gzip compressed data"; then
@@ -73,7 +68,7 @@ jobs:
       - name: Get Dgraph Labs version
         id: version
         run: |
-          VERSION=$(dgraph version 2>&1 | grep "Dgraph version" | awk '{print $4}' || echo "unknown")
+          VERSION=$(dgraph version 2>&1 | grep "Dgraph version" | awk '{print $4}' | sed 's/^v//' || echo "unknown")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Dgraph Labs version: $VERSION"
       
@@ -186,9 +181,8 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST_RAW=$(curl -fsSL https://api.github.com/repos/dgraph-io/dgraph/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
-          LATEST="${LATEST_RAW#v}"
+          CURRENT="$(echo "${{ steps.version.outputs.version || 'unknown' }}" | tr -d '[:space:]' | sed 's/^v//')"
+          LATEST="${DGRAPH_NEXT_VERSION}"
           NEXT_INSTALLED="not_installed"
           DECISION="next_lookup_failed"
           REGRESSION_RESULT="Next version install failed on Arm64"
@@ -199,9 +193,9 @@ jobs:
             NEXT_INSTALLED="lookup_failed"
           elif [ "$CURRENT" = "$LATEST" ]; then
             NEXT_INSTALLED="$CURRENT"
-            DECISION="baseline_matches_latest_stable"
-            REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
-            COMPARISON="Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release."
+            DECISION="no_newer_stable_available"
+            REGRESSION_RESULT="No newer stable release available for Test 6"
+            COMPARISON="Current pinned baseline already matches the newest public stable upstream release, so there is no newer stable Arm64 candidate for a genuine Test 6 upgrade check."
             STATUS="failed"
           else
             NEXT_DIR=$(mktemp -d /tmp/dgraph-next-XXXXXX)
@@ -212,7 +206,7 @@ jobs:
               NEXT_BIN=$(find "$NEXT_DIR" -type f -name dgraph | head -1)
               if [ -n "$NEXT_BIN" ] && [ -f "$NEXT_BIN" ]; then
                 chmod +x "$NEXT_BIN"
-                NEXT_INSTALLED_VERSION=$("$NEXT_BIN" version 2>&1 | grep "Dgraph version" | awk '{print $4}' || true)
+                NEXT_INSTALLED_VERSION=$("$NEXT_BIN" version 2>&1 | grep "Dgraph version" | awk '{print $4}' | sed 's/^v//' || true)
                 if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
                   NEXT_INSTALLED="$NEXT_INSTALLED_VERSION"
                   DECISION="next_install_validated"
@@ -278,7 +272,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
@@ -305,8 +299,10 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
           # Check dgraph binary exists
@@ -314,6 +310,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
@@ -322,6 +319,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
@@ -330,6 +328,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
@@ -338,6 +337,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
@@ -346,6 +346,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
           # Regression Validation
@@ -359,19 +360,33 @@ jobs:
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
           if [ $FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -eq 0 ]; then
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
             echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
           mkdir -p test-results
           
           cat > test-results/Dgraph-Labs.json << EOF
@@ -385,7 +400,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -439,7 +454,8 @@ jobs:
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "core_failed": ${{ steps.summary.outputs.core_failed || 0 }}
             }
           }
           EOF
@@ -462,6 +478,8 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          COMPARISON="${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
           echo "## Dgraph Labs Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
@@ -485,9 +503,4 @@ jobs:
           echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
-
-
+          echo "${COMPARISON}" >> $GITHUB_STEP_SUMMARY

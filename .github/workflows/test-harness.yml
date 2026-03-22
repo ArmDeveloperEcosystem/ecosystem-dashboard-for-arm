@@ -16,7 +16,10 @@ jobs:
     runs-on: ubuntu-24.04-arm
 
     env:
-      HARNESS_IMAGE: harness/harness:3.3.0
+      HARNESS_BASELINE_VERSION: "3.2.0"
+      HARNESS_NEXT_VERSION: "3.3.0"
+      HARNESS_IMAGE: harness/harness:3.2.0
+      HARNESS_NEXT_IMAGE: harness/harness:3.3.0
 
     steps:
       - name: Checkout repository
@@ -47,13 +50,10 @@ jobs:
             exit 1
           fi
 
-          # supported_minimum_version in metadata is v3.0.0-beta.8. Applying the
-          # metadata-first rule for a current stable release, pin the validated
-          # latest stable tag 3.3.0 for this Arm64 smoke workflow.
           sudo tee /usr/local/bin/harness >/dev/null <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
-          IMAGE="harness/harness:3.3.0"
+          IMAGE="harness/harness:3.2.0"
           case "${1:-}" in
             version|--version|-V)
               CID=$(sudo docker run -d --rm -p 13000:3000 "$IMAGE")
@@ -90,6 +90,7 @@ jobs:
           set -euo pipefail
           VERSION=$(harness version 2>&1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=${HARNESS_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Binary Existence
         id: test1
@@ -113,7 +114,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
 
-          if harness version 2>&1 | grep -qx '3\.3\.0'; then
+          if harness version 2>&1 | grep -qx '3\.2\.0'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -201,23 +202,16 @@ jobs:
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT}"
 
-          LATEST_TAG=$(python3 - <<'PY'
-          import json, urllib.request
-          try:
-              data = json.load(urllib.request.urlopen("https://hub.docker.com/v2/repositories/harness/harness/tags/latest", timeout=20))
-              print(data.get("name", "latest"))
-          except Exception:
-              print("latest")
-          PY
-          )
-          LATEST_IMAGE="harness/harness:${LATEST_TAG}"
-          CID=$(sudo docker run -d --rm -p 13001:3000 "$LATEST_IMAGE")
+          LATEST_VERSION="${HARNESS_NEXT_VERSION}"
+          echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: ${LATEST_VERSION}"
+
+          CID=$(sudo docker run -d --rm -p 13001:3000 "${HARNESS_NEXT_IMAGE}")
           cleanup() {
             sudo docker rm -f "$CID" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
 
-          LATEST_VERSION=""
           for _ in $(seq 1 60); do
             LATEST_VERSION=$(sudo docker logs "$CID" 2>&1 | sed -n 's/.*"version":"\([0-9.][0-9.]*\)".*/\1/p' | tail -n 1)
             if [ -n "$LATEST_VERSION" ]; then
@@ -243,12 +237,10 @@ jobs:
             exit 1
           fi
 
-          echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Next version targeted for install validation: ${LATEST_VERSION}"
           echo "next_installed_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
 
           if [ "$CURRENT" = "$LATEST_VERSION" ]; then
-            echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
             echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
             echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: ${LATEST_VERSION}"
@@ -258,14 +250,13 @@ jobs:
           else
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Harness version ${CURRENT} passed smoke tests in this run. Regression validation started the upstream latest Arm64 container and it reported runtime version ${LATEST_VERSION}." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Harness version ${CURRENT} passed smoke tests in this run. Regression validation started explicit candidate Arm64 container ${HARNESS_NEXT_IMAGE} and it reported runtime version ${LATEST_VERSION}." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: ${LATEST_VERSION}"
             echo "Regression install result: Next version installed successfully on Arm64"
-            echo "Details: Current pinned Harness version ${CURRENT} passed smoke tests in this run. Regression validation started the upstream latest Arm64 container and it reported runtime version ${LATEST_VERSION}."
+            echo "Details: Current pinned Harness version ${CURRENT} passed smoke tests in this run. Regression validation started explicit candidate Arm64 container ${HARNESS_NEXT_IMAGE} and it reported runtime version ${LATEST_VERSION}."
             echo "status=passed" >> "$GITHUB_OUTPUT"
           fi
 
-          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -283,7 +274,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)

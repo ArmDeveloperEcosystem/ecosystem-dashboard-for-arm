@@ -14,6 +14,9 @@ on:
 jobs:
   test-brpc:
     runs-on: ubuntu-24.04-arm
+    env:
+      BRPC_BASELINE_VERSION: "1.12.1"
+      BRPC_NEXT_VERSION: "1.13.0"
     
     steps:
       - name: Checkout repository
@@ -36,8 +39,7 @@ jobs:
         run: |
           echo "Installing BRPC..."
           
-          # Clone stable version (v1.7.0 is recent)
-          git clone --branch 1.7.0 --depth 1 https://github.com/apache/brpc.git
+          git clone --branch "${BRPC_BASELINE_VERSION}" --depth 1 https://github.com/apache/brpc.git
           
           cd brpc
           mkdir build && cd build
@@ -59,8 +61,8 @@ jobs:
       - name: Get BRPC version
         id: version
         run: |
-          echo "version=1.7.0" >> $GITHUB_OUTPUT
-          echo "Detected BRPC version: 1.7.0"
+          echo "version=${BRPC_BASELINE_VERSION}" >> $GITHUB_OUTPUT
+          echo "Detected BRPC version: ${BRPC_BASELINE_VERSION}"
       
       - name: Test 1 - Check Headers
         id: test1
@@ -165,6 +167,60 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
+      - name: Test 6 - Regression Validation
+        id: test6
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          CURRENT_VERSION="${BRPC_BASELINE_VERSION}"
+          NEXT_VERSION="${BRPC_NEXT_VERSION}"
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT_VERSION}"
+          echo "Next version targeted for install validation: ${NEXT_VERSION}"
+
+          WORKDIR=$(mktemp -d)
+          git clone --branch "${NEXT_VERSION}" --depth 1 https://github.com/apache/brpc.git "${WORKDIR}/brpc-next"
+          cmake -S "${WORKDIR}/brpc-next" -B "${WORKDIR}/brpc-next/build" -DWITH_GLOG=OFF
+          cmake --build "${WORKDIR}/brpc-next/build" --parallel 2
+
+          cat > "${WORKDIR}/test_brpc_next.cpp" <<'EOF'
+          #include <brpc/server.h>
+          #include <brpc/channel.h>
+          int main() {
+            brpc::Server server;
+            brpc::Channel channel;
+            return 0;
+          }
+          EOF
+
+          if g++ "${WORKDIR}/test_brpc_next.cpp" -std=c++11 -I"${WORKDIR}/brpc-next/src" -I"${WORKDIR}/brpc-next/build/output/include" -L"${WORKDIR}/brpc-next/build/output/lib" -lbrpc -lgflags -lprotobuf -lleveldb -lssl -lcrypto -ldl -lpthread -o "${WORKDIR}/test_brpc_next" && "${WORKDIR}/test_brpc_next"; then
+            RESULT="next_install_validated"
+            DETAILS="BRPC ${NEXT_VERSION} built and linked a real candidate example on Arm64"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            RESULT="candidate_build_or_run_failed"
+            DETAILS="BRPC ${NEXT_VERSION} failed build or candidate example validation on Arm64"
+            echo "status=failed" >> $GITHUB_OUTPUT
+          fi
+
+          echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+          echo "next_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
+          echo "result=${RESULT}" >> $GITHUB_OUTPUT
+          echo "details=${DETAILS}" >> $GITHUB_OUTPUT
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || 'n/a' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.next_version || 'n/a' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.result || 'n/a' }}"
+          echo "Details: ${{ steps.test6.outputs.details || 'n/a' }}"
+
       - name: Calculate test summary
         if: always()
         id: summary
@@ -172,12 +228,14 @@ jobs:
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
+          CORE_FAILED=0
 
           # Check Headers
           if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
@@ -186,6 +244,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
@@ -194,6 +253,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
@@ -202,6 +262,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
@@ -210,19 +271,35 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
+
+          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test6.outputs.status }}" == "failed" ]; then
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
 
           if [ $FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -eq 0 ]; then
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
             echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $FAILED -ne 0 ]; then
             exit 1
           fi
       - name: Generate test results JSON
@@ -279,12 +356,23 @@ jobs:
                   "name": "Architecture Verification",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Regression Validation",
+                  "status": "${{ steps.test6.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}
                 }
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "regression": {
+                "current_version": "${{ steps.test6.outputs.current_version || '' }}",
+                "next_version": "${{ steps.test6.outputs.next_version || '' }}",
+                "result": "${{ steps.test6.outputs.result || '' }}",
+                "details": "${{ steps.test6.outputs.details || '' }}"
+              }
             }
           }
           EOF
@@ -317,7 +405,13 @@ jobs:
           echo "2. Check Static Library: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "3. Compile Simple Example: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Run Simple Example: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY"
-
+          echo "5. Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "6. Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Regression Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current version:** ${{ steps.test6.outputs.current_version || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version:** ${{ steps.test6.outputs.next_version || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Result:** ${{ steps.test6.outputs.result || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Details:** ${{ steps.test6.outputs.details || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
 
 

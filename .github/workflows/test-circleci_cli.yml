@@ -44,6 +44,9 @@ on:
 jobs:
   test-circleci_cli:
     runs-on: ubuntu-24.04-arm
+    env:
+      CIRCLECI_CLI_VERSION: "0.1.31425"
+      CIRCLECI_CLI_NEXT_VERSION: "0.1.31543"
     
     steps:
       - name: Checkout repository
@@ -62,18 +65,18 @@ jobs:
       - name: Install CircleCI-CLI
         id: install
         run: |
+          set -euo pipefail
           echo "Installing CircleCI-CLI..."
-          # Pinned baseline from package metadata
-          LATEST_TAG="v0.1.26786"
+          BASELINE_TAG="v${CIRCLECI_CLI_VERSION}"
           
           # Remove 'v' prefix for filename construction if present, though tag usually has it
-          VERSION_NUM=$(echo "$LATEST_TAG" | sed 's/^v//')
+          VERSION_NUM=$(echo "$BASELINE_TAG" | sed 's/^v//')
           
           echo "Detailed version: $VERSION_NUM"
           
           # Construct URL for ARM64 Linux
           # Filename format: circleci-cli_<VERSION>_linux_arm64.tar.gz
-          URL="https://github.com/CircleCI-Public/circleci-cli/releases/download/${LATEST_TAG}/circleci-cli_${VERSION_NUM}_linux_arm64.tar.gz"
+          URL="https://github.com/CircleCI-Public/circleci-cli/releases/download/${BASELINE_TAG}/circleci-cli_${VERSION_NUM}_linux_arm64.tar.gz"
           
           echo "Downloading from $URL"
           
@@ -96,9 +99,12 @@ jobs:
       - name: Get CircleCI-CLI version
         id: version
         run: |
+          set -euo pipefail
           # Use version subcommand
           VERSION=$(circleci_cli version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
+          NEXT_VERSION="${CIRCLECI_CLI_NEXT_VERSION}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
           echo "Detected CircleCI-CLI version: $VERSION"
       
       # ============================================================
@@ -219,19 +225,42 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST_TAG=$(GH_TOKEN=${{ github.token }} gh api repos/CircleCI-Public/circleci-cli/releases/latest --jq .tag_name 2>/dev/null)
-          if [ -z "$LATEST_TAG" ]; then
-            LATEST_TAG="v0.1.32000"
-          fi
-          LATEST=$(echo "$LATEST_TAG" | sed 's/^v//')
+          NEXT_VERSION="${{ steps.version.outputs.next_version || 'unknown' }}"
+          NEXT_TAG="v${NEXT_VERSION}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $NEXT_VERSION"
+
+          if [ -z "$NEXT_VERSION" ] || [ "$NEXT_VERSION" = "unknown" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned CircleCI CLI version ${CURRENT} passed smoke tests in this run, but the next stable Arm64 release could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "$CURRENT" = "$NEXT_VERSION" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           NEXT_TAR="/tmp/circleci-cli-regression.tar.gz"
           NEXT_DIR=$(mktemp -d)
-          NEXT_URL="https://github.com/CircleCI-Public/circleci-cli/releases/download/${LATEST_TAG}/circleci-cli_${LATEST}_linux_arm64.tar.gz"
+          NEXT_URL="https://github.com/CircleCI-Public/circleci-cli/releases/download/${NEXT_TAG}/circleci-cli_${NEXT_VERSION}_linux_arm64.tar.gz"
           if wget -q -O "$NEXT_TAR" "$NEXT_URL"; then
             tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
             NEXT_BIN=$(find "$NEXT_DIR" -type f -name circleci | head -n 1)
@@ -241,26 +270,26 @@ jobs:
               if [ -n "$NEXT_INSTALLED_VERSION" ]; then
                 echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned CircleCI CLI version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, and the installed binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned CircleCI CLI version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${NEXT_VERSION} on Arm64, and the installed binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
                 echo "status=passed" >> "$GITHUB_OUTPUT"
               else
                 echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned CircleCI CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not report a usable version on Arm64." >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned CircleCI CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} did not report a usable version on Arm64." >> "$GITHUB_OUTPUT"
                 echo "status=failed" >> "$GITHUB_OUTPUT"
                 exit 1
               fi
             else
               echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned CircleCI CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not extract a usable Arm64 binary." >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned CircleCI CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} did not extract a usable Arm64 binary." >> "$GITHUB_OUTPUT"
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
             fi
           else
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned CircleCI CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned CircleCI CLI version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -281,8 +310,8 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Current stable version already validated on Arm64"
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
                 REGRESSION_RESULT="Pending regression install validation"
@@ -391,8 +420,8 @@ jobs:
             "package": {
               "name": "CircleCI-CLI",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "Go",
+              "category": "DevOps"
             },
             "run": {
               "id": "${{ github.run_id }}",

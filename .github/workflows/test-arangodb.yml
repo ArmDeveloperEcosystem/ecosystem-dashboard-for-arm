@@ -14,6 +14,9 @@ on:
 jobs:
   test-arangodb:
     runs-on: ubuntu-24.04-arm
+    env:
+      ARANGODB_BASELINE_VERSION: "3.12.4"
+      ARANGODB_NEXT_VERSION: "3.12.5"
 
     steps:
       - name: Checkout repository
@@ -29,11 +32,12 @@ jobs:
       - name: Install ArangoDB Image
         id: install
         run: |
-          VERSION="3.12.8"
+          VERSION="${ARANGODB_BASELINE_VERSION}"
           docker pull "arangodb:${VERSION}"
 
           if docker image inspect "arangodb:${VERSION}" >/dev/null 2>&1; then
             echo "install_status=success" >> "$GITHUB_OUTPUT"
+            echo "baseline_version=${VERSION}" >> "$GITHUB_OUTPUT"
           else
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
             exit 1
@@ -42,9 +46,10 @@ jobs:
       - name: Get ArangoDB version
         id: version
         run: |
-          VERSION=$(docker run --rm --entrypoint arangod "arangodb:3.12.8" --version | head -n 1 || echo "unknown")
+          VERSION=$(docker run --rm --entrypoint arangod "arangodb:${{ steps.install.outputs.baseline_version }}" --version | head -n 1 || echo "unknown")
           VERSION=$(echo "$VERSION" | awk '{print $1}')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=${ARANGODB_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Database Binary
         id: test1
@@ -52,7 +57,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
 
-          if docker run --rm --entrypoint sh "arangodb:3.12.8" -c 'command -v arangod' >/dev/null 2>&1; then
+          if docker run --rm --entrypoint sh "arangodb:${{ steps.install.outputs.baseline_version }}" -c 'command -v arangod' >/dev/null 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -68,7 +73,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
 
-          if docker run --rm --entrypoint arangod "arangodb:3.12.8" --version 2>&1 | grep -q '^3\.12\.8'; then
+          if docker run --rm --entrypoint arangod "arangodb:${{ steps.install.outputs.baseline_version }}" --version 2>&1 | grep -q '^${{ steps.install.outputs.baseline_version }}'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -84,7 +89,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
 
-          if docker run --rm --entrypoint arangod "arangodb:3.12.8" --help 2>&1 | grep -qi '^Usage:'; then
+          if docker run --rm --entrypoint arangod "arangodb:${{ steps.install.outputs.baseline_version }}" --help 2>&1 | grep -qi '^Usage:'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -118,7 +123,7 @@ jobs:
           START_TIME=$(date +%s)
 
           docker rm -f arangodb-smoke >/dev/null 2>&1 || true
-          docker run -d --name arangodb-smoke -p 8529:8529 -e ARANGO_NO_AUTH=1 "arangodb:3.12.8" > /dev/null
+          docker run -d --name arangodb-smoke -p 8529:8529 -e ARANGO_NO_AUTH=1 "arangodb:${{ steps.install.outputs.baseline_version }}" > /dev/null
           trap 'docker rm -f arangodb-smoke >/dev/null 2>&1 || true' EXIT
 
           for _ in $(seq 1 30); do
@@ -136,7 +141,7 @@ jobs:
           curl -s -H "content-type: application/json" -X POST --data @arangodb-payload.json \
             http://127.0.0.1:8529/_api/collection > arangodb-collection.json
 
-          if grep -q '"version":"3\.12\.8"' arangodb-version.json && \
+          if grep -q '"version":"${{ steps.install.outputs.baseline_version }}"' arangodb-version.json && \
              grep -q '"name":"test_collection"' arangodb-collection.json; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -159,25 +164,12 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST=$(python3 - <<'PY'
-          import json, re, urllib.request
-          obj = json.load(urllib.request.urlopen('https://registry.hub.docker.com/v2/repositories/library/arangodb/tags?page_size=100'))
-          versions = []
-          for result in obj.get('results', []):
-              name = result.get('name', '')
-              if re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', name):
-                  arches = {image.get('architecture') for image in result.get('images', [])}
-                  if 'arm64' in arches:
-                      versions.append(name)
-          versions = sorted(set(versions), key=lambda s: [int(x) for x in s.split('.')])
-          print(versions[-1] if versions else '')
-          PY
-          )
+          NEXT_VERSION="${{ steps.version.outputs.latest || env.ARANGODB_NEXT_VERSION }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
 
-          if [ -z "$LATEST" ]; then
+          if [ -z "$NEXT_VERSION" ]; then
             echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
@@ -193,42 +185,28 @@ jobs:
             exit 1
           fi
 
-          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
-          echo "Next version targeted for install validation: $LATEST"
+          echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: $NEXT_VERSION"
 
-          if [ "$CURRENT" = "$LATEST" ]; then
-            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $CURRENT"
-            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-            echo "Details: Current pinned ArangoDB version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 container candidate for this workflow."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if docker pull "arangodb:${LATEST}" >/dev/null 2>&1; then
-            NEXT_INSTALLED_VERSION=$(docker run --rm --entrypoint arangod "arangodb:${LATEST}" --version | head -n 1 | awk '{print $1}' || true)
-            if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
+          if docker pull "arangodb:${NEXT_VERSION}" >/dev/null 2>&1; then
+            NEXT_INSTALLED_VERSION=$(docker run --rm --entrypoint arangod "arangodb:${NEXT_VERSION}" --version | head -n 1 | awk '{print $1}' || true)
+            if [ "$NEXT_INSTALLED_VERSION" = "$NEXT_VERSION" ]; then
               echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned ArangoDB version ${CURRENT} passed smoke tests in this run. Regression validation pulled candidate container ${LATEST} on Arm64, and the installed server binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned ArangoDB version ${CURRENT} passed smoke tests in this run. Regression validation pulled candidate container ${NEXT_VERSION} on Arm64, and the installed server binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
               echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
               echo "Regression install result: Next version installed successfully on Arm64"
-              echo "Details: Current pinned ArangoDB version ${CURRENT} passed smoke tests in this run. Regression validation pulled candidate container ${LATEST} on Arm64, and the installed server binary reported version ${NEXT_INSTALLED_VERSION}."
+              echo "Details: Current pinned ArangoDB version ${CURRENT} passed smoke tests in this run. Regression validation pulled candidate container ${NEXT_VERSION} on Arm64, and the installed server binary reported version ${NEXT_INSTALLED_VERSION}."
               echo "status=passed" >> "$GITHUB_OUTPUT"
             else
               echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned ArangoDB version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not report a matching Arm64 server version." >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned ArangoDB version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} did not report a matching Arm64 server version." >> "$GITHUB_OUTPUT"
               echo "Next version installed on Arm64: install_failed"
               echo "Regression install result: Next version install failed on Arm64"
-              echo "Details: Current pinned ArangoDB version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not report a matching Arm64 server version."
+              echo "Details: Current pinned ArangoDB version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} did not report a matching Arm64 server version."
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
             fi
@@ -236,10 +214,10 @@ jobs:
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned ArangoDB version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be pulled on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned ArangoDB version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} could not be pulled on Arm64." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: install_failed"
             echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned ArangoDB version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be pulled on Arm64."
+            echo "Details: Current pinned ArangoDB version ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} could not be pulled on Arm64."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -260,7 +238,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)

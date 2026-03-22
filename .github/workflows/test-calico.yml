@@ -14,6 +14,9 @@ on:
 jobs:
   test-calico:
     runs-on: ubuntu-24.04-arm
+    env:
+      CALICO_VERSION: "v3.29.2"
+      CALICO_NEXT_VERSION: "v3.29.3"
     
     steps:
       - name: Checkout repository
@@ -31,7 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "Installing Calico CLI (calicoctl)..."
-          BASELINE_VERSION="v3.29.2"
+          BASELINE_VERSION="${CALICO_VERSION}"
           echo "baseline_version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
           curl -fsSL "https://github.com/projectcalico/calico/releases/download/${BASELINE_VERSION}/calicoctl-linux-arm64" -o calicoctl
           
@@ -158,56 +161,54 @@ jobs:
           if [ -z "$CURRENT" ]; then
             CURRENT="${{ steps.install.outputs.baseline_version || 'unknown' }}"
           fi
-          LATEST_RAW=$(GH_TOKEN=${{ github.token }} gh api repos/projectcalico/calico/releases/latest --jq .tag_name 2>/dev/null | tr -d '[:space:]' || true)
-          if [ -z "$LATEST_RAW" ]; then
-            LATEST_RAW=$(curl -fsSL https://api.github.com/repos/projectcalico/calico/releases/latest | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null | tr -d '[:space:]' || true)
-          fi
+          BASELINE_VERSION="${{ steps.install.outputs.baseline_version || '' }}"
+          TARGET_VERSION="${CALICO_NEXT_VERSION}"
           NEXT_INSTALLED="not_installed"
           DECISION="next_lookup_failed"
           REGRESSION_RESULT="Next version install failed on Arm64"
           COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run, but the next regression candidate version could not be resolved automatically."
           STATUS="failed"
 
-          if [ -z "$LATEST_RAW" ] || [ "$LATEST_RAW" = "null" ]; then
+          if [ -z "$TARGET_VERSION" ] || [ "$TARGET_VERSION" = "null" ]; then
             NEXT_INSTALLED="lookup_failed"
-          elif [ -n "$CURRENT" ] && [ "$CURRENT" = "$LATEST_RAW" ]; then
+          elif [ -n "$CURRENT" ] && [ "$CURRENT" = "$TARGET_VERSION" ]; then
             NEXT_INSTALLED="$CURRENT"
-            DECISION="baseline_matches_latest_stable"
-            REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
-            COMPARISON="Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release."
+            DECISION="no_newer_stable_available"
+            REGRESSION_RESULT="No newer stable release is available for regression validation"
+            COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run, and no newer stable upstream release is available above that baseline for an Arm64 Test 6 install check."
             STATUS="failed"
             echo "status=failed" >> "$GITHUB_OUTPUT"
           else
             NEXT_BIN=$(mktemp /tmp/calicoctl-next-XXXXXX)
-            if curl -fsSL -o "$NEXT_BIN" "https://github.com/projectcalico/calico/releases/download/${LATEST_RAW}/calicoctl-linux-arm64"; then
+            if curl -fsSL -o "$NEXT_BIN" "https://github.com/projectcalico/calico/releases/download/${TARGET_VERSION}/calicoctl-linux-arm64"; then
               chmod +x "$NEXT_BIN"
-              NEXT_RAW=$(timeout 10s "$NEXT_BIN" version 2>&1 || true)
-              NEXT_INSTALLED_VERSION=$(printf '%s' "$NEXT_RAW" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
-              if [ "$NEXT_INSTALLED_VERSION" = "$LATEST_RAW" ]; then
+              NEXT_VERSION_OUTPUT=$(timeout 10s "$NEXT_BIN" version 2>&1 || true)
+              NEXT_INSTALLED_VERSION=$(printf '%s' "$NEXT_VERSION_OUTPUT" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+              if [ "$NEXT_INSTALLED_VERSION" = "$TARGET_VERSION" ]; then
                 NEXT_INSTALLED="$NEXT_INSTALLED_VERSION"
                 DECISION="next_install_validated"
                 REGRESSION_RESULT="Next version installed successfully on Arm64"
-                COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run. Regression validation installed candidate version ${LATEST_RAW} on Arm64, and the downloaded binary reported version ${NEXT_INSTALLED_VERSION}."
+                COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run. Regression validation installed candidate version ${TARGET_VERSION} on Arm64, and the downloaded binary reported version ${NEXT_INSTALLED_VERSION}."
                 STATUS="passed"
                 echo "status=passed" >> "$GITHUB_OUTPUT"
               else
                 NEXT_INSTALLED="${NEXT_INSTALLED_VERSION:-unknown}"
                 DECISION="next_install_failed"
                 REGRESSION_RESULT="Next version installed but reported a version mismatch on Arm64"
-                COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run, but the regression candidate ${LATEST_RAW} downloaded on Arm64 and reported version ${NEXT_INSTALLED} instead of the expected ${LATEST_RAW}."
+                COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run, but the regression candidate ${TARGET_VERSION} downloaded on Arm64 and reported version ${NEXT_INSTALLED} instead of the expected ${TARGET_VERSION}."
                 echo "status=failed" >> "$GITHUB_OUTPUT"
               fi
             else
               NEXT_INSTALLED="install_failed"
               DECISION="next_install_failed"
               REGRESSION_RESULT="Next version install failed on Arm64"
-              COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run, but the regression candidate ${LATEST_RAW} could not be downloaded on Arm64."
+              COMPARISON="Current pinned Calico version ${CURRENT:-unknown} passed smoke tests in this run, but the regression candidate ${TARGET_VERSION} could not be downloaded on Arm64."
               echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
           fi
 
           echo "current_version=${CURRENT:-$CURRENT_RAW}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${LATEST_RAW:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${TARGET_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
           echo "next_installed_version=$NEXT_INSTALLED" >> "$GITHUB_OUTPUT"
           echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
           echo "regression_result=$REGRESSION_RESULT" >> "$GITHUB_OUTPUT"
@@ -216,7 +217,7 @@ jobs:
 
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT:-$CURRENT_RAW}"
-          echo "Next version targeted for install validation: ${LATEST_RAW:-unknown}"
+          echo "Next version targeted for install validation: ${TARGET_VERSION:-unknown}"
           echo "Next version installed on Arm64: $NEXT_INSTALLED"
           echo "Regression install result: $REGRESSION_RESULT"
           echo "Details: $COMPARISON"
@@ -242,7 +243,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
@@ -449,7 +450,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               *)

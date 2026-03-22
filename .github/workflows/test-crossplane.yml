@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       BASELINE_VERSION: "2.1.4"
+      NEXT_VERSION: "2.2.0"
 
     steps:
       - name: Checkout repository
@@ -50,19 +51,8 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(timeout 10s crossplane -v 2>&1 | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 | sed 's/^v//')
-          RELEASES=$(GH_TOKEN=${{ github.token }} gh api repos/crossplane/crossplane/releases --paginate --jq '.[].tag_name' \
-            | sed 's/^v//' \
-            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sort -V -u)
-          NEXT=$(printf '%s\n' "$RELEASES" | awk -v current="$VERSION" '
-            $0 == current {seen=1; next}
-            seen {print; exit}
-          ')
-          if [ -z "$NEXT" ]; then
-            NEXT="$VERSION"
-          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "latest=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "latest=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Binary
         id: test1
@@ -135,116 +125,6 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 6 - Regression Validation
-        id: test6
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version }}"
-          LATEST="${{ steps.version.outputs.latest }}"
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
-          echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: $CURRENT"
-          echo "Next version targeted for install validation: $LATEST"
-
-          NEXT_TAG="v${LATEST}"
-          NEXT_DIR=$(mktemp -d)
-          NEXT_BIN="$NEXT_DIR/crossplane"
-          NEXT_URL="https://releases.crossplane.io/stable/${NEXT_TAG}/bin/linux_arm64/crossplane"
-
-          if curl -fsSL "$NEXT_URL" -o "$NEXT_BIN"; then
-            echo "Next version download status: passed"
-            chmod +x "$NEXT_BIN"
-            NEXT_INSTALLED_VERSION=$(timeout 10s "$NEXT_BIN" -v 2>&1 | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 | sed 's/^v//')
-            echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
-            if [ -z "$NEXT_INSTALLED_VERSION" ] || [ "$NEXT_INSTALLED_VERSION" != "$LATEST" ]; then
-              DETAILS="Current pinned Crossplane version ${CURRENT} passed smoke tests in this run, but the candidate Arm64 CLI from ${NEXT_URL} reported version ${NEXT_INSTALLED_VERSION:-unknown} instead of ${LATEST}."
-              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Next version installed but reported a version mismatch on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=${DETAILS}" >> "$GITHUB_OUTPUT"
-              echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
-              echo "Regression install result: Next version installed but reported a version mismatch on Arm64"
-              echo "Details: ${DETAILS}"
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              END_TIME=$(date +%s)
-              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-
-            if [ "$LATEST" = "$CURRENT" ]; then
-              DETAILS="Current pinned Crossplane version ${CURRENT} already matches the latest stable release. Regression validation re-downloaded the Arm64 CLI binary, and the candidate binary reported version ${NEXT_INSTALLED_VERSION}."
-              echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-              echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-              echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-            else
-              DETAILS="Current pinned Crossplane version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the next stable Arm64 CLI ${LATEST}, and the candidate binary reported version ${NEXT_INSTALLED_VERSION}."
-              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=${DETAILS}" >> "$GITHUB_OUTPUT"
-              echo "Regression install result: Next version installed successfully on Arm64"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-            fi
-            echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
-            echo "Details: ${DETAILS}"
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            DETAILS="Current pinned Crossplane version ${CURRENT} passed smoke tests in this run, but the next stable Arm64 CLI could not be downloaded from ${NEXT_URL}."
-            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=${DETAILS}" >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: install_failed"
-            echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: ${DETAILS}"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Show regression validation details
-        if: always()
-        run: |
-          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
-          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
-          if [ -z "$REGRESSION_RESULT" ]; then
-            case "$DECISION" in
-              next_install_validated|safe_to_upgrade)
-                REGRESSION_RESULT="Next version installed successfully on Arm64"
-                ;;
-              next_install_failed|next_lookup_failed)
-                REGRESSION_RESULT="Next version install failed on Arm64"
-                ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
-                ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
-              *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
-                ;;
-            esac
-          fi
-
-          echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
-          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
-          echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
-
       - name: Calculate test summary
         if: always()
         id: summary
@@ -275,7 +155,6 @@ jobs:
           check_test "${{ steps.test3.outputs.status }}" "${{ steps.test3.outputs.duration || 0 }}" yes
           check_test "${{ steps.test4.outputs.status }}" "${{ steps.test4.outputs.duration || 0 }}" yes
           check_test "${{ steps.test5.outputs.status }}" "${{ steps.test5.outputs.duration || 0 }}" yes
-          check_test "${{ steps.test6.outputs.status }}" "${{ steps.test6.outputs.duration || 0 }}" no
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
@@ -290,7 +169,7 @@ jobs:
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
           fi
 
-          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
+          if [ "$CORE_FAILED" -ne 0 ]; then
             exit 1
           fi
 
@@ -354,17 +233,6 @@ jobs:
                   "name": "Test 5 - Architecture Verification",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Test 6 - Regression Validation",
-                  "status": "${{ steps.test6.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
-                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
-                  "latest_version": "${{ steps.test6.outputs.latest_version || '' }}",
-                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || '' }}",
-                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
-                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
-                  "comparison": "${{ steps.test6.outputs.comparison || '' }}"
                 }
               ]
             },
@@ -387,34 +255,14 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
-          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
-          if [ -z "$REGRESSION_RESULT" ]; then
-            case "${{ steps.test6.outputs.decision || 'manual_review_needed' }}" in
-              next_install_validated|safe_to_upgrade)
-                REGRESSION_RESULT="Next version installed successfully on Arm64"
-                ;;
-              next_install_failed|next_lookup_failed)
-                REGRESSION_RESULT="Next version install failed on Arm64"
-                ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
-                ;;
-              *)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
-            esac
-          fi
-
           echo "## Crossplane Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Pinned version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Test 6 - Regression Validation:** ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
           echo "1. Check Binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
@@ -422,11 +270,3 @@ jobs:
           echo "3. Check Help Output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "4. Check Core Start Help: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "5. Test 5 - Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
-          echo "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

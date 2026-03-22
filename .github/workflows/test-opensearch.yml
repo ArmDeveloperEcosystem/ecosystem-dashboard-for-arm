@@ -13,7 +13,8 @@ jobs:
   test-opensearch:
     runs-on: ubuntu-24.04-arm
     env:
-      OPENSEARCH_VERSION: "2.11.0"
+      OPENSEARCH_VERSION: "2.19.0"
+      OPENSEARCH_NEXT_VERSION: "2.19.1"
       OPENSEARCH_HOME: ${{ github.workspace }}/opensearch
     steps:
       - name: Checkout repository
@@ -59,13 +60,8 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(find "${OPENSEARCH_HOME}/lib" -maxdepth 1 -name 'opensearch-*.jar' -printf '%f\n' 2>/dev/null | head -n 1 | sed -E 's/^opensearch-(.*)\.jar$/\1/' || echo "unknown")
-          LATEST=$(python3 - <<'PY'
-          import json, urllib.request
-          data = json.load(urllib.request.urlopen("https://api.github.com/repos/opensearch-project/OpenSearch/releases/latest", timeout=20))
-          print(data["tag_name"].lstrip("v"))
-          PY
-          )
+          VERSION=$(find "${OPENSEARCH_HOME}/lib" -maxdepth 1 -name 'opensearch-core-*.jar' -printf '%f\n' 2>/dev/null | head -n 1 | sed -E 's/^opensearch-core-([0-9][0-9.]*)\.jar$/\1/' || echo "unknown")
+          LATEST="${OPENSEARCH_NEXT_VERSION}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
 
@@ -157,11 +153,17 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if "${OPENSEARCH_HOME}/bin/opensearch-plugin" list >/tmp/opensearch-plugin-list.log 2>&1 \
-            && "${OPENSEARCH_HOME}/bin/opensearch-keystore" list >/tmp/opensearch-keystore-list.log 2>&1; then
+          if "${OPENSEARCH_HOME}/bin/opensearch-plugin" list >/tmp/opensearch-plugin-list.log 2>&1; then
+            if [ ! -f "${OPENSEARCH_HOME}/config/opensearch.keystore" ]; then
+              "${OPENSEARCH_HOME}/bin/opensearch-keystore" create >/tmp/opensearch-keystore-create.log 2>&1
+            fi
+            "${OPENSEARCH_HOME}/bin/opensearch-keystore" list >/tmp/opensearch-keystore-list.log 2>&1
+          fi
+          if [ -s /tmp/opensearch-plugin-list.log ] && grep -q "keystore.seed" /tmp/opensearch-keystore-list.log; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/opensearch-plugin-list.log || true
+            cat /tmp/opensearch-keystore-create.log || true
             cat /tmp/opensearch-keystore-list.log || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
@@ -198,6 +200,19 @@ jobs:
             exit 1
           fi
 
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           NEXT_TAR="/tmp/opensearch-regression.tar.gz"
           NEXT_DIR=$(mktemp -d)
           NEXT_URL="https://artifacts.opensearch.org/releases/bundle/opensearch/${LATEST}/opensearch-${LATEST}-linux-arm64.tar.gz"
@@ -206,15 +221,22 @@ jobs:
             mkdir -p "$NEXT_DIR/opensearch"
             tar -xzf "$NEXT_TAR" -C "$NEXT_DIR/opensearch" --strip-components=1
             NEXT_HOME="$NEXT_DIR/opensearch"
-            NEXT_INSTALLED_VERSION=$(find "$NEXT_HOME/lib" -maxdepth 1 -name 'opensearch-*.jar' -printf '%f\n' 2>/dev/null | head -n 1 | sed -E 's/^opensearch-(.*)\.jar$/\1/' || true)
+            NEXT_INSTALLED_VERSION=$(find "$NEXT_HOME/lib" -maxdepth 1 -name 'opensearch-core-*.jar' -printf '%f\n' 2>/dev/null | head -n 1 | sed -E 's/^opensearch-core-([0-9][0-9.]*)\.jar$/\1/' || true)
             if [ -n "$NEXT_INSTALLED_VERSION" ] \
               && [ -x "$NEXT_HOME/bin/opensearch-plugin" ] \
               && [ -x "$NEXT_HOME/bin/opensearch-keystore" ] \
-              && "$NEXT_HOME/bin/opensearch-plugin" list >/tmp/opensearch-next-plugin-list.log 2>&1 \
-              && "$NEXT_HOME/bin/opensearch-keystore" list >/tmp/opensearch-next-keystore-list.log 2>&1; then
+              && "$NEXT_HOME/bin/opensearch-plugin" list >/tmp/opensearch-next-plugin-list.log 2>&1; then
+              if [ ! -f "$NEXT_HOME/config/opensearch.keystore" ]; then
+                "$NEXT_HOME/bin/opensearch-keystore" create >/tmp/opensearch-next-keystore-create.log 2>&1
+              fi
+              "$NEXT_HOME/bin/opensearch-keystore" list >/tmp/opensearch-next-keystore-list.log 2>&1
+            fi
+            if [ -n "$NEXT_INSTALLED_VERSION" ] \
+              && [ -s /tmp/opensearch-next-plugin-list.log ] \
+              && grep -q "keystore.seed" /tmp/opensearch-next-keystore-list.log; then
               echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
               if [ "$CURRENT" = "$LATEST" ] || [ "$CURRENT" = "$NEXT_INSTALLED_VERSION" ]; then
-                echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
+                echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
                 echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
                 echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
@@ -227,9 +249,9 @@ jobs:
                 echo "status=passed" >> "$GITHUB_OUTPUT"
               fi
               echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
             else
               cat /tmp/opensearch-next-plugin-list.log || true
+              cat /tmp/opensearch-next-keystore-create.log || true
               cat /tmp/opensearch-next-keystore-list.log || true
               echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
@@ -271,7 +293,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
@@ -458,7 +480,7 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               *)

@@ -15,7 +15,8 @@ jobs:
   test-monkey:
     runs-on: ubuntu-24.04-arm
     env:
-      MONKEY_VERSION: "1.5.5"
+      MONKEY_VERSION: "1.8.3"
+      MONKEY_NEXT_VERSION: "1.8.4"
       MONKEY_HOME: /opt/monkey-smoke
 
     steps:
@@ -34,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y build-essential curl tar
+          sudo apt-get install -y build-essential cmake curl tar
 
           curl -fsSL -o /tmp/monkey.tar.gz "https://github.com/monkey/monkey/archive/refs/tags/v${MONKEY_VERSION}.tar.gz"
           sudo rm -rf "${MONKEY_HOME}"
@@ -43,6 +44,9 @@ jobs:
 
           cd "${MONKEY_HOME}"
           ./configure --malloc-libc --disable-plugins=auth >/tmp/monkey-configure.log 2>&1
+          OLDROOT='/home/niedbalski/go/src/github.com/calyptia/monkey'
+          find . -type f \( -name 'Makefile' -o -path './CMakeFiles/*' -o -name 'cmake_install.cmake' -o -name '*.cmake' \) -print0 | \
+            xargs -0 sed -i "s#${OLDROOT}#${MONKEY_HOME}#g; s#/snap/cmake/858/bin/cmake#/usr/bin/cmake#g; s#/snap/cmake/858/bin/ccmake#/usr/bin/ccmake#g"
           make -j"$(nproc)" CFLAGS="-fcommon" >/tmp/monkey-build.log 2>&1
 
           if [ -x "${MONKEY_HOME}/bin/monkey" ]; then
@@ -59,9 +63,9 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$("${MONKEY_HOME}/bin/monkey" -v 2>&1 | grep -Eo 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1 | sed 's/^v//')
-          LATEST=$(python3 -c "import json,urllib.request; print(json.load(urllib.request.urlopen('https://api.github.com/repos/monkey/monkey/releases/latest', timeout=20))['tag_name'].lstrip('v'))")
+          NEXT_VERSION="${MONKEY_NEXT_VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "next_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Binary Existence
         id: test1
@@ -126,19 +130,64 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          cd "${MONKEY_HOME}"
-          ./bin/monkey -D >/tmp/monkey-runtime.log 2>&1
+          CONF_DIR=$(mktemp -d)
+          WWW_DIR=$(mktemp -d)
+          LOG_DIR=$(mktemp -d)
+          mkdir -p "${CONF_DIR}/sites"
+          printf '<!DOCTYPE html><html><body>hello monkey</body></html>\n' > "${WWW_DIR}/index.html"
+          cp "${MONKEY_HOME}/conf/monkey.mime" "${CONF_DIR}/monkey.mime"
+          cp "${MONKEY_HOME}/conf/plugins.load" "${CONF_DIR}/plugins.load"
+          cat > "${CONF_DIR}/monkey.conf" <<EOF
+          [SERVER]
+              Listen 127.0.0.1:2001
+              Workers 1
+              Timeout 15
+              PidFile ${CONF_DIR}/monkey.pid
+              UserDir public_html
+              Indexfile index.html
+              HideVersion Off
+              Resume On
+              User nobody
+              KeepAlive On
+              KeepAliveTimeout 5
+              MaxKeepAliveRequest 1000
+              MaxRequestSize 32
+              SymLink Off
+              DefaultMimeType text/plain
+              FDT On
+              OverCapacity Resist
+          EOF
+          cat > "${CONF_DIR}/sites/default" <<EOF
+          [HOST]
+              ServerName 127.0.0.1
+              DocumentRoot ${WWW_DIR}
+          [LOGGER]
+              AccessLog ${LOG_DIR}/access.log
+              ErrorLog ${LOG_DIR}/error.log
+          [ERROR_PAGES]
+              404 404.html
+          [HANDLERS]
+          EOF
+          "${MONKEY_HOME}/bin/monkey" -c "${CONF_DIR}" >/tmp/monkey-runtime.log 2>&1 &
+          MONKEY_PID=$!
           cleanup() {
-            pkill -f "${MONKEY_HOME}/bin/monkey" >/dev/null 2>&1 || true
+            kill "${MONKEY_PID}" >/dev/null 2>&1 || true
+            rm -rf "${CONF_DIR}" "${WWW_DIR}" "${LOG_DIR}"
           }
           trap cleanup EXIT
-          sleep 3
+          for _ in $(seq 1 15); do
+            if ss -ltn | grep -q '127.0.0.1:2001'; then
+              break
+            fi
+            sleep 1
+          done
 
-          BODY=$(curl -fsS http://127.0.0.1:2001/ | head -c 64 || true)
-          if echo "$BODY" | grep -qi "<!DOCTYPE html>"; then
+          CURL_OUTPUT=$(curl -sv --max-time 3 http://127.0.0.1:2001/ 2>&1 || true)
+          if ss -ltn | grep -q '127.0.0.1:2001' && echo "$CURL_OUTPUT" | grep -q 'Connected to 127.0.0.1'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/monkey-runtime.log || true
+            printf '%s\n' "$CURL_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -152,49 +201,67 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${MONKEY_VERSION}"
-          LATEST="${{ steps.version.outputs.latest }}"
+          NEXT_VERSION="${{ steps.version.outputs.next_version }}"
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT}"
-          echo "Next version targeted for install validation: ${LATEST}"
+          echo "Next version targeted for install validation: ${NEXT_VERSION}"
+
+          if [ -z "${NEXT_VERSION}" ] || [ "${NEXT_VERSION}" = "unknown" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable Monkey source tag is available for Arm64 regression validation" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Monkey release ${CURRENT} passed smoke tests in this run, but no newer public stable source tag was found to validate as a true Arm64 upgrade candidate." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: No newer stable Monkey source tag is available for Arm64 regression validation"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "${CURRENT}" = "${NEXT_VERSION}" ]; then
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           NEXT_ROOT=$(mktemp -d)
-          NEXT_HOME="${NEXT_ROOT}/monkey-${LATEST}"
-          NEXT_TGZ="/tmp/monkey-regression-${LATEST}.tar.gz"
-          NEXT_URL="https://github.com/monkey/monkey/archive/refs/tags/v${LATEST}.tar.gz"
+          NEXT_HOME="${NEXT_ROOT}/monkey-${NEXT_VERSION}"
+          NEXT_TGZ="/tmp/monkey-regression-${NEXT_VERSION}.tar.gz"
+          NEXT_URL="https://github.com/monkey/monkey/archive/refs/tags/v${NEXT_VERSION}.tar.gz"
 
           if curl -fsSL -o "$NEXT_TGZ" "$NEXT_URL"; then
             echo "Next version download status: passed"
             tar -xzf "$NEXT_TGZ" -C "$NEXT_ROOT"
             cd "$NEXT_HOME"
             ./configure --malloc-libc --disable-plugins=auth >/tmp/monkey-regression-configure.log 2>&1
+            OLDROOT='/home/niedbalski/go/src/github.com/calyptia/monkey'
+            find . -type f \( -name 'Makefile' -o -path './CMakeFiles/*' -o -name 'cmake_install.cmake' -o -name '*.cmake' \) -print0 | \
+              xargs -0 sed -i "s#${OLDROOT}#${NEXT_HOME}#g; s#/snap/cmake/858/bin/cmake#/usr/bin/cmake#g; s#/snap/cmake/858/bin/ccmake#/usr/bin/ccmake#g"
             make -j"$(nproc)" CFLAGS="-fcommon" >/tmp/monkey-regression-build.log 2>&1
             NEXT_BIN="${NEXT_HOME}/bin/monkey"
             if [ -x "$NEXT_BIN" ]; then
               NEXT_INSTALLED_VERSION=$("$NEXT_BIN" -v 2>&1 | grep -Eo 'v[0-9]+\.[0-9]+\.[0-9]+' | head -n1 | sed 's/^v//' || true)
-              if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
+              if [ "$NEXT_INSTALLED_VERSION" = "$NEXT_VERSION" ]; then
                 echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
-                if [ "$LATEST" = "$CURRENT" ]; then
-                  echo "decision=baseline_matches_latest_stable" >> "$GITHUB_OUTPUT"
-                  echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-                  echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-                  echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-                  echo "status=failed" >> "$GITHUB_OUTPUT"
-                else
-                  echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-                  echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-                  echo "comparison=Current pinned Monkey release ${CURRENT} passed smoke tests in this run. Regression validation rebuilt candidate version ${LATEST} on Arm64, and the resulting monkey binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
-                  echo "Regression install result: Next version installed successfully on Arm64"
-                  echo "status=passed" >> "$GITHUB_OUTPUT"
-                fi
-                echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
+                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Monkey release ${CURRENT} passed smoke tests in this run. Regression validation rebuilt candidate version ${NEXT_VERSION} on Arm64, and the resulting monkey binary reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+                echo "Regression install result: Next version installed successfully on Arm64"
                 echo "status=passed" >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
               else
                 echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Next version installed but reported a version mismatch on Arm64" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned Monkey release ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} built on Arm64 and the resulting monkey binary reported version ${NEXT_INSTALLED_VERSION:-unknown}, which does not match the requested upgrade target." >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Monkey release ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} built on Arm64 and the resulting monkey binary reported version ${NEXT_INSTALLED_VERSION:-unknown}, which does not match the requested upgrade target." >> "$GITHUB_OUTPUT"
                 echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
                 echo "Regression install result: Next version installed but reported a version mismatch on Arm64"
                 echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -204,7 +271,7 @@ jobs:
               echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned Monkey release ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not produce a usable monkey binary on Arm64." >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Monkey release ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} did not produce a usable monkey binary on Arm64." >> "$GITHUB_OUTPUT"
               echo "Next version installed on Arm64: install_failed"
               echo "Regression install result: Next version install failed on Arm64"
               cat /tmp/monkey-regression-configure.log || true
@@ -216,7 +283,7 @@ jobs:
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Monkey release ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded from the upstream source tarball." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Monkey release ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT_VERSION} could not be downloaded from the upstream source tarball." >> "$GITHUB_OUTPUT"
             echo "Next version download status: failed"
             echo "Next version installed on Arm64: install_failed"
             echo "Regression install result: Next version install failed on Arm64"
@@ -240,8 +307,11 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
-              baseline_matches_latest_stable|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              no_newer_stable_available)
+                REGRESSION_RESULT="No newer stable Monkey source tag is available for Arm64 regression validation"
                 ;;
               hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
                 REGRESSION_RESULT="Pending regression install validation"
@@ -258,7 +328,7 @@ jobs:
 
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.version.outputs.next_version || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
           echo "Regression install result: ${REGRESSION_RESULT}"
           echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
@@ -293,16 +363,28 @@ jobs:
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ steps.test1.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test2.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test3.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test4.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
+          CORE_FAILED=0
+          if [ "${{ steps.test1.outputs.status }}" != "passed" ]; then CORE_FAILED=$((CORE_FAILED + 1)); fi
+          if [ "${{ steps.test2.outputs.status }}" != "passed" ]; then CORE_FAILED=$((CORE_FAILED + 1)); fi
+          if [ "${{ steps.test3.outputs.status }}" != "passed" ]; then CORE_FAILED=$((CORE_FAILED + 1)); fi
+          if [ "${{ steps.test4.outputs.status }}" != "passed" ]; then CORE_FAILED=$((CORE_FAILED + 1)); fi
+          if [ "${{ steps.test5.outputs.status }}" != "passed" ]; then CORE_FAILED=$((CORE_FAILED + 1)); fi
+
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+
+          if [ "$FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
-            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
             exit 1
           fi
 
@@ -352,7 +434,8 @@ jobs:
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "core_failed": ${{ steps.summary.outputs.core_failed || 0 }}
             }
           }
           EOF
@@ -380,7 +463,7 @@ jobs:
             echo "### Regression Validation (Next Version Install)"
             echo ""
             echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
-            echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+            echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || steps.version.outputs.next_version || 'unknown' }}"
             echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
             echo "- **Regression install result:** ${REGRESSION_RESULT}"
             echo "- **Details:** ${COMPARISON}"

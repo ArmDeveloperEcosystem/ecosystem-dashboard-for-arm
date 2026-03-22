@@ -14,6 +14,9 @@ on:
 jobs:
   test-benchmark:
     runs-on: ubuntu-24.04-arm
+    env:
+      BENCHMARK_BASELINE_VERSION: "v1.9.3"
+      BENCHMARK_NEXT_VERSION: "v1.9.4"
     
     steps:
       - name: Checkout repository
@@ -36,8 +39,7 @@ jobs:
         run: |
           echo "Installing Google Benchmark..."
           
-          # Clone stable version (v1.8.3 is recent stable)
-          git clone --branch v1.8.3 --depth 1 https://github.com/google/benchmark.git
+          git clone --branch "${BENCHMARK_BASELINE_VERSION}" --depth 1 https://github.com/google/benchmark.git
           
           cd benchmark
           cmake -E make_directory "build"
@@ -57,9 +59,8 @@ jobs:
       - name: Get Benchmark version
         id: version
         run: |
-          # Version is v1.8.3 as pinned
-          echo "version=1.8.3" >> $GITHUB_OUTPUT
-          echo "Detected Benchmark version: 1.8.3"
+          echo "version=${BENCHMARK_BASELINE_VERSION#v}" >> $GITHUB_OUTPUT
+          echo "Detected Benchmark version: ${BENCHMARK_BASELINE_VERSION#v}"
       
       - name: Test 1 - Check Headers
         id: test1
@@ -177,6 +178,61 @@ jobs:
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          CURRENT_VERSION="${BENCHMARK_BASELINE_VERSION#v}"
+          NEXT_VERSION="${BENCHMARK_NEXT_VERSION#v}"
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT_VERSION}"
+          echo "Next version targeted for install validation: ${NEXT_VERSION}"
+
+          WORKDIR=$(mktemp -d)
+          git clone --branch "${BENCHMARK_NEXT_VERSION}" --depth 1 https://github.com/google/benchmark.git "${WORKDIR}/benchmark-next"
+          cmake -S "${WORKDIR}/benchmark-next" -B "${WORKDIR}/benchmark-next/build" -DBENCHMARK_DOWNLOAD_DEPENDENCIES=on -DCMAKE_BUILD_TYPE=Release
+          cmake --build "${WORKDIR}/benchmark-next/build" --config Release
+
+          cat > "${WORKDIR}/bench_next.cc" <<'EOF'
+          #include <benchmark/benchmark.h>
+          static void BM_Next(benchmark::State& state) {
+            for (auto _ : state) {
+              benchmark::DoNotOptimize(state.iterations());
+            }
+          }
+          BENCHMARK(BM_Next);
+          BENCHMARK_MAIN();
+          EOF
+
+          if g++ "${WORKDIR}/bench_next.cc" -std=c++11 -I"${WORKDIR}/benchmark-next/include" -I"${WORKDIR}/benchmark-next/build/src/generated_include" "${WORKDIR}/benchmark-next/build/src/libbenchmark.a" -lpthread -o "${WORKDIR}/bench_next" && "${WORKDIR}/bench_next" --benchmark_min_time=0.01 > /dev/null; then
+            RESULT="next_install_validated"
+            DETAILS="Google Benchmark ${NEXT_VERSION} built and ran a real candidate benchmark on Arm64"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            RESULT="candidate_build_or_run_failed"
+            DETAILS="Google Benchmark ${NEXT_VERSION} failed build or runtime validation on Arm64"
+            echo "status=failed" >> $GITHUB_OUTPUT
+          fi
+
+          echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+          echo "next_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
+          echo "result=${RESULT}" >> $GITHUB_OUTPUT
+          echo "details=${DETAILS}" >> $GITHUB_OUTPUT
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || 'n/a' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.next_version || 'n/a' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.result || 'n/a' }}"
+          echo "Details: ${{ steps.test6.outputs.details || 'n/a' }}"
       - name: Calculate test summary
         if: always()
         id: summary
@@ -184,12 +240,14 @@ jobs:
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
+          CORE_FAILED=0
 
           # Check Headers
           if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
@@ -198,6 +256,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
@@ -206,6 +265,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
@@ -214,6 +274,7 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
@@ -222,19 +283,35 @@ jobs:
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
+
+          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test6.outputs.status }}" == "failed" ]; then
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
 
           if [ $FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -eq 0 ]; then
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
             echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $FAILED -ne 0 ]; then
             exit 1
           fi
       - name: Generate test results JSON
@@ -291,12 +368,23 @@ jobs:
                   "name": "Functional Validation",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Regression Validation",
+                  "status": "${{ steps.test6.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}
                 }
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "regression": {
+                "current_version": "${{ steps.test6.outputs.current_version || '' }}",
+                "next_version": "${{ steps.test6.outputs.next_version || '' }}",
+                "result": "${{ steps.test6.outputs.result || '' }}",
+                "details": "${{ steps.test6.outputs.details || '' }}"
+              }
             }
           }
           EOF
@@ -331,7 +419,13 @@ jobs:
 
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "6. Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Regression Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current version:** ${{ steps.test6.outputs.current_version || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version:** ${{ steps.test6.outputs.next_version || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Result:** ${{ steps.test6.outputs.result || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Details:** ${{ steps.test6.outputs.details || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
 
 
 

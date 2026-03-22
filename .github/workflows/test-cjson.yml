@@ -14,6 +14,9 @@ on:
 jobs:
   test-cjson:
     runs-on: ubuntu-24.04-arm
+    env:
+      CJSON_BASELINE_VERSION: "v1.7.18"
+      CJSON_NEXT_VERSION: "v1.7.19"
     
     steps:
       - name: Checkout repository
@@ -35,8 +38,9 @@ jobs:
         id: build
         run: |
           echo "Cloning cJSON..."
-          git clone https://github.com/DaveGamble/cJSON.git
+          git clone --depth 1 --branch "$CJSON_BASELINE_VERSION" https://github.com/DaveGamble/cJSON.git
           cd cJSON
+          echo "CJSON_SOURCE_DIR=$PWD" >> "$GITHUB_ENV"
           
           echo "Building..."
           mkdir build
@@ -51,11 +55,7 @@ jobs:
       - name: Get CJSON version
         id: version
         run: |
-          if VERSION=$(pkg-config --modversion libcjson 2>/dev/null | head -n 1); then
-            :
-          else
-            VERSION=$(git -C cJSON describe --tags --always 2>/dev/null | head -n 1 || true)
-          fi
+          VERSION=$(git -C "${CJSON_SOURCE_DIR:-cJSON}" describe --tags --exact-match 2>/dev/null | sed 's/^v//' || pkg-config --modversion libcjson 2>/dev/null | head -n 1 || git -C "${CJSON_SOURCE_DIR:-cJSON}" describe --tags --always 2>/dev/null | sed 's/^v//' || echo "unknown")
           VERSION=${VERSION:-unknown}
           VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -191,64 +191,161 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
+      - name: Test 6 - Regression Validation
+        id: test6
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          NEXT_VERSION="${CJSON_NEXT_VERSION#v}"
+          NEXT_TAG="${CJSON_NEXT_VERSION}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $NEXT_VERSION"
+
+          TMPDIR=$(mktemp -d)
+          cleanup() {
+            rm -rf "$TMPDIR"
+          }
+          trap cleanup EXIT
+
+          if ! git clone --depth 1 --branch "$NEXT_TAG" https://github.com/DaveGamble/cJSON.git "$TMPDIR/cJSON-next" >/tmp/cjson-regression-clone.log 2>&1; then
+            cat /tmp/cjson-regression-clone.log || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned cJSON version $CURRENT passed smoke tests in this run, but the candidate source tag $NEXT_TAG could not be cloned for Arm64 regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          cd "$TMPDIR/cJSON-next"
+          mkdir build
+          cd build
+          cmake .. -DENABLE_CJSON_TEST=On -DCMAKE_INSTALL_PREFIX="$TMPDIR/install" >/tmp/cjson-regression-cmake.log 2>&1
+          if ! make >/tmp/cjson-regression-make.log 2>&1; then
+            cat /tmp/cjson-regression-make.log || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned cJSON version $CURRENT passed smoke tests in this run, but the candidate source tag $NEXT_TAG failed to build on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          cmake --install . >/tmp/cjson-regression-install.log 2>&1
+          export PKG_CONFIG_PATH="$TMPDIR/install/lib/pkgconfig:$TMPDIR/install/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+          NEXT_INSTALLED_VERSION=$(pkg-config --modversion libcjson 2>/dev/null | head -n 1 || git -C "$TMPDIR/cJSON-next" describe --tags --exact-match 2>/dev/null | sed 's/^v//' || echo "$NEXT_VERSION")
+
+          cat > "$TMPDIR/test.c" <<'EOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <cjson/cJSON.h>
+          int main(void) {
+            cJSON *root = cJSON_CreateObject();
+            char *out;
+            if (root == NULL) return 1;
+            cJSON_AddStringToObject(root, "name", "regression");
+            out = cJSON_PrintUnformatted(root);
+            if (out == NULL) { cJSON_Delete(root); return 1; }
+            printf("%s\n", out);
+            free(out);
+            cJSON_Delete(root);
+            return 0;
+          }
+          EOF
+
+          gcc "$TMPDIR/test.c" -o "$TMPDIR/test-next" $(pkg-config --cflags --libs libcjson) -Wl,-rpath,"$TMPDIR/install/lib" >/tmp/cjson-regression-gcc.log 2>&1
+          if [ "$CURRENT" = "$NEXT_INSTALLED_VERSION" ] || ! "$TMPDIR/test-next" | grep -q '{"name":"regression"}'; then
+            cat /tmp/cjson-regression-gcc.log || true
+            echo "next_installed_version=${NEXT_INSTALLED_VERSION:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=$( [ \"$CURRENT\" = \"$NEXT_INSTALLED_VERSION\" ] && echo 'Tests 1-5 baseline must be older than the latest stable release' || echo 'Next version install failed on Arm64')" >> "$GITHUB_OUTPUT"
+            if [ "$CURRENT" = "$NEXT_INSTALLED_VERSION" ]; then
+              echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            else
+              echo "comparison=Current pinned cJSON version $CURRENT passed smoke tests in this run, but the candidate Arm64 build from source tag $NEXT_TAG did not complete the expected install-plus-compile validation." >> "$GITHUB_OUTPUT"
+            fi
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+          echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Current pinned cJSON version $CURRENT passed smoke tests in this run. Regression validation built, installed, and compiled against candidate version $NEXT_INSTALLED_VERSION from source tag $NEXT_TAG on Arm64." >> "$GITHUB_OUTPUT"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check Header File
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          # Check version metadata
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          # Check pkg-config flags
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Verify architecture
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Compile and run test program
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
+            echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
 
           if [ $FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
             exit 1
           fi
       - name: Generate test results JSON
@@ -305,12 +402,25 @@ jobs:
                   "name": "Compile and run test program",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
+                },
+                {
+                  "name": "Test 6 - Regression Validation",
+                  "status": "${{ steps.test6.outputs.status || 'skipped' }}",
+                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}
                 }
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
+            },
+            "regression": {
+              "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
+              "next_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+              "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+              "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+              "result": "${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}",
+              "details": "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
             }
           }
           EOF
@@ -344,5 +454,11 @@ jobs:
           echo "3. Check pkg-config flags: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Verify architecture: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Compile and run test program: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
-
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Regression Validation" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY
