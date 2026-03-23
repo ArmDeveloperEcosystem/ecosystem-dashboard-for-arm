@@ -29,7 +29,6 @@ jobs:
           echo "package_slug=hazelcast" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/hazelcast" >> "$GITHUB_OUTPUT"
           echo "current_version=${HAZELCAST_VERSION}" >> "$GITHUB_OUTPUT"
-
       - name: Install Hazelcast baseline
         id: install
         run: |
@@ -57,7 +56,11 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(find hazelcast/lib -maxdepth 1 -type f -name 'hazelcast-*.jar' ! -name '*-tests.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' -printf '%f\n' | sed -n 's/^hazelcast-\(.*\)\.jar$/\1/p' | head -n 1)
+          VERSION=$(find hazelcast/lib -maxdepth 1 -type f -printf '%f\n' \
+            | grep -E '^hazelcast-[0-9][0-9.]*\.jar$' \
+            | sed -n 's/^hazelcast-\([0-9][0-9.]*\)\.jar$/\1/p' \
+            | sort -V \
+            | tail -n 1)
           if [ -z "$VERSION" ]; then
             VERSION="${HAZELCAST_VERSION}"
           fi
@@ -90,11 +93,16 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
 
-          if [ -f "hazelcast/lib/hazelcast-${HAZELCAST_VERSION}.jar" ] \
-            || find hazelcast/lib -maxdepth 1 -type f -name "hazelcast-${HAZELCAST_VERSION}*.jar" ! -name '*-tests.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | grep -q .; then
+          CORE_JAR=$(find hazelcast/lib -maxdepth 1 -type f -printf '%f\n' \
+            | grep -E '^hazelcast-[0-9][0-9.]*\.jar$' \
+            | sort -V \
+            | tail -n 1 || true)
+
+          if [ "$CORE_JAR" = "hazelcast-${HAZELCAST_VERSION}.jar" ] || [ -f "hazelcast/lib/hazelcast-${HAZELCAST_VERSION}.jar" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            ls -1 hazelcast/lib | grep '^hazelcast-.*\\.jar$' || true
+            printf 'Detected core jar: %s\n' "${CORE_JAR:-missing}" || true
+            ls -1 hazelcast/lib | grep '^hazelcast-.*\.jar$' || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -151,25 +159,25 @@ jobs:
 
           cleanup() {
             pkill -f 'com.hazelcast.core.server.StartServer' >/dev/null 2>&1 || true
+            pkill -f 'com.hazelcast.instance.impl.HazelcastBootstrap' >/dev/null 2>&1 || true
             pkill -f 'hazelcast/bin/hz-start' >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
           cleanup
 
           nohup hazelcast/bin/hz-start > hazelcast.log 2>&1 &
-          HZ_PID=$!
           READY=0
-          for _ in $(seq 1 30); do
-            if grep -Eq 'Members \\{size:1|LifecycleService|Hazelcast.*START|is STARTED' hazelcast.log; then
+          for _ in $(seq 1 45); do
+            if grep -Eqi 'Members \{size:1|LifecycleService|Hazelcast.*START|is STARTED|CP Subsystem is not enabled|Cluster version set to' hazelcast.log; then
+              READY=1
+              break
+            fi
+            if ss -ltn 2>/dev/null | awk '$1 == "LISTEN" && $4 ~ /:5701$/ {found=1} END {exit(found ? 0 : 1)}'; then
               READY=1
               break
             fi
             sleep 2
           done
-          if kill -0 "$HZ_PID" 2>/dev/null; then
-            kill "$HZ_PID" >/dev/null 2>&1 || true
-            wait "$HZ_PID" || true
-          fi
 
           if [ "$READY" -eq 1 ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -307,24 +315,23 @@ jobs:
           TOTAL_DURATION=0
           CORE_FAILED=0
 
-          for STEP in 1 2 3 4 5; do
-            if [ "${{ steps.test1.outputs.status }}" = "passed" ] && [ "$STEP" -eq 1 ] \
-              || [ "${{ steps.test2.outputs.status }}" = "passed" ] && [ "$STEP" -eq 2 ] \
-              || [ "${{ steps.test3.outputs.status }}" = "passed" ] && [ "$STEP" -eq 3 ] \
-              || [ "${{ steps.test4.outputs.status }}" = "passed" ] && [ "$STEP" -eq 4 ] \
-              || [ "${{ steps.test5.outputs.status }}" = "passed" ] && [ "$STEP" -eq 5 ]; then
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
-          done
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
           TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
           if [ "$TEST6_STATUS" = "passed" ]; then
@@ -440,7 +447,6 @@ jobs:
           name: hazelcast-test-results
           path: test-results/hazelcast.json
           retention-days: 90
-
       - name: Create test summary
         if: always()
         run: |

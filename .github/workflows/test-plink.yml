@@ -31,7 +31,6 @@ jobs:
           echo "package_slug=plink" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/plink" >> "$GITHUB_OUTPUT"
           echo "current_version=${PLINK_VERSION}" >> "$GITHUB_OUTPUT"
-
       - name: Install Plink baseline
         id: install
         run: |
@@ -182,45 +181,148 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
+      - name: Test 6 - Regression Validation
+        id: test6
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT_VERSION="${{ steps.version.outputs.version || 'unknown' }}"
+          NEXT_REF="${PLINK_NEXT_REF}"
+          NEXT_VERSION="${PLINK_NEXT_VERSION}"
+          NEXT_VENV="${RUNNER_TEMP}/plink-next"
+          REGRESSION_LOG="/tmp/plink-next-functional.log"
+
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT_VERSION"
+          echo "Next version targeted for install validation: $NEXT_VERSION"
+
+          if [ -z "$NEXT_REF" ] || [ -z "$NEXT_VERSION" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Plink version ${CURRENT_VERSION} passed smoke tests in this run, but the next regression candidate could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          rm -rf "$NEXT_VENV"
+          python3 -m venv "$NEXT_VENV"
+          "$NEXT_VENV/bin/pip" install -q --upgrade pip
+
+          if "$NEXT_VENV/bin/pip" install -q "git+https://github.com/3-manifolds/PLink@${NEXT_REF}"; then
+            NEXT_INSTALLED_VERSION=$("$NEXT_VENV/bin/python" - <<'PY'
+          import plink
+          print(plink.__version__)
+          PY
+            )
+            if [ "$NEXT_INSTALLED_VERSION" = "$NEXT_VERSION" ] && \
+               xvfb-run -a "$NEXT_VENV/bin/python" - >/tmp/plink-next-functional.log 2>&1 <<'PY'
+          import plink
+          from plink.app import LinkEditor
+          print(f"plink-ok {plink.__version__}")
+          editor = LinkEditor(file_name=None)
+          editor.window.destroy()
+          PY
+            then
+              cat "$REGRESSION_LOG"
+              echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Plink version ${CURRENT_VERSION} passed smoke tests in this run. Regression validation installed tagged release ${NEXT_REF} on Arm64, detected version ${NEXT_INSTALLED_VERSION}, and completed the same headless functional editor smoke successfully." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              cat "$REGRESSION_LOG" || true
+              echo "next_installed_version=${NEXT_INSTALLED_VERSION:-install_failed}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Plink version ${CURRENT_VERSION} passed smoke tests in this run, but tagged release ${NEXT_REF} did not validate cleanly on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-install_failed}"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Plink version ${CURRENT_VERSION} passed smoke tests in this run, but tagged release ${NEXT_REF} could not be installed on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          check_test() {
+          check_core_test() {
             local status="$1"
             local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          check_test "${{ steps.test1.outputs.status || 'skipped' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status || 'skipped' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status || 'skipped' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status || 'skipped' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status || 'skipped' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
+          TEST6_DURATION=${{ steps.test6.outputs.duration || 0 }}
+          if [ "$TEST6_STATUS" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + TEST6_DURATION))
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ steps.test1.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test2.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test3.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test4.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
+          if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" = "passed" ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
-            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "$TEST6_STATUS" != "passed" ]; then
             exit 1
           fi
 
@@ -235,64 +337,93 @@ jobs:
             JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?check_suite_focus=true&query=job:$JOB_ID"
           fi
 
-          cat > test-results/plink.json <<EOF
-          {
-            "schema_version": "1.0",
-            "package": {
-              "name": "Plink",
-              "version": "${{ steps.version.outputs.version }}",
-              "language": "Python",
-              "category": "HPC"
-            },
-            "run": {
-              "id": "${{ github.run_id }}",
-              "url": "$JOB_URL",
-              "timestamp": "${{ steps.metadata.outputs.timestamp }}",
-              "status": "${{ steps.summary.outputs.overall_status }}",
-              "runner": {
-                "os": "ubuntu-24.04",
-                "arch": "arm64"
-              }
-            },
-            "tests": {
-              "passed": ${{ steps.summary.outputs.passed }},
-              "failed": ${{ steps.summary.outputs.failed }},
-              "skipped": 0,
-              "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
-              "details": [
-                {
-                  "name": "Check package import exists",
-                  "status": "${{ steps.test1.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Check exact release version",
-                  "status": "${{ steps.test2.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Check package metadata",
-                  "status": "${{ steps.test3.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Architecture verification",
-                  "status": "${{ steps.test4.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
-                },
-                {
-                  "name": "Functional validation",
-                  "status": "${{ steps.test5.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
-                },
-              ]
-            },
-            "metadata": {
-              "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
-            }
+          export JOB_URL
+          export RUN_ID="${{ github.run_id }}"
+          export RUN_TIMESTAMP="${{ steps.metadata.outputs.timestamp }}"
+          export OVERALL_STATUS="${{ steps.summary.outputs.overall_status }}"
+          export PASSED_COUNT="${{ steps.summary.outputs.passed }}"
+          export FAILED_COUNT="${{ steps.summary.outputs.failed }}"
+          export TOTAL_DURATION="${{ steps.summary.outputs.duration || 0 }}"
+          export DASHBOARD_LINK="${{ steps.metadata.outputs.dashboard_link }}"
+          export BADGE_STATUS="${{ steps.summary.outputs.badge_status }}"
+          export PACKAGE_SLUG="${{ steps.metadata.outputs.package_slug }}"
+          export VERSION="${{ steps.version.outputs.version || '' }}"
+          export TEST1_STATUS="${{ steps.test1.outputs.status || 'skipped' }}"
+          export TEST1_DURATION="${{ steps.test1.outputs.duration || 0 }}"
+          export TEST2_STATUS="${{ steps.test2.outputs.status || 'skipped' }}"
+          export TEST2_DURATION="${{ steps.test2.outputs.duration || 0 }}"
+          export TEST3_STATUS="${{ steps.test3.outputs.status || 'skipped' }}"
+          export TEST3_DURATION="${{ steps.test3.outputs.duration || 0 }}"
+          export TEST4_STATUS="${{ steps.test4.outputs.status || 'skipped' }}"
+          export TEST4_DURATION="${{ steps.test4.outputs.duration || 0 }}"
+          export TEST5_STATUS="${{ steps.test5.outputs.status || 'skipped' }}"
+          export TEST5_DURATION="${{ steps.test5.outputs.duration || 0 }}"
+          export TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          export TEST6_DURATION="${{ steps.test6.outputs.duration || 0 }}"
+          export CURRENT_VERSION="${{ steps.test6.outputs.current_version || steps.version.outputs.version || '' }}"
+          export LATEST_VERSION="${{ steps.test6.outputs.latest_version || '' }}"
+          export NEXT_INSTALLED_VERSION="${{ steps.test6.outputs.next_installed_version || '' }}"
+          export TEST6_DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          export TEST6_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          export TEST6_COMPARISON="${{ steps.test6.outputs.comparison || '' }}"
+
+          python3 - <<'PY'
+          import json
+          import os
+
+          def as_int(name):
+              return int(os.environ.get(name, "0") or "0")
+
+          data = {
+              "schema_version": "1.0",
+              "package": {
+                  "name": "Plink",
+                  "version": os.environ.get("VERSION", ""),
+                  "language": "Python",
+                  "category": "HPC",
+              },
+              "run": {
+                  "id": os.environ["RUN_ID"],
+                  "url": os.environ["JOB_URL"],
+                  "timestamp": os.environ["RUN_TIMESTAMP"],
+                  "status": os.environ["OVERALL_STATUS"],
+                  "runner": {"os": "ubuntu-24.04", "arch": "arm64"},
+              },
+              "tests": {
+                  "passed": as_int("PASSED_COUNT"),
+                  "failed": as_int("FAILED_COUNT"),
+                  "skipped": 0,
+                  "duration_seconds": as_int("TOTAL_DURATION"),
+                  "details": [
+                      {"name": "Check package import exists", "status": os.environ["TEST1_STATUS"], "duration_seconds": as_int("TEST1_DURATION")},
+                      {"name": "Check exact release version", "status": os.environ["TEST2_STATUS"], "duration_seconds": as_int("TEST2_DURATION")},
+                      {"name": "Check package metadata", "status": os.environ["TEST3_STATUS"], "duration_seconds": as_int("TEST3_DURATION")},
+                      {"name": "Architecture verification", "status": os.environ["TEST4_STATUS"], "duration_seconds": as_int("TEST4_DURATION")},
+                      {"name": "Functional validation", "status": os.environ["TEST5_STATUS"], "duration_seconds": as_int("TEST5_DURATION")},
+                      {
+                          "name": "Test 6 - Regression Validation",
+                          "status": os.environ["TEST6_STATUS"],
+                          "duration_seconds": as_int("TEST6_DURATION"),
+                          "current_version": os.environ.get("CURRENT_VERSION", ""),
+                          "latest_version": os.environ.get("LATEST_VERSION", ""),
+                          "next_installed_version": os.environ.get("NEXT_INSTALLED_VERSION", ""),
+                          "decision": os.environ.get("TEST6_DECISION", "manual_review_needed"),
+                          "regression_result": os.environ.get("TEST6_RESULT", ""),
+                          "comparison": os.environ.get("TEST6_COMPARISON", ""),
+                      },
+                  ],
+              },
+              "metadata": {
+                  "dashboard_link": os.environ["DASHBOARD_LINK"],
+                  "badge_status": os.environ["BADGE_STATUS"],
+                  "package_slug": os.environ["PACKAGE_SLUG"],
+              },
           }
-          EOF
+
+          with open("test-results/plink.json", "w", encoding="utf-8") as fh:
+              json.dump(data, fh, indent=2)
+              fh.write("\n")
+          PY
 
       - name: Upload test results
         if: always()
@@ -301,7 +432,6 @@ jobs:
           name: plink-test-results
           path: test-results/plink.json
           retention-days: 90
-
       - name: Create test summary
         if: always()
         run: |
@@ -321,5 +451,13 @@ jobs:
             echo "3. Check package metadata: ${{ steps.test3.outputs.status || 'skipped' }}"
             echo "4. Architecture verification: ${{ steps.test4.outputs.status || 'skipped' }}"
             echo "5. Functional validation: ${{ steps.test5.outputs.status || 'skipped' }}"
+            echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}"
+            echo ""
+            echo "### Regression Validation (Next Version Install)"
+            echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+            echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}"
+            echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+            echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression comparison summary unavailable.' }}"
+            echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"

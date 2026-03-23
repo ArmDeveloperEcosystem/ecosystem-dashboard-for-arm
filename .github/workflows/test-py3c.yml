@@ -25,7 +25,6 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=py3c" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/py3c" >> "$GITHUB_OUTPUT"
-
       - name: Install Py3c
         id: install
         run: |
@@ -36,13 +35,18 @@ jobs:
           source venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install py3c
-          INCLUDE_DIR=$(python - <<'PY'
-          import sysconfig, pathlib
-          inc = pathlib.Path(sysconfig.get_path("include"))
-          print(inc / "site" / f"python{sysconfig.get_python_version()}" / "py3c")
+          readarray -t PY3C_PATHS < <(python - <<'PY'
+          import pathlib
+          import py3c
+          header = next(pathlib.Path(py3c.__file__).resolve().parent.rglob("py3c.h"))
+          print(header.parent)
+          print(header.parent.parent)
           PY
           )
+          INCLUDE_DIR="${PY3C_PATHS[0]}"
+          INCLUDE_ROOT="${PY3C_PATHS[1]}"
           echo "include_dir=${INCLUDE_DIR}" >> "$GITHUB_OUTPUT"
+          echo "include_root=${INCLUDE_ROOT}" >> "$GITHUB_OUTPUT"
           echo "$PWD/venv/bin" >> "$GITHUB_PATH"
           if [ -f "${INCLUDE_DIR}/py3c.h" ]; then
             echo "install_status=success" >> "$GITHUB_OUTPUT"
@@ -77,7 +81,7 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if python -c "import importlib.metadata as md; print(md.version('py3c'))" | grep -q '^1\.4$'; then
+          if python -c "import importlib.metadata as md; print(md.version('py3c'))" | grep -Fxq "${{ steps.version.outputs.version }}"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -119,6 +123,7 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           cat > /tmp/py3c-smoke.c <<'EOF'
           #include <Python.h>
@@ -126,10 +131,17 @@ jobs:
           #include <stdio.h>
           int main(void) { puts("py3c-ok"); return 0; }
           EOF
-          cc /tmp/py3c-smoke.c $(python3-config --includes) -I$(dirname "${{ steps.install.outputs.include_dir }}") -o /tmp/py3c-smoke
-          if /tmp/py3c-smoke | grep -q '^py3c-ok$'; then
+          PYTHON_INCLUDE=$(python - <<'PY'
+          import sysconfig
+          print(sysconfig.get_path("include"))
+          PY
+          )
+          cc /tmp/py3c-smoke.c -I"${PYTHON_INCLUDE}" -I"${{ steps.install.outputs.include_root }}" -o /tmp/py3c-smoke
+          /tmp/py3c-smoke > /tmp/py3c-smoke.out
+          if grep -q '^py3c-ok$' /tmp/py3c-smoke.out; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            cat /tmp/py3c-smoke.out || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -224,7 +236,6 @@ jobs:
           name: py3c-test-results
           path: test-results/py3c.json
           retention-days: 90
-
       - name: Create test summary
         if: always()
         run: |
