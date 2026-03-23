@@ -88,46 +88,123 @@ jobs:
 
           echo "downloaded_batches=$DOWNLOADED_BATCHES" >> $GITHUB_OUTPUT
 
-      - name: Build test-results structure from batch artifacts
+      - name: Build canonical package map
+        id: canonical
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          package_map = {}
+          for md_path in sorted(Path("content/opensource_packages").glob("*.md")):
+              if md_path.name == "_index.md":
+                  continue
+              package_map[md_path.stem.lower()] = md_path.stem
+
+          Path(".summary-package-map.json").write_text(json.dumps(package_map, indent=2, sort_keys=True) + "\n")
+          print(f"Built canonical package map for {len(package_map)} package pages.")
+          PY
+
+      - name: Assemble canonical staged test results
         id: assemble
         run: |
-          mkdir -p test-results data/test-results
+          python3 - <<'PY'
+          import json
+          import shutil
+          from pathlib import Path
 
-          JSON_COUNT=0
-          MALFORMED_COUNT=0
-          while IFS= read -r -d '' json_file; do
-            if ! jq empty "$json_file" >/dev/null 2>&1; then
-              echo "⚠️ Skipping malformed result artifact: $json_file"
-              MALFORMED_COUNT=$((MALFORMED_COUNT + 1))
-              continue
-            fi
-            base=$(basename "$json_file" .json)
-            canonical_base=$(echo "$base" | tr '[:upper:]' '[:lower:]')
-            mkdir -p "test-results/${canonical_base}-test-results"
-            cp "$json_file" "test-results/${canonical_base}-test-results/${canonical_base}.json"
-            cp "$json_file" "data/test-results/${canonical_base}.json"
-            JSON_COUNT=$((JSON_COUNT + 1))
-          done < <(find downloaded-results -name '*.json' -print0)
+          package_map = json.loads(Path(".summary-package-map.json").read_text())
+          stage_root = Path(".summary-staging")
+          stage_data = stage_root / "data-test-results"
 
-          echo "json_count=$JSON_COUNT" >> $GITHUB_OUTPUT
-          echo "malformed_count=$MALFORMED_COUNT" >> $GITHUB_OUTPUT
-          echo "✅ Prepared $JSON_COUNT valid test result files from ${{ steps.download.outputs.downloaded_batches || '0' }} batch artifacts."
+          if stage_root.exists():
+              shutil.rmtree(stage_root)
+          stage_data.mkdir(parents=True, exist_ok=True)
 
-      - name: Normalize result URLs to exact job links
+          existing_dir = Path("data/test-results")
+          downloaded_dir = Path("downloaded-results")
+
+          malformed_count = 0
+          seeded_count = 0
+          overlay_count = 0
+
+          def canonical_slug(raw_slug: str, fallback_stem: str) -> str:
+              for candidate in (raw_slug, fallback_stem):
+                  if candidate:
+                      value = str(candidate).strip()
+                      if value:
+                          return package_map.get(value.lower(), value)
+              return fallback_stem
+
+          def write_canonical(source_path: Path, overlay: bool) -> None:
+              nonlocal malformed_count, seeded_count, overlay_count
+
+              try:
+                  payload = json.loads(source_path.read_text())
+              except Exception:
+                  print(f"⚠️ Skipping malformed result artifact: {source_path}")
+                  malformed_count += 1
+                  return
+
+              metadata = payload.setdefault("metadata", {})
+              canonical = canonical_slug(metadata.get("package_slug"), source_path.stem)
+              metadata["package_slug"] = canonical
+              target_path = stage_data / f"{canonical}.json"
+              target_path.write_text(json.dumps(payload, indent=2) + "\n")
+
+              if overlay:
+                  overlay_count += 1
+              else:
+                  seeded_count += 1
+
+          for source in sorted(existing_dir.glob("*.json")):
+              write_canonical(source, overlay=False)
+
+          for source in sorted(downloaded_dir.rglob("*.json")):
+              write_canonical(source, overlay=True)
+
+          final_count = len(list(stage_data.glob("*.json")))
+          metrics = Path(".summary-staging/assemble-metrics.env")
+          metrics.write_text(
+              "\n".join(
+                  [
+                      f"json_count={final_count}",
+                      f"malformed_count={malformed_count}",
+                      f"seeded_count={seeded_count}",
+                      f"overlay_count={overlay_count}",
+                  ]
+              )
+              + "\n"
+          )
+
+          print(
+              f"Prepared {final_count} canonical staged result files "
+              f"({seeded_count} seeded from saved results, {overlay_count} overlaid from fresh batch artifacts)."
+          )
+          PY
+
+          cat .summary-staging/assemble-metrics.env >> "$GITHUB_OUTPUT"
+          echo "✅ Prepared ${{ steps.assemble.outputs.json_count || '0' }} canonical staged result files."
+
+      - name: Normalize staged result URLs to exact job links
         if: always() && steps.assemble.outputs.json_count != '0'
+        id: normalize
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
           import json
           import os
+          import re
           import subprocess
           from pathlib import Path
 
-          data_dir = Path("data/test-results")
+          data_dir = Path(".summary-staging/data-test-results")
           job_cache = {}
           updated = 0
           unresolved = []
+          duplicate_url_map = {}
+          weak_urls = []
 
           def normalize_runner(runner):
               if isinstance(runner, dict):
@@ -177,13 +254,16 @@ jobs:
               if not jobs:
                   return fallback_url
 
-              slug = (package_slug or "").strip().lower()
+              slug = (package_slug or "").strip()
               slug_candidates = {
                   slug,
+                  slug.lower(),
                   slug.replace("_", "-"),
                   slug.replace("-", "_"),
+                  slug.lower().replace("_", "-"),
+                  slug.lower().replace("-", "_"),
               }
-              expected_job_ids = {f"test-{candidate}" for candidate in slug_candidates if candidate}
+              expected_job_ids = {f"test-{candidate}".lower() for candidate in slug_candidates if candidate}
 
               for job in jobs:
                   name = (job.get("name") or "").strip()
@@ -203,17 +283,33 @@ jobs:
               try:
                   payload = json.loads(json_path.read_text())
               except Exception:
+                  weak_urls.append((json_path.name, "malformed_json", "malformed_json"))
                   continue
 
-              canonical_path = data_dir / json_path.name.lower()
-              path_changed = canonical_path != json_path
               package_slug = (
-                  str((payload.get("metadata") or {}).get("package_slug") or "").strip().lower()
-                  or canonical_path.stem.lower()
+                  str((payload.get("metadata") or {}).get("package_slug") or "").strip()
+                  or json_path.stem
               )
+              payload.setdefault("metadata", {})["package_slug"] = package_slug
               run = payload.get("run") or {}
+              schema_changed = False
+              legacy_workflow_url = str(run.get("workflow_url") or "").strip()
               run_id = str(run.get("id") or "").strip()
+              if not run_id and legacy_workflow_url:
+                  match = re.search(r"/actions/runs/(\d+)", legacy_workflow_url)
+                  if match:
+                      run_id = match.group(1)
+                      payload.setdefault("run", {})["id"] = run_id
+                      schema_changed = True
+
               current_url = str(run.get("url") or "").strip()
+              if not current_url and legacy_workflow_url:
+                  current_url = legacy_workflow_url
+
+              if legacy_workflow_url:
+                  payload.setdefault("run", {}).pop("workflow_url", None)
+                  schema_changed = True
+
               runner_value = run.get("runner")
               normalized_runner = normalize_runner(runner_value)
               runner_changed = normalized_runner != runner_value
@@ -222,38 +318,95 @@ jobs:
                   payload["run"]["runner"] = normalized_runner
 
               if not run_id:
-                  if runner_changed or path_changed:
-                      rendered = json.dumps(payload, indent=2) + "\n"
-                      canonical_path.write_text(rendered)
-                      if path_changed and json_path.exists():
-                          json_path.unlink()
-
-                      mirror = Path("test-results") / f"{canonical_path.stem}-test-results" / canonical_path.name
-                      if mirror.exists():
-                          mirror.write_text(rendered)
+                  weak_urls.append((json_path.name, "missing_run_id", current_url or "missing_run_id"))
+                  if runner_changed or schema_changed:
+                      json_path.write_text(json.dumps(payload, indent=2) + "\n")
                       updated += 1
                   continue
 
               exact_url = resolve_job_url(run_id, package_slug, current_url)
-              if exact_url != current_url or runner_changed or path_changed:
+              if exact_url != current_url or runner_changed or schema_changed:
                   payload["run"]["url"] = exact_url
-                  rendered = json.dumps(payload, indent=2) + "\n"
-                  canonical_path.write_text(rendered)
-                  if path_changed and json_path.exists():
-                      json_path.unlink()
-
-                  mirror = Path("test-results") / f"{canonical_path.stem}-test-results" / canonical_path.name
-                  if mirror.exists():
-                      mirror.write_text(rendered)
+                  json_path.write_text(json.dumps(payload, indent=2) + "\n")
                   updated += 1
+
+              final_url = str((payload.get("run") or {}).get("url") or "").strip()
+              if re.search(r"/actions/runs/\d+/job/\d+$", final_url):
+                  duplicate_url_map.setdefault(final_url, []).append(json_path.stem)
               else:
-                  unresolved.append(f"{canonical_path.name}\t{run_id}\t{package_slug}")
+                  weak_urls.append((json_path.name, run_id, final_url or "missing_url"))
+                  unresolved.append(f"{json_path.name}\t{run_id}\t{package_slug}")
+
+          duplicate_clusters = {
+              url: slugs for url, slugs in duplicate_url_map.items() if len(slugs) > 1
+          }
+
+          metrics = Path(".summary-staging/normalize-metrics.env")
+          metrics.write_text(
+              "\n".join(
+                  [
+                      f"normalized_count={updated}",
+                      f"weak_url_count={len(weak_urls)}",
+                      f"duplicate_url_count={len(duplicate_clusters)}",
+                      f"unresolved_count={len(unresolved)}",
+                  ]
+              )
+              + "\n"
+          )
 
           print(f"Normalized {updated} result URLs to exact job links.")
+          if weak_urls:
+              print("Weak or unresolved result URLs:")
+              for name, run_id, url in weak_urls[:50]:
+                  print(f" - {name}\t{run_id}\t{url}")
+          if duplicate_clusters:
+              print("Duplicate exact job URLs detected:")
+              for url, slugs in list(duplicate_clusters.items())[:50]:
+                  print(f" - {url} => {', '.join(sorted(slugs))}")
           if unresolved:
               print("Unable to resolve exact job links for:")
               for name in unresolved[:50]:
                   print(f" - {name}")
+
+          if weak_urls or duplicate_clusters:
+              raise SystemExit(1)
+          PY
+
+          cat .summary-staging/normalize-metrics.env >> "$GITHUB_OUTPUT"
+
+      - name: Materialize canonical test results
+        if: always() && steps.assemble.outputs.json_count != '0' && steps.normalize.outcome == 'success'
+        run: |
+          rm -rf test-results
+          mkdir -p test-results data/test-results
+
+          find data/test-results -maxdepth 1 -name '*.json' -delete
+
+          for json_file in .summary-staging/data-test-results/*.json; do
+            [ -f "$json_file" ] || continue
+            base=$(basename "$json_file" .json)
+            cp "$json_file" "data/test-results/${base}.json"
+            mkdir -p "test-results/${base}-test-results"
+            cp "$json_file" "test-results/${base}-test-results/${base}.json"
+          done
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          data_dir = Path("data/test-results")
+          index_payload = {}
+
+          for json_path in sorted(data_dir.glob("*.json")):
+              try:
+                  index_payload[json_path.stem] = json.loads(json_path.read_text())
+              except Exception:
+                  continue
+
+          Path("data/test-results-index.json").write_text(
+              json.dumps(index_payload, indent=2, sort_keys=True) + "\n"
+          )
+          print(f"Wrote canonical test-results index for {len(index_payload)} packages.")
           PY
 
       - name: Generate global summary

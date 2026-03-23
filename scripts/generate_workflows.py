@@ -70,7 +70,7 @@ def main():
     for filename in os.listdir(CONTENT_DIR):
         if filename.endswith('.md'):
             file_path = os.path.join(CONTENT_DIR, filename)
-            slug = filename[:-3].lower() # Remove .md and lowercase
+            slug = filename[:-3] # Remove .md and preserve the canonical page basename
             workflow_filename = f"test-{slug}.yml"
             workflow_path = os.path.join(WORKFLOW_DIR, workflow_filename)
             
