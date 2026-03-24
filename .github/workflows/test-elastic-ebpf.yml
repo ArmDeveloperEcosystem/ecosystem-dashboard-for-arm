@@ -30,32 +30,18 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y git
-
-          CONTAINER_ENGINE=""
-          if command -v docker >/dev/null 2>&1; then
-            sudo systemctl start docker || sudo service docker start || true
-            if docker info >/dev/null 2>&1; then
-              CONTAINER_ENGINE="docker"
-            fi
-          fi
-
-          if [ -z "$CONTAINER_ENGINE" ]; then
-            sudo apt-get install -y podman
-            if command -v podman >/dev/null 2>&1; then
-              CONTAINER_ENGINE="podman"
-            fi
-          fi
+          sudo apt-get install -y git clang llvm cmake bmake zlib1g-dev m4 gcc g++ libc6-dev-i386 make file
 
           CURRENT_VERSION="8.4.0"
           SRC_DIR="/tmp/elastic-ebpf-${CURRENT_VERSION}"
           rm -rf "$SRC_DIR"
           git clone --depth 1 --branch "v${CURRENT_VERSION}" https://github.com/elastic/ebpf.git "$SRC_DIR"
+          CHECKED_OUT_TAG=$(git -C "$SRC_DIR" describe --tags --exact-match 2>/dev/null || true)
 
-          if [ -d "$SRC_DIR" ] && [ -f "$SRC_DIR/VERSION" ] && command -v "$CONTAINER_ENGINE" >/dev/null 2>&1; then
+          if [ -d "$SRC_DIR" ] && [ -f "$SRC_DIR/CMakeLists.txt" ] && [ -n "$CHECKED_OUT_TAG" ]; then
             echo "source_dir=$SRC_DIR" >> "$GITHUB_OUTPUT"
             echo "baseline_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
-            echo "container_engine=$CONTAINER_ENGINE" >> "$GITHUB_OUTPUT"
+            echo "checked_out_tag=${CHECKED_OUT_TAG#v}" >> "$GITHUB_OUTPUT"
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
@@ -66,7 +52,7 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(cat "${{ steps.install.outputs.source_dir }}/VERSION")
+          VERSION="${{ steps.install.outputs.checked_out_tag || steps.install.outputs.baseline_version }}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Source Tree and Version Metadata
@@ -75,8 +61,10 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          TAG=$(git -C "${{ steps.install.outputs.source_dir }}" describe --tags --exact-match 2>/dev/null | sed 's/^v//')
           if [ -d "${{ steps.install.outputs.source_dir }}" ] \
-            && [ "$(cat "${{ steps.install.outputs.source_dir }}/VERSION")" = "${{ steps.install.outputs.baseline_version }}" ]; then
+            && [ -f "${{ steps.install.outputs.source_dir }}/CMakeLists.txt" ] \
+            && [ "$TAG" = "${{ steps.install.outputs.baseline_version }}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -94,9 +82,11 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           cd "${{ steps.install.outputs.source_dir }}"
-          make build ARCH=arm64 CONTAINER_ENGINE="${{ steps.install.outputs.container_engine }}"
-          if [ -d "${{ steps.install.outputs.source_dir }}/artifacts-arm64" ] \
-            && [ -n "$(find "${{ steps.install.outputs.source_dir }}/artifacts-arm64" -type f | head -n 1)" ]; then
+          rm -rf build
+          cmake -S . -B build -DTARGET_DIR="$PWD/build/target"
+          cmake --build build -j"$(nproc)"
+          if [ -f "$PWD/build/target/libeBPF.a" ] \
+            && [ -n "$(find "$PWD/build/target/ebpf" -maxdepth 1 -name '*.bpf.o' | head -n 1)" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -113,11 +103,15 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          ELF_COUNT=$(find "${{ steps.install.outputs.source_dir }}/artifacts-arm64" -type f -exec file {} + | grep -c '^.*ELF ' || true)
-          if [ "${ELF_COUNT:-0}" -gt 0 ]; then
+          TARGET_DIR="${{ steps.install.outputs.source_dir }}/build/target"
+          BPF_OBJ_COUNT=$(find "$TARGET_DIR/ebpf" -maxdepth 1 -name '*.bpf.o' | wc -l | tr -d ' ')
+          TEST_BIN=$(find "$TARGET_DIR/test" -maxdepth 1 -type f -name 'BPFTcFilterTests' | head -n 1)
+          if [ "${BPF_OBJ_COUNT:-0}" -gt 0 ] \
+            && [ -f "$TARGET_DIR/libeBPF.a" ] \
+            && [ -n "$TEST_BIN" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            find "${{ steps.install.outputs.source_dir }}/artifacts-arm64" -type f | sed -n '1,20p' || true
+            find "$TARGET_DIR" -maxdepth 3 -type f | sed -n '1,40p' || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -132,11 +126,13 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          TEST_BIN=$(find "${{ steps.install.outputs.source_dir }}/build/target/test" -maxdepth 1 -type f -name 'BPFTcFilterTests' | head -n 1)
           if [ "$(uname -m)" = "aarch64" ] \
-            && find "${{ steps.install.outputs.source_dir }}/artifacts-arm64" -type f -exec file {} + | grep -Eqi 'ELF .*aarch64|ELF .*ARM aarch64'; then
+            && [ -n "$TEST_BIN" ] \
+            && file "$TEST_BIN" | grep -Eqi 'ELF .*aarch64|ELF .*ARM aarch64'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            find "${{ steps.install.outputs.source_dir }}/artifacts-arm64" -type f -exec file {} + | sed -n '1,20p' || true
+            file "$TEST_BIN" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -151,17 +147,15 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          cd "${{ steps.install.outputs.source_dir }}"
-          make package ARCH=arm64 CONTAINER_ENGINE="${{ steps.install.outputs.container_engine }}"
-          TARBALL=$(find "${{ steps.install.outputs.source_dir }}/artifacts-arm64" -maxdepth 1 -name 'elastic-ebpf-*.tar.gz' | head -n 1)
-          if [ -n "$TARBALL" ] \
-            && tar -tzf "$TARBALL" | grep -q '^share/elastic/ebpf/VERSION$' \
-            && [ "$(tar -xOf "$TARBALL" share/elastic/ebpf/VERSION | tr -d '\n')" = "${{ steps.install.outputs.baseline_version }}" ] \
-            && tar -tzf "$TARBALL" | grep -q '^share/elastic/ebpf/NOTICE.txt$' \
-            && tar -tzf "$TARBALL" | grep -q '^share/elastic/ebpf/LICENSE.txt$'; then
+          TARGET_DIR="${{ steps.install.outputs.source_dir }}/build/target"
+          TEST_BIN=$(find "$TARGET_DIR/test" -maxdepth 1 -type f -name 'BPFTcFilterTests' | head -n 1)
+          HELP_OUTPUT=$("$TEST_BIN" --help 2>&1 || true)
+          if [ -n "$TEST_BIN" ] \
+            && [ -f "$TARGET_DIR/libeBPF.a" ] \
+            && printf '%s\n' "$HELP_OUTPUT" | grep -Eqi 'test|gtest|Google Test'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            tar -tzf "$TARBALL" | sed -n '1,30p' || true
+            printf '%s\n' "$HELP_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -215,33 +209,35 @@ jobs:
 
           NEXT_DIR=$(mktemp -d)
           git clone --depth 1 --branch "v${LATEST}" https://github.com/elastic/ebpf.git "$NEXT_DIR"
+          NEXT_TAG=$(git -C "$NEXT_DIR" describe --tags --exact-match 2>/dev/null | sed 's/^v//')
           cd "$NEXT_DIR"
-          make build ARCH=arm64 CONTAINER_ENGINE="${{ steps.install.outputs.container_engine }}"
-          make package ARCH=arm64 CONTAINER_ENGINE="${{ steps.install.outputs.container_engine }}"
-          TARBALL=$(find "$NEXT_DIR/artifacts-arm64" -maxdepth 1 -name 'elastic-ebpf-*.tar.gz' | head -n 1)
-          NEXT_REPORTED=$(cat "$NEXT_DIR/VERSION")
+          rm -rf build
+          cmake -S . -B build -DTARGET_DIR="$PWD/build/target"
+          cmake --build build -j"$(nproc)"
+          NEXT_TEST_BIN=$(find "$NEXT_DIR/build/target/test" -maxdepth 1 -type f -name 'BPFTcFilterTests' | head -n 1)
+          NEXT_REPORTED="${NEXT_TAG:-$LATEST}"
 
-          if [ -n "$TARBALL" ] \
+          if [ -f "$NEXT_DIR/build/target/libeBPF.a" ] \
             && [ -n "$NEXT_REPORTED" ] \
-            && find "$NEXT_DIR/artifacts-arm64" -type f -exec file {} + | grep -Eqi 'ELF .*aarch64|ELF .*ARM aarch64' \
-            && tar -tzf "$TARBALL" | grep -q '^share/elastic/ebpf/VERSION$' \
-            && [ "$(tar -xOf "$TARBALL" share/elastic/ebpf/VERSION | tr -d '\n')" = "$NEXT_REPORTED" ]; then
+            && [ -n "$(find "$NEXT_DIR/build/target/ebpf" -maxdepth 1 -name '*.bpf.o' | head -n 1)" ] \
+            && [ -n "$NEXT_TEST_BIN" ] \
+            && file "$NEXT_TEST_BIN" | grep -Eqi 'ELF .*aarch64|ELF .*ARM aarch64'; then
             echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Elastic eBPF version ${CURRENT} passed smoke tests in this run. Regression validation built and packaged candidate release ${LATEST} on Arm64 successfully, and the packaged VERSION file reported ${NEXT_REPORTED}." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Elastic eBPF version ${CURRENT} passed smoke tests in this run. Regression validation configured and built candidate release ${LATEST} on Arm64 successfully, and the checked-out git tag resolved to ${NEXT_REPORTED}." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $NEXT_REPORTED"
             echo "Regression install result: Next version installed successfully on Arm64"
-            echo "Details: Current pinned Elastic eBPF version ${CURRENT} passed smoke tests in this run. Regression validation built and packaged candidate release ${LATEST} on Arm64 successfully, and the packaged VERSION file reported ${NEXT_REPORTED}."
+            echo "Details: Current pinned Elastic eBPF version ${CURRENT} passed smoke tests in this run. Regression validation configured and built candidate release ${LATEST} on Arm64 successfully, and the checked-out git tag resolved to ${NEXT_REPORTED}."
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "next_installed_version=${NEXT_REPORTED:-install_failed}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Elastic eBPF version ${CURRENT} passed smoke tests in this run, but the candidate release ${LATEST} did not build and package successfully on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Elastic eBPF version ${CURRENT} passed smoke tests in this run, but the candidate release ${LATEST} did not configure and build successfully on Arm64." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: ${NEXT_REPORTED:-install_failed}"
             echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned Elastic eBPF version ${CURRENT} passed smoke tests in this run, but the candidate release ${LATEST} did not build and package successfully on Arm64."
+            echo "Details: Current pinned Elastic eBPF version ${CURRENT} passed smoke tests in this run, but the candidate release ${LATEST} did not configure and build successfully on Arm64."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"

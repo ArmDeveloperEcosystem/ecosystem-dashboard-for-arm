@@ -55,7 +55,29 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(sudo docker run --rm --entrypoint taosd "${TDENGINE_IMAGE}" --version 2>&1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+          VERSION_LOG=$(mktemp)
+          CID=$(sudo docker run -d --rm "${TDENGINE_IMAGE}")
+          cleanup() {
+            sudo docker rm -f "$CID" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          VERSION=""
+          for _ in $(seq 1 30); do
+            if timeout 10s sudo docker exec "$CID" taos -s 'select server_version()' >"$VERSION_LOG" 2>&1; then
+              VERSION=$(grep -Eo '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$VERSION_LOG" | head -1 || true)
+              if [ -n "$VERSION" ]; then
+                break
+              fi
+            fi
+            sleep 2
+          done
+
+          if [ -z "$VERSION" ]; then
+            cat "$VERSION_LOG" || true
+            sudo docker logs "$CID" | tail -n 60 || true
+            exit 1
+          fi
           LATEST="${TDENGINE_NEXT_VERSION}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
@@ -78,8 +100,9 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if sudo docker run --rm --entrypoint taosd "${TDENGINE_IMAGE}" --version 2>&1 | grep -q "${TDENGINE_VERSION}"; then
+          if [ "${{ steps.version.outputs.version || 'unknown' }}" = "${TDENGINE_VERSION}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -126,7 +149,7 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          CID=$(sudo docker run -d --rm -p 6030:6030 "${TDENGINE_IMAGE}")
+          CID=$(sudo docker run -d --rm "${TDENGINE_IMAGE}")
           cleanup() {
             sudo docker rm -f "$CID" >/dev/null 2>&1 || true
           }
@@ -134,7 +157,7 @@ jobs:
 
           SUCCESS=0
           for _ in $(seq 1 30); do
-            if sudo docker exec "$CID" taos -s 'select server_version()' >/tmp/tdengine-functional.log 2>&1; then
+            if timeout 10s sudo docker exec "$CID" taos -s 'select server_version()' >/tmp/tdengine-functional.log 2>&1; then
               SUCCESS=1
               break
             fi
@@ -197,20 +220,24 @@ jobs:
             exit 1
           fi
 
-          NEXT_VERSION=$(sudo docker run --rm --entrypoint taosd "$NEXT_IMAGE" --version 2>&1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+          NEXT_VERSION_LOG=$(mktemp)
           NEXT_HELP=$(sudo docker run --rm --entrypoint taos "$NEXT_IMAGE" --help 2>&1 || true)
           NEXT_ARCH=$(sudo docker image inspect "$NEXT_IMAGE" --format '{{.Architecture}}' 2>/dev/null || true)
-          CID=$(sudo docker run -d --rm -p 6031:6030 "$NEXT_IMAGE")
+          CID=$(sudo docker run -d --rm "$NEXT_IMAGE")
           cleanup_candidate() {
             sudo docker rm -f "$CID" >/dev/null 2>&1 || true
           }
           trap cleanup_candidate EXIT
 
+          NEXT_VERSION=""
           NEXT_SUCCESS=0
           for _ in $(seq 1 30); do
-            if sudo docker exec "$CID" taos -s 'select server_version()' >/tmp/tdengine-next.log 2>&1; then
-              NEXT_SUCCESS=1
-              break
+            if timeout 10s sudo docker exec "$CID" taos -s 'select server_version()' >"$NEXT_VERSION_LOG" 2>&1; then
+              NEXT_VERSION=$(grep -Eo '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$NEXT_VERSION_LOG" | head -1 || true)
+              if [ -n "$NEXT_VERSION" ]; then
+                NEXT_SUCCESS=1
+                break
+              fi
             fi
             sleep 2
           done
@@ -219,7 +246,7 @@ jobs:
              [ "$NEXT_ARCH" = "arm64" ] && \
              printf '%s\n' "$NEXT_HELP" | grep -qiE "usage|help|Options" && \
              [ "$NEXT_SUCCESS" -eq 1 ] && \
-             grep -q "$LATEST" /tmp/tdengine-next.log; then
+             grep -q "$LATEST" "$NEXT_VERSION_LOG"; then
             echo "next_installed_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
             echo "Next version image pull status: passed"
             echo "Next version installed on Arm64: $NEXT_VERSION"
@@ -229,7 +256,7 @@ jobs:
             echo "Regression install result: Next version installed successfully on Arm64"
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            cat /tmp/tdengine-next.log || true
+            cat "$NEXT_VERSION_LOG" || true
             sudo docker logs "$CID" | tail -n 60 || true
             echo "next_installed_version=${NEXT_VERSION:-not_installed}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"

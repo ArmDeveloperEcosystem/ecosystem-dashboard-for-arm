@@ -53,16 +53,13 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          BASHRC_PATH="${{ steps.install.outputs.bashrc_path }}"
-          if [ -n "$BASHRC_PATH" ] && [ -f "$BASHRC_PATH" ]; then
-             source "$BASHRC_PATH"
-          fi
-          if command -v foamVersion >/dev/null 2>&1; then
-             VERSION=$(foamVersion 2>/dev/null | head -n 1 || true)
-          elif command -v icoFoam &> /dev/null; then
-             VERSION=$(icoFoam -help 2>&1 | sed -n 's/.*\(OpenFOAM[^ ]*\).*/\1/p' | head -n 1 || true)
-          else
-             VERSION=""
+          find_openfoam_bin() {
+            command -v "$1" 2>/dev/null || true
+          }
+          VERSION="$(dpkg-query -W -f='${Version}\n' openfoam 2>/dev/null | head -n 1 || true)"
+          if [ -z "$VERSION" ]; then
+             ICOFOAM_BIN="$(find_openfoam_bin icoFoam)"
+             VERSION="$([ -n "$ICOFOAM_BIN" ] && "$ICOFOAM_BIN" -help 2>&1 | sed -n 's/.*\(OpenFOAM[^ ]*\).*/\1/p' | head -n 1 || true)"
           fi
           if [ -z "$VERSION" ]; then
              VERSION="unknown"
@@ -85,12 +82,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          BASHRC_PATH="${{ steps.install.outputs.bashrc_path }}"
-          if [ -n "$BASHRC_PATH" ] && [ -f "$BASHRC_PATH" ]; then
-             source "$BASHRC_PATH"
-          fi
-          
-          if command -v icoFoam &> /dev/null; then
+          ICOFOAM_BIN="$(command -v icoFoam 2>/dev/null || true)"
+
+          if [ -n "$ICOFOAM_BIN" ] && [ -x "$ICOFOAM_BIN" ]; then
             echo "✓ icoFoam binary found"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -108,12 +102,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          BASHRC_PATH="${{ steps.install.outputs.bashrc_path }}"
-          if [ -n "$BASHRC_PATH" ] && [ -f "$BASHRC_PATH" ]; then
-             source "$BASHRC_PATH"
-          fi
-          
-          if command -v blockMesh &> /dev/null; then
+          BLOCKMESH_BIN="$(command -v blockMesh 2>/dev/null || true)"
+
+          if [ -n "$BLOCKMESH_BIN" ] && [ -x "$BLOCKMESH_BIN" ]; then
             echo "✓ blockMesh binary found"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -131,12 +122,20 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          BASHRC_PATH="${{ steps.install.outputs.bashrc_path }}"
-          if [ -n "$BASHRC_PATH" ] && [ -f "$BASHRC_PATH" ]; then
-             source "$BASHRC_PATH"
-          fi
-          
-          OUTPUT=$({ foamVersion 2>&1 || icoFoam -help 2>&1 || icoFoam --help 2>&1 || blockMesh -help 2>&1; } || true)
+          find_openfoam_bin() {
+            command -v "$1" 2>/dev/null || true
+            return 0
+          }
+          FOAM_VERSION_BIN="$(find_openfoam_bin foamVersion)"
+          ICOFOAM_BIN="$(find_openfoam_bin icoFoam)"
+          BLOCKMESH_BIN="$(find_openfoam_bin blockMesh)"
+
+          OUTPUT=$({
+            [ -n "$FOAM_VERSION_BIN" ] && "$FOAM_VERSION_BIN" 2>&1 || true
+            [ -n "$ICOFOAM_BIN" ] && "$ICOFOAM_BIN" -help 2>&1 || true
+            [ -n "$ICOFOAM_BIN" ] && "$ICOFOAM_BIN" --help 2>&1 || true
+            [ -n "$BLOCKMESH_BIN" ] && "$BLOCKMESH_BIN" -help 2>&1 || true
+          } || true)
           printf '%s\n' "$OUTPUT" > /tmp/openfoam-help.log
           if [ -n "$OUTPUT" ] && printf '%s\n' "$OUTPUT" | grep -Ei -q "OpenFOAM|icoFoam|blockMesh|usage|solver|case|version"; then
              echo "✓ Help command works"
@@ -160,15 +159,17 @@ jobs:
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
+          ICOFOAM_BIN="$(command -v icoFoam 2>/dev/null || true)"
           echo "Checking system architecture..."
           ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
+          if [ "$ARCH" = "aarch64" ] && [ -n "$ICOFOAM_BIN" ] && file "$ICOFOAM_BIN" | grep -qiE 'aarch64|arm64'; then
             echo "✓ System architecture is ARM64 ($ARCH)"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
+            [ -n "$ICOFOAM_BIN" ] && file "$ICOFOAM_BIN" || true
+            echo "✗ OpenFOAM install is not exposing an ARM64 icoFoam binary ($ARCH)"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -182,18 +183,22 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          BASHRC_PATH="${{ steps.install.outputs.bashrc_path }}"
-          if [ -n "$BASHRC_PATH" ] && [ -f "$BASHRC_PATH" ]; then
-             source "$BASHRC_PATH"
-          fi
+          find_openfoam_bin() {
+            command -v "$1" 2>/dev/null || true
+            return 0
+          }
+          FOAM_VERSION_BIN="$(find_openfoam_bin foamVersion)"
+          ICOFOAM_BIN="$(find_openfoam_bin icoFoam)"
+          BLOCKMESH_BIN="$(find_openfoam_bin blockMesh)"
+          FOAMEXEC_BIN="$(find_openfoam_bin foamExec)"
           : > /tmp/openfoam-functional.log
           # Basic functional check: use real OpenFOAM entry points, not a nonexistent openfoam wrapper
-          if { command -v foamVersion >/dev/null 2>&1 && foamVersion > /tmp/openfoam-functional.log 2>&1; } || \
-             icoFoam -help >> /tmp/openfoam-functional.log 2>&1 || \
-             icoFoam --help >> /tmp/openfoam-functional.log 2>&1 || \
-             blockMesh -help >> /tmp/openfoam-functional.log 2>&1 || \
-             blockMesh --help >> /tmp/openfoam-functional.log 2>&1 || \
-             { command -v foamExec >/dev/null 2>&1 && foamExec -help >> /tmp/openfoam-functional.log 2>&1; }; then
+          if { [ -n "$FOAM_VERSION_BIN" ] && "$FOAM_VERSION_BIN" > /tmp/openfoam-functional.log 2>&1; } || \
+             { [ -n "$ICOFOAM_BIN" ] && "$ICOFOAM_BIN" -help >> /tmp/openfoam-functional.log 2>&1; } || \
+             { [ -n "$ICOFOAM_BIN" ] && "$ICOFOAM_BIN" --help >> /tmp/openfoam-functional.log 2>&1; } || \
+             { [ -n "$BLOCKMESH_BIN" ] && "$BLOCKMESH_BIN" -help >> /tmp/openfoam-functional.log 2>&1; } || \
+             { [ -n "$BLOCKMESH_BIN" ] && "$BLOCKMESH_BIN" --help >> /tmp/openfoam-functional.log 2>&1; } || \
+             { [ -n "$FOAMEXEC_BIN" ] && "$FOAMEXEC_BIN" -help >> /tmp/openfoam-functional.log 2>&1; }; then
             echo "✓ Basic functional check passed"
             echo "status=passed" >> $GITHUB_OUTPUT
           elif grep -Ei -q "icoFoam|blockMesh|OpenFOAM|usage|solver|case|version" /tmp/openfoam-functional.log; then

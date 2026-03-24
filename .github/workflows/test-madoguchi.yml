@@ -13,18 +13,35 @@ on:
 jobs:
   test-madoguchi:
     runs-on: ubuntu-24.04-arm
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     env:
-      BASELINE_VERSION: v0.5.2
-      NEXT_VERSION: v0.5.3
+      BASELINE_VERSION: v0.5.4
+      NEXT_VERSION: v0.6.0
       DISCORD_WEBHOOK: "https://discord.com/api/webhooks/dummy/dummy"
       ROCKET_PORT: "8000"
       ROCKET_ADDRESS: "127.0.0.1"
-      ROCKET_DATABASES: '{madoguchi={url="sqlite::memory:"}}'
+      ROCKET_DATABASES: '{madoguchi={url="postgres://postgres:postgres@127.0.0.1:5432/postgres"}}'
       JWT_KEY: "dummy_key_for_smoke_test"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Set test metadata
         id: metadata
@@ -37,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y cargo git pkg-config libssl-dev
+          sudo apt-get install -y git pkg-config libssl-dev libpq-dev
           rm -rf madoguchi
           git clone --depth 1 --branch "${BASELINE_VERSION}" https://github.com/terrapkg/madoguchi.git
           cargo build --release --manifest-path madoguchi/Cargo.toml
@@ -105,11 +122,23 @@ jobs:
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           madoguchi >/tmp/madoguchi.log 2>&1 &
           PID=$!
-          sleep 3
-          if ps -p "$PID" >/dev/null 2>&1; then
+          READY=0
+          for _ in $(seq 1 20); do
+            if ! ps -p "$PID" >/dev/null 2>&1; then
+              break
+            fi
+            STATUS_CODE=$(curl -s -o /tmp/madoguchi-start.out -w "%{http_code}" http://127.0.0.1:8000/ || true)
+            if [ "$STATUS_CODE" = "200" ] || [ "$STATUS_CODE" = "404" ] || [ "$STATUS_CODE" = "401" ]; then
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$READY" -eq 1 ]; then
             kill "$PID" >/dev/null 2>&1 || true
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -126,12 +155,22 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           madoguchi >/tmp/madoguchi-func.log 2>&1 &
           PID=$!
           trap 'kill "$PID" >/dev/null 2>&1 || true' EXIT
-          sleep 3
-          STATUS_CODE=$(curl -s -o /tmp/madoguchi-http.out -w "%{http_code}" http://127.0.0.1:8000/ || true)
+          STATUS_CODE=""
+          for _ in $(seq 1 20); do
+            if ! ps -p "$PID" >/dev/null 2>&1; then
+              break
+            fi
+            STATUS_CODE=$(curl -s -o /tmp/madoguchi-http.out -w "%{http_code}" http://127.0.0.1:8000/ || true)
+            if [ "$STATUS_CODE" = "200" ] || [ "$STATUS_CODE" = "404" ] || [ "$STATUS_CODE" = "401" ]; then
+              break
+            fi
+            sleep 1
+          done
           cat /tmp/madoguchi-http.out || true
           if [ "$STATUS_CODE" = "200" ] || [ "$STATUS_CODE" = "404" ] || [ "$STATUS_CODE" = "401" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -167,8 +206,17 @@ jobs:
           "$NEXT_BIN" >/tmp/madoguchi-next.log 2>&1 &
           PID=$!
           trap 'kill "$PID" >/dev/null 2>&1 || true; rm -rf "$NEXT_DIR"' EXIT
-          sleep 3
-          STATUS_CODE=$(curl -s -o /tmp/madoguchi-next-http.out -w "%{http_code}" http://127.0.0.1:8001/ || true)
+          STATUS_CODE=""
+          for _ in $(seq 1 20); do
+            if ! ps -p "$PID" >/dev/null 2>&1; then
+              break
+            fi
+            STATUS_CODE=$(curl -s -o /tmp/madoguchi-next-http.out -w "%{http_code}" http://127.0.0.1:8001/ || true)
+            if [ "$STATUS_CODE" = "200" ] || [ "$STATUS_CODE" = "404" ] || [ "$STATUS_CODE" = "401" ]; then
+              break
+            fi
+            sleep 1
+          done
 
           if [ -x "$NEXT_BIN" ] && \
              file "$NEXT_BIN" | grep -qiE "aarch64|arm64" && \
