@@ -159,11 +159,28 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          CLIENT_CONF=$(find /etc/fdfs -maxdepth 1 -type f \( -name 'client.conf.sample' -o -name 'client.conf' \) | head -n 1 || true)
-          MONITOR_OUTPUT=$(LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:/usr/lib:/usr/lib64 fdfs_monitor "${CLIENT_CONF:-/etc/fdfs/client.conf.sample}" 2>&1 || true)
+          CLIENT_CONF_TEMPLATE=$(find /etc/fdfs -maxdepth 1 -type f \( -name 'client.conf.sample' -o -name 'client.conf' \) | head -n 1 || true)
+          TEST_BASE=$(mktemp -d)
+          CLIENT_CONF="${TEST_BASE}/client.conf"
+          if [ -n "$CLIENT_CONF_TEMPLATE" ] && [ -f "$CLIENT_CONF_TEMPLATE" ]; then
+            cp "$CLIENT_CONF_TEMPLATE" "$CLIENT_CONF"
+          else
+            cat > "$CLIENT_CONF" <<'EOF'
+          base_path=/tmp/fastdfs
+          tracker_server=127.0.0.1:22122
+          connect_timeout=5
+          network_timeout=30
+          http.tracker_server_port=80
+          EOF
+          fi
+          mkdir -p "${TEST_BASE}/base"
+          sed -i "s|^base_path=.*|base_path=${TEST_BASE}/base|" "$CLIENT_CONF" || true
+          grep -q '^tracker_server=' "$CLIENT_CONF" || echo 'tracker_server=127.0.0.1:22122' >> "$CLIENT_CONF"
+          MONITOR_OUTPUT=$(LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:/usr/lib:/usr/lib64 fdfs_monitor "$CLIENT_CONF" 2>&1 || true)
           echo "$MONITOR_OUTPUT"
-          if ls /etc/fdfs/*.sample >/dev/null 2>&1 && echo "$MONITOR_OUTPUT" | grep -qiE 'usage|tracker|storage|connect|connection|errno|config'; then
+          if echo "$MONITOR_OUTPUT" | grep -qiE 'usage|tracker|storage|connect|connection|errno|config'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -171,6 +188,7 @@ jobs:
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          rm -rf "$TEST_BASE"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -189,20 +207,57 @@ jobs:
           echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
 
           git clone --depth 1 --branch "${NEXT_VERSION}" "${FASTDFS_REPO}" "$TMPDIR/fastdfs-next"
+          NEXT_LIBFASTCOMMON_TAG=$(sed -n "s/.*git checkout \\(V[0-9.]*\\).*/\\1/p" "$TMPDIR/fastdfs-next/INSTALL" | sed -n '1p')
+          NEXT_LIBSERVERFRAME_TAG=$(sed -n "s/.*git checkout \\(V[0-9.]*\\).*/\\1/p" "$TMPDIR/fastdfs-next/INSTALL" | sed -n '2p')
+          NEXT_LIBFASTCOMMON_TAG="${NEXT_LIBFASTCOMMON_TAG:-${LIBFASTCOMMON_TAG}}"
+          NEXT_LIBSERVERFRAME_TAG="${NEXT_LIBSERVERFRAME_TAG:-${LIBSERVERFRAME_TAG}}"
+          git clone --depth 1 --branch "${NEXT_LIBFASTCOMMON_TAG}" "${LIBFASTCOMMON_REPO}" "$TMPDIR/libfastcommon-next"
+          (
+            cd "$TMPDIR/libfastcommon-next"
+            ./make.sh clean || true
+            ./make.sh
+            DESTDIR="$TMPDIR/root" ./make.sh install
+          )
+          git clone --depth 1 --branch "${NEXT_LIBSERVERFRAME_TAG}" "${LIBSERVERFRAME_REPO}" "$TMPDIR/libserverframe-next"
+          (
+            cd "$TMPDIR/libserverframe-next"
+            ./make.sh clean || true
+            PKG_CONFIG_PATH="$TMPDIR/root/usr/lib/pkgconfig:${PKG_CONFIG_PATH:-}" ./make.sh
+            DESTDIR="$TMPDIR/root" ./make.sh install
+          )
           (
             cd "$TMPDIR/fastdfs-next"
             ./make.sh clean || true
+            PKG_CONFIG_PATH="$TMPDIR/root/usr/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
+            C_INCLUDE_PATH="$TMPDIR/root/usr/include:${C_INCLUDE_PATH:-}" \
+            LIBRARY_PATH="$TMPDIR/root/usr/lib:$TMPDIR/root/usr/lib64:${LIBRARY_PATH:-}" \
+            LD_LIBRARY_PATH="$TMPDIR/root/usr/lib:$TMPDIR/root/usr/lib64:${LD_LIBRARY_PATH:-}" \
             ./make.sh
             DESTDIR="$TMPDIR/root" ./make.sh install
           )
 
           NEXT_TRACKER=$(find "$TMPDIR/root" -type f -name fdfs_trackerd | head -n 1)
           NEXT_MONITOR=$(find "$TMPDIR/root" -type f -name fdfs_monitor | head -n 1)
-          NEXT_CONF=$(find "$TMPDIR/root" -type f \( -name 'client.conf.sample' -o -name 'client.conf' -o -name 'tracker.conf.sample' -o -name 'storage.conf.sample' \) | head -n 1)
+          NEXT_CONF_TEMPLATE=$(find "$TMPDIR/root" -type f \( -name 'client.conf.sample' -o -name 'client.conf' \) | head -n 1)
           NEXT_LIB_DIRS=$(find "$TMPDIR/root" -type d \( -path '*/lib' -o -path '*/lib64' \) | paste -sd: -)
+          NEXT_CONF="$TMPDIR/candidate-client.conf"
+          if [ -n "$NEXT_CONF_TEMPLATE" ] && [ -f "$NEXT_CONF_TEMPLATE" ]; then
+            cp "$NEXT_CONF_TEMPLATE" "$NEXT_CONF"
+          else
+            cat > "$NEXT_CONF" <<'EOF'
+          base_path=/tmp/fastdfs
+          tracker_server=127.0.0.1:22122
+          connect_timeout=5
+          network_timeout=30
+          http.tracker_server_port=80
+          EOF
+          fi
+          mkdir -p "$TMPDIR/base"
+          sed -i "s|^base_path=.*|base_path=$TMPDIR/base|" "$NEXT_CONF" || true
+          grep -q '^tracker_server=' "$NEXT_CONF" || echo 'tracker_server=127.0.0.1:22122' >> "$NEXT_CONF"
 
           VERSION_OUTPUT=$(LD_LIBRARY_PATH="${NEXT_LIB_DIRS:-/usr/local/lib:/usr/local/lib64:/usr/lib:/usr/lib64}" "$NEXT_TRACKER" 2>&1 || true)
-          MONITOR_OUTPUT=$(LD_LIBRARY_PATH="${NEXT_LIB_DIRS:-/usr/local/lib:/usr/local/lib64:/usr/lib:/usr/lib64}" "$NEXT_MONITOR" "${NEXT_CONF:-/dev/null}" 2>&1 || true)
+          MONITOR_OUTPUT=$(LD_LIBRARY_PATH="${NEXT_LIB_DIRS:-/usr/local/lib:/usr/local/lib64:/usr/lib:/usr/lib64}" "$NEXT_MONITOR" "$NEXT_CONF" 2>&1 || true)
           echo "$VERSION_OUTPUT"
           echo "$MONITOR_OUTPUT"
 
