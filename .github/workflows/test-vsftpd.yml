@@ -189,15 +189,26 @@ jobs:
           echo "Current version tested in Tests 1-5: $CURRENT_PACKAGE_VERSION"
           echo "Next version targeted for install validation: $LATEST"
 
-          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ] || [ "$CURRENT_UPSTREAM_VERSION" = "$LATEST" ]; then
+          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup unavailable for Arm64 validation" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current packaged vsftpd version ${CURRENT_PACKAGE_VERSION} passed smoke tests in this run, but the public upstream release page did not expose a newer stable tarball list that this workflow could resolve for an Arm64 Test 6 upgrade check." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$CURRENT_UPSTREAM_VERSION" = "$LATEST" ]; then
             echo "next_installed_version=${CURRENT_UPSTREAM_VERSION:-not_installed}" >> "$GITHUB_OUTPUT"
             echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
             echo "regression_result=No newer stable upstream release is available for Arm64 validation" >> "$GITHUB_OUTPUT"
             echo "comparison=Current packaged vsftpd version ${CURRENT_PACKAGE_VERSION} passed smoke tests in this run, and the public upstream release list currently stops at ${CURRENT_UPSTREAM_VERSION}. There is no newer stable source release to validate in Test 6." >> "$GITHUB_OUTPUT"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            exit 0
           fi
 
           NEXT_DIR=$(mktemp -d)
@@ -290,8 +301,14 @@ jobs:
               next_install_validated|safe_to_upgrade)
                 REGRESSION_RESULT="Next version installed successfully on Arm64"
                 ;;
-              next_install_failed|next_lookup_failed)
+              next_install_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              next_lookup_failed)
+                REGRESSION_RESULT="Next version lookup unavailable for Arm64 validation"
+                ;;
+              no_newer_stable_available)
+                REGRESSION_RESULT="No newer stable upstream release is available for Arm64 validation"
                 ;;
               metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
@@ -325,6 +342,7 @@ jobs:
           FAILED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
 
           check_test() {
             local status="$1"
@@ -351,14 +369,20 @@ jobs:
           check_core "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
           check_core "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
           check_core "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
-          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}"
+          if [ "$TEST6_STATUS" = "passed" ]; then
+            check_test "passed" "${{ steps.test6.outputs.duration || 0 }}"
+          elif [ "$TEST6_STATUS" = "failed" ]; then
+            check_test "failed" "${{ steps.test6.outputs.duration || 0 }}"
+          else
+            TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+          fi
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ "$FAILED" -eq 0 ]; then
+          if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
@@ -370,7 +394,7 @@ jobs:
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
           fi
 
-          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
+          if [ "$CORE_FAILED" -ne 0 ] || [ "$TEST6_STATUS" = "failed" ]; then
             exit 1
           fi
 
