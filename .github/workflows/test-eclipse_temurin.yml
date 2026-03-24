@@ -17,6 +17,7 @@ jobs:
     env:
       TEMURIN_BASE_RELEASE: "jdk-21.0.7+6"
       TEMURIN_NEXT_RELEASE: "jdk-21.0.8+9"
+      TEMURIN_API_BASE: "https://api.adoptium.net/v3/binary/version"
 
     steps:
       - name: Checkout repository
@@ -32,26 +33,10 @@ jobs:
         id: install
         run: |
           set -euo pipefail
-          BASE_INFO="$(
-          python3 - <<'PY'
-          import json, urllib.request
-          req = urllib.request.Request(
-              "https://api.adoptium.net/v3/assets/feature_releases/21/ga?architecture=aarch64&image_type=jdk&os=linux&vendor=eclipse&jvm_impl=hotspot&page_size=20",
-              headers={"User-Agent": "github-actions"},
-          )
-          releases = json.load(urllib.request.urlopen(req))
-          target = next(item for item in releases if item["release_name"] == "jdk-21.0.7+6")
-          data = target["binaries"][0]
-          print(
-              "21.0.7+6",
-              target["version_data"]["openjdk_version"],
-              data["package"]["link"],
-              data["package"]["name"],
-              sep="\t",
-          )
-          PY
-          )"
-          IFS=$'\t' read -r BASE_RELEASE BASE_OPENJDK BASE_URL BASE_NAME <<< "$BASE_INFO"
+          BASE_RELEASE="${TEMURIN_BASE_RELEASE}"
+          BASE_VERSION="${BASE_RELEASE#jdk-}"
+          BASE_URL="${TEMURIN_API_BASE}/${BASE_RELEASE}/linux/aarch64/jdk/hotspot/normal/eclipse?project=jdk"
+          BASE_NAME="OpenJDK21U-jdk_aarch64_linux_hotspot_${BASE_VERSION//+/_}.tar.gz"
           INSTALL_DIR="/opt/eclipse-temurin-${BASE_RELEASE#jdk-}"
           sudo rm -rf "$INSTALL_DIR"
           sudo mkdir -p "$INSTALL_DIR"
@@ -60,8 +45,7 @@ jobs:
 
           if [ -x "$INSTALL_DIR/bin/java" ] && [ -x "$INSTALL_DIR/bin/javac" ]; then
             echo "install_dir=$INSTALL_DIR" >> "$GITHUB_OUTPUT"
-            echo "baseline_release=${BASE_RELEASE#jdk-}" >> "$GITHUB_OUTPUT"
-            echo "baseline_openjdk=$BASE_OPENJDK" >> "$GITHUB_OUTPUT"
+            echo "baseline_release=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
@@ -183,69 +167,55 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.install.outputs.baseline_release }}"
+          NEXT_RELEASE="${TEMURIN_NEXT_RELEASE}"
+          NEXT_VERSION="${NEXT_RELEASE#jdk-}"
+          NEXT_URL="${TEMURIN_API_BASE}/${NEXT_RELEASE}/linux/aarch64/jdk/hotspot/normal/eclipse?project=jdk"
+          NEXT_NAME="OpenJDK21U-jdk_aarch64_linux_hotspot_${NEXT_VERSION//+/_}.tar.gz"
+          STATUS="failed"
+          NEXT_REPORTED="install_failed"
+          DECISION="next_install_failed"
+          REGRESSION_RESULT="Next version install failed on Arm64"
+          COMPARISON="Current pinned Temurin release ${CURRENT} passed smoke tests in this run, but the latest Linux/Aarch64 Temurin candidate ${NEXT_VERSION} could not be validated successfully on Arm64."
+
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
-
-          NEXT_INFO="$(
-            python3 - <<'PY'
-            import json, urllib.request
-            req = urllib.request.Request(
-                "https://api.adoptium.net/v3/assets/feature_releases/21/ga?architecture=aarch64&image_type=jdk&os=linux&vendor=eclipse&jvm_impl=hotspot&page_size=20",
-                headers={"User-Agent": "github-actions"},
-            )
-            releases = json.load(urllib.request.urlopen(req))
-            target = next(item for item in releases if item["release_name"] == "jdk-21.0.8+9")
-            data = target["binaries"][0]
-            print(
-                "21.0.8+9",
-                target["version_data"]["openjdk_version"],
-                data["package"]["link"],
-                data["package"]["name"],
-                sep="\t",
-            )
-            PY
-          )"
-          IFS=$'\t' read -r NEXT_RELEASE NEXT_OPENJDK NEXT_URL NEXT_NAME <<< "$NEXT_INFO"
-          NEXT_VERSION="${NEXT_RELEASE#jdk-}"
-          echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "Next version targeted for install validation: $NEXT_VERSION"
 
           NEXT_DIR=$(mktemp -d)
-          curl -fsSL "$NEXT_URL" -o "$NEXT_DIR/${NEXT_NAME}"
-          tar -xzf "$NEXT_DIR/${NEXT_NAME}" --strip-components=1 -C "$NEXT_DIR"
-          NEXT_JAVA="$NEXT_DIR/bin/java"
-          NEXT_JAVAC="$NEXT_DIR/bin/javac"
-          NEXT_REPORTED=$("$NEXT_JAVA" -version 2>&1 | awk -F '"' '/version/ {print $2; exit}' || true)
+          if curl -fsSL "$NEXT_URL" -o "$NEXT_DIR/${NEXT_NAME}"; then
+            tar -xzf "$NEXT_DIR/${NEXT_NAME}" --strip-components=1 -C "$NEXT_DIR"
+            NEXT_JAVA="$NEXT_DIR/bin/java"
+            NEXT_JAVAC="$NEXT_DIR/bin/javac"
+            NEXT_REPORTED=$("$NEXT_JAVA" -version 2>&1 | awk -F '"' '/version/ {print $2; exit}' || true)
 
-          if [ -x "$NEXT_JAVA" ] \
-            && [ -x "$NEXT_JAVAC" ] \
-            && file "$NEXT_JAVA" | grep -Eqi 'aarch64|arm64' \
-            && [ -n "$NEXT_REPORTED" ]; then
-            echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Temurin release ${CURRENT} passed smoke tests in this run. Regression validation downloaded the latest Linux/Aarch64 Temurin release ${NEXT_VERSION}, and the candidate JDK reported version ${NEXT_REPORTED} on Arm64." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $NEXT_REPORTED"
-            echo "Regression install result: Next version installed successfully on Arm64"
-            echo "Details: Current pinned Temurin release ${CURRENT} passed smoke tests in this run. Regression validation downloaded the latest Linux/Aarch64 Temurin release ${NEXT_VERSION}, and the candidate JDK reported version ${NEXT_REPORTED} on Arm64."
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "next_installed_version=${NEXT_REPORTED:-install_failed}" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Temurin release ${CURRENT} passed smoke tests in this run, but the latest Linux/Aarch64 Temurin candidate ${NEXT_VERSION} could not be validated successfully on Arm64." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: ${NEXT_REPORTED:-install_failed}"
-            echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned Temurin release ${CURRENT} passed smoke tests in this run, but the latest Linux/Aarch64 Temurin candidate ${NEXT_VERSION} could not be validated successfully on Arm64."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            if [ -x "$NEXT_JAVA" ] \
+              && [ -x "$NEXT_JAVAC" ] \
+              && file "$NEXT_JAVA" | grep -Eqi 'aarch64|arm64' \
+              && [ -n "$NEXT_REPORTED" ]; then
+              STATUS="passed"
+              DECISION="next_install_validated"
+              REGRESSION_RESULT="Next version installed successfully on Arm64"
+              COMPARISON="Current pinned Temurin release ${CURRENT} passed smoke tests in this run. Regression validation downloaded the Linux/Aarch64 Temurin release ${NEXT_VERSION}, and the candidate JDK reported version ${NEXT_REPORTED} on Arm64."
+            fi
           fi
+
+          echo "next_installed_version=${NEXT_REPORTED}" >> "$GITHUB_OUTPUT"
+          echo "decision=${DECISION}" >> "$GITHUB_OUTPUT"
+          echo "regression_result=${REGRESSION_RESULT}" >> "$GITHUB_OUTPUT"
+          echo "comparison=${COMPARISON}" >> "$GITHUB_OUTPUT"
+          echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
+          echo "Next version installed on Arm64: ${NEXT_REPORTED}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${COMPARISON}"
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+          if [ "$STATUS" != "passed" ]; then
+            exit 1
+          fi
 
       - name: Show regression validation details
         if: always()
