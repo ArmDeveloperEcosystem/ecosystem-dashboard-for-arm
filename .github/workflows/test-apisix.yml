@@ -32,6 +32,7 @@ jobs:
       - name: Install Apache APISIX
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Apache APISIX via Docker..."
 
           # Clean up any old containers from previous runs
@@ -82,17 +83,43 @@ jobs:
           sleep 10
 
           ######################################################
-          # 3) Start APISIX on host network
+          # 3) Start APISIX container in controlled mode and
+          #    initialize it after etcd is confirmed healthy.
           ######################################################
           BASELINE_TAG="${APISIX_BASELINE_TAG}"
-          echo "Starting APISIX (apache/apisix:${BASELINE_TAG}) on host network..."
+          echo "Starting APISIX container shell (apache/apisix:${BASELINE_TAG}) on host network..."
           docker run -d --name apisix \
             --network host \
+            --entrypoint sh \
             -e APISIX_STAND_ALONE=false \
-            "apache/apisix:${BASELINE_TAG}"
+            "apache/apisix:${BASELINE_TAG}" \
+            -lc 'tail -f /dev/null'
 
+          echo "Waiting for APISIX container shell..."
+          sleep 5
+
+          echo "Initializing APISIX runtime..."
+          docker exec apisix sh -lc 'apisix init'
+
+          INIT_OK=0
+          for _ in $(seq 1 30); do
+            if docker exec apisix sh -lc 'apisix init_etcd'; then
+              INIT_OK=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$INIT_OK" -ne 1 ]; then
+            echo "Unable to initialize APISIX etcd state"
+            docker exec apisix sh -lc 'sed -n "1,220p" /usr/local/apisix/conf/config.yaml' || true
+            docker logs etcd || true
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          docker exec apisix sh -lc 'apisix start'
           echo "Waiting for APISIX to start..."
-          sleep 35
+          sleep 20
 
           ADMIN_KEY=""
           for _ in $(seq 1 30); do
