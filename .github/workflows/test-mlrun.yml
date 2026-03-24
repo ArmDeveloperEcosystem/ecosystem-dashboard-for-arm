@@ -1,4 +1,5 @@
 name: Test MLRun on Arm64
+
 on:
   workflow_call:
   push:
@@ -8,9 +9,13 @@ on:
     paths:
       - 'content/opensource_packages/mlrun.md'
       - '.github/workflows/test-mlrun.yml'
+
 jobs:
   test-mlrun:
     runs-on: ubuntu-24.04-arm
+    env:
+      MLRUN_VERSION: "1.5.2"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,240 +26,211 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=mlrun" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/mlrun" >> "$GITHUB_OUTPUT"
-      - name: Install MLRun
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install MLRun baseline
         id: install
         run: |
-          echo "Installing MLRun..."
-          
-          # Install prerequisites
-          sudo apt-get update
-          sudo apt-get install -y python3-pip python3-venv
-          
-          # Create venv
-          python3 -m venv venv
-          source venv/bin/activate
-          
-          # Upgrade pip
-          pip install --upgrade pip
-          
-          # Install mlrun
-          if pip install mlrun; then
-             echo "MLRun installed successfully"
-             echo "install_status=success" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          python -m venv venv
+          . venv/bin/activate
+          python -m pip install -q --upgrade pip setuptools wheel
+          python -m pip install -q "mlrun==${MLRUN_VERSION}"
+
+          INSTALLED_VERSION=$(python - <<'PY'
+          from importlib import metadata
+          print(metadata.version("mlrun"))
+          PY
+          )
+
+          if [ -x "venv/bin/mlrun" ] && [ "$INSTALLED_VERSION" = "${MLRUN_VERSION}" ]; then
+            echo "venv=$PWD/venv" >> "$GITHUB_OUTPUT"
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
-             echo "MLRun installation failed"
-             echo "install_status=failed" >> $GITHUB_OUTPUT
-             exit 1
+            . venv/bin/activate
+            python -m pip show mlrun || true
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
 
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
       - name: Get MLRun version
         id: version
         run: |
-          source venv/bin/activate
-          # Check version via pip or python
-          VERSION=$(pip show mlrun | grep Version | awk '{print $2}' || python3 -c "import mlrun; print(mlrun.__version__)" 2>/dev/null || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          . "${{ steps.install.outputs.venv }}/bin/activate"
+          VERSION=$(python - <<'PY'
+          from importlib import metadata
+          print(metadata.version("mlrun"))
+          PY
+          )
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected MLRun version: $VERSION"
 
-      # ============================================================
-      # ADD YOUR TESTS BELOW
-      # Each test should:
-      # 1. Have a unique id (test1, test2, etc.)
-      # 2. Track start/end time for duration
-      # 3. Set status=passed or status=failed
-      # 4. Exit 1 on failure
-      # ============================================================
-
-      - name: Test 1 - Check mlrun binary (CLI)
+      - name: Test 1 - Check mlrun CLI exists
         id: test1
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          source venv/bin/activate
-          
-          if command -v mlrun &> /dev/null; then
-            echo "✓ mlrun binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if [ -x "${{ steps.install.outputs.venv }}/bin/mlrun" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ mlrun binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Check version command (CLI)
+      - name: Test 2 - Check exact package version
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          source venv/bin/activate
-          
-          if mlrun version 2>&1 | grep -q "version"; then
-            echo "✓ version command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          . "${{ steps.install.outputs.venv }}/bin/activate"
+          VERSION=$(python - <<'PY'
+          from importlib import metadata
+          print(metadata.version("mlrun"))
+          PY
+          )
+          if [ "$VERSION" = "${MLRUN_VERSION}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            python -m pip show mlrun || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 3 - Check help command
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          source venv/bin/activate
-          
-          if mlrun --help 2>&1 | grep -q "Usage"; then
-             echo "✓ help command works"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          . "${{ steps.install.outputs.venv }}/bin/activate"
+          if mlrun --help >/tmp/mlrun-help.txt 2>&1 && grep -Eqi 'Usage:|Commands:|mlrun' /tmp/mlrun-help.txt; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ help command failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            cat /tmp/mlrun-help.txt || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 4 - Import check (Python)
+      - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          source venv/bin/activate
-          
-          if python3 -c "import mlrun; print(mlrun.__version__)"; then
-             echo "✓ Import successful"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          ARCH=$(python - <<'PY'
+          import platform
+          print(platform.machine())
+          PY
+          )
+          if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ Import failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Create simple project (dry run)
+      - name: Test 5 - Functional Validation
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Functional Validation
-          source venv/bin/activate
-          
-          # Try to create a project or run a simple function
-          # This might require a server, so we just check if the API call structure works (even if it fails to connect)
-          # Or check config
-          
-          if mlrun config 2>&1 | grep -qiE "Config|mlrun"; then
-             echo "✓ Config command works"
-             echo "status=passed" >> $GITHUB_OUTPUT
+          . "${{ steps.install.outputs.venv }}/bin/activate"
+          if mlrun project --help >/tmp/mlrun-project-help.txt 2>&1 && grep -Eqi 'Usage:|Commands:' /tmp/mlrun-project-help.txt; then
+            python - <<'PY' >/tmp/mlrun-import.txt
+          import mlrun
+          from importlib import metadata
+          assert mlrun.__version__ == metadata.version("mlrun")
+          print(mlrun.__version__)
+          PY
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✓ Config command executed"
-             # If it runs without error, we consider it passed for smoke test
-             echo "status=passed" >> $GITHUB_OUTPUT
-          fi
-          
-          # Architecture Verification
-          ARCH=$(uname -m)
-          if [ "$ARCH" != "aarch64" ]; then
-            echo "status=failed" >> $GITHUB_OUTPUT
+            cat /tmp/mlrun-project-help.txt || true
+            cat /tmp/mlrun-import.txt || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-            # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check mlrun binary (CLI)
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          # Check version command (CLI)
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" ${{ steps.test1.outputs.duration || 0 }}
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" ${{ steps.test2.outputs.duration || 0 }}
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" ${{ steps.test3.outputs.duration || 0 }}
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" ${{ steps.test4.outputs.duration || 0 }}
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" ${{ steps.test5.outputs.duration || 0 }}
 
-          # Check help command
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          # Import check (Python)
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Create simple project (dry run)
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
-          else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
-          
-          cat > test-results/mlrun.json << EOF
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
+          cat > test-results/mlrun.json <<EOF
           {
             "schema_version": "1.0",
             "package": {
               "name": "MLRun",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "Python",
+              "category": "AI/ML"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -269,12 +245,12 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check mlrun binary (CLI)",
+                  "name": "Check mlrun CLI exists",
                   "status": "${{ steps.test1.outputs.status || 'failed' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check version command (CLI)",
+                  "name": "Check exact package version",
                   "status": "${{ steps.test2.outputs.status || 'failed' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
@@ -284,12 +260,12 @@ jobs:
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Import check (Python)",
+                  "name": "Architecture Verification",
                   "status": "${{ steps.test4.outputs.status || 'failed' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Create simple project (dry run)",
+                  "name": "Functional Validation",
                   "status": "${{ steps.test5.outputs.status || 'failed' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 }
@@ -297,17 +273,12 @@ jobs:
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}"
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/mlrun.json
-      # ============================================================
-      # STANDARD STEPS - Usually don't need to modify below here
-      # ============================================================
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -315,24 +286,23 @@ jobs:
           name: mlrun-test-results
           path: test-results/mlrun.json
           retention-days: 90
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## MLRun Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Test 1 - Check mlrun binary (CLI): ${{ steps.test1.outputs.status || 'failed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Test 2 - Check version command (CLI): ${{ steps.test2.outputs.status || 'failed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Test 3 - Check help command: ${{ steps.test3.outputs.status || 'failed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Import check (Python): ${{ steps.test4.outputs.status || 'failed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Create simple project (dry run): ${{ steps.test5.outputs.status || 'failed' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
+          {
+            echo "## MLRun Test Results"
+            echo ""
+            echo "- **Version:** ${{ steps.version.outputs.version }}"
+            echo "- **Status:** ${{ steps.summary.outputs.overall_status }}"
+            echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}"
+            echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}"
+            echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s"
+            echo ""
+            echo "### Test Details"
+            echo "1. Check mlrun CLI exists: ${{ steps.test1.outputs.status || 'failed' }}"
+            echo "2. Check exact package version: ${{ steps.test2.outputs.status || 'failed' }}"
+            echo "3. Check help command: ${{ steps.test3.outputs.status || 'failed' }}"
+            echo "4. Architecture Verification: ${{ steps.test4.outputs.status || 'failed' }}"
+            echo "5. Functional Validation: ${{ steps.test5.outputs.status || 'failed' }}"
+          } >> "$GITHUB_STEP_SUMMARY"

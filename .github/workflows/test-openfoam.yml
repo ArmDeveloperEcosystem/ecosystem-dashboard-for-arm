@@ -57,9 +57,14 @@ jobs:
           if [ -n "$BASHRC_PATH" ] && [ -f "$BASHRC_PATH" ]; then
              source "$BASHRC_PATH"
           fi
-          if command -v icoFoam &> /dev/null; then
-             VERSION=$(icoFoam -help 2>&1 | grep "OpenFOAM" | head -n 1 | awk '{print $3}' || echo "unknown")
+          if command -v foamVersion >/dev/null 2>&1; then
+             VERSION=$(foamVersion 2>/dev/null | head -n 1 || true)
+          elif command -v icoFoam &> /dev/null; then
+             VERSION=$(icoFoam -help 2>&1 | sed -n 's/.*\(OpenFOAM[^ ]*\).*/\1/p' | head -n 1 || true)
           else
+             VERSION=""
+          fi
+          if [ -z "$VERSION" ]; then
              VERSION="unknown"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -131,9 +136,9 @@ jobs:
              source "$BASHRC_PATH"
           fi
           
-          OUTPUT=$(icoFoam -help 2>&1 || icoFoam --help 2>&1 || true)
+          OUTPUT=$({ foamVersion 2>&1 || icoFoam -help 2>&1 || icoFoam --help 2>&1 || blockMesh -help 2>&1; } || true)
           printf '%s\n' "$OUTPUT" > /tmp/openfoam-help.log
-          if [ -n "$OUTPUT" ] && printf '%s\n' "$OUTPUT" | grep -Ei -q "icoFoam|usage|OpenFOAM|options|solver|case"; then
+          if [ -n "$OUTPUT" ] && printf '%s\n' "$OUTPUT" | grep -Ei -q "OpenFOAM|icoFoam|blockMesh|usage|solver|case|version"; then
              echo "✓ Help command works"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -183,14 +188,15 @@ jobs:
           fi
           : > /tmp/openfoam-functional.log
           # Basic functional check: use real OpenFOAM entry points, not a nonexistent openfoam wrapper
-          if icoFoam -help > /tmp/openfoam-functional.log 2>&1 || \
+          if { command -v foamVersion >/dev/null 2>&1 && foamVersion > /tmp/openfoam-functional.log 2>&1; } || \
+             icoFoam -help >> /tmp/openfoam-functional.log 2>&1 || \
              icoFoam --help >> /tmp/openfoam-functional.log 2>&1 || \
              blockMesh -help >> /tmp/openfoam-functional.log 2>&1 || \
              blockMesh --help >> /tmp/openfoam-functional.log 2>&1 || \
-             { command -v foamVersion >/dev/null 2>&1 && foamVersion >> /tmp/openfoam-functional.log 2>&1; }; then
+             { command -v foamExec >/dev/null 2>&1 && foamExec -help >> /tmp/openfoam-functional.log 2>&1; }; then
             echo "✓ Basic functional check passed"
             echo "status=passed" >> $GITHUB_OUTPUT
-          elif grep -Ei -q "icoFoam|blockMesh|OpenFOAM|usage|solver|case" /tmp/openfoam-functional.log; then
+          elif grep -Ei -q "icoFoam|blockMesh|OpenFOAM|usage|solver|case|version" /tmp/openfoam-functional.log; then
             echo "✓ Basic functional check passed"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -265,20 +271,26 @@ jobs:
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
-          
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
           cat > test-results/openfoam.json << EOF
           {
             "schema_version": "1.0",
             "package": {
               "name": "OpenFOAM",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "C++",
+              "category": "HPC"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -294,40 +306,38 @@ jobs:
               "details": [
                 {
                   "name": "Check icoFoam binary",
-                  "status": "${{ steps.test1.outputs.status || 'skipped' }}",
+                  "status": "${{ steps.test1.outputs.status || 'failed' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
                   "name": "Check blockMesh binary",
-                  "status": "${{ steps.test2.outputs.status || 'skipped' }}",
+                  "status": "${{ steps.test2.outputs.status || 'failed' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
                   "name": "Run Help Command",
-                  "status": "${{ steps.test3.outputs.status || 'skipped' }}",
+                  "status": "${{ steps.test3.outputs.status || 'failed' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
                   "name": "Architecture Verification",
-                  "status": "${{ steps.test4.outputs.status || 'skipped' }}",
+                  "status": "${{ steps.test4.outputs.status || 'failed' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
                   "name": "Functional Validation",
-                  "status": "${{ steps.test5.outputs.status || 'skipped' }}",
+                  "status": "${{ steps.test5.outputs.status || 'failed' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 }
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "package_slug": "${{ steps.metadata.outputs.package_slug }}"
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/openfoam.json
       # ============================================================
       # STANDARD STEPS - Usually don't need to modify below here
       # ============================================================
@@ -358,4 +368,3 @@ jobs:
 
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
