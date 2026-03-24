@@ -15,7 +15,7 @@ jobs:
   test-nifi:
     runs-on: ubuntu-24.04-arm
     env:
-      NIFI_VERSION: "2.8.0"
+      NIFI_VERSION: "2.7.2"
       NIFI_NEXT_VERSION: "2.8.0"
       JAVA_HOME: /usr/lib/jvm/java-21-openjdk-arm64
 
@@ -177,20 +177,69 @@ jobs:
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $LATEST"
 
+          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ] || [ "$LATEST" = "$CURRENT" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NiFi version ${CURRENT} passed smoke tests in this run, but Test 6 could not identify a newer stable release than the baseline. Repin Tests 1-5 to an older stable release before claiming a regression upgrade proof." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           NEXT_DIR=$(mktemp -d)
           trap 'rm -rf "$NEXT_DIR"' EXIT
           NEXT_ZIP="$NEXT_DIR/nifi-next.zip"
           NEXT_URL="https://archive.apache.org/dist/nifi/${LATEST}/nifi-${LATEST}-bin.zip"
-          echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-          echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned NiFi version ${CURRENT} passed smoke tests in this run. Public Apache archive releases currently stop at ${CURRENT}, so there is no newer stable NiFi release available for a genuine Arm64 Test 6 upgrade check." >> "$GITHUB_OUTPUT"
-          echo "Next version installed on Arm64: $CURRENT"
-          echo "Regression install result: No newer stable release available for Test 6"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
+
+          if ! wget -q -O "$NEXT_ZIP" "$NEXT_URL"; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NiFi version ${CURRENT} passed smoke tests in this run, but the candidate archive ${NEXT_URL} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          unzip -q "$NEXT_ZIP" -d "$NEXT_DIR"
+          NEXT_ROOT="$NEXT_DIR/nifi-${LATEST}"
+          NEXT_SCRIPT="$NEXT_ROOT/bin/nifi.sh"
+          NEXT_REPORTED=$(find "$NEXT_ROOT/lib" -name 'nifi-framework-api-*.jar' -printf '%f\n' | sed -E 's/^nifi-framework-api-([0-9.]+)\.jar/\1/' | head -n 1 | tr -d '\r')
+          HELP_OUTPUT=$(
+            export JAVA_HOME="${JAVA_HOME}"
+            export NIFI_JAVA_HOME="${JAVA_HOME}"
+            "$NEXT_SCRIPT" 2>&1 || true
+          )
+
+          if [ -x "$NEXT_SCRIPT" ] && [ "$NEXT_REPORTED" = "$LATEST" ] && printf '%s\n' "$HELP_OUTPUT" | grep -Eq '^Usage nifi\.sh|run nifi as a service|print this usage'; then
+            echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NiFi version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and unpacked the Arm64/platform-independent candidate from ${NEXT_URL}, verified the launcher script, confirmed the framework jar version ${NEXT_REPORTED}, and received usable CLI help output from the candidate install." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_REPORTED"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "next_installed_version=${NEXT_REPORTED:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NiFi version ${CURRENT} passed smoke tests in this run, but the candidate archive ${NEXT_URL} did not complete the expected Arm64 install validation path. Candidate script present: $( [ -x "$NEXT_SCRIPT" ] && echo yes || echo no ); detected version: ${NEXT_REPORTED:-unknown}. Help output: ${HELP_OUTPUT:-none}" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_REPORTED:-unknown}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-          exit 0
 
       - name: Show regression validation details
         if: always()

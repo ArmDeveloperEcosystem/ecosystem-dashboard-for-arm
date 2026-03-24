@@ -96,7 +96,11 @@ jobs:
 
           ADMIN_KEY=""
           for _ in $(seq 1 30); do
-            ADMIN_KEY=$(docker exec apisix sh -lc 'sed -n "/admin_key:/,/role:/p" /usr/local/apisix/conf/config.yaml | grep -E "^[[:space:]]+key:" | head -n 1 | cut -d: -f2- | tr -d "[:space:]\""') || true
+            ADMIN_KEY=$(docker exec apisix sh -lc "awk '
+              /^[[:space:]]*admin_key:/ { in_admin=1; next }
+              in_admin && /^[[:space:]]*admin_listen:/ { exit }
+              in_admin && \$1 == \"key:\" { print \$2; exit }
+            ' /usr/local/apisix/conf/config.yaml" | tr -d '[:space:]') || true
             if [ -n "$ADMIN_KEY" ]; then
               break
             fi
@@ -112,6 +116,24 @@ jobs:
 
           echo "APISIX_ADMIN_KEY=$ADMIN_KEY" >> "$GITHUB_ENV"
           echo "admin_key=$ADMIN_KEY" >> "$GITHUB_OUTPUT"
+          ADMIN_READY=0
+          for _ in $(seq 1 60); do
+            HTTP_CODE=$(curl -sS --connect-timeout 2 --max-time 5 -o /tmp/apisix-install-routes.json -w "%{http_code}" \
+              -H "X-API-KEY: ${ADMIN_KEY}" \
+              http://127.0.0.1:9180/apisix/admin/routes || true)
+            if [ "$HTTP_CODE" = "200" ]; then
+              ADMIN_READY=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ADMIN_READY" -ne 1 ]; then
+            echo "APISIX admin API did not become ready"
+            cat /tmp/apisix-install-routes.json || true
+            docker logs apisix || true
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           echo "baseline_tag=${BASELINE_TAG}" >> $GITHUB_OUTPUT
           echo "install_status=success" >> $GITHUB_OUTPUT
 

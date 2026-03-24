@@ -107,10 +107,10 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          "${{ steps.install.outputs.rqlite_bin }}" -help > /tmp/rqlite-help.txt 2>&1 || true
-          "${{ steps.install.outputs.rqlited_bin }}" -help > /tmp/rqlited-help.txt 2>&1 || true
-          if grep -qiE 'Usage|Usage of|flag|connect|node|rqlite' /tmp/rqlite-help.txt; then
-            if grep -qiE 'Usage|Usage of|flag|raft|join|node|rqlited' /tmp/rqlited-help.txt; then
+          "${{ steps.install.outputs.rqlite_bin }}" --help > /tmp/rqlite-help.txt 2>&1 || true
+          "${{ steps.install.outputs.rqlited_bin }}" --help > /tmp/rqlited-help.txt 2>&1 || true
+          if grep -qiE 'usage|usage of|rqlite|command' /tmp/rqlite-help.txt; then
+            if grep -qiE 'usage|usage of|rqlited|raft|join|node|command' /tmp/rqlited-help.txt; then
               echo "status=passed" >> "$GITHUB_OUTPUT"
             else
               cat /tmp/rqlited-help.txt || true
@@ -135,18 +135,21 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if file "${{ steps.install.outputs.rqlite_bin }}" | grep -q "ARM aarch64"; then
-            if file "${{ steps.install.outputs.rqlited_bin }}" | grep -q "ARM aarch64"; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-            else
-              file "${{ steps.install.outputs.rqlited_bin }}" || true
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              END_TIME=$(date +%s)
-              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-              exit 1
+          is_arm_binary() {
+            local path="$1"
+            if file "$path" | grep -Eiq 'ARM aarch64|ARM64|aarch64'; then
+              return 0
             fi
+            if command -v readelf >/dev/null 2>&1 && readelf -h "$path" | grep -qi 'AArch64'; then
+              return 0
+            fi
+            return 1
+          }
+          if is_arm_binary "${{ steps.install.outputs.rqlite_bin }}" && is_arm_binary "${{ steps.install.outputs.rqlited_bin }}"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             file "${{ steps.install.outputs.rqlite_bin }}" || true
+            file "${{ steps.install.outputs.rqlited_bin }}" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -193,15 +196,44 @@ jobs:
             exit 1
           fi
 
-          curl -fsS -XPOST "http://127.0.0.1:4001/db/execute?pretty" \
-            -H "Content-Type: application/json" \
-            -d '["CREATE TABLE IF NOT EXISTS smoke (id integer not null primary key, value text)", "INSERT INTO smoke(value) VALUES(\"arm64-baseline\")"]' >/dev/null
+          EXECUTE_RESULT=""
+          for _ in $(seq 1 60); do
+            EXECUTE_RESULT=$(
+              curl -sS -XPOST "http://127.0.0.1:4001/db/execute?pretty" \
+                -H "Content-Type: application/json" \
+                -d '["CREATE TABLE IF NOT EXISTS smoke (id integer not null primary key, value text)", "INSERT INTO smoke(value) VALUES(\"arm64-baseline\")"]' || true
+            )
+            if echo "$EXECUTE_RESULT" | grep -q '"error"'; then
+              if echo "$EXECUTE_RESULT" | grep -q 'store not open'; then
+                sleep 1
+                continue
+              fi
+              echo "$EXECUTE_RESULT"
+              cat "$LOG_FILE" || true
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            break
+          done
 
-          RESULT=$(
-            curl -fsS -XPOST "http://127.0.0.1:4001/db/query?pretty" \
-              -H "Content-Type: application/json" \
-              -d '["SELECT value FROM smoke ORDER BY id DESC LIMIT 1"]'
-          )
+          RESULT=""
+          for _ in $(seq 1 30); do
+            RESULT=$(
+              curl -sS -XPOST "http://127.0.0.1:4001/db/query?pretty" \
+                -H "Content-Type: application/json" \
+                -d '["SELECT value FROM smoke ORDER BY id DESC LIMIT 1"]' || true
+            )
+            if echo "$RESULT" | grep -q '"arm64-baseline"'; then
+              break
+            fi
+            if echo "$RESULT" | grep -q 'store not open'; then
+              sleep 1
+              continue
+            fi
+            sleep 1
+          done
 
           if echo "$RESULT" | grep -q '"arm64-baseline"'; then
             echo "note=Single-node rqlited booted successfully and served create/insert/query over the HTTP API on Arm64." >> "$GITHUB_OUTPUT"
@@ -286,7 +318,17 @@ jobs:
           fi
 
           NEXT_REPORTED="$("$NEXT_RQLITE" --version 2>&1 | grep -Eo '[0-9]+([.][0-9]+)+' | head -n1 || true)"
-          if ! file "$NEXT_RQLITE" | grep -q "ARM aarch64"; then
+          is_arm_binary() {
+            local path="$1"
+            if file "$path" | grep -Eiq 'ARM aarch64|ARM64|aarch64'; then
+              return 0
+            fi
+            if command -v readelf >/dev/null 2>&1 && readelf -h "$path" | grep -qi 'AArch64'; then
+              return 0
+            fi
+            return 1
+          }
+          if ! is_arm_binary "$NEXT_RQLITE"; then
             NEXT_REPORTED="${NEXT_REPORTED:-arch_mismatch}"
           fi
 
@@ -316,14 +358,36 @@ jobs:
 
           RESULT=""
           if [ "$READY" = "1" ]; then
-            curl -fsS -XPOST "http://127.0.0.1:4101/db/execute?pretty" \
-              -H "Content-Type: application/json" \
-              -d '["CREATE TABLE IF NOT EXISTS smoke (id integer not null primary key, value text)", "INSERT INTO smoke(value) VALUES(\"arm64-candidate\")"]' >/dev/null
-            RESULT=$(
-              curl -fsS -XPOST "http://127.0.0.1:4101/db/query?pretty" \
-                -H "Content-Type: application/json" \
-                -d '["SELECT value FROM smoke ORDER BY id DESC LIMIT 1"]'
-            )
+            for _ in $(seq 1 60); do
+              EXECUTE_RESULT=$(
+                curl -sS -XPOST "http://127.0.0.1:4101/db/execute?pretty" \
+                  -H "Content-Type: application/json" \
+                  -d '["CREATE TABLE IF NOT EXISTS smoke (id integer not null primary key, value text)", "INSERT INTO smoke(value) VALUES(\"arm64-candidate\")"]' || true
+              )
+              if echo "$EXECUTE_RESULT" | grep -q '"error"'; then
+                if echo "$EXECUTE_RESULT" | grep -q 'store not open'; then
+                  sleep 1
+                  continue
+                fi
+                break
+              fi
+              break
+            done
+            for _ in $(seq 1 30); do
+              RESULT=$(
+                curl -sS -XPOST "http://127.0.0.1:4101/db/query?pretty" \
+                  -H "Content-Type: application/json" \
+                  -d '["SELECT value FROM smoke ORDER BY id DESC LIMIT 1"]' || true
+              )
+              if echo "$RESULT" | grep -q '"arm64-candidate"'; then
+                break
+              fi
+              if echo "$RESULT" | grep -q 'store not open'; then
+                sleep 1
+                continue
+              fi
+              sleep 1
+            done
           fi
 
           if [ "$NEXT_REPORTED" = "$LATEST" ] && [ "$READY" = "1" ] && echo "$RESULT" | grep -q '"arm64-candidate"'; then

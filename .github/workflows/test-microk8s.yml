@@ -24,6 +24,7 @@ jobs:
       - name: Install MicroK8s
         id: install
         run: |
+          set -euo pipefail
           echo "Installing MicroK8s..."
           
           # Ensure snapd is running
@@ -52,6 +53,8 @@ jobs:
             # Add user to microk8s group
             sudo usermod -a -G microk8s $USER
             sudo chown -f -R $USER ~/.kube || true
+            sudo microk8s status --wait-ready --timeout 300 >/tmp/microk8s-status-install.txt 2>&1 || true
+            sudo snap services microk8s || true
           else
             echo "MicroK8s installation failed after $MAX_RETRIES attempts"
             echo "install_status=failed" >> $GITHUB_OUTPUT
@@ -108,13 +111,13 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          # sudo is needed usually
-          if sudo microk8s status 2>&1 | grep -q "microk8s is"; then
+          STATUS_OUTPUT=$(sudo microk8s status --wait-ready --timeout 300 2>&1 || sudo microk8s status 2>&1 || true)
+          if printf '%s\n' "$STATUS_OUTPUT" | grep -Eqi "microk8s is running|high-availability|datastore master nodes|addons:"; then
             echo "✓ status command works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
             echo "✗ status command failed"
-            # It might fail if not running, but command execution is what we check
+            printf '%s\n' "$STATUS_OUTPUT"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
             fi
@@ -128,11 +131,13 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if sudo microk8s kubectl version --client 2>&1 | grep -q "Client Version"; then
+          KUBECTL_OUTPUT=$(sudo microk8s kubectl get --raw=/version 2>&1 || true)
+          if printf '%s\n' "$KUBECTL_OUTPUT" | grep -q '"gitVersion"'; then
              echo "✓ kubectl command works"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
              echo "✗ kubectl command failed"
+             printf '%s\n' "$KUBECTL_OUTPUT"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
             fi
@@ -146,12 +151,13 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          # inspect command usually exists
-          if sudo microk8s inspect --help 2>&1 | grep -q "Usage"; then
-             echo "✓ inspect command help works"
+          INSPECT_OUTPUT=$(sudo microk8s inspect 2>&1 || true)
+          if printf '%s\n' "$INSPECT_OUTPUT" | grep -Eqi "Inspecting|inspection-report|tarball"; then
+             echo "✓ inspect command works"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
              echo "✗ inspect command failed"
+             printf '%s\n' "$INSPECT_OUTPUT"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
             fi
@@ -159,29 +165,25 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 5 - Check start/stop commands (dry run)
+      - name: Test 5 - Check services and architecture
         id: test5
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          # Functional Validation
+          SERVICES_OUTPUT=$(sudo snap services microk8s 2>&1 || true)
           
-          # Just check help for start/stop to avoid actually stopping it if running
-          if sudo microk8s start --help 2>&1 | grep -q "Usage"; then
-             echo "✓ start command help works"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ start command help failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
-          # Architecture Verification
+          if ! printf '%s\n' "$SERVICES_OUTPUT" | grep -Eq 'microk8s|daemon-kubelite'; then
+            printf '%s\n' "$SERVICES_OUTPUT"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
           ARCH=$(uname -m)
           if [ "$ARCH" != "aarch64" ]; then
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
+          echo "status=passed" >> $GITHUB_OUTPUT
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -344,5 +346,4 @@ jobs:
           echo "3. Test 3 - Check kubectl command: ${{ steps.test3.outputs.status || 'failed' }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Test 4 - Check inspect command: ${{ steps.test4.outputs.status || 'failed' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Check start/stop commands (dry run): ${{ steps.test5.outputs.status || 'failed' }}" >> $GITHUB_STEP_SUMMARY
-
 
