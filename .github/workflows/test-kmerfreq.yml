@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set test metadata
         id: metadata
@@ -25,32 +25,18 @@ jobs:
         id: install
         run: |
           echo "Installing KmerFreq..."
-          
-          # Install build dependencies
           sudo apt-get update
           sudo apt-get install -y build-essential git zlib1g-dev
-          
-          # Clone and build
-          # Using the repository mentioned in search results or a common one like fanagelab/KmerFreq or similar
-          # Let's search for the official one or a popular fork.
-          # The search result mentioned github.com/fanagelab/KmerFreq is common for bioinformatics.
-          # Or maybe it's part of another package.
-          # Let's try cloning a known repo. If it fails, we might need to find the correct URL.
-          # Assuming https://github.com/fanagelab/KmerFreq or similar.
-          # Let's try https://github.com/fanagelab/KmerFreq.git
-          
+
           if git clone https://github.com/fanagislab/kmerfreq.git; then
              cd kmerfreq
-             # It might use make or configure
              if [ -f "Makefile" ]; then
-                make
-            elif [ -f "configure" ]; then
-                ./configure && make
-            else
-                # Sometimes it's just a simple compile command
-                # Let's try generic make
-                make || gcc -o kmerfreq *.c -lz -lm
-            fi
+                 make -j"$(nproc)"
+             elif [ -f "configure" ]; then
+                 ./configure && make -j"$(nproc)"
+             else
+                 make || gcc -o kmerfreq *.c -lz -lm
+             fi
              
              if [ -f "kmerfreq" ] || [ -f "KmerFreq" ]; then
                 echo "KmerFreq built successfully"
@@ -68,14 +54,10 @@ jobs:
              exit 1
           fi
 
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
       - name: Get KmerFreq version
         id: version
         run: |
-          # KmerFreq might not have a version flag, or it prints it on help
-          VERSION=$(kmerfreq 2>&1 | grep "Version" | awk '{print $2}' || echo "unknown")
+          VERSION=$(git -C kmerfreq rev-parse --short HEAD 2>/dev/null || echo "master")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected KmerFreq version: $VERSION"
 
@@ -139,30 +121,23 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           
-          # Create a dummy fasta file
-          echo ">seq1" > test.fa
-          echo "ATCGATCGATCG" >> test.fa
-          
-          # Run kmerfreq (syntax depends on version, usually kmerfreq -k 5 -t 1 test.fa)
-          # Assuming standard syntax
-          if kmerfreq -k 5 test.fa > output.txt 2>&1 \
-            || kmerfreq -k 5 -i test.fa > output.txt 2>&1 \
-            || kmerfreq test.fa > output.txt 2>&1; then
-             if [ -s "output.txt" ] || [ -f "test.fa.freq" ]; then
-                echo "✓ kmerfreq ran on dummy data"
-                echo "status=passed" >> $GITHUB_OUTPUT
-             elif grep -Eqi 'ATCG|kmer|freq|usage' output.txt; then
-                echo "✓ kmerfreq produced informative output"
+          printf '>seq1\nATCGATCGATCGATCG\n' > reads.fa
+          printf '%s\n' "$PWD/reads.fa" > reads_files.lib
+
+          if kmerfreq -k 5 -t 1 -p test reads_files.lib > output.txt 2>&1; then
+             if [ -s "test.freq.stat" ] \
+               || grep -Eqi 'Generate the kmer frequency statistics file|Construction of Kmer frequency table completed|kmer' output.txt; then
+                echo "✓ kmerfreq ran on dummy library data"
                 echo "status=passed" >> $GITHUB_OUTPUT
              else
-                echo "✗ kmerfreq ran but no output"
+                echo "✗ kmerfreq ran but did not produce expected output"
                 cat output.txt
                 echo "status=failed" >> $GITHUB_OUTPUT
                 exit 1
              fi
           else
-             echo "✗ kmerfreq execution failed"
-             cat output.txt
+              echo "✗ kmerfreq execution failed"
+              cat output.txt
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
             fi
@@ -176,14 +151,15 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          # If output exists, check if it contains expected content
-          if grep -q "ATCG" output.txt || grep -q "Frequency" output.txt; then
-             echo "✓ Output content check passed"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✓ Output content check skipped (format unknown)"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          fi
+           if [ -s "test.freq.stat" ] || grep -Eqi 'frequency|kmer|histogram' output.txt; then
+              echo "✓ Output content check passed"
+              echo "status=passed" >> $GITHUB_OUTPUT
+           else
+              echo "✗ Output content check failed"
+              cat output.txt
+              echo "status=failed" >> $GITHUB_OUTPUT
+              exit 1
+           fi
           
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -295,6 +271,19 @@ jobs:
             echo "badge_status=failing" >> $GITHUB_OUTPUT
             exit 1
           fi
+      - name: Resolve job URL
+        if: always()
+        id: job_url
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID\" or (.name | endswith(\" / $JOB_ID\"))) | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+          echo "url=$JOB_URL" >> "$GITHUB_OUTPUT"
+
       - name: Generate test results JSON
         if: always()
         run: |
@@ -306,12 +295,12 @@ jobs:
             "package": {
               "name": "KmerFreq",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "REPLACE_ME",
-              "category": "REPLACE_ME"
+              "language": "C++",
+              "category": "AI/ML"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "${{ steps.job_url.outputs.url }}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -375,11 +364,11 @@ jobs:
       
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kmerfreq-test-results
           path: test-results/kmerfreq.json
-          retention-days: 90
+          retention-days: 10
       - name: Create test summary
         if: always()
         run: |
