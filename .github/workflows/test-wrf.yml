@@ -44,6 +44,11 @@ on:
 jobs:
   test-wrf:
     runs-on: ubuntu-24.04-arm
+    env:
+      WRF_VERSION: "4.7.0"
+      WRF_TAG: "v4.7.0"
+      WRF_NEXT_VERSION: "4.7.1"
+      WRF_WORKDIR: "/tmp/wrf-smoke"
     
     steps:
       - name: Checkout repository
@@ -55,13 +60,39 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=wrf" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/wrf" >> "$GITHUB_OUTPUT"
+          echo "current_version=${WRF_VERSION}" >> "$GITHUB_OUTPUT"
       - name: Install Weather Research and Forecasting (WRF)
         id: install
         run: |
-          echo "WRF does not provide a public Ubuntu Arm64 package-manager install path." >&2
-          echo "A real source-build workflow using configure_new/compile_new and the netCDF toolchain is still required for honest Arm64 validation." >&2
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential gfortran cmake m4 perl file python3 zlib1g-dev libnetcdf-dev libnetcdff-dev
+
+          rm -rf "${WRF_WORKDIR}"
+          mkdir -p "${WRF_WORKDIR}"
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSLo "${WRF_WORKDIR}/wrf-${WRF_TAG}.tar.gz" \
+            "https://github.com/wrf-model/WRF/releases/download/${WRF_TAG}/${WRF_TAG}.tar.gz"
+          tar -xzf "${WRF_WORKDIR}/wrf-${WRF_TAG}.tar.gz" -C "${WRF_WORKDIR}"
+          BASE_DIR=$(find "${WRF_WORKDIR}" -maxdepth 1 -type d -name 'WRFV*' | head -1)
+          test -n "${BASE_DIR}"
+          cd "${BASE_DIR}"
+
+          ./configure_new -p GNU -x -- \
+            -DWRF_CORE=ARW \
+            -DWRF_NESTING=NONE \
+            -DWRF_CASE=EM_B_WAVE \
+            -DUSE_MPI=OFF \
+            -DUSE_OPENMP=OFF \
+            -DCMAKE_BUILD_TYPE=Release >/tmp/wrf-configure.log 2>&1
+          ./compile_new -j"$(nproc)" >/tmp/wrf-build.log 2>&1
+
+          test -x "${BASE_DIR}/install/bin/ideal"
+          test -x "${BASE_DIR}/install/bin/wrf"
+          test -d "${BASE_DIR}/install/test/em_b_wave"
+
+          echo "base_dir=${BASE_DIR}" >> "$GITHUB_OUTPUT"
+          echo "install_dir=${BASE_DIR}/install" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
       
       # ============================================================
       # CUSTOMIZE THIS: Get the package version
@@ -69,9 +100,11 @@ jobs:
       - name: Get Weather Research and Forecasting (WRF) version
         id: version
         run: |
-          VERSION="unknown"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Weather Research and Forecasting (WRF) version: $VERSION"
+          set -euo pipefail
+          echo "version=${WRF_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest=${WRF_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected Weather Research and Forecasting (WRF) version from release asset: ${WRF_VERSION}"
+          echo "Detected next stable release: ${WRF_NEXT_VERSION}"
       
       # ============================================================
       # ADD YOUR TESTS BELOW
@@ -86,56 +119,66 @@ jobs:
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if command -v wrf &> /dev/null; then
-            echo "✓ wrf binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          INSTALL_DIR="${{ steps.install.outputs.install_dir }}"
+
+          if [ -x "${INSTALL_DIR}/bin/ideal" ] && [ -x "${INSTALL_DIR}/bin/wrf" ]; then
+            echo "✓ WRF binaries found"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ wrf binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            ls -R "${INSTALL_DIR}" | head -n 80 || true
+            echo "✗ WRF binaries not found"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
       - name: Test 2 - Check wrf version command
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if wrf --version 2>&1 | grep -q "version\|[0-9]"; then
-            echo "✓ wrf version command works"
-            wrf --version
-            echo "status=passed" >> $GITHUB_OUTPUT
+          BASE_DIR="${{ steps.install.outputs.base_dir }}"
+
+          if [ "$(basename "${BASE_DIR}")" = "WRFV${WRF_VERSION}" ]; then
+            echo "✓ WRF release provenance matches ${WRF_VERSION}"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ wrf version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "✗ WRF release provenance check failed"
+            basename "${BASE_DIR}"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
       - name: Test 3 - Check wrf help output
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if wrf --help 2>&1 | grep -qi "usage\|help\|options"; then
-            echo "✓ wrf help command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          BASE_DIR="${{ steps.install.outputs.base_dir }}"
+
+          if [ -f "${BASE_DIR}/_build/wrf_config.cmake" ] && \
+             grep -Fq 'set( WRF_CORE "ARW"' "${BASE_DIR}/_build/wrf_config.cmake" && \
+             grep -Fq 'set( WRF_CASE "EM_B_WAVE"' "${BASE_DIR}/_build/wrf_config.cmake"; then
+            echo "✓ WRF configure_new settings recorded correctly"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ wrf help command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            sed -n '1,120p' "${BASE_DIR}/_build/wrf_config.cmake" || true
+            echo "✗ WRF configuration file check failed"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
       # Add more tests as needed (test4, test5, etc.)
       # Examples:
@@ -153,34 +196,41 @@ jobs:
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          echo "Checking system architecture..."
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          INSTALL_DIR="${{ steps.install.outputs.install_dir }}"
+          if [ "$(uname -m)" = "aarch64" ] && \
+             file "${INSTALL_DIR}/bin/ideal" | grep -Eqi 'aarch64|arm64' && \
+             file "${INSTALL_DIR}/bin/wrf" | grep -Eqi 'aarch64|arm64'; then
+            echo "✓ WRF binaries are AArch64"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            file "${INSTALL_DIR}/bin/ideal" || true
+            file "${INSTALL_DIR}/bin/wrf" || true
+            echo "✗ WRF architecture verification failed"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 5 - Functional Validation
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if wrf --version > /dev/null 2>&1 || wrf --help > /dev/null 2>&1; then
-            echo "✓ Basic functional check passed"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          CASE_DIR="${{ steps.install.outputs.install_dir }}/test/em_b_wave"
+          cd "${CASE_DIR}"
+
+          if timeout 180 ./ideal >ideal.log 2>&1 && [ -s wrfinput_d01 ]; then
+            echo "✓ WRF idealized case generated wrfinput_d01"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ Basic functional check failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            sed -n '1,160p' ideal.log || true
+            echo "✗ WRF functional check failed"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
@@ -191,13 +241,69 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=n/a" >> "$GITHUB_OUTPUT"
-          echo "decision=workflow_implementation_required" >> "$GITHUB_OUTPUT"
-          echo "comparison=WRF needs a real source-build workflow on Arm64. The old package-manager placeholder path is not a valid production test and was stopped intentionally." >> "$GITHUB_OUTPUT"
-          echo "note=Blocked pending real WRF source-build workflow implementation." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version }}"
+          LATEST="${{ steps.version.outputs.latest }}"
+          NEXT_TAG="v${LATEST}"
+          NEXT_WORKDIR="/tmp/wrf-regression"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+
+          rm -rf "${NEXT_WORKDIR}"
+          mkdir -p "${NEXT_WORKDIR}"
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSLo "${NEXT_WORKDIR}/wrf-${NEXT_TAG}.tar.gz" \
+            "https://github.com/wrf-model/WRF/releases/download/${NEXT_TAG}/${NEXT_TAG}.tar.gz"
+          tar -xzf "${NEXT_WORKDIR}/wrf-${NEXT_TAG}.tar.gz" -C "${NEXT_WORKDIR}"
+          NEXT_DIR=$(find "${NEXT_WORKDIR}" -maxdepth 1 -type d -name 'WRFV*' | head -1)
+          cd "${NEXT_DIR}"
+
+          ./configure_new -p GNU -x -- \
+            -DWRF_CORE=ARW \
+            -DWRF_NESTING=NONE \
+            -DWRF_CASE=EM_B_WAVE \
+            -DUSE_MPI=OFF \
+            -DUSE_OPENMP=OFF \
+            -DCMAKE_BUILD_TYPE=Release >candidate-configure.log 2>&1
+          ./compile_new -j"$(nproc)" >candidate-build.log 2>&1
+
+          NEXT_INSTALL="${NEXT_DIR}/install"
+          NEXT_CASE_DIR="${NEXT_INSTALL}/test/em_b_wave"
+
+          if [ -x "${NEXT_INSTALL}/bin/ideal" ] && [ -x "${NEXT_INSTALL}/bin/wrf" ] && \
+             file "${NEXT_INSTALL}/bin/ideal" | grep -Eqi 'aarch64|arm64' && \
+             file "${NEXT_INSTALL}/bin/wrf" | grep -Eqi 'aarch64|arm64' && \
+             [ "$(basename "${NEXT_DIR}")" = "WRFV${LATEST}" ] && \
+             timeout 180 "${NEXT_CASE_DIR}/ideal" >"${NEXT_CASE_DIR}/ideal.log" 2>&1 && \
+             [ -s "${NEXT_CASE_DIR}/wrfinput_d01" ]; then
+            echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            if [ "${CURRENT}" = "${LATEST}" ]; then
+              echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+              echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            else
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned WRF version ${CURRENT} built the EM_B_WAVE case and generated wrfinput_d01 on Arm64. Regression validation rebuilt candidate version ${LATEST}, confirmed the binaries are AArch64, and completed the same idealized case generation successfully." >> "$GITHUB_OUTPUT"
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned WRF version ${CURRENT} built successfully on Arm64, but candidate version ${LATEST} did not complete the expected source-build and idealized-case validation path." >> "$GITHUB_OUTPUT"
+            sed -n '1,160p' candidate-configure.log || true
+            sed -n '1,160p' candidate-build.log || true
+            sed -n '1,160p' "${NEXT_CASE_DIR}/ideal.log" || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -436,5 +542,4 @@ jobs:
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
 
