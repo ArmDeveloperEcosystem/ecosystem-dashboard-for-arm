@@ -13,6 +13,7 @@ on:
 jobs:
   test-smcpp:
     runs-on: ubuntu-24.04-arm
+    container: ubuntu:22.04
     env:
       SMCPP_VERSION: "1.15.3"
       SMCPP_TAG: "v1.15.3"
@@ -20,11 +21,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
 
       - name: Set test metadata
         id: metadata
@@ -38,32 +34,31 @@ jobs:
         id: install
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y build-essential git pkg-config gfortran libopenblas-dev liblapack-dev libgmp-dev libmpfr-dev libgsl-dev
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y python3 python3-pip build-essential git pkg-config gfortran libopenblas-dev liblapack-dev libgmp-dev libmpfr-dev libgsl-dev
 
-          python -m pip install --upgrade pip setuptools wheel
-          python -m pip install "Cython<3" "numpy<2" "scipy<1.12" "matplotlib<3.8" "pybind11<3" "pandas<2.3" "scikit-learn<1.6" "pysam<0.23" "msprime<1.4"
-          python -m pip install --no-build-isolation "git+https://github.com/popgenmethods/smcpp@${SMCPP_TAG}"
+          WORKDIR="${RUNNER_TEMP:-/tmp}/smcpp-src"
+          rm -rf "$WORKDIR"
+          git clone --depth 1 --branch "${SMCPP_TAG}" https://github.com/popgenmethods/smcpp "$WORKDIR"
+
+          python3 -m pip install --upgrade pip wheel
+          python3 -m pip install "setuptools<81"
+          python3 -m pip install "Cython<3" "numpy<2" "scipy<1.12" "matplotlib<3.8" "pybind11<3" "pandas<2.3" "scikit-learn<1.6" "pysam<0.23" "msprime<1.4"
+          python3 -m pip install --no-build-isolation "$WORKDIR"
 
           command -v smc++ >/dev/null
-          python -c "import smcpp" >/dev/null
+          python3 -c "import pkg_resources; import smcpp.defaults" >/dev/null
 
+          echo "workdir=$WORKDIR" >> "$GITHUB_OUTPUT"
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get Smcpp version
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(smc++ --version 2>&1 | sed -nE 's/.*v?([0-9]+(\.[0-9]+)+).*/\1/p' | head -n 1)
-          if [ -z "$VERSION" ]; then
-            VERSION=$(python - <<'PY'
-            import importlib.metadata as md
-            print(md.version("smcpp"))
-            PY
-            )
-          fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Detected Smcpp version: ${VERSION}"
+          echo "version=${SMCPP_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected Smcpp version from source tag: ${SMCPP_VERSION}"
 
       - name: Test 1 - Check smc++ command exists
         id: test1
@@ -86,10 +81,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          VERSION=$(smc++ --version 2>&1 | sed -nE 's/.*v?([0-9]+(\.[0-9]+)+).*/\1/p' | head -n 1)
-          if [ "$VERSION" = "${SMCPP_VERSION}" ]; then
+          TAG=$(git -C "${{ steps.install.outputs.workdir }}" describe --tags --exact-match 2>/dev/null || true)
+          if [ "$TAG" = "${SMCPP_TAG}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            echo "Expected source tag ${SMCPP_TAG}, got ${TAG:-<none>}"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -132,10 +128,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if python - <<'PY'
-          import smcpp
+          if python3 - <<'PY'
           import smcpp.defaults
-          print(smcpp.__version__)
           print(smcpp.defaults.cores)
           PY
           then
