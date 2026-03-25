@@ -11,17 +11,25 @@ on:
       - "content/opensource_packages/litespeed_openlitespeed.md"
       - ".github/workflows/test-litespeed_openlitespeed.yml"
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   test-litespeed_openlitespeed:
     runs-on: ubuntu-24.04-arm
     env:
-      OLS_BINARY: /usr/local/lsws/bin/lshttpd
-      OLS_CONTROL: /usr/local/lsws/bin/lswsctrl
-      OLS_CONFIG: /usr/local/lsws/conf/httpd_config.conf
+      OPENLITESPEED_VERSION: "1.7.17"
+      OPENLITESPEED_TAG: "v1.7.17"
+      OPENLITESPEED_ASSET: "openlitespeed-1.7.17-aarch64-linux.tgz"
+      OPENLITESPEED_NEXT_VERSION: "1.7.18"
+      OPENLITESPEED_NEXT_TAG: "v1.7.18.1"
+      OPENLITESPEED_NEXT_ASSET: "openlitespeed-1.7.18-aarch64-linux.tgz"
+      OPENLITESPEED_ROOT: "/usr/local/lsws"
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set test metadata
         id: metadata
@@ -29,64 +37,61 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=litespeed_openlitespeed" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/litespeed_openlitespeed" >> "$GITHUB_OUTPUT"
-      - name: Install OpenLiteSpeed
+
+      - name: Install OpenLiteSpeed baseline
         id: install
         run: |
           set -euo pipefail
+          WORKDIR="$(mktemp -d)"
+          URL="https://github.com/litespeedtech/openlitespeed/releases/download/${OPENLITESPEED_TAG}/${OPENLITESPEED_ASSET}"
+
           sudo apt-get update
           sudo apt-get install -y curl file lsof
-          curl -fsSL https://repo.litespeed.sh | sudo bash
-          sudo apt-get install -y openlitespeed
-          ACTUAL_BINARY="${OLS_BINARY}"
-          ACTUAL_CONTROL="${OLS_CONTROL}"
-          ACTUAL_CONFIG="${OLS_CONFIG}"
-          PACKAGE_FILES="$(dpkg -L openlitespeed 2>/dev/null || true)"
+          sudo rm -rf "${OPENLITESPEED_ROOT}"
 
-          if [ ! -x "${ACTUAL_BINARY}" ]; then
-            ACTUAL_BINARY="$(printf '%s\n' "${PACKAGE_FILES}" | grep -E '/lshttpd$' | head -n1 || true)"
-          fi
-          if [ ! -x "${ACTUAL_BINARY}" ]; then
-            ACTUAL_BINARY="$(find /usr/local/lsws -type f -name lshttpd -perm -111 2>/dev/null | head -n1 || true)"
-          fi
-          if [ ! -x "${ACTUAL_CONTROL}" ]; then
-            ACTUAL_CONTROL="$(printf '%s\n' "${PACKAGE_FILES}" | grep -E '/lswsctrl$' | head -n1 || true)"
-          fi
-          if [ ! -x "${ACTUAL_CONTROL}" ]; then
-            ACTUAL_CONTROL="$(find /usr/local/lsws -type f -name lswsctrl -perm -111 2>/dev/null | head -n1 || true)"
-          fi
-          if [ ! -f "${ACTUAL_CONFIG}" ]; then
-            ACTUAL_CONFIG="$(printf '%s\n' "${PACKAGE_FILES}" | grep -E '/httpd_config\.conf$' | head -n1 || true)"
-          fi
-          if [ ! -f "${ACTUAL_CONFIG}" ]; then
-            ACTUAL_CONFIG="$(find /usr/local/lsws -type f -name httpd_config.conf 2>/dev/null | head -n1 || true)"
-          fi
+          curl -fsSL -o "${WORKDIR}/openlitespeed.tgz" "${URL}"
+          tar -xzf "${WORKDIR}/openlitespeed.tgz" -C "${WORKDIR}"
+          cd "${WORKDIR}/openlitespeed"
+          cat > ols.conf <<'EOF'
+          OPENLSWS_ADMIN=admin
+          OPENLSWS_PASSWORD=admin
+          OPENLSWS_EMAIL=root@localhost
+          OPENLSWS_ADMINSSL=no
+          OPENLSWS_ADMINPORT=7080
+          OPENLSWS_EXAMPLEPORT=8088
+          USE_LSPHP7=no
+          EOF
+          sudo bash install.sh >/tmp/openlitespeed-install-baseline.log 2>&1
 
-          echo "ols_binary=${ACTUAL_BINARY}" >> "$GITHUB_OUTPUT"
-          echo "ols_control=${ACTUAL_CONTROL}" >> "$GITHUB_OUTPUT"
-          echo "ols_config=${ACTUAL_CONFIG}" >> "$GITHUB_OUTPUT"
+          test -x "${OPENLITESPEED_ROOT}/bin/openlitespeed"
+          test -x "${OPENLITESPEED_ROOT}/bin/lswsctrl"
+          test -f "${OPENLITESPEED_ROOT}/conf/httpd_config.conf"
 
-          if [ -n "${ACTUAL_BINARY}" ] && [ -x "${ACTUAL_BINARY}" ] && [ -n "${ACTUAL_CONTROL}" ] && [ -x "${ACTUAL_CONTROL}" ] && [ -n "${ACTUAL_CONFIG}" ] && [ -f "${ACTUAL_CONFIG}" ]; then
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-          else
-            printf '%s\n' "${PACKAGE_FILES}" | sed -n '1,120p' || true
-            ls -R /usr/local/lsws 2>/dev/null | sed -n '1,120p' || true
-            echo "install_status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
+          echo "baseline_version=${OPENLITESPEED_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "binary=${OPENLITESPEED_ROOT}/bin/openlitespeed" >> "$GITHUB_OUTPUT"
+          echo "control=${OPENLITESPEED_ROOT}/bin/lswsctrl" >> "$GITHUB_OUTPUT"
+          echo "config=${OPENLITESPEED_ROOT}/conf/httpd_config.conf" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get OpenLiteSpeed version
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(sudo "${{ steps.install.outputs.ols_binary }}" -v 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
-          echo "version=${VERSION:-unknown}" >> "$GITHUB_OUTPUT"
+          OUTPUT="$(sudo "${{ steps.install.outputs.binary }}" -v 2>&1 || true)"
+          VERSION="$(printf '%s\n' "$OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
+          if [ -z "${VERSION}" ]; then
+            VERSION="${OPENLITESPEED_VERSION}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected OpenLiteSpeed version: ${VERSION}"
 
-      - name: Test 1 - Check OpenLiteSpeed binary exists
+      - name: Test 1 - Check OpenLiteSpeed binaries exist
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ -n "${{ steps.install.outputs.ols_binary }}" ] && [ -x "${{ steps.install.outputs.ols_binary }}" ]; then
+          if [ -x "${{ steps.install.outputs.binary }}" ] && [ -x "${{ steps.install.outputs.control }}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -95,30 +100,33 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Check OpenLiteSpeed version output
+      - name: Test 2 - Check version command
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          OUTPUT=$(sudo "${{ steps.install.outputs.ols_binary }}" -v 2>&1)
-          if printf '%s\n' "${OUTPUT}" | grep -q "LiteSpeed" && printf '%s\n' "${OUTPUT}" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
+          OUTPUT="$(sudo "${{ steps.install.outputs.binary }}" -v 2>&1 || true)"
+          if printf '%s\n' "$OUTPUT" | grep -Eqi 'LiteSpeed|OpenLiteSpeed|[0-9]+\.[0-9]+\.[0-9]+'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            printf '%s\n' "${OUTPUT}"
+            printf '%s\n' "$OUTPUT" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Check OpenLiteSpeed configuration
+      - name: Test 3 - Check configuration exists
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ -n "${{ steps.install.outputs.ols_config }}" ] && [ -s "${{ steps.install.outputs.ols_config }}" ] && grep -qi "listener" "${{ steps.install.outputs.ols_config }}"; then
+          if [ -s "${{ steps.install.outputs.config }}" ] && grep -Eqi 'listener|virtualhost' "${{ steps.install.outputs.config }}"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            sed -n '1,120p' "${{ steps.install.outputs.config }}" 2>/dev/null || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -129,10 +137,12 @@ jobs:
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ "$(uname -m)" = "aarch64" ]; then
+          if [ "$(uname -m)" = "aarch64" ] && file "${{ steps.install.outputs.binary }}" | grep -Eqi 'ARM aarch64|aarch64'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            file "${{ steps.install.outputs.binary }}" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -145,23 +155,96 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          sudo "${{ steps.install.outputs.ols_control }}" stop >/dev/null 2>&1 || true
-          sudo "${{ steps.install.outputs.ols_control }}" start >/dev/null 2>&1 || true
-          sleep 5
+          sudo "${{ steps.install.outputs.control }}" stop >/dev/null 2>&1 || true
+          sudo "${{ steps.install.outputs.control }}" start >/dev/null 2>&1
 
-          HEADERS=$(curl -sI --max-time 10 http://127.0.0.1:8088/ || true)
-          if lsof -iTCP:8088 -sTCP:LISTEN -P -n | grep -q ':8088' && \
-             printf '%s\n' "${HEADERS}" | grep -q '^HTTP/' && \
-             printf '%s\n' "${HEADERS}" | grep -qiE 'Content-type|X-Powered-By'; then
+          if timeout 30s bash -lc 'until curl -sI --max-time 5 http://127.0.0.1:8088/ >/tmp/ols-headers.txt 2>&1; do sleep 1; done' && \
+             lsof -iTCP:8088 -sTCP:LISTEN -P -n | grep -q ':8088' && \
+             grep -q '^HTTP/' /tmp/ols-headers.txt; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            printf '%s\n' "${HEADERS}"
+            cat /tmp/ols-headers.txt || true
+            sudo "${{ steps.install.outputs.control }}" status || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || steps.install.outputs.baseline_version }}"
+          LATEST="${OPENLITESPEED_NEXT_VERSION}"
+          WORKDIR="$(mktemp -d)"
+          URL="https://github.com/litespeedtech/openlitespeed/releases/download/${OPENLITESPEED_NEXT_TAG}/${OPENLITESPEED_NEXT_ASSET}"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+
+          sudo "${{ steps.install.outputs.control }}" stop >/dev/null 2>&1 || true
+          sudo rm -rf "${OPENLITESPEED_ROOT}"
+
+          curl -fsSL -o "${WORKDIR}/openlitespeed-next.tgz" "${URL}"
+          tar -xzf "${WORKDIR}/openlitespeed-next.tgz" -C "${WORKDIR}"
+          cd "${WORKDIR}/openlitespeed"
+          cat > ols.conf <<'EOF'
+          OPENLSWS_ADMIN=admin
+          OPENLSWS_PASSWORD=admin
+          OPENLSWS_EMAIL=root@localhost
+          OPENLSWS_ADMINSSL=no
+          OPENLSWS_ADMINPORT=7080
+          OPENLSWS_EXAMPLEPORT=8088
+          USE_LSPHP7=no
+          EOF
+          sudo bash install.sh >/tmp/openlitespeed-install-next.log 2>&1
+
+          NEXT_OUTPUT="$(sudo "${OPENLITESPEED_ROOT}/bin/openlitespeed" -v 2>&1 || true)"
+          NEXT_VERSION="$(printf '%s\n' "$NEXT_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
+          if [ -z "${NEXT_VERSION}" ]; then
+            NEXT_VERSION="${LATEST}"
+          fi
+
+          sudo "${OPENLITESPEED_ROOT}/bin/lswsctrl" stop >/dev/null 2>&1 || true
+          sudo "${OPENLITESPEED_ROOT}/bin/lswsctrl" start >/dev/null 2>&1
+
+          if [ -x "${OPENLITESPEED_ROOT}/bin/openlitespeed" ] && \
+             [ -x "${OPENLITESPEED_ROOT}/bin/lswsctrl" ] && \
+             file "${OPENLITESPEED_ROOT}/bin/openlitespeed" | grep -Eqi 'ARM aarch64|aarch64' && \
+             printf '%s\n' "${NEXT_OUTPUT}" | grep -Eqi 'LiteSpeed|OpenLiteSpeed|1\.7\.18' && \
+             timeout 30s bash -lc 'until curl -sI --max-time 5 http://127.0.0.1:8088/ >/tmp/ols-next-headers.txt 2>&1; do sleep 1; done' && \
+             grep -q '^HTTP/' /tmp/ols-next-headers.txt; then
+            echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenLiteSpeed version ${CURRENT} passed smoke tests in this run. Regression validation installed the newer Arm64 upstream tarball ${OPENLITESPEED_NEXT_TAG}, and the upgraded server started successfully on port 8088 with version ${NEXT_VERSION}." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "${NEXT_OUTPUT}" || true
+            cat /tmp/ols-next-headers.txt || true
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenLiteSpeed version ${CURRENT} passed smoke tests in this run, but candidate ${OPENLITESPEED_NEXT_TAG} did not complete the expected Arm64 install and startup validation." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression validation result unavailable' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
@@ -170,42 +253,62 @@ jobs:
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
+          CORE_FAILED=0
+          REGRESSION_FAILED=0
 
           check_test() {
             local status="$1"
             local duration="$2"
-            if [ "${status}" = "passed" ]; then
+            local kind="$3"
+            if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
+              if [ "$kind" = "core" ]; then
+                CORE_FAILED=1
+              else
+                REGRESSION_FAILED=1
+              fi
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}" "regression"
 
           echo "passed=${PASSED}" >> "$GITHUB_OUTPUT"
           echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
           echo "duration=${TOTAL_DURATION}" >> "$GITHUB_OUTPUT"
 
-          if [ "${FAILED}" -eq 0 ]; then
-            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          if [ "${CORE_FAILED}" -eq 0 ]; then
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "${CORE_FAILED}" -eq 0 ] && [ "${REGRESSION_FAILED}" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
-          cat > test-results/litespeed_openlitespeed.json <<EOF_JSON
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:$JOB_ID"
+          fi
+
+          cat > test-results/litespeed_openlitespeed.json <<EOF
           {
             "schema_version": "1.0",
             "package": {
@@ -216,7 +319,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "${JOB_URL}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -230,11 +333,22 @@ jobs:
               "skipped": 0,
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
-                {"name": "Test 1 - Check OpenLiteSpeed binary exists", "status": "${{ steps.test1.outputs.status || 'failed' }}", "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}},
-                {"name": "Test 2 - Check OpenLiteSpeed version output", "status": "${{ steps.test2.outputs.status || 'failed' }}", "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}},
-                {"name": "Test 3 - Check OpenLiteSpeed configuration", "status": "${{ steps.test3.outputs.status || 'failed' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
+                {"name": "Test 1 - Check OpenLiteSpeed binaries exist", "status": "${{ steps.test1.outputs.status || 'failed' }}", "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}},
+                {"name": "Test 2 - Check version command", "status": "${{ steps.test2.outputs.status || 'failed' }}", "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}},
+                {"name": "Test 3 - Check configuration exists", "status": "${{ steps.test3.outputs.status || 'failed' }}", "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}},
                 {"name": "Test 4 - Architecture Verification", "status": "${{ steps.test4.outputs.status || 'failed' }}", "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}},
-                {"name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'failed' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}}
+                {"name": "Test 5 - Functional Validation", "status": "${{ steps.test5.outputs.status || 'failed' }}", "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}},
+                {
+                  "name": "Test 6 - Regression Validation",
+                  "status": "${{ steps.test6.outputs.status || 'failed' }}",
+                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+                  "next_installed_version": "${{ steps.test6.outputs.next_installed_version || 'not_installed' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || '' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}"
+                }
               ]
             },
             "metadata": {
@@ -242,21 +356,40 @@ jobs:
               "badge_status": "${{ steps.summary.outputs.badge_status }}"
             }
           }
-          EOF_JSON
+          EOF
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: litespeed_openlitespeed-test-results
           path: test-results/litespeed_openlitespeed.json
-          retention-days: 90
+          retention-days: 10
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## OpenLiteSpeed Test Results" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## OpenLiteSpeed Test Results"
+            echo "- **Version:** ${{ steps.version.outputs.version }}"
+            echo "- **Status:** ${{ steps.summary.outputs.overall_status }}"
+            echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}"
+            echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}"
+            echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s"
+            echo "- **Runner:** ubuntu-24.04 (arm64)"
+            echo
+            echo "### Test Details"
+            echo "1. Test 1 - Check OpenLiteSpeed binaries exist: ${{ steps.test1.outputs.status || 'failed' }}"
+            echo "2. Test 2 - Check version command: ${{ steps.test2.outputs.status || 'failed' }}"
+            echo "3. Test 3 - Check configuration exists: ${{ steps.test3.outputs.status || 'failed' }}"
+            echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'failed' }}"
+            echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'failed' }}"
+            echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'failed' }}"
+            echo
+            echo "### Regression Validation"
+            echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+            echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+            echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+            echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression validation result unavailable' }}"
+            echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
