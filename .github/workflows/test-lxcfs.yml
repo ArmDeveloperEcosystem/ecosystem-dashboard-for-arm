@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set test metadata
         id: metadata
@@ -48,7 +48,8 @@ jobs:
           }
 
           sudo apt-get update
-          sudo apt-get install -y build-essential meson ninja-build automake autoconf libtool pkg-config libfuse3-dev liblxc-dev lxc-utils libcap-dev libseccomp-dev bison flex help2man curl ca-certificates
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y build-essential meson ninja-build automake autoconf libtool pkg-config libfuse3-dev liblxc-dev lxc-utils libcap-dev libseccomp-dev bison flex help2man curl ca-certificates
+          sudo systemctl stop lxcfs >/dev/null 2>&1 || true
 
           if ! grep -q '^user_allow_other$' /etc/fuse.conf 2>/dev/null; then
             echo user_allow_other | sudo tee -a /etc/fuse.conf >/dev/null
@@ -60,13 +61,27 @@ jobs:
           tar -xzf "${LXCFS_WORKDIR}/lxcfs-${LXCFS_VERSION}.tar.gz" -C "${LXCFS_WORKDIR}"
 
           BASE_SRC=$(find "${LXCFS_WORKDIR}" -maxdepth 1 -type d -name 'lxcfs-*' | head -n 1)
-          meson setup "${BASE_SRC}/build" --prefix=/usr >/dev/null
-          ninja -C "${BASE_SRC}/build" >/dev/null
-          DESTDIR="${LXCFS_WORKDIR}/stage-base" meson install -C "${BASE_SRC}/build" --no-rebuild >/dev/null
+          if ! meson setup "${BASE_SRC}/build" --prefix=/usr >"${LXCFS_WORKDIR}/base-meson.log" 2>&1; then
+            cat "${LXCFS_WORKDIR}/base-meson.log" || true
+            exit 1
+          fi
+          if ! ninja -C "${BASE_SRC}/build" >"${LXCFS_WORKDIR}/base-ninja.log" 2>&1; then
+            cat "${LXCFS_WORKDIR}/base-ninja.log" || true
+            exit 1
+          fi
+          if ! DESTDIR="${LXCFS_WORKDIR}/stage-base" meson install -C "${BASE_SRC}/build" --no-rebuild >"${LXCFS_WORKDIR}/base-install.log" 2>&1; then
+            cat "${LXCFS_WORKDIR}/base-install.log" || true
+            exit 1
+          fi
 
-          BIN=$(find "${LXCFS_WORKDIR}/stage-base" -type f -path '*/usr/bin/lxcfs' | head -n 1)
-          LIBDIR=$(dirname "$(find "${LXCFS_WORKDIR}/stage-base" -type f -name 'liblxcfs.so' | head -n 1)")
-          test -x "${BIN}"
+          BIN=$(find "${LXCFS_WORKDIR}/stage-base" -type f -name 'lxcfs' -perm -111 | head -n 1)
+          LIBFILE=$(find "${LXCFS_WORKDIR}/stage-base" -type f \( -name 'liblxcfs.so' -o -name 'lxcfs.so' \) | head -n 1)
+          if [ -z "${BIN:-}" ] || [ ! -x "${BIN}" ] || [ -z "${LIBFILE:-}" ]; then
+            echo "Failed to locate built LXCFS outputs" >&2
+            find "${LXCFS_WORKDIR}/stage-base" -maxdepth 6 -type f | sort || true
+            exit 1
+          fi
+          LIBDIR=$(dirname "${LIBFILE}")
 
           echo "base_src=${BASE_SRC}" >> "$GITHUB_OUTPUT"
           echo "bin_path=${BIN}" >> "$GITHUB_OUTPUT"
@@ -273,10 +288,19 @@ jobs:
           NEXT_SRC=$(find "${REGRESSION_WORKDIR}" -maxdepth 1 -type d -name 'lxcfs-*' | head -n 1)
           meson setup "${NEXT_SRC}/build" --prefix=/usr >/dev/null
           ninja -C "${NEXT_SRC}/build" >/dev/null
-          DESTDIR="${REGRESSION_WORKDIR}/stage-next" meson install -C "${NEXT_SRC}/build" --no-rebuild >/dev/null
+          if ! DESTDIR="${REGRESSION_WORKDIR}/stage-next" meson install -C "${NEXT_SRC}/build" --no-rebuild >"${REGRESSION_WORKDIR}/next-install.log" 2>&1; then
+            cat "${REGRESSION_WORKDIR}/next-install.log" || true
+            exit 1
+          fi
 
-          NEXT_BIN=$(find "${REGRESSION_WORKDIR}/stage-next" -type f -path '*/usr/bin/lxcfs' | head -n 1)
-          NEXT_LIBDIR=$(dirname "$(find "${REGRESSION_WORKDIR}/stage-next" -type f -name 'liblxcfs.so' | head -n 1)")
+          NEXT_BIN=$(find "${REGRESSION_WORKDIR}/stage-next" -type f -name 'lxcfs' -perm -111 | head -n 1)
+          NEXT_LIBFILE=$(find "${REGRESSION_WORKDIR}/stage-next" -type f \( -name 'liblxcfs.so' -o -name 'lxcfs.so' \) | head -n 1)
+          if [ -z "${NEXT_BIN:-}" ] || [ ! -x "${NEXT_BIN}" ] || [ -z "${NEXT_LIBFILE:-}" ]; then
+            echo "Failed to locate staged candidate LXCFS outputs" >&2
+            find "${REGRESSION_WORKDIR}/stage-next" -maxdepth 6 -type f | sort || true
+            exit 1
+          fi
+          NEXT_LIBDIR=$(dirname "${NEXT_LIBFILE}")
           NEXT_VERSION=$("${NEXT_BIN}" --version | tr -d '"' | awk 'NR==1 {print $1}' || true)
 
           ROOT="/tmp/lxcfs-regression-functional"
@@ -449,11 +473,11 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lxcfs-test-results
           path: test-results/lxcfs.json
-          retention-days: 90
+          retention-days: 10
       - name: Create test summary
         if: always()
         run: |
