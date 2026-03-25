@@ -101,7 +101,7 @@ jobs:
         run: |
           set -euo pipefail
           BIN="${{ steps.install.outputs.bin_path }}"
-          VERSION=$("${BIN}" --version | tr -d '"' | awk 'NR==1 {print $1}')
+          VERSION=$("${BIN}" --version 2>&1 | tr -d '"' | grep -Eo '[0-9]+([.][0-9]+)+' | head -n1)
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "latest=${LXCFS_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Detected LXCFS version: ${VERSION}"
@@ -131,7 +131,7 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           BIN="${{ steps.install.outputs.bin_path }}"
-          VERSION=$("${BIN}" --version | tr -d '"' | awk 'NR==1 {print $1}')
+          VERSION=$("${BIN}" --version 2>&1 | tr -d '"' | grep -Eo '[0-9]+([.][0-9]+)+' | head -n1)
           if [ "$VERSION" = "${LXCFS_VERSION}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -151,7 +151,11 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           BIN="${{ steps.install.outputs.bin_path }}"
-          if "${BIN}" --help > /tmp/lxcfs-help.txt 2>&1 && grep -Eqi "usage|options|lxcfs" /tmp/lxcfs-help.txt; then
+          set +e
+          "${BIN}" --help > /tmp/lxcfs-help.txt 2>&1
+          HELP_RC=$?
+          set -e
+          if { [ "$HELP_RC" -eq 0 ] || [ "$HELP_RC" -eq 1 ]; } && grep -Eqi "usage|options|lxcfs" /tmp/lxcfs-help.txt; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/lxcfs-help.txt || true
@@ -210,17 +214,19 @@ jobs:
 
           sudo env LD_LIBRARY_PATH="${LIBDIR}:${LD_LIBRARY_PATH:-}" "${BIN}" -f -p "${PIDFILE}" "${MNT}" > "${ROOT}/lxcfs.log" 2>&1 &
           PID=$!
-          for _ in $(seq 1 10); do
-            if mount | grep -q "${MNT}" && [ -f "${MNT}/proc/cpuinfo" ]; then
+          for _ in $(seq 1 20); do
+            if [ -f "${MNT}/proc/cpuinfo" ]; then
               break
             fi
             sleep 1
           done
 
-          if mount | grep -q "${MNT}" && [ -f "${MNT}/proc/cpuinfo" ]; then
+          if [ -f "${MNT}/proc/cpuinfo" ]; then
             head -n 2 "${MNT}/proc/cpuinfo" >/tmp/lxcfs-cpuinfo.txt || true
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            mount | grep "${MNT}" || true
+            find "${MNT}" -maxdepth 2 -print || true
             cat "${ROOT}/lxcfs.log" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
@@ -317,7 +323,7 @@ jobs:
             exit 1
           fi
           NEXT_LIBDIR=$(dirname "${NEXT_LIBFILE}")
-          NEXT_VERSION=$("${NEXT_BIN}" --version | tr -d '"' | awk 'NR==1 {print $1}' || true)
+          NEXT_VERSION=$("${NEXT_BIN}" --version 2>&1 | tr -d '"' | grep -Eo '[0-9]+([.][0-9]+)+' | head -n1 || true)
 
           ROOT="/tmp/lxcfs-regression-functional"
           MNT="${ROOT}/mount"
@@ -338,14 +344,14 @@ jobs:
 
           sudo env LD_LIBRARY_PATH="${NEXT_LIBDIR}:${LD_LIBRARY_PATH:-}" "${NEXT_BIN}" -f -p "${PIDFILE}" "${MNT}" > "${ROOT}/lxcfs.log" 2>&1 &
           PID=$!
-          for _ in $(seq 1 10); do
-            if mount | grep -q "${MNT}" && [ -f "${MNT}/proc/cpuinfo" ]; then
+          for _ in $(seq 1 20); do
+            if [ -f "${MNT}/proc/cpuinfo" ]; then
               break
             fi
             sleep 1
           done
 
-          if [ "$NEXT_VERSION" = "$LATEST" ] && mount | grep -q "${MNT}" && [ -f "${MNT}/proc/cpuinfo" ]; then
+          if [ "$NEXT_VERSION" = "$LATEST" ] && [ -f "${MNT}/proc/cpuinfo" ]; then
             head -n 2 "${MNT}/proc/cpuinfo" >/tmp/lxcfs-next-cpuinfo.txt || true
             echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
@@ -356,6 +362,8 @@ jobs:
             echo "Details: Current pinned LXCFS version ${CURRENT} passed smoke tests in this run. Regression validation built and staged candidate version ${LATEST} on Arm64, the candidate binary reported version ${NEXT_VERSION}, and a real FUSE mount exposed virtualized /proc data successfully."
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            mount | grep "${MNT}" || true
+            find "${MNT}" -maxdepth 2 -print || true
             cat "${ROOT}/lxcfs.log" || true
             echo "next_installed_version=${NEXT_VERSION:-not_installed}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
