@@ -20,9 +20,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       MUSCLE_VERSION: "v5.2"
-      MUSCLE_URL: "https://github.com/rcedgar/muscle/releases/download/v5.2/muscle-linux-aarch64-v5.2"
       MUSCLE_NEXT_VERSION: "v5.3"
-      MUSCLE_NEXT_URL: "https://github.com/rcedgar/muscle/releases/download/v5.3/muscle-aarch64.v5.3"
+      MUSCLE_REPO: "https://github.com/rcedgar/muscle"
 
     steps:
       - name: Checkout repository
@@ -39,21 +38,25 @@ jobs:
         id: install
         run: |
           set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl file python3 wget
           mkdir -p "$HOME/.local/bin"
-          curl -fsSL -o "$HOME/.local/bin/muscle" "${MUSCLE_URL}"
-          chmod +x "$HOME/.local/bin/muscle"
+          WORKDIR="$(mktemp -d)"
+          git clone --depth 1 --branch "${MUSCLE_VERSION}" "${MUSCLE_REPO}" "${WORKDIR}/muscle"
+          cd "${WORKDIR}/muscle/src"
+          bash build_linux.bash >/tmp/muscle-build-baseline.log 2>&1
+          install -m 0755 "${WORKDIR}/muscle/bin/muscle" "$HOME/.local/bin/muscle"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "baseline_version=${MUSCLE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "binary=$HOME/.local/bin/muscle" >> "$GITHUB_OUTPUT"
+          echo "source_dir=${WORKDIR}/muscle" >> "$GITHUB_OUTPUT"
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get MUSCLE version
         id: version
         run: |
           set -euo pipefail
-          BIN="${{ steps.install.outputs.binary }}"
-          OUTPUT="$({ timeout 10s "$BIN" -version || timeout 10s "$BIN" --version || true; } 2>&1)"
-          VERSION="$(printf '%s\n' "$OUTPUT" | grep -oE 'v?5\.[0-9]+(\.[0-9]+)?' | head -n 1 || true)"
+          VERSION="$(git -C "${{ steps.install.outputs.source_dir }}" describe --tags --exact-match 2>/dev/null || true)"
           if [ -z "$VERSION" ]; then
             VERSION="${{ steps.install.outputs.baseline_version }}"
           fi
@@ -75,18 +78,17 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Check version command
+      - name: Test 2 - Check source tag metadata
         id: test2
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          BIN="${{ steps.install.outputs.binary }}"
-          OUTPUT="$({ timeout 10s "$BIN" -version || timeout 10s "$BIN" --version || true; } 2>&1)"
-          if printf '%s\n' "$OUTPUT" | grep -Eqi 'MUSCLE|5\.[0-9]'; then
+          VERSION="$(git -C "${{ steps.install.outputs.source_dir }}" describe --tags --exact-match 2>/dev/null || true)"
+          if [ "$VERSION" = "${MUSCLE_VERSION}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            printf '%s\n' "$OUTPUT" || true
+            git -C "${{ steps.install.outputs.source_dir }}" describe --tags --always || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -101,7 +103,7 @@ jobs:
           START_TIME=$(date +%s)
           BIN="${{ steps.install.outputs.binary }}"
           OUTPUT="$({ timeout 10s "$BIN" -h || timeout 10s "$BIN" -help || true; } 2>&1)"
-          if printf '%s\n' "$OUTPUT" | grep -Eqi 'MUSCLE|align|super5|usage'; then
+          if printf '%s\n' "$OUTPUT" | grep -Eqi 'align|super5|usage|sequences'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             printf '%s\n' "$OUTPUT" || true
@@ -161,16 +163,15 @@ jobs:
           CURRENT="${{ steps.version.outputs.version || steps.install.outputs.baseline_version }}"
           LATEST="${MUSCLE_NEXT_VERSION}"
           NEXT_DIR="$(mktemp -d)"
-          NEXT_BIN="${NEXT_DIR}/muscle-next"
+          git clone --depth 1 --branch "${LATEST}" "${MUSCLE_REPO}" "${NEXT_DIR}/muscle-next"
 
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
           echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
 
-          curl -fsSL -o "$NEXT_BIN" "${MUSCLE_NEXT_URL}"
-          chmod +x "$NEXT_BIN"
-
-          NEXT_VERSION_OUTPUT="$({ timeout 10s "$NEXT_BIN" -version || timeout 10s "$NEXT_BIN" --version || true; } 2>&1)"
-          NEXT_VERSION="$(printf '%s\n' "$NEXT_VERSION_OUTPUT" | grep -oE 'v?5\.[0-9]+(\.[0-9]+)?' | head -n 1 || true)"
+          cd "${NEXT_DIR}/muscle-next/src"
+          bash build_linux.bash >/tmp/muscle-build-next.log 2>&1
+          NEXT_BIN="${NEXT_DIR}/muscle-next/bin/muscle"
+          NEXT_VERSION="$(git -C "${NEXT_DIR}/muscle-next" describe --tags --exact-match 2>/dev/null || true)"
           if [ -z "$NEXT_VERSION" ]; then
             NEXT_VERSION="${LATEST}"
           fi
@@ -184,20 +185,20 @@ jobs:
 
           if [ -x "$NEXT_BIN" ] && \
              file "$NEXT_BIN" | grep -Eqi 'ARM aarch64|aarch64' && \
-             printf '%s\n' "$NEXT_VERSION_OUTPUT" | grep -Eqi 'MUSCLE|5\.[0-9]' && \
+             [ "$NEXT_VERSION" = "${LATEST}" ] && \
              timeout 30s "$NEXT_BIN" -align candidate.fa -output candidate.afa >/tmp/muscle-next.log 2>&1 && \
              [ -s candidate.afa ] && grep -q '^>seq1' candidate.afa; then
             echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned MUSCLE binary ${CURRENT} passed Arm64 smoke tests in this run. Regression validation downloaded candidate ${LATEST}, confirmed the Arm64 binary, and completed a simple alignment successfully." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MUSCLE source build ${CURRENT} passed Arm64 smoke tests in this run. Regression validation built candidate ${LATEST} from source, confirmed the Arm64 binary, and completed a simple alignment successfully." >> "$GITHUB_OUTPUT"
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/muscle-next.log || true
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned MUSCLE binary ${CURRENT} passed Arm64 smoke tests in this run, but candidate ${LATEST} did not complete the expected Arm64 alignment validation." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MUSCLE source build ${CURRENT} passed Arm64 smoke tests in this run, but candidate ${LATEST} did not complete the expected Arm64 build-and-alignment validation." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi

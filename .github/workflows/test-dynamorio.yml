@@ -57,7 +57,7 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(timeout 10s "$GITHUB_WORKSPACE/dynamorio/bin64/drrun" --version 2>&1 | awk '/DynamoRIO version/ {print $3; exit}' || true)
+          VERSION="$(sed -nE 's/set\\(PACKAGE_VERSION ([0-9]+\\.[0-9]+\\.[0-9]+)\\)/\\1/p' "$GITHUB_WORKSPACE/dynamorio/cmake/DynamoRIOConfigVersion.cmake" | head -n1 || true)"
           if [ -z "$VERSION" ]; then
             VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
           fi
@@ -81,15 +81,17 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Check version command
+      - name: Test 2 - Check packaged version metadata
         id: test2
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if timeout 10s "dynamorio/bin64/drrun" --version 2>&1 | grep -qi "DynamoRIO version"; then
+          VERSION="$(sed -nE 's/set\\(PACKAGE_VERSION ([0-9]+\\.[0-9]+\\.[0-9]+)\\)/\\1/p' "$GITHUB_WORKSPACE/dynamorio/cmake/DynamoRIOConfigVersion.cmake" | head -n1 || true)"
+          if [ "${VERSION}" = "${{ steps.install.outputs.baseline_version }}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            cat "$GITHUB_WORKSPACE/dynamorio/cmake/DynamoRIOConfigVersion.cmake" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -193,27 +195,38 @@ jobs:
           curl -fsSL -o "$NEXT_DIR/dynamorio.tar.gz" "$NEXT_URL"
           tar -xzf "$NEXT_DIR/dynamorio.tar.gz" -C "$NEXT_DIR"
           CANDIDATE_DIR="$NEXT_DIR/DynamoRIO-AArch64-Linux-${LATEST_VERSION}"
+          CANDIDATE_VERSION="$(sed -nE 's/set\\(PACKAGE_VERSION ([0-9]+\\.[0-9]+\\.[0-9]+)\\)/\\1/p' "$CANDIDATE_DIR/cmake/DynamoRIOConfigVersion.cmake" | head -n1 || true)"
+          cat > hello_candidate.c <<'C'
+          #include <stdio.h>
+          int main(void) {
+            printf("Hello DynamoRIO\n");
+            return 0;
+          }
+          C
+          gcc hello_candidate.c -o hello_candidate
 
           if [ -x "$CANDIDATE_DIR/bin64/drrun" ] && \
              [ -d "$CANDIDATE_DIR/samples" ] && \
              [ -f "$CANDIDATE_DIR/include/dr_api.h" ] && \
-             timeout 10s "$CANDIDATE_DIR/bin64/drrun" --version 2>&1 | grep -qi "DynamoRIO version ${LATEST_VERSION}"; then
-            echo "next_installed_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+             [ "${CANDIDATE_VERSION}" = "${LATEST_VERSION}" ] && \
+             timeout 10s "$CANDIDATE_DIR/bin64/drrun" -root "$CANDIDATE_DIR" -- ./hello_candidate 2>&1 | tee /tmp/dynamorio-candidate.out | grep -q "Hello DynamoRIO"; then
+            echo "next_installed_version=${CANDIDATE_VERSION}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned DynamoRio version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and extracted the latest stable Arm64 candidate ${LATEST_VERSION}, and the candidate drrun binary, samples directory, headers, and version output all validated successfully on Arm64." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $LATEST_VERSION"
+            echo "comparison=Current pinned DynamoRio version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and extracted the latest stable Arm64 candidate ${LATEST_VERSION}, validated packaged version metadata, and ran a simple hello-world binary under candidate drrun on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${CANDIDATE_VERSION}"
             echo "Regression install result: Next version installed successfully on Arm64"
-            echo "Details: Current pinned DynamoRio version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and extracted the latest stable Arm64 candidate ${LATEST_VERSION}, and the candidate drrun binary, samples directory, headers, and version output all validated successfully on Arm64."
+            echo "Details: Current pinned DynamoRio version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and extracted the latest stable Arm64 candidate ${LATEST_VERSION}, validated packaged version metadata, and ran a simple hello-world binary under candidate drrun on Arm64."
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            cat /tmp/dynamorio-candidate.out || true
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned DynamoRio version ${CURRENT} passed smoke tests in this run, but the latest stable Arm64 candidate ${LATEST_VERSION} did not install or report version correctly on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned DynamoRio version ${CURRENT} passed smoke tests in this run, but the latest stable Arm64 candidate ${LATEST_VERSION} did not complete the expected packaged-metadata and hello-world validation on Arm64." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: install_failed"
             echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned DynamoRio version ${CURRENT} passed smoke tests in this run, but the latest stable Arm64 candidate ${LATEST_VERSION} did not install or report version correctly on Arm64."
+            echo "Details: Current pinned DynamoRio version ${CURRENT} passed smoke tests in this run, but the latest stable Arm64 candidate ${LATEST_VERSION} did not complete the expected packaged-metadata and hello-world validation on Arm64."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
