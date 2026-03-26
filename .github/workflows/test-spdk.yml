@@ -218,13 +218,36 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          run_bounded() {
+            local timeout_secs="$1"
+            shift
+            local pid
+            local pgid
+            local waited=0
+            setsid "$@" &
+            pid=$!
+            pgid="$(ps -o pgid= "$pid" | tr -d ' ')"
+            while kill -0 "$pid" 2>/dev/null; do
+              if [ "$waited" -ge "$timeout_secs" ]; then
+                kill -TERM -- "-$pgid" 2>/dev/null || true
+                sleep 5
+                kill -KILL -- "-$pgid" 2>/dev/null || true
+                wait "$pid" 2>/dev/null || true
+                return 124
+              fi
+              sleep 1
+              waited=$((waited + 1))
+            done
+            wait "$pid"
+          }
+
           START_TIME=$(date +%s)
           SPDK_DIR="${{ steps.install.outputs.source_dir }}"
           SPDK_BIN="${{ steps.install.outputs.spdk_bin }}"
           HUGE_DIR="${{ steps.hugepages.outputs.huge_dir }}"
           cd "$SPDK_DIR"
           # Real bounded startup using runner-provisioned hugepages and no PCI probing.
-          if timeout 10s "$SPDK_BIN" -u -m 0x1 -s 64 --huge-dir "$HUGE_DIR" >/tmp/spdk_tgt_baseline.log 2>&1; then
+          if run_bounded 15 "$SPDK_BIN" -u -m 0x1 -s 64 --huge-dir "$HUGE_DIR" >/tmp/spdk_tgt_baseline.log 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             RC=$?
@@ -328,7 +351,7 @@ jobs:
             exit 1
           fi
 
-          if timeout 10s "$NEXT_BIN" -u -m 0x1 -s 64 --huge-dir "$HUGE_DIR" >/tmp/spdk_tgt_candidate.log 2>&1; then
+          if run_bounded 15 "$NEXT_BIN" -u -m 0x1 -s 64 --huge-dir "$HUGE_DIR" >/tmp/spdk_tgt_candidate.log 2>&1; then
             :
           else
             RC=$?
