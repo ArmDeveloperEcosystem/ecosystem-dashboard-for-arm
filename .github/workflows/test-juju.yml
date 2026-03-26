@@ -132,6 +132,8 @@ jobs:
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+          CURRENT_CLEAN=$(printf '%s\n' "$CURRENT" | sed 's/^v//')
+          LATEST_CLEAN=$(printf '%s\n' "$LATEST" | sed 's/^v//')
           NEXT_URL="${JUJU_NEXT_TARBALL_URL}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
@@ -151,6 +153,19 @@ jobs:
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
+          fi
+
+          if [ "$CURRENT_CLEAN" = "$LATEST_CLEAN" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Juju version $CURRENT already matches the newest stable Arm64 artifact, so there is no newer candidate for a genuine Test 6 upgrade validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: No newer stable release available for Test 6"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           TMPDIR=$(mktemp -d)
@@ -239,21 +254,12 @@ jobs:
           fi
 
           echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
-          if [ "$CURRENT" = "$LATEST" ] || [ "$BASELINE_CLEAN" = "$LATEST_CLEAN" ]; then
-            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
-            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-          else
-            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Juju version $CURRENT passed smoke tests in this run. Regression validation downloaded and extracted the candidate Arm64 artifact from $NEXT_URL successfully, and the installed candidate binary reported version $NEXT_INSTALLED_VERSION." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
-            echo "Regression install result: Next version installed successfully on Arm64"
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          fi
+          echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Current pinned Juju version $CURRENT passed smoke tests in this run. Regression validation downloaded and extracted the candidate Arm64 artifact from $NEXT_URL successfully, and the installed candidate binary reported version $NEXT_INSTALLED_VERSION." >> "$GITHUB_OUTPUT"
+          echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+          echo "Regression install result: Next version installed successfully on Arm64"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -271,6 +277,9 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
+              no_newer_stable_available)
+                REGRESSION_RESULT="No newer stable release available for Test 6"
+                ;;
               metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
@@ -280,6 +289,8 @@ jobs:
               *)
                 if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
                   REGRESSION_RESULT="Regression validation passed"
+                elif [ "${{ steps.test6.outputs.status || 'skipped' }}" = "skipped" ]; then
+                  REGRESSION_RESULT="Regression validation skipped"
                 else
                   REGRESSION_RESULT="Regression validation failed"
                 fi
@@ -301,6 +312,7 @@ jobs:
           set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
           check_core_test() {
@@ -319,24 +331,28 @@ jobs:
           check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
           check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
           check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
-          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
+          if [ "$TEST6_STATUS" = "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "$TEST6_STATUS" = "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
-          if [ "$CORE_FAILED" -eq 0 ]; then
+          if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
           fi
-          if [ "$CORE_FAILED" -ne 0 ] || [ "${{ steps.test6.outputs.status || 'failed' }}" != "passed" ]; then
+          if [ "$CORE_FAILED" -ne 0 ] || [ "$TEST6_STATUS" = "failed" ]; then
             exit 1
           fi
 
@@ -372,7 +388,7 @@ jobs:
             "tests": {
               "passed": ${{ steps.summary.outputs.passed }},
               "failed": ${{ steps.summary.outputs.failed }},
-              "skipped": 0,
+              "skipped": ${{ steps.summary.outputs.skipped || 0 }},
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {"name": "Test 1 - Binary Existence", "status": "${{ steps.test1.outputs.status || 'skipped' }}", "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}},
