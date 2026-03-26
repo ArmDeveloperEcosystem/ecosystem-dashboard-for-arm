@@ -11,9 +11,17 @@ on:
 jobs:
   test-kobert:
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
 
       - name: Set test metadata
         id: metadata
@@ -27,9 +35,8 @@ jobs:
           set -euo pipefail
           echo "Installing KoBERT..."
           
-          # Install Python and pip
           sudo apt-get update
-          sudo apt-get install -y python3 python3-pip python3-venv git curl ca-certificates
+          sudo apt-get install -y git curl ca-certificates
           . /etc/os-release
           ARM_REPO_DIST="${NAME,,}-${VERSION_ID%%.*}"
           curl -fsSL "https://developer.arm.com/packages/arm-toolchains:${ARM_REPO_DIST}/${VERSION_CODENAME}/Release.key" | sudo tee /etc/apt/trusted.gpg.d/developer-arm-com.asc >/dev/null
@@ -37,12 +44,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y arm-performance-libraries
           
-          # Create venv
-          python3 -m venv venv
+          python -m venv venv
           source venv/bin/activate
           
-          pip install --upgrade pip
-          pip install sentencepiece gluonnlp torch transformers onnxruntime accelerate datasets protobuf "numpy<2" "mxnet==1.9.1"
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install \
+            "numpy==1.23.5" \
+            "mxnet==1.9.1" \
+            "gluonnlp==0.10.0" \
+            sentencepiece \
+            torch \
+            transformers \
+            onnxruntime \
+            accelerate \
+            datasets \
+            protobuf
           ARMPL_LIB=$(find /opt/arm -name 'libarmpl_lp64_mp.so' 2>/dev/null | head -n 1 || true)
           if [ -z "${ARMPL_LIB}" ]; then
             echo "KoBERT installation failed"
@@ -54,7 +70,7 @@ jobs:
           echo "armpl_lib_dir=${ARMPL_LIB_DIR}" >> "$GITHUB_OUTPUT"
           
           # Install KoBERT without downgrading mxnet to the older broken wheel line.
-          if pip install --no-deps git+https://github.com/SKTBrain/KoBERT.git@master; then
+          if python -m pip install --no-deps git+https://github.com/SKTBrain/KoBERT.git@master; then
              echo "KoBERT installed successfully"
              echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
@@ -69,8 +85,8 @@ jobs:
       - name: Get KoBERT version
         id: version
         run: |
+          set -euo pipefail
           source venv/bin/activate
-          # kobert doesn't have __version__ at top level sometimes, check pip show
           VERSION=$(pip show kobert 2>/dev/null | awk '/^Version:/ {print $2; exit}' || true)
           if [ -z "$VERSION" ]; then
             VERSION=$(pip show kobert-transformers 2>/dev/null | awk '/^Version:/ {print $2; exit}' || true)
@@ -78,7 +94,7 @@ jobs:
           if [ -z "$VERSION" ]; then
             VERSION="unknown"
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected KoBERT version: $VERSION"
 
       # ============================================================
@@ -196,8 +212,8 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Functional Validation
           ARCH=$(uname -m)
 
           if [ "$ARCH" = "aarch64" ]; then
@@ -217,6 +233,7 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
@@ -261,22 +278,28 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
           if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
             exit 1
           fi
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --paginate --jq '.jobs[] | [.name, .html_url] | @tsv' | awk -F '\t' -v job="$JOB_ID" '$1 == job || $1 == job " / " job || $1 ~ ("/ " job "$") { print $2; exit }')
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
           
           cat > test-results/kobert.json << EOF
           {
@@ -289,7 +312,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "${JOB_URL}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
