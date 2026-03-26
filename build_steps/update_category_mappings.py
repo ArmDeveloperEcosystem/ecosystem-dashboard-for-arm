@@ -95,4 +95,3 @@ def update_category_mappings(input_file, output_file):
 if __name__ == "__main__":
     update_category_mappings('../package_category_list.yml', '../data/category_data.yml')
     update_category_mappings('../package_category_list_windows.yml', '../data/category_data_windows.yml')
-
