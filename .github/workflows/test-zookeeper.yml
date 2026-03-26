@@ -112,22 +112,51 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          sudo /usr/share/zookeeper/bin/zkServer.sh start >/tmp/zk-start.log 2>&1 || true
+          ZK_SMOKE_ROOT=$(mktemp -d)
+          ZK_PORT=22181
+          ZK_CFG="$ZK_SMOKE_ROOT/zoo.cfg"
+          cat > "$ZK_CFG" <<EOF_CFG
+          tickTime=2000
+          dataDir=$ZK_SMOKE_ROOT/data
+          clientPort=$ZK_PORT
+          admin.enableServer=false
+          standaloneEnabled=true
+          4lw.commands.whitelist=ruok,stat,mntr
+          EOF_CFG
+          mkdir -p "$ZK_SMOKE_ROOT/data"
+          ZK_LOG="$ZK_SMOKE_ROOT/zookeeper.log"
+          cleanup() {
+            if [ -n "${ZK_PID:-}" ] && kill -0 "$ZK_PID" >/dev/null 2>&1; then
+              kill "$ZK_PID" >/dev/null 2>&1 || true
+              wait "$ZK_PID" >/dev/null 2>&1 || true
+            fi
+            rm -rf "$ZK_SMOKE_ROOT"
+          }
+          trap cleanup EXIT
+          export ZOOCFG="$ZK_CFG"
+          sudo -E /usr/share/zookeeper/bin/zkServer.sh start-foreground >"$ZK_LOG" 2>&1 &
+          ZK_PID=$!
           READY=0
           for _ in $(seq 1 30); do
-            if printf 'ruok\n' | nc 127.0.0.1 2181 2>/dev/null | grep -q '^imok$'; then
+            if ! kill -0 "$ZK_PID" >/dev/null 2>&1; then
+              break
+            fi
+            if printf 'ruok\n' | nc 127.0.0.1 "$ZK_PORT" 2>/dev/null | grep -q '^imok$'; then
               READY=1
               break
             fi
             sleep 2
           done
           if [ "$READY" -ne 1 ]; then
-            cat /tmp/zk-start.log || true
-            sudo /usr/share/zookeeper/bin/zkServer.sh stop >/dev/null 2>&1 || true
+            cat "$ZK_LOG" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          sudo /usr/share/zookeeper/bin/zkServer.sh stop >/dev/null 2>&1 || true
+          if ! printf 'ls /\nquit\n' | /usr/share/zookeeper/bin/zkCli.sh -server "127.0.0.1:$ZK_PORT" 2>/dev/null | grep -q 'zookeeper'; then
+            cat "$ZK_LOG" || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -169,7 +198,13 @@ jobs:
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" | head -n 1)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
           cat > test-results/zookeeper.json <<EOF
           {
             "schema_version": "1.0",
@@ -181,7 +216,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
