@@ -1,296 +1,222 @@
-# Package Test Template
-#
-# This is a TEMPLATE file stored in the tests/ directory - it will not run as a workflow.
-# To use it:
-# 1. Copy this file to .github/workflows/test-<your-package>.yml
-# 2. Replace all Bk-cmdb placeholders with your package name (e.g., "Redis")
-# 3. Replace all bk_cmdb placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the appropriate trigger(s) in the 'on:' section
-#
-# See .github/workflows/test-nginx.yml and test-envoy.yml for real examples. Template
-#
-# This is a TEMPLATE file - it will not run automatically.
-# To use it:
-# 1. Copy this file to test-<your-package>.yml
-# 2. Replace all Bk-cmdb placeholders with your package name (e.g., "Redis")
-# 3. Replace all bk_cmdb placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the 'push:' trigger section below (remove the workflow_dispatch if desired)
-#
-# See test-nginx.yml and test-envoy.yml for real examples.
-
 name: Test Bk-cmdb on Arm64
 
-# This is a TEMPLATE - it has no triggers and will not run.
-# When you copy this file, uncomment the appropriate triggers below:
 on:
-  # workflow_dispatch:  # Uncomment for manual testing
   workflow_call:
   push:
     branches:
       - main
       - smoke_tests
     paths:
-      - 'content/opensource_packages/bk_cmdb.md'
-      - '.github/workflows/test-bk_cmdb.yml'
+      - "content/opensource_packages/bk_cmdb.md"
+      - ".github/workflows/test-bk_cmdb.yml"
 
 jobs:
   test-bk_cmdb:
     runs-on: ubuntu-24.04-arm
-    
+    permissions:
+      contents: read
+      actions: read
+    env:
+      BK_CMDB_REF: "release-v3.10.41"
+      BK_CMDB_VERSION: "v3.10.41"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
       - name: Set test metadata
         id: metadata
         run: |
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=bk_cmdb" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/bk_cmdb" >> "$GITHUB_OUTPUT"
-      - name: Install Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '>=1.20'
-          
+
       - name: Install Bk-cmdb (Source)
         id: install
         run: |
-          echo "Installing Bk-cmdb from source..."
-          
-          git clone https://github.com/Tencent/bk-cmdb.git
-          cd bk-cmdb
-          
-          # Build a core component to verify it compiles on arm64
-          # Assuming standard Go project structure
-          echo "Building cmdb_admin_server..."
-          # Try generic build first as direct paths typically change
-          if go build -o cmdb_admin_server ./src/scene_server/admin_server; then
-             echo "Go build successful (specific target)"
-          elif go build -o cmdb_admin_server ./...; then
-             echo "Go build successful (wildcard)"
-          elif make server/cmdb_admin_server; then
-             echo "Make successful"
-          else
-             echo "Build failed, attempting to find any main package..."
-             # One last desperate attempt
-             go install ./...
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+          REPO_DIR="${RUNNER_TEMP}/bk-cmdb"
+          rm -rf "$REPO_DIR"
+          git clone --depth 1 --branch "${BK_CMDB_REF}" https://github.com/TencentBlueKing/bk-cmdb.git "$REPO_DIR"
+
+          pushd "$REPO_DIR/src/scene_server/admin_server" >/dev/null
+          go build -o "${RUNNER_TEMP}/cmdb_adminserver" .
+          popd >/dev/null
+
+          if [ ! -x "${RUNNER_TEMP}/cmdb_adminserver" ]; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          
-          # Find the binary wherever it is
-          BINARY=$(find . -name cmdb_admin_server -type f | head -n 1)
-          
-          if [ -n "$BINARY" ]; then
-             echo "Found binary at $BINARY"
-             chmod +x "$BINARY"
-             # Copy to a known location for tests
-             sudo cp "$BINARY" /usr/local/bin/cmdb_admin_server
-             echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-             echo "Could not find 'cmdb_admin_server' binary after build"
-             echo "Listing common bin dirs:"
-             ls -R bin || true
-             echo "install_status=failed" >> $GITHUB_OUTPUT
-             exit 1
-          fi
-      
+
+          sudo install -m 0755 "${RUNNER_TEMP}/cmdb_adminserver" /usr/local/bin/cmdb_adminserver
+          echo "repo_dir=$REPO_DIR" >> "$GITHUB_OUTPUT"
+          echo "binary_path=/usr/local/bin/cmdb_adminserver" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
       - name: Get Bk-cmdb version
         id: version
         run: |
-          cd bk-cmdb
-          VERSION=$(git describe --tags --always || echo "source-latest")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          REPO_DIR="${{ steps.install.outputs.repo_dir }}"
+          VERSION="$(git -C "$REPO_DIR" describe --tags --always 2>/dev/null | sed 's/^release-//' || true)"
+          if [ -z "$VERSION" ]; then
+            VERSION="${BK_CMDB_VERSION}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Bk-cmdb version: $VERSION"
-      
+
       - name: Test 1 - Check Build Output
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if command -v cmdb_admin_server &> /dev/null; then
-            echo "✓ Binary installed and found in PATH"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if command -v cmdb_adminserver >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ Binary not found in PATH"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Check Binary Architecture
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check Version Command
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          BINARY=$(which cmdb_admin_server)
-          if [ -z "$BINARY" ]; then
-             echo "✗ No binary to check"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-          fi
-          
-          echo "Checking binary: $BINARY"
-          file "$BINARY"
-          if file "$BINARY" | grep -q "ARM aarch64"; then
-            echo "✓ Binary is ARM64"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if cmdb_adminserver --version 2>&1 | grep -q "Version"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ Binary is NOT ARM64"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Test 3 - Basic Help Check
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if command -v cmdb_admin_server &> /dev/null; then
-             # Try running with --help or asking for version, usually returns 0 or prints usage
-             if cmdb_admin_server --help > /dev/null 2>&1 || cmdb_admin_server --version > /dev/null 2>&1; then
-                echo "✓ Binary runs"
-                echo "status=passed" >> $GITHUB_OUTPUT
-             else
-                # Some servers might hang if just run, so we might skip this if strict run isn't possible
-                echo "⚠ Binary found but execution check inconclusive (might need config)"
-                echo "status=passed" >> $GITHUB_OUTPUT
-             fi
+          if cmdb_adminserver --help >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ Binary not not executable or not found"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          echo "Checking system architecture..."
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          BINARY="${{ steps.install.outputs.binary_path }}"
+          if file "$BINARY" | grep -Eiq "aarch64|arm64"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            echo "Skipping further tests"
-             exit 0
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 5 - Functional Validation
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Re-using previous check or adding a new simple one
-          echo "✓ Functional validation covered by build and exec checks"
-          echo "status=passed" >> $GITHUB_OUTPUT
+          if timeout 10s cmdb_adminserver --version >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
-          
-          # Check Build Output
-          STATUS_1="${{ steps.test1.outputs.status || 'skipped' }}"
-          if [ "$STATUS_1" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "$STATUS_1" != "skipped" ]; then
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
-          
-          # Check Binary Architecture
-          STATUS_2="${{ steps.test2.outputs.status || 'skipped' }}"
-          if [ "$STATUS_2" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "$STATUS_2" != "skipped" ]; then
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
-          
-          # Basic Help Check
-          STATUS_3="${{ steps.test3.outputs.status || 'skipped' }}"
-          if [ "$STATUS_3" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "$STATUS_3" != "skipped" ]; then
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-          
-          # Architecture Verification
-          STATUS_4="${{ steps.test4.outputs.status || 'skipped' }}"
-          if [ "$STATUS_4" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "$STATUS_4" != "skipped" ]; then
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-          
-          # Functional Validation
-          STATUS_5="${{ steps.test5.outputs.status || 'skipped' }}"
-          if [ "$STATUS_5" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "$STATUS_5" != "skipped" ]; then
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          check_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$status" != "skipped" ]; then
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_test "${{ steps.test1.outputs.status || 'skipped' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_test "${{ steps.test2.outputs.status || 'skipped' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_test "${{ steps.test3.outputs.status || 'skipped' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_test "${{ steps.test4.outputs.status || 'skipped' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_test "${{ steps.test5.outputs.status || 'skipped' }}" "${{ steps.test5.outputs.duration || 0 }}"
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
-          
+
+          JOB_NAME="${{ github.job }}"
+          JOB_URL=$(
+            GH_TOKEN="${{ github.token }}" gh api \
+              "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+              --paginate --jq '.jobs[] | [.name, .html_url] | @tsv' 2>/dev/null \
+            | awk -F '\t' -v job="$JOB_NAME" '$1 == job " / " job || $1 == job || $1 ~ (" / " job "$") {print $2; exit}'
+          )
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
           cat > test-results/bk_cmdb.json << EOF
           {
             "schema_version": "1.0",
             "package": {
               "name": "Bk-cmdb",
               "version": "${{ steps.version.outputs.version }}",
-              "language": "DevOps",
+              "language": "Go",
               "category": "DevOps"
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "${JOB_URL}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -305,27 +231,27 @@ jobs:
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check Build Output",
+                  "name": "Test 1 - Check Build Output",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check Binary Architecture",
+                  "name": "Test 2 - Check Version Command",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Basic Help Check",
+                  "name": "Test 3 - Basic Help Check",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Architecture Verification",
+                  "name": "Test 4 - Architecture Verification",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Functional Validation",
+                  "name": "Test 5 - Functional Validation",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 }
@@ -337,14 +263,7 @@ jobs:
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/bk_cmdb.json
-      
-      # ============================================================
-      # STANDARD STEPS - Usually don't need to modify below here
-      # ============================================================
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -352,27 +271,24 @@ jobs:
           name: bk_cmdb-test-results
           path: test-results/bk_cmdb.json
           retention-days: 90
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## Bk-cmdb Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check Build Output: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check Binary Architecture: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Basic Help Check: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
-
-
-
+          {
+            echo "## Bk-cmdb Test Results"
+            echo ""
+            echo "- **Version:** ${{ steps.version.outputs.version }}"
+            echo "- **Status:** ${{ steps.summary.outputs.overall_status }}"
+            echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}"
+            echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}"
+            echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s"
+            echo "- **Runner:** ubuntu-24.04 (arm64)"
+            echo ""
+            echo "### Test Details"
+            echo "1. Test 1 - Check Build Output: ${{ steps.test1.outputs.status || 'skipped' }}"
+            echo "2. Test 2 - Check Version Command: ${{ steps.test2.outputs.status || 'skipped' }}"
+            echo "3. Test 3 - Basic Help Check: ${{ steps.test3.outputs.status || 'skipped' }}"
+            echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}"
+            echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
