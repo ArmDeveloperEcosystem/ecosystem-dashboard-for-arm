@@ -17,7 +17,8 @@ jobs:
     env:
       NEXT_GROOVY_VERSION: "5.0.0"
       NEXT_GRAILS_VERSION: "7.0.0"
-      NEXT_GRAILS_URL: "https://github.com/apache/grails-core/releases/download/v7.0.0/grails-7.0.0.zip"
+      NEXT_GROOVY_URL: "https://archive.apache.org/dist/groovy/5.0.0/distribution/apache-groovy-binary-5.0.0.zip"
+      NEXT_GRAILS_URL: "https://github.com/apache/grails-core/releases/download/v7.0.0/apache-grails-7.0.0-bin.zip"
 
     steps:
       - name: Checkout repository
@@ -220,22 +221,35 @@ jobs:
 
           LATEST_GROOVY="${NEXT_GROOVY_VERSION}"
           LATEST_GRAILS="${NEXT_GRAILS_VERSION}"
+          LATEST_GROOVY_URL="${NEXT_GROOVY_URL}"
           LATEST_GRAILS_URL="${NEXT_GRAILS_URL}"
 
-          if [ -z "$LATEST_GROOVY" ] || [ -z "$LATEST_GRAILS" ] || [ -z "$LATEST_GRAILS_URL" ]; then
-            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run, but the latest stable Groovy or Grails release could not be resolved from the official upstream endpoints." >> "$GITHUB_OUTPUT"
-            echo "Next version targeted for install validation: lookup_failed"
-            echo "Next version installed on Arm64: lookup_failed"
-            echo "Regression install result: Next version lookup failed on Arm64"
-            echo "Details: Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run, but the latest stable Groovy or Grails release could not be resolved from the official upstream endpoints."
+          fail_regression() {
+            local installed="$1"
+            local decision="$2"
+            local result="$3"
+            local details="$4"
+            echo "next_installed_version=$installed" >> "$GITHUB_OUTPUT"
+            echo "decision=$decision" >> "$GITHUB_OUTPUT"
+            echo "regression_result=$result" >> "$GITHUB_OUTPUT"
+            echo "comparison=$details" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $installed"
+            echo "Regression install result: $result"
+            echo "Details: $details"
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            rm -rf "${NEXT_DIR:-}"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
+          }
+
+          if [ -z "$LATEST_GROOVY" ] || [ -z "$LATEST_GRAILS" ] || [ -z "$LATEST_GROOVY_URL" ] || [ -z "$LATEST_GRAILS_URL" ]; then
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            fail_regression \
+              "lookup_failed" \
+              "next_lookup_failed" \
+              "Next version lookup failed on Arm64" \
+              "Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run, but the latest stable Groovy or Grails release could not be resolved from the official upstream endpoints."
           fi
 
           LATEST="Groovy ${LATEST_GROOVY} / Grails ${LATEST_GRAILS}"
@@ -243,42 +257,53 @@ jobs:
           echo "Next version targeted for install validation: $LATEST"
 
           if [ "$CURRENT" = "$LATEST" ]; then
-            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $CURRENT"
-            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-            echo "Details: Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run and the official latest stable releases are unchanged, so current stable remains validated on Arm64."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            fail_regression \
+              "$CURRENT" \
+              "metadata_review_required" \
+              "Tests 1-5 baseline must be older than the latest stable release" \
+              "Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run and the official latest stable releases are unchanged, so current stable remains validated on Arm64."
           fi
 
           NEXT_DIR=$(mktemp -d)
-          wget -q "https://downloads.apache.org/groovy/${LATEST_GROOVY}/distribution/apache-groovy-binary-${LATEST_GROOVY}.zip" -O "$NEXT_DIR/groovy-next.zip"
-          wget -q "$LATEST_GRAILS_URL" -O "$NEXT_DIR/grails-next.zip"
+          if ! curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 --progress-bar "$LATEST_GROOVY_URL" -o "$NEXT_DIR/groovy-next.zip"; then
+            fail_regression \
+              "download_failed" \
+              "next_download_failed" \
+              "Next version download failed on Arm64" \
+              "Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run, but the candidate Groovy archive for ${LATEST_GROOVY} could not be downloaded from the official upstream location."
+          fi
+          if ! curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 --progress-bar "$LATEST_GRAILS_URL" -o "$NEXT_DIR/grails-next.zip"; then
+            fail_regression \
+              "download_failed" \
+              "next_download_failed" \
+              "Next version download failed on Arm64" \
+              "Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run, but the candidate Grails archive for ${LATEST_GRAILS} could not be downloaded from the official upstream location."
+          fi
 
-          unzip -q "$NEXT_DIR/groovy-next.zip" -d "$NEXT_DIR/groovy"
-          unzip -q "$NEXT_DIR/grails-next.zip" -d "$NEXT_DIR/grails"
+          if ! unzip -q "$NEXT_DIR/groovy-next.zip" -d "$NEXT_DIR/groovy"; then
+            fail_regression \
+              "extract_failed" \
+              "next_extract_failed" \
+              "Next version extract failed on Arm64" \
+              "Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run, but the candidate Groovy archive for ${LATEST_GROOVY} could not be extracted on Arm64."
+          fi
+          if ! unzip -q "$NEXT_DIR/grails-next.zip" -d "$NEXT_DIR/grails"; then
+            fail_regression \
+              "extract_failed" \
+              "next_extract_failed" \
+              "Next version extract failed on Arm64" \
+              "Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run, but the candidate Grails archive for ${LATEST_GRAILS} could not be extracted on Arm64."
+          fi
 
           NEXT_GROOVY_HOME=$(find "$NEXT_DIR/groovy" -maxdepth 1 -type d -name "groovy-*" | head -n 1)
           NEXT_GRAILS_HOME=$(find "$NEXT_DIR/grails" -maxdepth 1 -type d \( -name "grails-*" -o -name "apache-grails-*" \) | head -n 1)
 
           if [ -z "$NEXT_GROOVY_HOME" ] || [ -z "$NEXT_GRAILS_HOME" ]; then
-            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run, but the candidate archives did not extract usable Groovy and Grails homes on Arm64." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: install_failed"
-            echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run, but the candidate archives did not extract usable Groovy and Grails homes on Arm64."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            rm -rf "$NEXT_DIR"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            fail_regression \
+              "install_failed" \
+              "next_install_failed" \
+              "Next version install failed on Arm64" \
+              "Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run, but the candidate archives did not extract usable Groovy and Grails homes on Arm64."
           fi
 
           strip_ansi() {
@@ -315,18 +340,11 @@ jobs:
           else
             cat /tmp/groovy-grails-help-next.txt || true
             cat /tmp/groovy-grails-script-next.txt || true
-            echo "next_installed_version=Groovy ${NEXT_GROOVY_REPORTED:-unknown} / Grails ${NEXT_GRAILS_REPORTED:-unknown}" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run, but the candidate Groovy/Grails combination did not report the expected versions or complete the expected help/script checks on Arm64." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: Groovy ${NEXT_GROOVY_REPORTED:-unknown} / Grails ${NEXT_GRAILS_REPORTED:-unknown}"
-            echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run, but the candidate Groovy/Grails combination did not report the expected versions or complete the expected help/script checks on Arm64."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            rm -rf "$NEXT_DIR"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            fail_regression \
+              "Groovy ${NEXT_GROOVY_REPORTED:-unknown} / Grails ${NEXT_GRAILS_REPORTED:-unknown}" \
+              "next_install_failed" \
+              "Next version install failed on Arm64" \
+              "Current pinned Groovy/Grails baseline ${CURRENT} passed smoke tests in this run, but the candidate Groovy/Grails combination did not report the expected versions or complete the expected help/script checks on Arm64."
           fi
 
           rm -rf "$NEXT_DIR"
