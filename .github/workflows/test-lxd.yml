@@ -14,6 +14,9 @@ on:
 jobs:
   test-lxd:
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      actions: read
     
     steps:
       - name: Checkout repository
@@ -28,19 +31,41 @@ jobs:
       - name: Install LXD
         id: install
         run: |
+          set -euo pipefail
           echo "Installing LXD via Snap..."
-          # Snap is pre-installed on Ubuntu runners, but we need to install the lxd snap
-          sudo snap install lxd
-          
+          sudo systemctl start snapd.socket snapd.service >/dev/null 2>&1 || true
+          sudo snap wait system seed.loaded >/dev/null 2>&1 || true
+          install_ok=0
+          for attempt in 1 2 3; do
+            echo "LXD install attempt ${attempt}/3"
+            if snap list lxd >/dev/null 2>&1; then
+              install_ok=1
+              break
+            fi
+            if timeout 600 sudo snap install lxd --channel=latest/stable; then
+              install_ok=1
+              break
+            fi
+            echo "snap install lxd attempt ${attempt} did not complete cleanly"
+            sudo snap remove --purge lxd >/dev/null 2>&1 || true
+            sleep 15
+          done
+          if [ "$install_ok" -ne 1 ]; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "LXD snap install did not complete successfully after retries."
+            exit 1
+          fi
+
           echo "LXD installed"
-          echo "install_status=success" >> $GITHUB_OUTPUT
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
       
       - name: Get LXD version
         id: version
         run: |
+          set -euo pipefail
           VERSION=$(lxd --version)
           VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected LXD version: $VERSION"
       
       - name: Test 1 - Check Binaries Exist
@@ -198,7 +223,13 @@ jobs:
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
           mkdir -p test-results
+          JOB_NAME="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --paginate --jq '.jobs[] | [.name, .html_url] | @tsv' 2>/dev/null | awk -F '\t' -v job="$JOB_NAME" '$1 == job " / " job || $1 == job || $1 ~ (" / " job "$") { print $2; exit }' || true)
+          if [ -z "${JOB_URL:-}" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
           
           cat > test-results/lxd.json << EOF
           {
@@ -211,7 +242,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "${JOB_URL}",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -287,5 +318,4 @@ jobs:
           echo "3. Initialize (Dry Run): ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
 
