@@ -162,6 +162,34 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare hugepages for SPDK runtime validation
+        id: hugepages
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          HUGE_DIR="/mnt/spdk-hugepages"
+          sudo mkdir -p "$HUGE_DIR"
+          if ! mountpoint -q "$HUGE_DIR"; then
+            sudo mount -t hugetlbfs -o mode=1777 none "$HUGE_DIR"
+          fi
+          sudo chmod 1777 "$HUGE_DIR"
+          if [ -w /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages ]; then
+            echo 64 | sudo tee /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages >/dev/null
+          else
+            echo 64 | sudo tee /proc/sys/vm/nr_hugepages >/dev/null
+          fi
+          FREE_HUGEPAGES="$(cat /sys/kernel/mm/hugepages/hugepages-2048kB/free_hugepages 2>/dev/null || echo 0)"
+          if [ "${FREE_HUGEPAGES}" -le 0 ]; then
+            echo "huge_dir=$HUGE_DIR" >> "$GITHUB_OUTPUT"
+            echo "free_hugepages=0" >> "$GITHUB_OUTPUT"
+            echo "duration=$(( $(date +%s) - START_TIME ))" >> "$GITHUB_OUTPUT"
+            echo "Unable to reserve hugepages for SPDK runtime validation."
+            exit 1
+          fi
+          echo "huge_dir=$HUGE_DIR" >> "$GITHUB_OUTPUT"
+          echo "free_hugepages=${FREE_HUGEPAGES}" >> "$GITHUB_OUTPUT"
+          echo "duration=$(( $(date +%s) - START_TIME ))" >> "$GITHUB_OUTPUT"
+
       - name: Test 5 - Functional validation
         id: test5
         continue-on-error: true
@@ -170,9 +198,10 @@ jobs:
           START_TIME=$(date +%s)
           SPDK_DIR="${{ steps.install.outputs.source_dir }}"
           SPDK_BIN="${{ steps.install.outputs.spdk_bin }}"
+          HUGE_DIR="${{ steps.hugepages.outputs.huge_dir }}"
           cd "$SPDK_DIR"
-          # Bounded launch test to confirm binary starts cleanly on Arm.
-          if timeout 10s "$SPDK_BIN" -m 0x1 >/tmp/spdk_tgt_baseline.log 2>&1; then
+          # Real bounded startup using runner-provisioned hugepages and no PCI probing.
+          if timeout 10s "$SPDK_BIN" -u -m 0x1 -s 64 --huge-dir "$HUGE_DIR" >/tmp/spdk_tgt_baseline.log 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             RC=$?
@@ -195,6 +224,7 @@ jobs:
           START_TIME=$(date +%s)
           CURRENT_VERSION="${{ steps.version.outputs.version }}"
           CANDIDATE_VERSION="${SPDK_NEXT_VERSION}"
+          HUGE_DIR="${{ steps.hugepages.outputs.huge_dir }}"
           echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
           echo "latest_version=${CANDIDATE_VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -234,6 +264,22 @@ jobs:
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
+          fi
+
+          if timeout 10s "$NEXT_BIN" -u -m 0x1 -s 64 --huge-dir "$HUGE_DIR" >/tmp/spdk_tgt_candidate.log 2>&1; then
+            :
+          else
+            RC=$?
+            if [ "$RC" -ne 124 ]; then
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              tail -n 80 /tmp/spdk_tgt_candidate.log || true
+              echo "comparison=Candidate spdk_tgt could not complete bounded runtime startup on Arm64." >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
           fi
 
           echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
