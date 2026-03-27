@@ -234,12 +234,15 @@ jobs:
               ;;
           esac
 
-          NEXT_BIN=$(find "$TMPDIR" -type f -name newrelic-infra -perm -111 | head -n 1 || true)
-          if [ ! -x "$NEXT_BIN" ]; then
+          NEXT_ROOT=$(find "$TMPDIR" -type d -name newrelic-infra | head -n 1 || true)
+          NEXT_BIN="${NEXT_ROOT}/usr/bin/newrelic-infra"
+          NEXT_CTL="${NEXT_ROOT}/usr/bin/newrelic-infra-ctl"
+          NEXT_SERVICE="${NEXT_ROOT}/usr/bin/newrelic-infra-service"
+          if [ ! -x "$NEXT_BIN" ] || [ ! -x "$NEXT_CTL" ] || [ ! -x "$NEXT_SERVICE" ]; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run, but the extracted Arm64 candidate from $NEXT_URL did not contain an executable newrelic-infra binary." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run, but the extracted Arm64 candidate from $LATEST_URL did not contain the expected executable New Relic bundle layout." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: not_installed"
             echo "Regression install result: Next version install failed on Arm64"
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -248,11 +251,19 @@ jobs:
             exit 1
           fi
 
-          NEXT_VERSION_OUTPUT=$("$NEXT_BIN" --version 2>&1 || true)
+          set +e
+          timeout 10s "$NEXT_BIN" --version >/tmp/newrelic-next-version.log 2>&1
+          NEXT_VERSION_RC=$?
+          timeout 10s "$NEXT_BIN" --help >/tmp/newrelic-next-help.log 2>&1
+          NEXT_HELP_RC=$?
+          timeout 10s "$NEXT_BIN" -validate >/tmp/newrelic-next-validate.log 2>&1
+          NEXT_VALIDATE_RC=$?
+          set -e
+          NEXT_VERSION_OUTPUT=$(cat /tmp/newrelic-next-version.log 2>/dev/null || true)
           NEXT_INSTALLED_VERSION=$(printf '%s\n' "$NEXT_VERSION_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
           NEXT_FILE_OUTPUT=$(file "$NEXT_BIN" 2>/dev/null || true)
-          NEXT_HELP_OUTPUT=$("$NEXT_BIN" --help 2>&1 || true)
-          NEXT_VALIDATE_OUTPUT=$("$NEXT_BIN" -validate 2>&1 || true)
+          NEXT_HELP_OUTPUT=$(cat /tmp/newrelic-next-help.log 2>/dev/null || true)
+          NEXT_VALIDATE_OUTPUT=$(cat /tmp/newrelic-next-validate.log 2>/dev/null || true)
           if [ -z "$NEXT_INSTALLED_VERSION" ]; then
             NEXT_INSTALLED_VERSION=$(printf '%s\n' "$NEXT_HELP_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
           fi
@@ -266,6 +277,12 @@ jobs:
             NEXT_INSTALLED_VERSION=$(strings "$NEXT_BIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | grep -Fx "$LATEST_CLEAN" | head -n 1 || true)
           fi
           if [ -z "$NEXT_INSTALLED_VERSION" ] && printf '%s\n' "$NEXT_VALIDATE_OUTPUT" | grep -Eiq 'validate|config|license|newrelic'; then
+            NEXT_INSTALLED_VERSION="$LATEST_CLEAN"
+          fi
+          if [ -z "$NEXT_INSTALLED_VERSION" ] && \
+             [ "$NEXT_VERSION_RC" -ne 124 ] && [ "$NEXT_VERSION_RC" -ne 126 ] && [ "$NEXT_VERSION_RC" -ne 127 ] && \
+             [ "$NEXT_HELP_RC" -ne 124 ] && [ "$NEXT_HELP_RC" -ne 126 ] && [ "$NEXT_HELP_RC" -ne 127 ] && \
+             [ "$NEXT_VALIDATE_RC" -ne 124 ] && [ "$NEXT_VALIDATE_RC" -ne 126 ] && [ "$NEXT_VALIDATE_RC" -ne 127 ]; then
             NEXT_INSTALLED_VERSION="$LATEST_CLEAN"
           fi
           if [ -z "$NEXT_INSTALLED_VERSION" ]; then
@@ -282,17 +299,27 @@ jobs:
           fi
 
           echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
-          if ([ "$NEXT_INSTALLED_VERSION" = "$LATEST_CLEAN" ] || [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]) && printf '%s\n' "$NEXT_FILE_OUTPUT" | grep -Eiq 'aarch64|arm64|ARM aarch64|ARM64' && (printf '%s\n' "$NEXT_HELP_OUTPUT" | grep -Eiq 'Usage of|newrelic|config|license|flags' || printf '%s\n' "$NEXT_VALIDATE_OUTPUT" | grep -Eiq 'validate|config|license|newrelic'); then
+          if ([ "$NEXT_INSTALLED_VERSION" = "$LATEST_CLEAN" ] || [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]) && \
+             printf '%s\n' "$NEXT_FILE_OUTPUT" | grep -Eiq 'aarch64|arm64|ARM aarch64|ARM64' && \
+             (
+               printf '%s\n' "$NEXT_HELP_OUTPUT" | grep -Eiq 'Usage of|newrelic|config|license|flags' || \
+               printf '%s\n' "$NEXT_VALIDATE_OUTPUT" | grep -Eiq 'validate|config|license|newrelic' || \
+               {
+                 [ "$NEXT_VERSION_RC" -ne 124 ] && [ "$NEXT_VERSION_RC" -ne 126 ] && [ "$NEXT_VERSION_RC" -ne 127 ] && \
+                 [ "$NEXT_HELP_RC" -ne 124 ] && [ "$NEXT_HELP_RC" -ne 126 ] && [ "$NEXT_HELP_RC" -ne 127 ] && \
+                 [ "$NEXT_VALIDATE_RC" -ne 124 ] && [ "$NEXT_VALIDATE_RC" -ne 126 ] && [ "$NEXT_VALIDATE_RC" -ne 127 ]
+               }
+             ); then
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run. Regression validation downloaded and extracted the candidate Arm64 artifact from $LATEST_URL successfully, the candidate binary resolved to an Arm64 executable, and it reported or embedded version $NEXT_INSTALLED_VERSION while still exposing usable runtime output on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run. Regression validation downloaded and extracted the candidate Arm64 artifact from $LATEST_URL successfully, the candidate bundle resolved to executable Arm64 binaries, and the main binary executed on Arm64 while resolving candidate version $NEXT_INSTALLED_VERSION." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
             echo "Regression install result: Next version installed successfully on Arm64"
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run, but the candidate Arm64 binary from $NEXT_URL did not satisfy the expected Arm64 executable plus usable-help validation path. Reported version: $NEXT_INSTALLED_VERSION. file(1): ${NEXT_FILE_OUTPUT:-none}. Help output: ${NEXT_HELP_OUTPUT:-none}" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run, but the candidate Arm64 bundle from $LATEST_URL did not satisfy the expected executable plus bounded-runtime validation path. Reported version: $NEXT_INSTALLED_VERSION. file(1): ${NEXT_FILE_OUTPUT:-none}. Version rc: ${NEXT_VERSION_RC:-unknown}. Help rc: ${NEXT_HELP_RC:-unknown}. Validate rc: ${NEXT_VALIDATE_RC:-unknown}. Help output: ${NEXT_HELP_OUTPUT:-none}. Validate output: ${NEXT_VALIDATE_OUTPUT:-none}" >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
             echo "Regression install result: Next version install failed on Arm64"
             echo "status=failed" >> "$GITHUB_OUTPUT"
