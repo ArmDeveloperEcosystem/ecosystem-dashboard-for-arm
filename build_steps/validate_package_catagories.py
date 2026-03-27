@@ -36,7 +36,7 @@ if __name__ == "__main__":
     valid_packages = []
     for content_directory in content_directories:
         for f in os.listdir(content_directory):
-            if f.endswith(".md"):
+            if f.endswith(".md") and f != "_index.md":
                 file_path_full = os.path.join(content_directory, f)
                 with open(file_path_full, 'r') as file:
                     lines = file.readlines()
