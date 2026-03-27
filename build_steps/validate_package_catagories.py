@@ -3,190 +3,106 @@ from pathlib import Path
 import yaml
 
 
-def read_yaml_file(file_path):
-    """
-    Reads a YAML file and returns the parsed data.
-    Returns None if the file is missing or invalid.
-    """
-    try:
-        with open(file_path, 'r') as file:
-            try:
-                data = yaml.safe_load(file)
-                return data
-            except yaml.YAMLError as exc:
-                print(f"ERROR: Error reading YAML file {file_path}: {exc}")
-                return None
-    except FileNotFoundError:
-        print(f"ERROR: Input YAML file not found: {file_path}")
-        return None
-    except Exception as exc:
-        print(f"ERROR: Unexpected error opening YAML file {file_path}: {exc}")
-        return None
+def isCategoryValid(string, dictionary):
+    # Check if the category exactly matches a key in the dictionary
+    return string in dictionary
 
 
-def subcategory_to_group_mapping(data):
-    """
-    Creates a dictionary mapping subcategory names to their corresponding group names.
-    """
-    subcategory_to_group = {}
-    for category_entry in data.get('category_list', []):
-        group_name = category_entry.get('group')
-        for subcategory in category_entry.get('categories', []):
-            subcategory_name = subcategory.get('name')
-            subcategory_to_group[subcategory_name] = group_name
-
-    subcategory_mapping = {"subcategory_mapping": subcategory_to_group}
-    return subcategory_mapping
-
-
-def group_list_simple(data):
-    """
-    Creates a dictionary simply listing out the main groups.
-    """
-    group_list = []
-    for category_entry in data.get('category_list', []):
-        group_name = category_entry.get('group')
-        group_list.append(group_name)
-
-    # order alphabetically, but keep Miscallaneous at the end!
-    sorted_group_list = sorted(
-        [group for group in group_list if group != 'Miscellaneous']
-    ) + (['Miscellaneous'] if 'Miscellaneous' in group_list else [])
-
-    group_dict = {"groups": sorted_group_list}
-    return group_dict
-
-
-def group_description_list_simple(data):
-    """
-    Creates a dictionary simply listing out the main groups.
-    """
-    group_list = []
-    for category_entry in data.get('category_list', []):
-        group_name = category_entry.get('group')
-        group_desc = category_entry.get('description')
-        group_list.append({"name": group_name, "description": group_desc})
-
-    # Sorting list of dictionaries by the 'name' key
-    sorted_group_list = sorted(group_list, key=lambda x: x['name'])
-    group_dict = {"groups_and_descriptions": sorted_group_list}
-    return group_dict
-
-
-def write_mapping_to_yaml(mapping, output_file):
-    """
-    Writes the subcategory-to-group mapping to a new YAML file.
-    """
-    try:
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_file, 'w') as outfile:
-            yaml.dump(mapping, outfile, default_flow_style=False)
-        return True
-    except Exception as exc:
-        print(f"ERROR: Failed writing output YAML file {output_file}: {exc}")
-        return False
-
-
-def update_category_mappings(input_file, output_file, label="mapping"):
-    """
-    Generates the category to subcategory mappings based on the category data.
-    Returns True on success, False on failure.
-    """
-    print()
-    print(f"=== Starting {label} ===")
+if __name__ == "__main__":
 
     # Get the absolute path to this python file's directory
     script_dir = Path(__file__).parent.absolute()
 
-    # Relative path to content from script, then get absolute path
-    input_yaml_relative_path = Path(input_file)
-    input_yaml_absolute_path = (script_dir / input_yaml_relative_path).resolve()
+    # Relative path to content from script, then tet absolute path to content by combining, and use Resolve to handle backwards".."
+    category_data_yml_relative_path = Path('../data/category_data.yml')
+    category_data_yaml = (script_dir / category_data_yml_relative_path).resolve()
 
-    # Same process for the output YAML data file
-    output_yaml_relative_path = Path(output_file)
-    output_yaml_absolute_path = (script_dir / output_yaml_relative_path).resolve()
+    # content dirs
+    opensource_relative_path = Path('../content/linux/opensource_packages')
+    opensource_absolute_path = (script_dir / opensource_relative_path).resolve()
 
-    print(f"Script dir: {script_dir}")
-    print(f"Input path: {input_yaml_absolute_path}")
-    print(f"Input exists: {input_yaml_absolute_path.exists()}")
-    print(f"Output path: {output_yaml_absolute_path}")
-    print(f"Output parent dir: {output_yaml_absolute_path.parent}")
-    print(f"Output parent exists before write: {output_yaml_absolute_path.parent.exists()}")
+    commercial_relative_path = Path('../content/linux/commercial_packages')
+    commercial_absolute_path = (script_dir / commercial_relative_path).resolve()
+    
+    content_directories = [opensource_absolute_path, commercial_absolute_path]
 
-    category_raw_data = read_yaml_file(input_yaml_absolute_path)
-    if category_raw_data is None:
-        print(f"ERROR: Could not load input YAML for {label}")
-        print(f"=== Failed {label} ===")
-        return False
+    # Read in category data into a dictionary, which maps {'category': 'group'}.
+    with open(category_data_yaml, 'r') as file:
+        data = yaml.safe_load(file)
+        category_dict = data["subcategory_mapping"]
 
-    if not isinstance(category_raw_data, dict):
-        print(f"ERROR: YAML root is not a dictionary for {label}")
-        print(f"Actual type: {type(category_raw_data)}")
-        print(f"=== Failed {label} ===")
-        return False
+    # Loop over all packages
+    invalid_packages = []
+    valid_packages = []
+    for content_directory in content_directories:
+        for f in os.listdir(content_directory):
+            if f.endswith(".md"):
+                file_path_full = os.path.join(content_directory, f)
+                with open(file_path_full, 'r') as file:
+                    lines = file.readlines()
+                    packages_type = 'Open source'
+                    packages_name = ''
+                    packages_category = ''
 
-    if 'category_list' not in category_raw_data:
-        print(f"ERROR: 'category_list' key missing in input YAML for {label}")
-        print(f"Top-level keys: {list(category_raw_data.keys())}")
-        print(f"=== Failed {label} ===")
-        return False
+                    for line in lines:
+                        if 'name:' in line:
+                            packages_name = line.split('name:')[1].strip()
+                        if 'category:' in line:
+                            packages_category = line.split('category:')[1].strip()
+                        if 'vendor:' in line:
+                            packages_type = 'Commercial'
 
-    try:
-        category_count = len(category_raw_data.get('category_list', []))
-        print(f"Category groups found: {category_count}")
+                # check if packages_category matches a key in category_dict
+                is_valid = isCategoryValid(packages_category, category_dict)
+                if is_valid:
+                    try:
+                        valid_packages.append({
+                            "name": packages_name,
+                            "category": packages_category,
+                            "group": category_dict[packages_category]
+                        })
+                    except KeyError as e:
+                        print("KEY ERROR, package category isn't in category dictionary. Check and try again.")
+                        print("attempted: category_dict[packages_category]")
+                        print(packages_name)
+                        print('packages_category =', packages_category)
+                        print('category_dict = ', category_dict)
 
-        subcategory_mapping_dict = subcategory_to_group_mapping(category_raw_data)
-        group_dict = group_list_simple(category_raw_data)
-        group_desc_dict = group_description_list_simple(category_raw_data)
+                else:
+                    invalid_packages.append({
+                        "name": packages_name,
+                        "file": f,
+                        "type": packages_type,
+                        "category": packages_category,
+                    })
 
-        print(f"Subcategory mappings generated: {len(subcategory_mapping_dict.get('subcategory_mapping', {}))}")
-        print(f"Groups generated: {len(group_dict.get('groups', []))}")
-        print(f"Group descriptions generated: {len(group_desc_dict.get('groups_and_descriptions', []))}")
+    if invalid_packages:
+        # Maximum width for columns
+        max_package_name_width = max(len(max(invalid_packages, key=lambda x: len(x['name']))['name']), len('Package Name'))
+        max_category_width = max(len(max(invalid_packages, key=lambda x: len(x['category']))['category']), len('Wrong Category'))
+        max_type_width = max(len(max(invalid_packages, key=lambda x: len(x['type']))['type']), len('Type'))
+        max_file_width = max(len(max(invalid_packages, key=lambda x: len(x['file']))['file']), len('File'))
 
-        # Merge the dictionaries
-        final_category_dict = {**subcategory_mapping_dict, **group_dict, **group_desc_dict}
+        print("ERROR: The following packages have invalid categories:")
+        print("   ", "Package Name".ljust(max_package_name_width), "Wrong Category".ljust(max_category_width), "Type".ljust(max_type_width), "File".ljust(max_file_width))
+        print("   ", "-" * max_package_name_width, "-" * max_category_width, "-" * max_type_width, "-" * max_file_width)
 
-        write_ok = write_mapping_to_yaml(final_category_dict, output_yaml_absolute_path)
-        if not write_ok:
-            print(f"ERROR: Write step failed for {label}")
-            print(f"=== Failed {label} ===")
-            return False
-
-        print(f"Output exists after write: {output_yaml_absolute_path.exists()}")
-        if output_yaml_absolute_path.exists():
-            try:
-                print(f"Output file size: {output_yaml_absolute_path.stat().st_size} bytes")
-            except Exception as exc:
-                print(f"WARNING: Could not read output file size: {exc}")
-
-        print("Category mapping success. Updated file:", output_yaml_absolute_path)
-        print(f"=== Finished {label} ===")
-        return True
-
-    except Exception as exc:
-        print(f"ERROR: Failed while processing {label}: {exc}")
-        print(f"=== Failed {label} ===")
-        return False
-
-
-if __name__ == "__main__":
-    linux_ok = update_category_mappings(
-        '../package_category_list.yml',
-        '../data/category_data.yml',
-        label='linux category mapping'
-    )
-
-    windows_ok = update_category_mappings(
-        '../package_category_list_windows.yml',
-        '../data/category_data_windows.yml',
-        label='windows category mapping'
-    )
-
-    print()
-    print("=== Category mapping summary ===")
-    print(f"Linux mapping success: {linux_ok}")
-    print(f"Windows mapping success: {windows_ok}")
-
-    if not linux_ok or not windows_ok:
-        print("ERROR: One or more category mapping steps failed.")
+        # Print data rows
+        for package in invalid_packages:
+            print("   ", package['name'].ljust(max_package_name_width), package['category'].ljust(max_category_width), package['type'].ljust(max_type_width), package['file'].ljust(max_file_width))
         sys.exit(1)
+
+    else:
+        # Maximum width for columns
+        max_package_name_width = max(len(max(valid_packages, key=lambda x: len(x['name']))['name']), len('Package Name'))
+        max_category_width = max(len(max(valid_packages, key=lambda x: len(x['category']))['category']), len('Category'))
+        max_group_width = max(len(max(valid_packages, key=lambda x: len(x['group']))['group']), len('Group'))
+
+        print("Success! Report of all packages:")
+        print("   ", "Package Name".ljust(max_package_name_width), "Group".ljust(max_group_width), "Category".ljust(max_category_width))
+        print("   ", "-" * max_package_name_width, "-" * max_group_width, "-" * max_category_width)
+
+        for package in valid_packages:
+            print("   ", package['name'].ljust(max_package_name_width), package['group'].ljust(max_group_width), package['category'].ljust(max_category_width))
+
+        print("Success! See above report.")
