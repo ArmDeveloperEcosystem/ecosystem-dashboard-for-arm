@@ -1,205 +1,169 @@
-# Package Test Template
-#
-# This is a TEMPLATE file stored in the tests/ directory - it will not run as a workflow.
-# To use it:
-# 1. Copy this file to .github/workflows/test-<your-package>.yml
-# 2. Replace all OpenGauss placeholders with your package name (e.g., "Redis")
-# 3. Replace all opengauss placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the appropriate trigger(s) in the 'on:' section
-#
-# See .github/workflows/test-nginx.yml and test-envoy.yml for real examples. Template
-#
-# This is a TEMPLATE file - it will not run automatically.
-# To use it:
-# 1. Copy this file to test-<your-package>.yml
-# 2. Replace all OpenGauss placeholders with your package name (e.g., "Redis")
-# 3. Replace all opengauss placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the 'push:' trigger section below (remove the workflow_dispatch if desired)
-#
-# See test-nginx.yml and test-envoy.yml for real examples.
-
 name: Test OpenGauss on Arm64
 
-# This is a TEMPLATE - it has no triggers and will not run.
-# When you copy this file, uncomment the appropriate triggers below:
 on:
-  # workflow_dispatch:  # Uncomment for manual testing
+  workflow_dispatch:
   workflow_call:
   push:
     branches:
       - main
       - smoke_tests
     paths:
-      - 'content/opensource_packages/opengauss.md'
-      - '.github/workflows/test-opengauss.yml'
+      - "content/opensource_packages/opengauss.md"
+      - ".github/workflows/test-opengauss.yml"
 
 jobs:
   test-opengauss:
     runs-on: ubuntu-24.04-arm
-    
+    timeout-minutes: 30
+    env:
+      OPENGAUSS_VERSION: "7.0.0-RC2.B015"
+      OPENGAUSS_NEXT_VERSION: "7.0.0-RC3.B016"
+      OPENGAUSS_IMAGE_REPO: "opengauss/opengauss-server"
+      OPENGAUSS_PASSWORD: "OpenGauss#2026!"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set test metadata
         id: metadata
         run: |
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=opengauss" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/opengauss" >> "$GITHUB_OUTPUT"
-      - name: Install OpenGauss
+          echo "current_version=${OPENGAUSS_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Install OpenGauss baseline container
         id: install
         run: |
-          echo "Installing OpenGauss..."
-          
-          # Example for apt packages:
-          sudo apt-get update
-          sudo apt-get install -y opengauss
-          
-          # Example for downloading binaries:
-          # sudo curl -L -o /usr/local/bin/opengauss https://github.com/org/repo/releases/download/v1.0.0/opengauss-linux-arm64
-          # sudo chmod +x /usr/local/bin/opengauss
-          
-          # Verify installation
-          if command -v opengauss &> /dev/null; then
-            echo "OpenGauss installed successfully"
-            echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-            echo "OpenGauss installation failed"
-            echo "install_status=failed" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          sudo systemctl start docker || true
+          sudo docker version >/dev/null
+
+          IMAGE="${OPENGAUSS_IMAGE_REPO}:${OPENGAUSS_VERSION}"
+          CONTAINER="opengauss-baseline-${GITHUB_RUN_ID}"
+          sudo docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+
+          timeout 10m sudo docker pull "$IMAGE"
+          sudo docker run -d --name "$CONTAINER" \
+            --sysctl kernel.sem="250 6400000 1000 25600" \
+            --security-opt seccomp=unconfined \
+            -e GS_PASSWORD="${OPENGAUSS_PASSWORD}" \
+            "$IMAGE" >/tmp/opengauss-container-id.txt
+
+          READY=0
+          for _ in $(seq 1 30); do
+            if sudo docker exec "$CONTAINER" su - omm -c "gsql -d postgres -r -c 'select version();'" >/tmp/opengauss-baseline-version.txt 2>&1; then
+              READY=1
+              break
+            fi
+            sleep 5
+          done
+
+          if [ "$READY" -ne 1 ]; then
+            sudo docker logs "$CONTAINER" || true
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-      
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
-      - name: Get OpenGauss version
+
+          IMAGE_ARCH=$(sudo docker image inspect "$IMAGE" --format '{{.Architecture}}')
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "container_name=$CONTAINER" >> "$GITHUB_OUTPUT"
+          echo "image_arch=$IMAGE_ARCH" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Get OpenGauss image tag
         id: version
         run: |
-          # Adjust this command based on how your package reports version
-          VERSION=$(opengauss --version 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected OpenGauss version: $VERSION"
-      
-      # ============================================================
-      # ADD YOUR TESTS BELOW
-      # Each test should:
-      # 1. Have a unique id (test1, test2, etc.)
-      # 2. Track start/end time for duration
-      # 3. Set status=passed or status=failed
-      # 4. Exit 1 on failure
-      # ============================================================
-      
-      - name: Test 1 - Check opengauss binary exists
+          set -euo pipefail
+          echo "version=${OPENGAUSS_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest=${OPENGAUSS_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected OpenGauss image tag: ${OPENGAUSS_VERSION}"
+
+      - name: Test 1 - Check baseline client tooling
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if command -v opengauss &> /dev/null; then
-            echo "✓ opengauss binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          CONTAINER="${{ steps.install.outputs.container_name }}"
+          if sudo docker exec "$CONTAINER" su - omm -c "command -v gsql >/dev/null"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ opengauss binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Check opengauss version command
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check SQL version query
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if opengauss --version 2>&1 | grep -q "version\|[0-9]"; then
-            echo "✓ opengauss version command works"
-            opengauss --version
-            echo "status=passed" >> $GITHUB_OUTPUT
+          CONTAINER="${{ steps.install.outputs.container_name }}"
+          sudo docker exec "$CONTAINER" su - omm -c "gsql -d postgres -r -c 'select version();'" >/tmp/opengauss-version-query.txt 2>&1
+          if grep -qi 'openGauss' /tmp/opengauss-version-query.txt; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ opengauss version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            cat /tmp/opengauss-version-query.txt || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 3 - Check opengauss help output
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check gsql help output
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if opengauss --help 2>&1 | grep -qi "usage\|help\|options"; then
-            echo "✓ opengauss help command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          CONTAINER="${{ steps.install.outputs.container_name }}"
+          sudo docker exec "$CONTAINER" su - omm -c "gsql --help" >/tmp/opengauss-help.txt 2>&1
+          if grep -Eqi 'usage|gsql' /tmp/opengauss-help.txt; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ opengauss help command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            cat /tmp/opengauss-help.txt || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      # Add more tests as needed (test4, test5, etc.)
-      # Examples:
-      # - Run a simple command
-      # - Check configuration files
-      # - Start/stop a service
-      # - Test basic functionality
-      
-      # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
-      # ============================================================
-      
-      - name: Test 4 - Architecture Verification
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture verification
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          echo "Checking system architecture..."
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if [ "$(uname -m)" = "aarch64" ] && [ "${{ steps.install.outputs.image_arch }}" = "arm64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "Host architecture: $(uname -m)"
+            echo "Image architecture: ${{ steps.install.outputs.image_arch }}"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Functional Validation
+      - name: Test 5 - Functional database validation
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if opengauss --version > /dev/null 2>&1 || opengauss --help > /dev/null 2>&1; then
-            echo "✓ Basic functional check passed"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          CONTAINER="${{ steps.install.outputs.container_name }}"
+          sudo docker exec "$CONTAINER" su - omm -c "gsql -d postgres -r -c 'select 1;'" >/tmp/opengauss-smoke.txt 2>&1
+          if grep -Eq '(^|[^0-9])1([^0-9]|$)' /tmp/opengauss-smoke.txt; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ Basic functional check failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            cat /tmp/opengauss-smoke.txt || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -207,127 +171,178 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_yet_checked" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          LATEST="${OPENGAUSS_NEXT_VERSION}"
+          NEXT_IMAGE="${OPENGAUSS_IMAGE_REPO}:${LATEST}"
+          NEXT_CONTAINER="opengauss-next-${GITHUB_RUN_ID}"
+
+          cleanup() {
+            sudo docker rm -f "$NEXT_CONTAINER" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Official Public Arm64 Image) ==="
+          echo "Current image tag tested in Tests 1-5: $CURRENT"
+          echo "Next image tag targeted for validation: $LATEST"
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_validated_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the next official public Arm64 image tag" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned baseline already matches the newest public OpenGauss Arm64 image tag used by this workflow. Repin Tests 1-5 to an older tag so Test 6 validates a real Arm64 upgrade step." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          timeout 10m sudo docker pull "$NEXT_IMAGE"
+          sudo docker run -d --name "$NEXT_CONTAINER" \
+            --sysctl kernel.sem="250 6400000 1000 25600" \
+            --security-opt seccomp=unconfined \
+            -e GS_PASSWORD="${OPENGAUSS_PASSWORD}" \
+            "$NEXT_IMAGE" >/tmp/opengauss-next-container-id.txt
+
+          READY=0
+          for _ in $(seq 1 30); do
+            if sudo docker exec "$NEXT_CONTAINER" su - omm -c "gsql -d postgres -r -c 'select version();'" >/tmp/opengauss-next-version.txt 2>&1; then
+              READY=1
+              break
+            fi
+            sleep 5
+          done
+
+          if [ "$READY" -ne 1 ]; then
+            sudo docker logs "$NEXT_CONTAINER" || true
+            echo "next_validated_version=not_validated" >> "$GITHUB_OUTPUT"
+            echo "decision=next_image_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next official public Arm64 image validation failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenGauss image tag ${CURRENT} completed the real Arm64 container validation path in this run, but candidate image tag ${LATEST} did not reach a ready state on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_ARCH=$(sudo docker image inspect "$NEXT_IMAGE" --format '{{.Architecture}}')
+          sudo docker exec "$NEXT_CONTAINER" su - omm -c "gsql --help" >/tmp/opengauss-next-help.txt 2>&1
+          sudo docker exec "$NEXT_CONTAINER" su - omm -c "gsql -d postgres -r -c 'select 1;'" >/tmp/opengauss-next-smoke.txt 2>&1
+
+          if [ "$NEXT_ARCH" = "arm64" ] && \
+             grep -qi 'openGauss' /tmp/opengauss-next-version.txt && \
+             grep -Eqi 'usage|gsql' /tmp/opengauss-next-help.txt && \
+             grep -Eq '(^|[^0-9])1([^0-9]|$)' /tmp/opengauss-next-smoke.txt; then
+            echo "next_validated_version=$LATEST" >> "$GITHUB_OUTPUT"
+            echo "decision=next_image_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next official public Arm64 image validated successfully" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenGauss image tag ${CURRENT} completed the real Arm64 container validation path in this run. Regression validation pulled candidate tag ${LATEST}, verified the Arm64 image architecture, and confirmed SQL client and query functionality inside the container." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/opengauss-next-version.txt || true
+            cat /tmp/opengauss-next-help.txt || true
+            cat /tmp/opengauss-next-smoke.txt || true
+            echo "next_validated_version=not_validated" >> "$GITHUB_OUTPUT"
+            echo "decision=next_image_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next official public Arm64 image validation failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenGauss image tag ${CURRENT} completed the real Arm64 container validation path in this run, but candidate image tag ${LATEST} did not satisfy the expected SQL and image checks on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
+      - name: Cleanup OpenGauss containers
+        if: always()
+        run: |
+          sudo docker rm -f "${{ steps.install.outputs.container_name || '' }}" >/dev/null 2>&1 || true
+          sudo docker rm -f "opengauss-next-${GITHUB_RUN_ID}" >/dev/null 2>&1 || true
 
       - name: Show regression validation details
         if: always()
         run: |
-          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
-          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
-          if [ -z "$REGRESSION_RESULT" ]; then
-            case "$DECISION" in
-              next_install_validated|safe_to_upgrade)
-                REGRESSION_RESULT="Next version installed successfully on Arm64"
-                ;;
-              next_install_failed|next_lookup_failed)
-                REGRESSION_RESULT="Next version install failed on Arm64"
-                ;;
-              current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Current stable version already validated on Arm64"
-                ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
-              *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
-                ;;
-            esac
-          fi
-
-          echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
-          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
-          echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "=== Regression Validation (Next Official Public Arm64 Image) ==="
+          echo "Current image tag tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next image tag targeted for validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next image tag validated on Arm64: ${{ steps.test6.outputs.next_validated_version || 'not_validated' }}"
+          echo "Regression validation result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
 
-          # Check opengauss binary exists
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          # Check opengauss version command
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          # Check opengauss help output
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          if [ "$TEST6_STATUS" = "passed" ]; then
             PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Architecture Verification
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Functional Validation
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
+          elif [ "$TEST6_STATUS" = "failed" ]; then
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "$TEST6_STATUS" = "failed" ]; then
             exit 1
           fi
+
       - name: Generate test results JSON
         if: always()
         run: |
+          set -euo pipefail
+          JOB_ID="${{ github.job }}"
+          JOB_URL=$(GH_TOKEN="${{ github.token }}" gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_ID / $JOB_ID\" or .name == \"$JOB_ID\") | .html_url" 2>/dev/null | head -n 1 || true)
+          if [ -z "$JOB_URL" ]; then
+            JOB_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
           mkdir -p test-results
-          
-          cat > test-results/opengauss.json << EOF
+          cat > test-results/opengauss.json <<EOF
           {
             "schema_version": "1.0",
             "package": {
@@ -338,7 +353,7 @@ jobs:
             },
             "run": {
               "id": "${{ github.run_id }}",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?query=job:${{ github.job }}",
+              "url": "$JOB_URL",
               "timestamp": "${{ steps.metadata.outputs.timestamp }}",
               "status": "${{ steps.summary.outputs.overall_status }}",
               "runner": {
@@ -347,57 +362,57 @@ jobs:
               }
             },
             "tests": {
-              "passed": ${{ steps.summary.outputs.passed }},
-              "failed": ${{ steps.summary.outputs.failed }},
+              "passed": ${{ steps.summary.outputs.passed || 0 }},
+              "failed": ${{ steps.summary.outputs.failed || 0 }},
               "skipped": 0,
               "duration_seconds": ${{ steps.summary.outputs.duration || 0 }},
               "details": [
                 {
-                  "name": "Check opengauss binary exists",
+                  "name": "Test 1 - Check baseline client tooling",
                   "status": "${{ steps.test1.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check opengauss version command",
+                  "name": "Test 2 - Check SQL version query",
                   "status": "${{ steps.test2.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Check opengauss help output",
+                  "name": "Test 3 - Check gsql help output",
                   "status": "${{ steps.test3.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test3.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Architecture Verification",
+                  "name": "Test 4 - Architecture verification",
                   "status": "${{ steps.test4.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test4.outputs.duration || 0 }}
                 },
                 {
-                  "name": "Functional Validation",
+                  "name": "Test 5 - Functional database validation",
                   "status": "${{ steps.test5.outputs.status || 'skipped' }}",
                   "duration_seconds": ${{ steps.test5.outputs.duration || 0 }}
                 },
                 {
                   "name": "Test 6 - Regression Validation",
                   "status": "${{ steps.test6.outputs.status || 'skipped' }}",
-                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }}
+                  "duration_seconds": ${{ steps.test6.outputs.duration || 0 }},
+                  "current_version": "${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}",
+                  "latest_version": "${{ steps.test6.outputs.latest_version || 'unknown' }}",
+                  "next_validated_version": "${{ steps.test6.outputs.next_validated_version || 'not_validated' }}",
+                  "decision": "${{ steps.test6.outputs.decision || 'manual_review_needed' }}",
+                  "regression_result": "${{ steps.test6.outputs.regression_result || '' }}",
+                  "comparison": "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
                 }
               ]
             },
             "metadata": {
               "dashboard_link": "${{ steps.metadata.outputs.dashboard_link }}",
-              "badge_status": "${{ steps.summary.outputs.badge_status }}"
+              "badge_status": "${{ steps.summary.outputs.badge_status }}",
+              "core_failed": ${{ steps.summary.outputs.core_failed || 0 }}
             }
           }
           EOF
-          
-          echo "Generated test results:"
-          cat test-results/opengauss.json
-      
-      # ============================================================
-      # STANDARD STEPS - Usually don't need to modify below here
-      # ============================================================
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -405,34 +420,30 @@ jobs:
           name: opengauss-test-results
           path: test-results/opengauss.json
           retention-days: 90
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## OpenGauss Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check opengauss binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check opengauss version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check opengauss help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
-          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
-
-
-
+          echo "## OpenGauss Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Test 1 - Check baseline client tooling: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Test 2 - Check SQL version query: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Test 3 - Check gsql help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Test 4 - Architecture verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Test 5 - Functional database validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Official Public Arm64 Image)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current image tag tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next image tag targeted for validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next image tag validated on Arm64:** ${{ steps.test6.outputs.next_validated_version || 'not_validated' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression validation result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
