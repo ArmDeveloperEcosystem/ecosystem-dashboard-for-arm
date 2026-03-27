@@ -39,6 +39,11 @@ jobs:
             BUILD_DEPS+=(libc6-dev-i386)
           fi
           sudo apt-get install -y "${BUILD_DEPS[@]}"
+          MULTIARCH_INCLUDE="/usr/include/$(gcc -dumpmachine)"
+          if [ -d "$MULTIARCH_INCLUDE/bits" ] && [ ! -e /usr/include/bits ]; then
+            sudo ln -s "$MULTIARCH_INCLUDE/bits" /usr/include/bits
+          fi
+          echo "ELASTIC_EBPF_MULTIARCH_INCLUDE=$MULTIARCH_INCLUDE" >> "$GITHUB_ENV"
 
           CURRENT_VERSION="8.4.0"
           SRC_DIR="/tmp/elastic-ebpf-${CURRENT_VERSION}"
@@ -91,7 +96,15 @@ jobs:
           START_TIME=$(date +%s)
           cd "${{ steps.install.outputs.source_dir }}"
           rm -rf build
-          cmake -S . -B build -DTARGET_DIR="$PWD/build/target"
+          ARCH="$(uname -m)"
+          if [ "$ARCH" = "arm64" ]; then
+            ARCH="aarch64"
+          fi
+          MULTIARCH_INCLUDE="${ELASTIC_EBPF_MULTIARCH_INCLUDE:-/usr/include/$(gcc -dumpmachine)}"
+          if [ -d "$MULTIARCH_INCLUDE" ]; then
+            export CPATH="$MULTIARCH_INCLUDE${CPATH:+:$CPATH}"
+          fi
+          cmake -S . -B build -DTARGET_DIR="$PWD/build/target" -DARCH="$ARCH" -DEBPF_EXTERNAL_ENV_FLAGS=BUILD_STATIC_ONLY=1
           cmake --build build -j"$(nproc)"
           if [ -f "$PWD/build/target/libeBPF.a" ] \
             && [ -n "$(find "$PWD/build/target/ebpf" -maxdepth 1 -name '*.bpf.o' | head -n 1)" ]; then
@@ -140,7 +153,11 @@ jobs:
             && file "$TEST_BIN" | grep -Eqi 'ELF .*aarch64|ELF .*ARM aarch64'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            file "$TEST_BIN" || true
+            if [ -n "$TEST_BIN" ]; then
+              file "$TEST_BIN" || true
+            else
+              echo "BPFTcFilterTests binary not found under ${{ steps.install.outputs.source_dir }}/build/target/test"
+            fi
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -157,7 +174,11 @@ jobs:
           START_TIME=$(date +%s)
           TARGET_DIR="${{ steps.install.outputs.source_dir }}/build/target"
           TEST_BIN=$(find "$TARGET_DIR/test" -maxdepth 1 -type f -name 'BPFTcFilterTests' | head -n 1)
-          HELP_OUTPUT=$("$TEST_BIN" --help 2>&1 || true)
+          if [ -n "$TEST_BIN" ]; then
+            HELP_OUTPUT=$("$TEST_BIN" --help 2>&1 || true)
+          else
+            HELP_OUTPUT="BPFTcFilterTests binary not found under $TARGET_DIR/test"
+          fi
           if [ -n "$TEST_BIN" ] \
             && [ -f "$TARGET_DIR/libeBPF.a" ] \
             && printf '%s\n' "$HELP_OUTPUT" | grep -Eqi 'test|gtest|Google Test'; then
@@ -220,14 +241,25 @@ jobs:
           NEXT_TAG=$(git -C "$NEXT_DIR" describe --tags --exact-match 2>/dev/null | sed 's/^v//')
           cd "$NEXT_DIR"
           rm -rf build
-          cmake -S . -B build -DTARGET_DIR="$PWD/build/target"
+          ARCH="$(uname -m)"
+          if [ "$ARCH" = "arm64" ]; then
+            ARCH="aarch64"
+          fi
+          MULTIARCH_INCLUDE="${ELASTIC_EBPF_MULTIARCH_INCLUDE:-/usr/include/$(gcc -dumpmachine)}"
+          if [ -d "$MULTIARCH_INCLUDE" ]; then
+            export CPATH="$MULTIARCH_INCLUDE${CPATH:+:$CPATH}"
+          fi
+          cmake -S . -B build -DTARGET_DIR="$PWD/build/target" -DARCH="$ARCH" -DEBPF_EXTERNAL_ENV_FLAGS=BUILD_STATIC_ONLY=1
           cmake --build build -j"$(nproc)"
-          NEXT_TEST_BIN=$(find "$NEXT_DIR/build/target/test" -maxdepth 1 -type f -name 'BPFTcFilterTests' | head -n 1)
+          cmake --install build --prefix "$PWD/build/package" >/dev/null 2>&1 || true
+          NEXT_TEST_BIN=$(find "$NEXT_DIR/build" -type f -name 'BPFTcFilterTests' | head -n 1)
+          NEXT_BPF_OBJ=$(find "$NEXT_DIR/build" -type f -name '*.bpf.o' | head -n 1)
+          NEXT_LIB=$(find "$NEXT_DIR/build" -type f \( -name 'libeBPF.a' -o -name 'libbpf.a' \) | head -n 1)
           NEXT_REPORTED="${NEXT_TAG:-$LATEST}"
 
-          if [ -f "$NEXT_DIR/build/target/libeBPF.a" ] \
+          if [ -n "$NEXT_LIB" ] \
             && [ -n "$NEXT_REPORTED" ] \
-            && [ -n "$(find "$NEXT_DIR/build/target/ebpf" -maxdepth 1 -name '*.bpf.o' | head -n 1)" ] \
+            && [ -n "$NEXT_BPF_OBJ" ] \
             && [ -n "$NEXT_TEST_BIN" ] \
             && file "$NEXT_TEST_BIN" | grep -Eqi 'ELF .*aarch64|ELF .*ARM aarch64'; then
             echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"

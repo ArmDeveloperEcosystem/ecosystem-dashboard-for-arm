@@ -126,6 +126,7 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           export ROCKET_PORT=8010
+          STATUS_CODE=""
           cleanup() {
             if [ -n "${PID:-}" ]; then
               kill "$PID" >/dev/null 2>&1 || true
@@ -140,8 +141,8 @@ jobs:
             if ! ps -p "$PID" >/dev/null 2>&1; then
               break
             fi
-            STATUS_CODE=$(curl -s -o /tmp/madoguchi-start.out -w "%{http_code}" http://127.0.0.1:${ROCKET_PORT}/ || true)
-            if [ "$STATUS_CODE" = "200" ] || [ "$STATUS_CODE" = "404" ] || [ "$STATUS_CODE" = "401" ]; then
+            STATUS_CODE=$(curl -s -o /tmp/madoguchi-start.out -w "%{http_code}" http://127.0.0.1:${ROCKET_PORT}/health || true)
+            if [ "$STATUS_CODE" = "200" ]; then
               READY=1
               break
             fi
@@ -150,6 +151,8 @@ jobs:
           if [ "$READY" -eq 1 ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            echo "Last health status code: ${STATUS_CODE:-none}"
+            cat /tmp/madoguchi-start.out || true
             cat /tmp/madoguchi.log || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
@@ -166,6 +169,7 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           export ROCKET_PORT=8011
+          EXPECTED_VERSION="${BASELINE_VERSION#v}"
           cleanup() {
             if [ -n "${PID:-}" ]; then
               kill "$PID" >/dev/null 2>&1 || true
@@ -180,16 +184,19 @@ jobs:
             if ! ps -p "$PID" >/dev/null 2>&1; then
               break
             fi
-            STATUS_CODE=$(curl -s -o /tmp/madoguchi-http.out -w "%{http_code}" http://127.0.0.1:${ROCKET_PORT}/ || true)
-            if [ "$STATUS_CODE" = "200" ] || [ "$STATUS_CODE" = "404" ] || [ "$STATUS_CODE" = "401" ]; then
+            STATUS_CODE=$(curl -s -o /tmp/madoguchi-http.out -w "%{http_code}" http://127.0.0.1:${ROCKET_PORT}/health || true)
+            if [ "$STATUS_CODE" = "200" ]; then
               break
             fi
             sleep 1
           done
-          cat /tmp/madoguchi-http.out || true
-          if [ "$STATUS_CODE" = "200" ] || [ "$STATUS_CODE" = "404" ] || [ "$STATUS_CODE" = "401" ]; then
+          OBSERVED_VERSION=$(tr -d '\r\n' < /tmp/madoguchi-http.out 2>/dev/null || true)
+          if [ "$STATUS_CODE" = "200" ] && [ "$OBSERVED_VERSION" = "$EXPECTED_VERSION" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            echo "Expected /health version: ${EXPECTED_VERSION}, observed: ${OBSERVED_VERSION:-none}"
+            echo "Last health status code: ${STATUS_CODE:-none}"
+            cat /tmp/madoguchi-http.out || true
             cat /tmp/madoguchi-func.log || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
@@ -223,6 +230,7 @@ jobs:
           git clone --depth 1 --branch "${NEXT_VERSION}" https://github.com/terrapkg/madoguchi.git "$NEXT_DIR/repo"
           cargo build --release --manifest-path "$NEXT_DIR/repo/Cargo.toml"
           NEXT_BIN="$NEXT_DIR/repo/target/release/madoguchi"
+          EXPECTED_NEXT="${LATEST#v}"
           export ROCKET_PORT=8012
           "$NEXT_BIN" >/tmp/madoguchi-next.log 2>&1 &
           PID=$!
@@ -231,22 +239,27 @@ jobs:
             if ! ps -p "$PID" >/dev/null 2>&1; then
               break
             fi
-            STATUS_CODE=$(curl -s -o /tmp/madoguchi-next-http.out -w "%{http_code}" http://127.0.0.1:${ROCKET_PORT}/ || true)
-            if [ "$STATUS_CODE" = "200" ] || [ "$STATUS_CODE" = "404" ] || [ "$STATUS_CODE" = "401" ]; then
+            STATUS_CODE=$(curl -s -o /tmp/madoguchi-next-http.out -w "%{http_code}" http://127.0.0.1:${ROCKET_PORT}/health || true)
+            if [ "$STATUS_CODE" = "200" ]; then
               break
             fi
             sleep 1
           done
+          NEXT_HEALTH=$(tr -d '\r\n' < /tmp/madoguchi-next-http.out 2>/dev/null || true)
 
           if [ -x "$NEXT_BIN" ] && \
              file "$NEXT_BIN" | grep -qiE "aarch64|arm64" && \
-             { [ "$STATUS_CODE" = "200" ] || [ "$STATUS_CODE" = "404" ] || [ "$STATUS_CODE" = "401" ]; }; then
+             [ "$STATUS_CODE" = "200" ] && \
+             [ "$NEXT_HEALTH" = "$EXPECTED_NEXT" ]; then
             echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Madoguchi baseline ${CURRENT} built from source and passed server startup plus HTTP smoke validation on Arm64, and candidate ${LATEST} also built successfully and passed the same Arm64 runtime checks." >> "$GITHUB_OUTPUT"
+            echo "comparison=Madoguchi baseline ${CURRENT} built from source and passed /health runtime validation on Arm64, and candidate ${LATEST} also built successfully and returned the expected /health version on Arm64." >> "$GITHUB_OUTPUT"
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            echo "Expected next /health version: ${EXPECTED_NEXT}, observed: ${NEXT_HEALTH:-none}"
+            echo "Last next health status code: ${STATUS_CODE:-none}"
+            cat /tmp/madoguchi-next-http.out || true
             cat /tmp/madoguchi-next.log || true
             file "$NEXT_BIN" || true
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
