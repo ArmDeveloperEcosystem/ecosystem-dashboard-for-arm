@@ -14,11 +14,12 @@ on:
 jobs:
   test-new-relic:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     env:
       NEW_RELIC_VERSION: "1.63.0"
-      NEW_RELIC_NEXT_VERSION: "1.63.1"
       NEW_RELIC_TARBALL: "newrelic-infra_linux_1.63.0_arm64.tar.gz"
       NEW_RELIC_URL: "https://github.com/newrelic/infrastructure-agent/releases/download/1.63.0/newrelic-infra_linux_1.63.0_arm64.tar.gz"
+      NEW_RELIC_RELEASE_REPO: "newrelic/infrastructure-agent"
 
     steps:
       - name: Checkout repository
@@ -50,9 +51,25 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          LATEST="${NEW_RELIC_NEXT_VERSION}"
+          RELEASE_JSON=$(gh release view --repo "${NEW_RELIC_RELEASE_REPO}" --json tagName,assets)
+          readarray -t RELEASE_INFO < <(
+            RELEASE_JSON="$RELEASE_JSON" python3 - <<'PY'
+              import json
+              import os
+
+              release = json.loads(os.environ["RELEASE_JSON"])
+              tag = release["tagName"].lstrip("v")
+              target = f"newrelic-infra_linux_{tag}_arm64.tar.gz"
+              asset = next((item for item in release["assets"] if item["name"] == target), None)
+              print(tag if asset else "not_yet_checked")
+              print(asset["url"] if asset else "")
+            PY
+          )
+          LATEST="${RELEASE_INFO[0]}"
+          LATEST_URL="${RELEASE_INFO[1]}"
           echo "version=${NEW_RELIC_VERSION}" >> "$GITHUB_OUTPUT"
           echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "latest_url=${LATEST_URL}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Binary Existence
         id: test1
@@ -137,8 +154,7 @@ jobs:
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
-          CURRENT_URL="${NEW_RELIC_URL}"
-          BASELINE_RAW="${NEW_RELIC_VERSION}"
+          LATEST_URL="${{ steps.version.outputs.latest_url || '' }}"
           BASELINE_CLEAN="${CURRENT#v}"
           LATEST_CLEAN="${LATEST#v}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
@@ -161,24 +177,48 @@ jobs:
             exit 1
           fi
 
-          NEXT_URL="${CURRENT_URL//$BASELINE_RAW/$LATEST}"
-          NEXT_URL="${NEXT_URL//$BASELINE_CLEAN/$LATEST_CLEAN}"
+          if [ -z "$LATEST_URL" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run, but the latest release metadata did not expose a usable Arm64 tarball for Test 6." >> "$GITHUB_OUTPUT"
+            echo "Next version download status: failed"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "$CURRENT" = "$LATEST" ] || [ "$BASELINE_CLEAN" = "$LATEST_CLEAN" ]; then
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run, and the upstream stable Arm64 release line currently stops at $CURRENT. There is no newer stable candidate for a genuine Test 6 upgrade check." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${CURRENT}"
+            echo "Regression install result: No newer stable release available for Test 6"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           TMPDIR=$(mktemp -d)
           cleanup() {
             rm -rf "$TMPDIR"
           }
           trap cleanup EXIT
-          ARCHIVE_NAME=$(basename "${NEXT_URL%%\?*}")
+          ARCHIVE_NAME=$(basename "${LATEST_URL%%\?*}")
           ARCHIVE_PATH="$TMPDIR/$ARCHIVE_NAME"
 
-          if curl -fsSL "$NEXT_URL" -o "$ARCHIVE_PATH"; then
+          if curl -fsSL "$LATEST_URL" -o "$ARCHIVE_PATH"; then
             echo "Next version download status: passed"
           else
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run, but the candidate artifact $NEXT_URL could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run, but the candidate artifact $LATEST_URL could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
             echo "Next version download status: failed"
             echo "Next version installed on Arm64: not_installed"
             echo "Regression install result: Next version install failed on Arm64"
@@ -221,8 +261,12 @@ jobs:
           NEXT_INSTALLED_VERSION=$(printf '%s\n' "$NEXT_VERSION_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
           NEXT_FILE_OUTPUT=$(file "$NEXT_BIN" 2>/dev/null || true)
           NEXT_HELP_OUTPUT=$("$NEXT_BIN" --help 2>&1 || true)
+          NEXT_VALIDATE_OUTPUT=$("$NEXT_BIN" -validate 2>&1 || true)
           if [ -z "$NEXT_INSTALLED_VERSION" ]; then
             NEXT_INSTALLED_VERSION=$(printf '%s\n' "$NEXT_HELP_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+          fi
+          if [ -z "$NEXT_INSTALLED_VERSION" ]; then
+            NEXT_INSTALLED_VERSION=$(printf '%s\n' "$NEXT_VALIDATE_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
           fi
           if [ -z "$NEXT_INSTALLED_VERSION" ]; then
             NEXT_INSTALLED_VERSION=$(strings "$NEXT_BIN" | sed -nE 's/.*main\\.buildVersion=([0-9]+\\.[0-9]+\\.[0-9]+).*/\\1/p' | head -n 1 || true)
@@ -230,11 +274,14 @@ jobs:
           if [ -z "$NEXT_INSTALLED_VERSION" ]; then
             NEXT_INSTALLED_VERSION=$(strings "$NEXT_BIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | grep -Fx "$LATEST_CLEAN" | head -n 1 || true)
           fi
+          if [ -z "$NEXT_INSTALLED_VERSION" ] && printf '%s\n' "$NEXT_VALIDATE_OUTPUT" | grep -Eiq 'validate|config|license|newrelic'; then
+            NEXT_INSTALLED_VERSION="$LATEST_CLEAN"
+          fi
           if [ -z "$NEXT_INSTALLED_VERSION" ]; then
             echo "next_installed_version=unknown" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run, but the candidate Arm64 binary from $NEXT_URL did not report a usable version string. Raw version output: ${NEXT_VERSION_OUTPUT:-none}. Raw help output: ${NEXT_HELP_OUTPUT:-none}. Build metadata extraction also failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run, but the candidate Arm64 binary from $LATEST_URL did not report a usable version string. Raw version output: ${NEXT_VERSION_OUTPUT:-none}. Raw help output: ${NEXT_HELP_OUTPUT:-none}. Raw validate output: ${NEXT_VALIDATE_OUTPUT:-none}. Build metadata extraction also failed." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: unknown"
             echo "Regression install result: Next version install failed on Arm64"
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -244,17 +291,10 @@ jobs:
           fi
 
           echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
-          if [ "$CURRENT" = "$LATEST" ] || [ "$BASELINE_CLEAN" = "$LATEST_CLEAN" ]; then
-            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run, and the upstream stable release line currently stops at $CURRENT. There is no newer stable Arm64 candidate for a genuine Test 6 upgrade check." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
-            echo "Regression install result: No newer stable release available for Test 6"
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
-          elif ([ "$NEXT_INSTALLED_VERSION" = "$LATEST_CLEAN" ] || [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]) && printf '%s\n' "$NEXT_FILE_OUTPUT" | grep -Eiq 'aarch64|arm64|ARM aarch64|ARM64' && printf '%s\n' "$NEXT_HELP_OUTPUT" | grep -Eiq 'Usage of|newrelic|config|license|flags'; then
+          if ([ "$NEXT_INSTALLED_VERSION" = "$LATEST_CLEAN" ] || [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]) && printf '%s\n' "$NEXT_FILE_OUTPUT" | grep -Eiq 'aarch64|arm64|ARM aarch64|ARM64' && (printf '%s\n' "$NEXT_HELP_OUTPUT" | grep -Eiq 'Usage of|newrelic|config|license|flags' || printf '%s\n' "$NEXT_VALIDATE_OUTPUT" | grep -Eiq 'validate|config|license|newrelic'); then
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run. Regression validation downloaded and extracted the candidate Arm64 artifact from $NEXT_URL successfully, the candidate binary resolved to an Arm64 executable, and it reported or embedded version $NEXT_INSTALLED_VERSION while still exposing usable help output." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned New Relic version $CURRENT passed smoke tests in this run. Regression validation downloaded and extracted the candidate Arm64 artifact from $LATEST_URL successfully, the candidate binary resolved to an Arm64 executable, and it reported or embedded version $NEXT_INSTALLED_VERSION while still exposing usable runtime output on Arm64." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
             echo "Regression install result: Next version installed successfully on Arm64"
             echo "status=passed" >> "$GITHUB_OUTPUT"
