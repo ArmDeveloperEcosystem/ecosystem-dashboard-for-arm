@@ -105,7 +105,7 @@ jobs:
           print(f"Built canonical package map for {len(package_map)} package pages.")
           PY
 
-      - name: Assemble canonical staged test results
+      - name: Assemble candidate and previous-production staging sets
         id: assemble
         run: |
           python3 - <<'PY'
@@ -115,19 +115,21 @@ jobs:
 
           package_map = json.loads(Path(".summary-package-map.json").read_text())
           stage_root = Path(".summary-staging")
-          stage_data = stage_root / "data-test-results"
+          candidate_dir = stage_root / "candidate-test-results"
+          previous_dir = stage_root / "previous-production-test-results"
 
           if stage_root.exists():
               shutil.rmtree(stage_root)
-          stage_data.mkdir(parents=True, exist_ok=True)
+          candidate_dir.mkdir(parents=True, exist_ok=True)
+          previous_dir.mkdir(parents=True, exist_ok=True)
 
           existing_dir = Path("data/test-results")
           downloaded_dir = Path("downloaded-results")
 
           counters = {
               "malformed": 0,
-              "seeded": 0,
-              "overlay": 0,
+              "previous": 0,
+              "candidate": 0,
           }
 
           def canonical_slug(raw_slug: str, fallback_stem: str) -> str:
@@ -138,7 +140,7 @@ jobs:
                           return package_map.get(value.lower(), value)
               return fallback_stem
 
-          def write_canonical(source_path: Path, overlay: bool) -> None:
+          def write_canonical(source_path: Path, target_dir: Path, counter_key: str) -> None:
               try:
                   payload = json.loads(source_path.read_text())
               except Exception:
@@ -149,45 +151,43 @@ jobs:
               metadata = payload.setdefault("metadata", {})
               canonical = canonical_slug(metadata.get("package_slug"), source_path.stem)
               metadata["package_slug"] = canonical
-              target_path = stage_data / f"{canonical}.json"
+              target_path = target_dir / f"{canonical}.json"
               target_path.write_text(json.dumps(payload, indent=2) + "\n")
-
-              if overlay:
-                  counters["overlay"] += 1
-              else:
-                  counters["seeded"] += 1
+              counters[counter_key] += 1
 
           for source in sorted(existing_dir.glob("*.json")):
-              write_canonical(source, overlay=False)
+              write_canonical(source, previous_dir, "previous")
 
           for source in sorted(downloaded_dir.rglob("*.json")):
-              write_canonical(source, overlay=True)
+              write_canonical(source, candidate_dir, "candidate")
 
-          final_count = len(list(stage_data.glob("*.json")))
+          candidate_count = len(list(candidate_dir.glob("*.json")))
+          previous_count = len(list(previous_dir.glob("*.json")))
           metrics = Path(".summary-staging/assemble-metrics.env")
           metrics.write_text(
               "\n".join(
                   [
-                      f"json_count={final_count}",
+                      f"json_count={candidate_count}",
                       f"malformed_count={counters['malformed']}",
-                      f"seeded_count={counters['seeded']}",
-                      f"overlay_count={counters['overlay']}",
+                      f"candidate_count={candidate_count}",
+                      f"previous_count={previous_count}",
                   ]
               )
               + "\n"
           )
 
           print(
-              f"Prepared {final_count} canonical staged result files "
-              f"({counters['seeded']} seeded from saved results, {counters['overlay']} overlaid from fresh batch artifacts)."
+              f"Prepared {candidate_count} candidate package results and "
+              f"{previous_count} previous-production package results "
+              f"({counters['malformed']} malformed artifacts skipped)."
           )
           PY
 
           cat .summary-staging/assemble-metrics.env >> "$GITHUB_OUTPUT"
           source .summary-staging/assemble-metrics.env
-          echo "✅ Prepared ${json_count:-0} canonical staged result files."
+          echo "✅ Prepared ${candidate_count:-0} candidate staged result files and ${previous_count:-0} previous-production files."
 
-      - name: Normalize staged result URLs to exact job links
+      - name: Validate candidate exact job URLs
         if: always() && steps.assemble.outputs.json_count != '0'
         id: normalize
         env:
@@ -200,12 +200,14 @@ jobs:
           import subprocess
           from pathlib import Path
 
-          data_dir = Path(".summary-staging/data-test-results")
+          data_dir = Path(".summary-staging/candidate-test-results")
           job_cache = {}
           updated = 0
           unresolved = []
           duplicate_url_map = {}
           weak_urls = []
+          blocked_slugs = {}
+          exact_urls = 0
 
           def normalize_runner(runner):
               if isinstance(runner, dict):
@@ -320,6 +322,7 @@ jobs:
 
               if not run_id:
                   weak_urls.append((json_path.name, "missing_run_id", current_url or "missing_run_id"))
+                  blocked_slugs[package_slug] = "missing_run_id"
                   if runner_changed or schema_changed:
                       json_path.write_text(json.dumps(payload, indent=2) + "\n")
                       updated += 1
@@ -333,24 +336,44 @@ jobs:
 
               final_url = str((payload.get("run") or {}).get("url") or "").strip()
               if re.search(r"/actions/runs/\d+/job/\d+$", final_url):
+                  exact_urls += 1
                   duplicate_url_map.setdefault(final_url, []).append(json_path.stem)
               else:
                   weak_urls.append((json_path.name, run_id, final_url or "missing_url"))
+                  blocked_slugs[package_slug] = "job_url_unresolved"
                   unresolved.append(f"{json_path.name}\t{run_id}\t{package_slug}")
 
           duplicate_clusters = {
               url: slugs for url, slugs in duplicate_url_map.items() if len(slugs) > 1
           }
 
+          for url, slugs in duplicate_clusters.items():
+              for slug in slugs:
+                  blocked_slugs[slug] = f"duplicate_exact_job_url:{url}"
+
           metrics = Path(".summary-staging/normalize-metrics.env")
           metrics.write_text(
               "\n".join(
                   [
                       f"normalized_count={updated}",
+                      f"exact_url_count={exact_urls}",
                       f"weak_url_count={len(weak_urls)}",
                       f"duplicate_url_count={len(duplicate_clusters)}",
                       f"unresolved_count={len(unresolved)}",
                   ]
+              )
+              + "\n"
+          )
+          Path(".summary-staging/normalize-report.json").write_text(
+              json.dumps(
+                  {
+                      "blocked_slugs": blocked_slugs,
+                      "weak_urls": weak_urls,
+                      "duplicate_clusters": duplicate_clusters,
+                      "unresolved": unresolved,
+                  },
+                  indent=2,
+                  sort_keys=True,
               )
               + "\n"
           )
@@ -368,22 +391,122 @@ jobs:
               print("Unable to resolve exact job links for:")
               for name in unresolved[:50]:
                   print(f" - {name}")
-
-          if weak_urls or duplicate_clusters:
-              raise SystemExit(1)
           PY
 
           cat .summary-staging/normalize-metrics.env >> "$GITHUB_OUTPUT"
 
-      - name: Materialize canonical test results
-        if: always() && steps.assemble.outputs.json_count != '0' && steps.normalize.outcome == 'success'
+      - name: Promote validated candidate results into production data
+        if: always()
+        id: publish
         run: |
+          python3 - <<'PY'
+          import json
+          import re
+          import shutil
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          stage_root = Path(".summary-staging")
+          previous_dir = stage_root / "previous-production-test-results"
+          candidate_dir = stage_root / "candidate-test-results"
+          publish_dir = stage_root / "publish-data-test-results"
+          publish_dir.mkdir(parents=True, exist_ok=True)
+
+          normalize_report_path = stage_root / "normalize-report.json"
+          normalize_report = {
+              "blocked_slugs": {},
+              "weak_urls": [],
+              "duplicate_clusters": {},
+              "unresolved": [],
+          }
+          if normalize_report_path.exists():
+              normalize_report = json.loads(normalize_report_path.read_text())
+
+          previous_payloads = {}
+          for json_path in sorted(previous_dir.glob("*.json")):
+              previous_payloads[json_path.stem] = json.loads(json_path.read_text())
+              shutil.copy2(json_path, publish_dir / json_path.name)
+
+          decisions = {}
+          promoted_count = 0
+          fallback_count = 0
+          blocked_new_count = 0
+
+          def candidate_publish_reason(slug, payload):
+              blocked_reason = (normalize_report.get("blocked_slugs") or {}).get(slug)
+              if blocked_reason:
+                  return blocked_reason
+
+              final_url = str((payload.get("run") or {}).get("url") or "").strip()
+              if not re.search(r"/actions/runs/\d+/job/\d+$", final_url):
+                  return "non_exact_job_url"
+              return ""
+
+          for json_path in sorted(candidate_dir.glob("*.json")):
+              slug = json_path.stem
+              payload = json.loads(json_path.read_text())
+              reason = candidate_publish_reason(slug, payload)
+              if not reason:
+                  payload.setdefault("metadata", {})["publish_state"] = "published"
+                  payload["metadata"]["production_refreshed_at"] = datetime.now(timezone.utc).isoformat()
+                  (publish_dir / json_path.name).write_text(json.dumps(payload, indent=2) + "\n")
+                  decisions[slug] = {
+                      "state": "published",
+                      "reason": "candidate_validated",
+                  }
+                  promoted_count += 1
+                  continue
+
+              if slug in previous_payloads:
+                  decisions[slug] = {
+                      "state": "stale_from_previous_production",
+                      "reason": reason,
+                  }
+                  fallback_count += 1
+              else:
+                  decisions[slug] = {
+                      "state": "blocked_missing_previous_production",
+                      "reason": reason,
+                  }
+                  blocked_new_count += 1
+
+          report_payload = {
+              "generated_at": datetime.now(timezone.utc).isoformat(),
+              "candidate_count": len(list(candidate_dir.glob("*.json"))),
+              "previous_count": len(list(previous_dir.glob("*.json"))),
+              "published_count": len(list(publish_dir.glob("*.json"))),
+              "promoted_count": promoted_count,
+              "fallback_count": fallback_count,
+              "blocked_new_count": blocked_new_count,
+              "normalize": normalize_report,
+              "decisions": decisions,
+          }
+          (stage_root / "publish-report.json").write_text(
+              json.dumps(report_payload, indent=2, sort_keys=True) + "\n"
+          )
+          (stage_root / "publish-metrics.env").write_text(
+              "\n".join(
+                  [
+                      f"candidate_count={report_payload['candidate_count']}",
+                      f"previous_count={report_payload['previous_count']}",
+                      f"published_count={report_payload['published_count']}",
+                      f"promoted_count={promoted_count}",
+                      f"fallback_count={fallback_count}",
+                      f"blocked_new_count={blocked_new_count}",
+                  ]
+              )
+              + "\n"
+          )
+          PY
+
+          cat .summary-staging/publish-metrics.env >> "$GITHUB_OUTPUT"
+
           rm -rf test-results
           mkdir -p test-results data/test-results
 
           find data/test-results -maxdepth 1 -name '*.json' -delete
 
-          for json_file in .summary-staging/data-test-results/*.json; do
+          for json_file in .summary-staging/publish-data-test-results/*.json; do
             [ -f "$json_file" ] || continue
             base=$(basename "$json_file" .json)
             cp "$json_file" "data/test-results/${base}.json"
@@ -419,8 +542,14 @@ jobs:
           echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
           echo "| :--- | :--- |" >> $GITHUB_STEP_SUMMARY
           echo "| Batch artifacts downloaded | ${{ steps.download.outputs.downloaded_batches || '0' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| JSON result files assembled | ${{ steps.assemble.outputs.json_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Candidate JSON files assembled | ${{ steps.assemble.outputs.candidate_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Previous production rows loaded | ${{ steps.assemble.outputs.previous_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Malformed JSON artifacts skipped | ${{ steps.assemble.outputs.malformed_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Exact candidate job URLs resolved | ${{ steps.normalize.outputs.exact_url_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Candidate rows with weak URLs | ${{ steps.normalize.outputs.weak_url_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Candidate rows promoted to production | ${{ steps.publish.outputs.promoted_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Candidate rows kept stale from previous production | ${{ steps.publish.outputs.fallback_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| New candidate rows blocked from production | ${{ steps.publish.outputs.blocked_new_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           TOTAL=0
