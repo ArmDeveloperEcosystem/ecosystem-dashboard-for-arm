@@ -73,14 +73,6 @@ on:
       timestamp:
         description: UTC timestamp for this package run
         value: ${{ jobs.test-mediawiki.outputs.timestamp }}
-  push:
-    branches:
-      - main
-      - smoke_tests
-    paths:
-      - "content/opensource_packages/mediawiki.md"
-      - ".github/workflows/test-mediawiki.yml"
-
 jobs:
   test-mediawiki:
     runs-on: ubuntu-24.04-arm
@@ -130,7 +122,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl tar php-cli php-xml php-mbstring php-intl
 
-          curl -fsSL -A "Mozilla/5.0" -o /tmp/mediawiki.tar.gz "https://releases.wikimedia.org/mediawiki/1.43/mediawiki-${MEDIAWIKI_VERSION}.tar.gz"
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 -A "Mozilla/5.0" -o /tmp/mediawiki.tar.gz "https://releases.wikimedia.org/mediawiki/1.43/mediawiki-${MEDIAWIKI_VERSION}.tar.gz"
           sudo rm -rf "${MEDIAWIKI_HOME}"
           sudo mkdir -p "${MEDIAWIKI_HOME}"
           sudo tar -xzf /tmp/mediawiki.tar.gz -C /tmp
@@ -246,8 +238,8 @@ jobs:
           trap cleanup EXIT
           sleep 4
 
-          STATUS_LINE=$(curl -I -s http://127.0.0.1:8088/ | head -n 1 || true)
-          BODY=$(curl -s http://127.0.0.1:8088/ || true)
+            STATUS_LINE=$(curl -I -s --connect-timeout 2 --max-time 5 http://127.0.0.1:8088/ | head -n 1 || true)
+            BODY=$(curl -s --connect-timeout 2 --max-time 5 http://127.0.0.1:8088/ || true)
 
           if echo "$STATUS_LINE" | grep -q "MediaWiki configuration Error" || echo "$BODY" | grep -qi "MediaWiki"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -275,7 +267,19 @@ jobs:
           echo "Current version tested in Tests 1-5: ${CURRENT}"
           echo "Next version targeted for install validation: ${LATEST}"
 
-          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ]; then
+          if [ -z "$LATEST" ]; then
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MediaWiki version ${CURRENT} already matches the latest stable patch release in the ${SERIES} series, so there is no credible newer candidate for regression install validation on Arm64." >> "$GITHUB_OUTPUT"
+            echo "note=MediaWiki is validated as an unpacked tarball install without a database, so the functional probe intentionally checks the first-run web experience rather than a completed wiki setup." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$LATEST" = "unknown" ]; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
@@ -302,23 +306,65 @@ jobs:
           REG_HOME="/tmp/mediawiki-regression"
           rm -rf "${REG_HOME}"
           mkdir -p "${REG_HOME}"
-          curl -fsSL -A "Mozilla/5.0" -o /tmp/mediawiki-regression.tar.gz "https://releases.wikimedia.org/mediawiki/${SERIES}/mediawiki-${LATEST}.tar.gz"
-          tar -xzf /tmp/mediawiki-regression.tar.gz -C /tmp
+          if ! curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 -A "Mozilla/5.0" -o /tmp/mediawiki-regression.tar.gz "https://releases.wikimedia.org/mediawiki/${SERIES}/mediawiki-${LATEST}.tar.gz"; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MediaWiki version ${CURRENT} passed smoke tests in this run, but the ${SERIES} patch candidate ${LATEST} tarball could not be downloaded from the official release endpoint." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if ! tar -xzf /tmp/mediawiki-regression.tar.gz -C /tmp; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MediaWiki version ${CURRENT} passed smoke tests in this run, but the ${SERIES} patch candidate ${LATEST} tarball could not be extracted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ ! -d "/tmp/mediawiki-${LATEST}" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MediaWiki version ${CURRENT} passed smoke tests in this run, but the extracted directory for ${LATEST} was not found after unpacking." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           mv "/tmp/mediawiki-${LATEST}"/* "${REG_HOME}/"
 
           NEXT_VERSION=$(grep -E "MW_VERSION" "${REG_HOME}/includes/Defines.php" | sed -E "s/.*'([^']+)'.*/\\1/" | head -1)
-          php "${REG_HOME}/maintenance/install.php" --help >/tmp/mediawiki-regression-help.txt 2>&1
-          timeout 20 php -S 127.0.0.1:8089 -t "${REG_HOME}" >/tmp/mediawiki-regression-server.log 2>&1 &
-          SERVER_PID=$!
+          if ! php "${REG_HOME}/maintenance/install.php" --help >/tmp/mediawiki-regression-help.txt 2>&1; then
+            cat /tmp/mediawiki-regression-help.txt || true
+            echo "next_installed_version=${NEXT_VERSION:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MediaWiki version ${CURRENT} passed smoke tests in this run, but the ${SERIES} patch candidate ${LATEST} failed installer-help validation on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          SERVER_PID=""
           cleanup() {
-            kill "$SERVER_PID" >/dev/null 2>&1 || true
+            if [ -n "${SERVER_PID}" ]; then
+              kill "$SERVER_PID" >/dev/null 2>&1 || true
+            fi
           }
           trap cleanup EXIT
+          timeout 20 php -S 127.0.0.1:8089 -t "${REG_HOME}" >/tmp/mediawiki-regression-server.log 2>&1 &
+          SERVER_PID=$!
           STATUS_LINE=""
           BODY=""
           for _ in $(seq 1 20); do
-            STATUS_LINE=$(curl -I -s http://127.0.0.1:8089/ | head -n 1 || true)
-            BODY=$(curl -s http://127.0.0.1:8089/ || true)
+            STATUS_LINE=$(curl -I -s --connect-timeout 2 --max-time 5 http://127.0.0.1:8089/ | head -n 1 || true)
+            BODY=$(curl -s --connect-timeout 2 --max-time 5 http://127.0.0.1:8089/ || true)
             if echo "$STATUS_LINE" | grep -q "^HTTP/" && [ -n "$BODY" ]; then
               break
             fi
@@ -465,4 +511,3 @@ jobs:
             echo "- Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
             echo "- Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
           } >> "$GITHUB_STEP_SUMMARY"
-

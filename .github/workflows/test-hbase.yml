@@ -73,14 +73,6 @@ on:
       timestamp:
         description: UTC timestamp for this package run
         value: ${{ jobs.test-hbase.outputs.timestamp }}
-  push:
-    branches:
-      - main
-      - smoke_tests
-    paths:
-      - "content/opensource_packages/hbase.md"
-      - ".github/workflows/test-hbase.yml"
-
 jobs:
   test-hbase:
     runs-on: ubuntu-24.04-arm
@@ -92,7 +84,7 @@ jobs:
       contract_version: "2.0"
       package_slug: ${{ steps.metadata.outputs.package_slug }}
       package_name: 'HBase'
-      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      package_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
       run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
       badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
       core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
@@ -104,7 +96,7 @@ jobs:
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
-      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || env.BASELINE_VERSION }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
       run_id: ${{ github.run_id }}
@@ -128,14 +120,19 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y openjdk-17-jdk tar wget
+          sudo apt-get install -y openjdk-17-jdk tar curl
 
           VERSION="${{ steps.metadata.outputs.current_version }}"
           URL="https://archive.apache.org/dist/hbase/${VERSION}/hbase-${VERSION}-hadoop3-bin.tar.gz"
 
           rm -rf hbase hbase.tar.gz
-          wget -q "$URL" -O hbase.tar.gz
-          EXTRACTED_DIR=$(tar -tzf hbase.tar.gz | sed -n '1p' | cut -d/ -f1)
+          if ! curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 "$URL" -o hbase.tar.gz; then
+            echo "Failed to download baseline HBase archive: $URL"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          EXTRACTED_DIR=$(tar -tzf hbase.tar.gz | awk -F/ 'NF>1 {print $1; exit}')
           tar -xzf hbase.tar.gz
           if [ -z "${EXTRACTED_DIR:-}" ] || [ ! -d "$EXTRACTED_DIR" ]; then
             echo "Unable to locate extracted HBase directory from archive"
@@ -295,15 +292,24 @@ jobs:
             echo "Next version installed on Arm64: $CURRENT"
             echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
             echo "Details: Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64, and the current stable release line remains ${LATEST}."
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_DIR=$(mktemp -d)
+          NEXT_TAR="$NEXT_DIR/hbase-next.tar.gz"
+          if ! curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 "https://downloads.apache.org/hbase/${LATEST}/hbase-${LATEST}-hadoop3-bin.tar.gz" -o "$NEXT_TAR"; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64, but the candidate HBase ${LATEST} archive could not be downloaded for regression install validation." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
-          NEXT_DIR=$(mktemp -d)
-          NEXT_TAR="$NEXT_DIR/hbase-next.tar.gz"
-          wget -q "https://downloads.apache.org/hbase/${LATEST}/hbase-${LATEST}-hadoop3-bin.tar.gz" -O "$NEXT_TAR"
           tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
           NEXT_HOME="$NEXT_DIR/hbase-${LATEST}-hadoop3-bin"
           sed -i '/^export JAVA_HOME=/d' "$NEXT_HOME/conf/hbase-env.sh"

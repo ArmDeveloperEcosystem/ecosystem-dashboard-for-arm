@@ -73,14 +73,6 @@ on:
       timestamp:
         description: UTC timestamp for this package run
         value: ${{ jobs.test-submarine.outputs.timestamp }}
-  push:
-    branches:
-      - main
-      - smoke_tests
-    paths:
-      - "content/opensource_packages/submarine.md"
-      - ".github/workflows/test-submarine.yml"
-
 jobs:
   test-submarine:
     runs-on: ubuntu-24.04-arm
@@ -111,7 +103,7 @@ jobs:
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
-      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
@@ -164,7 +156,11 @@ jobs:
           UROOT_COMMIT=$(git -C "${BASE_DIR}" rev-parse HEAD:u-root)
           go install github.com/u-root/u-root@"${UROOT_COMMIT}"
 
-          timeout 30m make -C "${BASE_DIR}" -j"$(nproc)" arm64 2>&1 | tee /tmp/submarine-build.log
+          JOBS=$(nproc)
+          if ! timeout 30m bash -lc "make -C '${BASE_DIR}' -j'${JOBS}' arm64 > /tmp/submarine-build.log 2>&1"; then
+            cat /tmp/submarine-build.log || true
+            exit 1
+          fi
 
           test -f "${BASE_DIR}/images/submarine-a64.bin"
           test -f "${BASE_DIR}/images/submarine-a64.kpart"
@@ -251,12 +247,14 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           BASE_DIR="${{ steps.install.outputs.base_dir }}"
+          gzip -cd "${BASE_DIR}/build/bzImage.a64" >/tmp/submarine-bzImage-test4 || true
+          KERNEL_DESC=$(file /tmp/submarine-bzImage-test4 2>/dev/null || true)
           if [ "$(uname -m)" = "aarch64" ] && \
-             gzip -cd "${BASE_DIR}/build/bzImage.a64" | file - | grep -Eqi 'ARM aarch64|ARM64|AArch64'; then
+             printf '%s\n' "$KERNEL_DESC" | grep -Eqi 'ARM aarch64|ARM64|AArch64'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             uname -m
-            gzip -cd "${BASE_DIR}/build/bzImage.a64" | file - || true
+            printf '%s\n' "$KERNEL_DESC" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -291,13 +289,14 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           export PATH="${SUBMARINE_VENV}/bin:$PATH:$HOME/go/bin"
-          CURRENT="${{ steps.version.outputs.version }}"
-          LATEST="${{ steps.version.outputs.latest }}"
+          CURRENT="${{ steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          LATEST="${{ steps.version.outputs.latest || env.SUBMARINE_NEXT_VERSION || 'unknown' }}"
           NEXT_DIR="${SUBMARINE_WORKROOT}/regression"
           STATUS="failed"
 
@@ -306,6 +305,17 @@ jobs:
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT}"
           echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ "${{ steps.install.outputs.install_status || '' }}" != "success" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Baseline install/build failed before regression validation" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Submarine version ${CURRENT} could not complete baseline install/build in this run, so a genuine Arm64 next-version regression validation was not possible." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if [ -z "${LATEST}" ] || [ "${LATEST}" = "unknown" ]; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
@@ -323,11 +333,23 @@ jobs:
           git config --global --add safe.directory "${NEXT_DIR}"
           UROOT_COMMIT=$(git -C "${NEXT_DIR}" rev-parse HEAD:u-root)
           go install github.com/u-root/u-root@"${UROOT_COMMIT}"
-          timeout 30m make -C "${NEXT_DIR}" -j"$(nproc)" arm64 2>&1 | tee /tmp/submarine-next-build.log
+          JOBS=$(nproc)
+          if ! timeout 30m bash -lc "make -C '${NEXT_DIR}' -j'${JOBS}' arm64 > /tmp/submarine-next-build.log 2>&1"; then
+            cat /tmp/submarine-next-build.log || true
+            echo "next_installed_version=build_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Submarine version ${CURRENT} completed the real Arm64 boot-image build path in this run, but candidate version ${LATEST} failed during the next-version build on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           NEXT_VERSION=$(git -C "${NEXT_DIR}" describe --tags --exact-match | sed 's/^v//')
           parted -s "${NEXT_DIR}/images/submarine-a64.bin" unit s print > /tmp/submarine-next-parted.txt 2>&1
           NEXT_IMAGE_SIZE=$(stat -c%s "${NEXT_DIR}/images/submarine-a64.bin")
-          NEXT_KERNEL_DESC=$(gzip -cd "${NEXT_DIR}/build/bzImage.a64" | file -)
+          gzip -cd "${NEXT_DIR}/build/bzImage.a64" >/tmp/submarine-bzImage-next || true
+          NEXT_KERNEL_DESC=$(file /tmp/submarine-bzImage-next 2>/dev/null || true)
           NEXT_GPT_OK=0
           if grep -q "Partition Table: gpt" /tmp/submarine-next-parted.txt; then
             NEXT_GPT_OK=1

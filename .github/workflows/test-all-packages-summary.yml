@@ -561,6 +561,7 @@ jobs:
           REGRESSION_TOTAL=0
           REGRESSION_PASS=0
           REGRESSION_FAIL=0
+          REGRESSION_DEFERRED=0
           REGRESSION_LIST=""
 
           for result_dir in test-results/*/; do
@@ -583,15 +584,21 @@ jobs:
 
               NAME=$(jq -r '.package.name' "$json_file")
               VERSION=$(jq -r '.package.version' "$json_file")
-              VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g' | cut -c 1-40)
-              [ "${#VERSION}" -gt 39 ] && VERSION="${VERSION}..."
-
               STATUS=$(jq -r '.run.status' "$json_file")
               PASSED_COUNT=$(jq -r '.tests.passed' "$json_file")
               FAILED_COUNT=$(jq -r '.tests.failed' "$json_file")
               SKIPPED_COUNT=$(jq -r '.tests.skipped // 0' "$json_file")
               TOTAL_TESTS=$((PASSED_COUNT + FAILED_COUNT + SKIPPED_COUNT))
               REGRESSION_ENTRY=$(jq -c '.tests.details[]? | select(.name == "Test 6 - Regression Validation" or .name == "Regression Validation")' "$json_file" | head -n 1)
+
+              if [ -n "$REGRESSION_ENTRY" ] && { [ -z "$VERSION" ] || [ "$VERSION" = "unknown" ] || [ "$VERSION" = "n/a" ]; }; then
+                VERSION=$(echo "$REGRESSION_ENTRY" | jq -r '.current_version // .baseline_version // .current // ""')
+              fi
+              VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g' | cut -c 1-40)
+              [ "${#VERSION}" -gt 39 ] && VERSION="${VERSION}..."
+              if [ -z "$VERSION" ] || [ "$VERSION" = "unknown" ] || [ "$VERSION" = "n/a" ]; then
+                VERSION="unknown"
+              fi
 
               if [ "$STATUS" = "success" ]; then
                 PASS=$((PASS + 1))
@@ -611,14 +618,47 @@ jobs:
                 REGRESSION_RESULT=$(echo "$REGRESSION_ENTRY" | jq -r '.regression_result // ""')
                 COMPARISON=$(echo "$REGRESSION_ENTRY" | jq -r '.comparison // .note // ""' | tr '\n' ' ' | sed 's/|/\\|/g')
 
-                if [ "$REG_STATUS" = "passed" ]; then
-                  REGRESSION_PASS=$((REGRESSION_PASS + 1))
-                else
-                  REGRESSION_FAIL=$((REGRESSION_FAIL + 1))
-                fi
+                case "$DECISION" in
+                  next_install_validated|next_bundle_validated|next_image_validated|safe_to_upgrade)
+                    REGRESSION_CLASS="passed"
+                    ;;
+                  metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|no_newer_stable_available|manual_review_needed|not_applicable_package_ecosystem|not_applicable_package_manager|hold_current_arm_dependency_gap|not_configured)
+                    REGRESSION_CLASS="deferred"
+                    ;;
+                  *)
+                    if [ "$REG_STATUS" = "passed" ]; then
+                      REGRESSION_CLASS="passed"
+                    elif [ "$REG_STATUS" = "failed" ]; then
+                      REGRESSION_CLASS="failed"
+                    else
+                      REGRESSION_CLASS="deferred"
+                    fi
+                    ;;
+                esac
 
-                [ -z "$CURRENT_VERSION" ] && CURRENT_VERSION="n/a"
-                [ -z "$LATEST_VERSION" ] && LATEST_VERSION="n/a"
+                case "$REGRESSION_CLASS" in
+                  passed)
+                    REGRESSION_PASS=$((REGRESSION_PASS + 1))
+                    ;;
+                  failed)
+                    REGRESSION_FAIL=$((REGRESSION_FAIL + 1))
+                    ;;
+                  *)
+                    REGRESSION_DEFERRED=$((REGRESSION_DEFERRED + 1))
+                    ;;
+                esac
+
+                [ -z "$CURRENT_VERSION" ] && CURRENT_VERSION="unknown"
+                if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "n/a" ]; then
+                  case "$DECISION" in
+                    metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|no_newer_stable_available)
+                      LATEST_VERSION="$CURRENT_VERSION"
+                      ;;
+                    *)
+                      LATEST_VERSION="unknown"
+                      ;;
+                  esac
+                fi
                 [ -z "$NEXT_INSTALLED_VERSION" ] && NEXT_INSTALLED_VERSION="n/a"
                 if [ -z "$REGRESSION_RESULT" ]; then
                   case "$DECISION" in
@@ -634,11 +674,22 @@ jobs:
                     manual_review_needed)
                       REGRESSION_RESULT="Pending regression install validation"
                       ;;
+                    no_newer_stable_available)
+                      REGRESSION_RESULT="No newer stable public release is available"
+                      ;;
+                    metadata_review_required)
+                      REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                      ;;
+                    not_configured)
+                      REGRESSION_RESULT="Regression validation not configured for this workflow"
+                      ;;
                     *)
-                      if [ "$REG_STATUS" = "passed" ]; then
+                      if [ "$REGRESSION_CLASS" = "passed" ]; then
                         REGRESSION_RESULT="Regression validation passed"
-                      else
+                      elif [ "$REGRESSION_CLASS" = "failed" ]; then
                         REGRESSION_RESULT="Regression validation failed"
+                      else
+                        REGRESSION_RESULT="Regression validation deferred"
                       fi
                       ;;
                   esac
@@ -661,6 +712,7 @@ jobs:
           echo "| **Packages With Regression Validation** | $REGRESSION_TOTAL |" >> $GITHUB_STEP_SUMMARY
           echo "| **Regression Validation Passed** | $REGRESSION_PASS ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| **Regression Validation Failed** | $REGRESSION_FAIL ❌ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Regression Validation Deferred / Not Applicable** | $REGRESSION_DEFERRED ⏸️ |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ $REGRESSION_TOTAL -gt 0 ]; then

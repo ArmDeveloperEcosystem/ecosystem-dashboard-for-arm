@@ -73,14 +73,6 @@ on:
       timestamp:
         description: UTC timestamp for this package run
         value: ${{ jobs.test-boringssl.outputs.timestamp }}
-  push:
-    branches:
-      - main
-      - smoke_tests
-    paths:
-      - 'content/opensource_packages/boringssl.md'
-      - '.github/workflows/test-boringssl.yml'
-
 jobs:
   test-boringssl:
     runs-on: ubuntu-24.04-arm
@@ -91,7 +83,7 @@ jobs:
       contract_version: "2.0"
       package_slug: ${{ steps.metadata.outputs.package_slug }}
       package_name: 'BoringSSL'
-      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      package_version: ${{ steps.version.outputs.version || env.BORINGSSL_BASELINE_VERSION }}
       run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
       badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
       core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
@@ -103,7 +95,7 @@ jobs:
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
-      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || env.BORINGSSL_BASELINE_VERSION }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
       run_id: ${{ github.run_id }}
@@ -129,8 +121,16 @@ jobs:
       - name: Install BoringSSL
         id: install
         run: |
+          set -euo pipefail
           set -x
           echo "Installing BoringSSL..."
+
+          GO_BIN="$(command -v go || true)"
+          if [ -z "${GO_BIN}" ]; then
+            echo "Go toolchain not found in PATH" >&2
+            echo "install_status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
           
           git clone --depth 1 --branch "${BORINGSSL_BASELINE_VERSION}" https://boringssl.googlesource.com/boringssl
           
@@ -140,7 +140,7 @@ jobs:
           # Build with CMake
           # Disable tests to avoid linking issues on some arm64 runners with strict linking
           # Use Clang as recommended for BoringSSL
-          cmake -GNinja -DGO_EXECUTABLE=go -DBUILD_SHARED_LIBS=0 -DRUN_TESTS=0 -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON ..
+          cmake -GNinja -DGO_EXECUTABLE="${GO_BIN}" -DBUILD_SHARED_LIBS=0 -DRUN_TESTS=0 -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON ..
           ninja -j 2 -v bssl
           
           # Find where the binary actually is
@@ -304,21 +304,23 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           CURRENT_VERSION="${BORINGSSL_BASELINE_VERSION}"
-          NEXT_VERSION=""
-          RESULT="no_newer_stable_available"
+          NEXT_VERSION="${CURRENT_VERSION}"
+          RESULT="No newer stable public release is available"
           DETAILS="Public stable BoringSSL tags for this dashboard path currently stop at ${BORINGSSL_BASELINE_VERSION}; there is no newer stable FIPS tag for a real Test 6 upgrade validation"
 
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT_VERSION}"
-          echo "Next version targeted for install validation: n/a"
+          echo "Next version targeted for install validation: ${NEXT_VERSION}"
           echo "Regression install result: ${RESULT}"
           echo "Details: ${DETAILS}"
 
           echo "status=skipped" >> $GITHUB_OUTPUT
+          echo "decision=no_newer_stable_available" >> $GITHUB_OUTPUT
           echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-          echo "next_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
-          echo "result=${RESULT}" >> $GITHUB_OUTPUT
-          echo "details=${DETAILS}" >> $GITHUB_OUTPUT
+          echo "latest_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
+          echo "next_installed_version=not_installed" >> $GITHUB_OUTPUT
+          echo "regression_result=${RESULT}" >> $GITHUB_OUTPUT
+          echo "comparison=${DETAILS}" >> $GITHUB_OUTPUT
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -327,10 +329,10 @@ jobs:
         if: always()
         run: |
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || 'n/a' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.next_version || 'n/a' }}"
-          echo "Regression install result: ${{ steps.test6.outputs.result || 'n/a' }}"
-          echo "Details: ${{ steps.test6.outputs.details || 'n/a' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
       - name: Calculate test summary
         if: always()
         id: summary
@@ -430,6 +432,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Regression Details" >> $GITHUB_STEP_SUMMARY
           echo "- **Current version:** ${{ steps.test6.outputs.current_version || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version:** ${{ steps.test6.outputs.next_version || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Result:** ${{ steps.test6.outputs.result || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Details:** ${{ steps.test6.outputs.details || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY

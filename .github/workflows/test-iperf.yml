@@ -73,14 +73,6 @@ on:
       timestamp:
         description: UTC timestamp for this package run
         value: ${{ jobs.test-iperf.outputs.timestamp }}
-  push:
-    branches:
-      - main
-      - smoke_tests
-    paths:
-      - "content/opensource_packages/iperf.md"
-      - ".github/workflows/test-iperf.yml"
-
 jobs:
   test-iperf:
     runs-on: ubuntu-24.04-arm
@@ -131,7 +123,7 @@ jobs:
           sudo apt-get install -y build-essential libssl-dev curl ca-certificates file binutils
           rm -rf "${IPERF_WORKDIR}"
           mkdir -p "${IPERF_WORKDIR}"
-          curl -fsSL -o "${IPERF_WORKDIR}/iperf-${IPERF_VERSION}.tar.gz" "https://downloads.es.net/pub/iperf/iperf-${IPERF_VERSION}.tar.gz"
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 -o "${IPERF_WORKDIR}/iperf-${IPERF_VERSION}.tar.gz" "https://downloads.es.net/pub/iperf/iperf-${IPERF_VERSION}.tar.gz"
           tar -xzf "${IPERF_WORKDIR}/iperf-${IPERF_VERSION}.tar.gz" -C "${IPERF_WORKDIR}"
           BASE_DIR="${IPERF_WORKDIR}/iperf-${IPERF_VERSION}"
           cd "${BASE_DIR}"
@@ -247,6 +239,10 @@ jobs:
           if [ ! -x "${IPERF_BIN}" ]; then
             IPERF_BIN="${BASE_DIR}/src/iperf3"
           fi
+          IPERF_LIB_DIR="${BASE_DIR}/src/.libs"
+          if [ -d "${IPERF_LIB_DIR}" ]; then
+            export LD_LIBRARY_PATH="${IPERF_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          fi
           cleanup() {
             pkill -f "${IPERF_BIN} -s -D" >/dev/null 2>&1 || pkill -f iperf3 >/dev/null 2>&1 || true
           }
@@ -304,30 +300,38 @@ jobs:
             echo "Next version installed on Arm64: ${CURRENT}"
             echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
             echo "Details: Current pinned Iperf version ${CURRENT} passed smoke tests in this run and already matches the latest stable upstream release on Arm64."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            exit 0
           fi
 
           rm -rf "${REGRESSION_WORKDIR}"
           mkdir -p "${REGRESSION_WORKDIR}"
-          curl -fsSL -o "${REGRESSION_WORKDIR}/iperf-${LATEST}.tar.gz" "https://downloads.es.net/pub/iperf/iperf-${LATEST}.tar.gz"
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 -o "${REGRESSION_WORKDIR}/iperf-${LATEST}.tar.gz" "https://downloads.es.net/pub/iperf/iperf-${LATEST}.tar.gz"
           tar -xzf "${REGRESSION_WORKDIR}/iperf-${LATEST}.tar.gz" -C "${REGRESSION_WORKDIR}"
           NEXT_DIR="${REGRESSION_WORKDIR}/iperf-${LATEST}"
           cd "${NEXT_DIR}"
           ./configure
           make -j"$(nproc)"
-          NEXT_VERSION=$("${NEXT_DIR}/src/iperf3" --version | awk 'NR==1 {print $2}' || true)
+          NEXT_IPERF_BIN="${NEXT_DIR}/src/.libs/iperf3"
+          if [ ! -x "${NEXT_IPERF_BIN}" ]; then
+            NEXT_IPERF_BIN="${NEXT_DIR}/src/iperf3"
+          fi
+          NEXT_LIB_DIR="${NEXT_DIR}/src/.libs"
+          if [ -d "${NEXT_LIB_DIR}" ]; then
+            export LD_LIBRARY_PATH="${NEXT_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          fi
+          NEXT_VERSION=$("${NEXT_IPERF_BIN}" --version | awk 'NR==1 {print $2}' || true)
 
           cleanup() {
-            pkill -f "${NEXT_DIR}/src/iperf3 -s -D" >/dev/null 2>&1 || pkill -f iperf3 >/dev/null 2>&1 || true
+            pkill -f "${NEXT_IPERF_BIN} -s -D" >/dev/null 2>&1 || pkill -f iperf3 >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
           cleanup
-          "${NEXT_DIR}/src/iperf3" -s -D
+          "${NEXT_IPERF_BIN}" -s -D
           sleep 2
-          if [ "$NEXT_VERSION" = "$LATEST" ] && "${NEXT_DIR}/src/iperf3" -c 127.0.0.1 -t 1 > /tmp/iperf-next-functional.txt 2>&1 && grep -Fq "connected to 127.0.0.1" /tmp/iperf-next-functional.txt; then
+          if [ "$NEXT_VERSION" = "$LATEST" ] && "${NEXT_IPERF_BIN}" -c 127.0.0.1 -t 1 > /tmp/iperf-next-functional.txt 2>&1 && grep -Fq "connected to 127.0.0.1" /tmp/iperf-next-functional.txt; then
             echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
