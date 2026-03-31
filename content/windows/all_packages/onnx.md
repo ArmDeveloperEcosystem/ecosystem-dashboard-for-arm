@@ -1,6 +1,6 @@
 ---
 name: Open Neural Network Exchange (ONNX)
-category: AI/ML
+category: AI/ML Tools
 description: ONNX (Open Neural Network Exchange) is an open-source framework designed for creating, sharing, and deploying machine learning models across different platforms and tools.
 download_url: https://github.com/onnx/onnx/tags
 works_on_arm: true

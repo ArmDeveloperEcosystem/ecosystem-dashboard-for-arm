@@ -1,6 +1,6 @@
 ---
 name: sse2neon
-category: Languages
+category: Languages and Frameworks
 description: A C/C++ header file that converts Intel SSE intrinsics to Arm/Aarch64 NEON intrinsics.
 download_url: https://github.com/DLTcollab/sse2neon/releases
 works_on_arm: true

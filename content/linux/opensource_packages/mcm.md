@@ -2,7 +2,7 @@
 name: Gardener Machine Controller Manager (MCM)
 category: Containers and Orchestration
 description: Machine Controller Manager (MCM) is a set of cooperative Kubernetes controllers that manage the lifecycle of worker machines across multiple cloud providers, enabling declarative node management, autoscaling integration, rolling upgrades, and infrastructure abstraction.
-download_url: europe-docker.pkg.dev/gardener-project/releases/gardener/machine-controller-manager
+download_url: https://console.cloud.google.com/artifacts/docker/gardener-project/europe/releases/gardener%2Fmachine-controller-manager
 works_on_arm: true
 supported_minimum_version:
     version_number: 0.46.0
