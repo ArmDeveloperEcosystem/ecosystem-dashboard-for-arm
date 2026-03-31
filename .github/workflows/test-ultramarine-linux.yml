@@ -221,6 +221,88 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
+      - name: Test 6 - Regression Validation
+        id: test6
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          CURRENT="${{ steps.version.outputs.version || env.BASELINE_VERSION || 'unknown' }}"
+          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+
+          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation skipped because one or more baseline tests (1-5) failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline tests failed, so next-version validation is not trustworthy for this run." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "${LATEST}" ] || [ "${LATEST}" = "unknown" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=unknown" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Latest Ultramarine Linux release could not be resolved automatically in this run." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT}; latest release lookup unavailable." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${LATEST}" = "${CURRENT}" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer Ultramarine Linux release is available beyond baseline." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT} matches latest ${LATEST}; next-version regression is not applicable for this run." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TMPDIR=$(mktemp -d)
+          trap 'rm -rf "$TMPDIR"' EXIT
+          NEXT_IMAGE="${{ steps.version.outputs.latest_image }}"
+          NEXT_SHA="${{ steps.version.outputs.latest_sha }}"
+          curl -fsIL "${NEXT_IMAGE}" >/tmp/ultramarine-next-image.head
+          curl -fsIL "${NEXT_SHA}" >/tmp/ultramarine-next-sha.head
+          curl -fsSL "${NEXT_SHA}" -o "$TMPDIR/next.sha256sum"
+          grep "base-base-disk-aarch64.img.zst" "$TMPDIR/next.sha256sum" > "$TMPDIR/next.sha"
+          curl -fsSL --range 0-4095 "${NEXT_IMAGE}" -o "$TMPDIR/next.sample"
+          export NEXT_SAMPLE_PATH="$TMPDIR/next.sample"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          sample = Path(os.environ["NEXT_SAMPLE_PATH"]).read_bytes()
+          if len(sample) < 4 or sample[:4] != bytes.fromhex("28b52ffd"):
+              raise SystemExit(1)
+          PY
+
+          if grep -q '200' /tmp/ultramarine-next-image.head && grep -q '200' /tmp/ultramarine-next-sha.head; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "decision=validated_next_release_metadata" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Validated latest Ultramarine Linux image artifacts and checksum metadata for the next release." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT} passed full baseline checks; next ${LATEST} artifact presence, checksum listing, and image-header sanity checks passed." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_artifact_validation_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next Ultramarine Linux artifact metadata validation failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT} passed, but next ${LATEST} artifact or checksum validation did not pass." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Calculate test summary
         if: always()
         id: summary

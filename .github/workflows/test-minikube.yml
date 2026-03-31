@@ -254,6 +254,91 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
+      - name: Test 6 - Regression Validation
+        id: test6
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          CURRENT="${{ steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          LATEST="${{ steps.metadata.outputs.next_version || 'unknown' }}"
+
+          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation skipped because one or more baseline tests (1-5) failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline tests failed, so next-version validation is not trustworthy for this run." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "${LATEST}" ] || [ "${LATEST}" = "unknown" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=unknown" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next Minikube candidate version is not configured in metadata." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT}; next-version target unavailable in workflow metadata." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${LATEST}" = "${CURRENT}" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer Minikube target is configured beyond baseline." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT} matches next target ${LATEST}; next-version regression is not applicable for this run." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_BIN="${RUNNER_TEMP}/minikube-next"
+          NEXT_URL="https://storage.googleapis.com/minikube/releases/${LATEST}/minikube-linux-arm64"
+          curl -fsSL --retry 5 --retry-delay 2 "${NEXT_URL}" -o "${NEXT_BIN}"
+          chmod +x "${NEXT_BIN}"
+          NEXT_INSTALLED=$("${NEXT_BIN}" version --short 2>&1 | awk '{print $NF}' | tr -d '",')
+
+          if [ -z "${NEXT_INSTALLED}" ] || [ "${NEXT_INSTALLED}" != "${LATEST}" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${NEXT_INSTALLED:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_or_version_mismatch" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Failed to install and verify the selected next Minikube release." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT}; attempted next ${LATEST}; observed ${NEXT_INSTALLED:-not_installed}." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          "${NEXT_BIN}" help >/tmp/minikube-next-help.log 2>&1
+          "${NEXT_BIN}" config view >/tmp/minikube-next-config.log 2>&1
+          "${NEXT_BIN}" completion bash >/tmp/minikube-next-completion.log 2>&1
+
+          if grep -q "__start_minikube" /tmp/minikube-next-completion.log; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
+            echo "decision=validated_next_release" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Validated baseline Minikube against the configured next release with install and CLI smoke checks." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT} and next ${LATEST} both passed smoke validation; no regression observed in this workflow scope." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_regression_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next-version Minikube smoke checks failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT}; next ${LATEST} installed, but one or more CLI checks failed." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+          fi
+
             # ============================================================
       # UPDATE THIS: Calculate summary based on your number of tests
       # Add/remove test result checks to match your tests above

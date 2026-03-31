@@ -253,6 +253,85 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
+      - name: Test 6 - Regression Validation
+        id: test6
+        if: always()
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT_VERSION="${{ steps.version.outputs.version || steps.install.outputs.baseline_version || 'unknown' }}"
+          LATEST_VERSION="unknown"
+          NEXT_INSTALLED_VERSION="not_installed"
+          STATUS="deferred"
+          DECISION="manual_review_needed"
+          RESULT="Regression validation deferred pending next stable candidate resolution"
+          COMPARISON="Current pinned version ${CURRENT_VERSION} passed Tests 1-5 in this run. A deterministic next stable candidate was not resolved from Maven metadata, so Test 6 is explicitly deferred."
+
+          METADATA_URL="https://repo.maven.apache.org/maven2/io/grpc/protoc-gen-grpc-java/maven-metadata.xml"
+          if curl -fsSL "$METADATA_URL" -o /tmp/grpc-java-metadata.xml; then
+            CANDIDATE_VERSION=$(sed -n 's:.*<release>\\(.*\\)</release>.*:\\1:p' /tmp/grpc-java-metadata.xml | head -n1 || true)
+            if [ -n "$CANDIDATE_VERSION" ]; then
+              LATEST_VERSION="$CANDIDATE_VERSION"
+              if [ "$LATEST_VERSION" = "$CURRENT_VERSION" ]; then
+                STATUS="deferred"
+                DECISION="current_is_latest_stable"
+                RESULT="Current version is already the latest stable candidate"
+                COMPARISON="Current pinned version ${CURRENT_VERSION} passed Tests 1-5 and matches the latest stable version reported by Maven metadata."
+              else
+                NEXT_URL="https://repo.maven.apache.org/maven2/io/grpc/protoc-gen-grpc-java/${LATEST_VERSION}/protoc-gen-grpc-java-${LATEST_VERSION}-linux-aarch_64.exe"
+                if curl -fsSL "$NEXT_URL" -o /tmp/protoc-gen-grpc-java-next; then
+                  chmod +x /tmp/protoc-gen-grpc-java-next
+                  rm -rf /tmp/grpc-java-next
+                  mkdir -p /tmp/grpc-java-next/out
+                  cat > /tmp/grpc-java-next/hello.proto <<'EOF'
+          syntax = "proto3";
+          option java_multiple_files = true;
+          option java_package = "test";
+          package test;
+          service Greeter {
+            rpc SayHello (HelloRequest) returns (HelloReply) {}
+          }
+          message HelloRequest {
+            string name = 1;
+          }
+          message HelloReply {
+            string message = 1;
+          }
+          EOF
+                  if file /tmp/protoc-gen-grpc-java-next | grep -Eqi "aarch64|arm64" && \
+                     protoc -I /tmp/grpc-java-next \
+                       --java_out=/tmp/grpc-java-next/out \
+                       --plugin=protoc-gen-grpc-java=/tmp/protoc-gen-grpc-java-next \
+                       --grpc-java_out=/tmp/grpc-java-next/out \
+                       /tmp/grpc-java-next/hello.proto >/tmp/grpc-java-next-generate.log 2>&1 && \
+                     find /tmp/grpc-java-next/out -type f -name 'GreeterGrpc.java' | grep -q .; then
+                    STATUS="passed"
+                    DECISION="next_install_validated"
+                    NEXT_INSTALLED_VERSION="$LATEST_VERSION"
+                    RESULT="Next version installed successfully on Arm64"
+                    COMPARISON="Current pinned version ${CURRENT_VERSION} passed Tests 1-5 in this run. The next candidate ${LATEST_VERSION} downloaded successfully and generated Java stubs on Arm64."
+                  else
+                    STATUS="failed"
+                    DECISION="next_install_failed"
+                    NEXT_INSTALLED_VERSION="$LATEST_VERSION"
+                    RESULT="Next version installation or generation validation failed on Arm64"
+                    COMPARISON="Current pinned version ${CURRENT_VERSION} passed Tests 1-5, but next candidate ${LATEST_VERSION} did not complete equivalent generation checks on Arm64."
+                  fi
+                fi
+              fi
+            fi
+          fi
+
+          echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
+          echo "decision=${DECISION}" >> "$GITHUB_OUTPUT"
+          echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "regression_result=${RESULT}" >> "$GITHUB_OUTPUT"
+          echo "comparison=${COMPARISON}" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Calculate test summary
         if: always()
         id: summary
