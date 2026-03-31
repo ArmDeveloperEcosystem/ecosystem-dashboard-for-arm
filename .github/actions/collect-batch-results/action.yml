@@ -53,6 +53,7 @@ runs:
         python3 - <<'PY'
         import json
         import os
+        import re
         import subprocess
         import time
         import urllib.request
@@ -103,11 +104,21 @@ runs:
             return slug
 
         def meaningful_version(value):
-            candidate = str(value or "").strip()
+            candidate = str(value or "").replace("\r", " ").replace("\n", " ").strip()
             if not candidate:
                 return ""
-            if candidate.lower() in {"unknown", "n/a", "none", "null", "not_installed"}:
+            lowered = candidate.lower()
+            if lowered in {"unknown", "n/a", "none", "null", "not_installed", "not_applicable"}:
                 return ""
+            if lowered.startswith("usage:"):
+                return ""
+            if "null object or invalid expression" in lowered:
+                return ""
+            if lowered.startswith("git-hash:"):
+                return ""
+            if "occ_version_complete" in lowered:
+                extracted = re.search(r"\d+(?:\.\d+){1,3}", candidate)
+                return extracted.group(0) if extracted else ""
             return candidate
 
         def unique(values):
@@ -262,6 +273,8 @@ runs:
             return "skipped"
 
         def default_regression_result(status, decision):
+            if decision == "not_applicable_package_manager":
+                return "Regression validation not applicable: tested package installed via package manager in Tests 1-5"
             if decision == "next_install_validated":
                 return "Next version installed successfully on Arm64"
             if decision == "next_bundle_validated":
@@ -293,13 +306,20 @@ runs:
 
         def regression_policy(outputs):
             decision = str(outputs.get("regression_decision") or "not_configured").strip() or "not_configured"
-            if decision == "not_applicable_package_manager":
+            policy = str(outputs.get("regression_policy") or "").strip()
+            if decision == "not_applicable_package_manager" or policy == "package_manager_installed":
                 return {
                     "applicability": "not_applicable",
                     "reason": "package_manager_installed",
                     "note": "Regression validation not applicable: tested package installed via package manager in Tests 1-5.",
                 }
             if decision == "not_configured":
+                if policy == "applicable":
+                    return {
+                        "applicability": "applicable",
+                        "reason": "applicable_deferred",
+                        "note": "Applicable under current policy, but this run did not emit a final regression decision.",
+                    }
                 return {
                     "applicability": "not_configured",
                     "reason": "not_configured",
@@ -322,6 +342,9 @@ runs:
             if decision == "not_configured" and policy_info.get("reason") == "applicable_deferred":
                 decision = "applicable_deferred"
                 status = "skipped"
+            elif decision == "not_configured" and policy_info.get("reason") == "package_manager_installed":
+                decision = "not_applicable_package_manager"
+                status = "skipped"
             latest_version = meaningful_version(outputs.get("regression_latest_version"))
             if not latest_version and decision in {
                 "metadata_review_required",
@@ -334,9 +357,13 @@ runs:
                 "no_newer_stable_available",
             }:
                 latest_version = current_version
+            if not latest_version and decision == "not_applicable_package_manager":
+                latest_version = "not_applicable"
             if not latest_version:
                 latest_version = "unknown"
             next_installed_version = meaningful_version(outputs.get("regression_next_installed_version")) or "not_installed"
+            if decision == "not_applicable_package_manager" and next_installed_version == "not_installed":
+                next_installed_version = "not_applicable"
             regression_result = str(outputs.get("regression_result") or "").strip()
             if not regression_result:
                 if decision == "applicable_deferred":
