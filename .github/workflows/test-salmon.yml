@@ -372,44 +372,65 @@ jobs:
           NEXT_SRC="$NEXT_ROOT/salmon-src"
           NEXT_BUILD="$NEXT_ROOT/build"
           NEXT_INSTALL="$NEXT_ROOT/install"
-          BUILD_OK=1
-          if ! git clone --depth 1 --branch "v${LATEST}" https://github.com/COMBINE-lab/salmon "$NEXT_SRC"; then
-            BUILD_OK=0
+          NEXT_BIN=""
+          NEXT_INSTALL_MODE="official_aarch64_asset"
+          NEXT_ASSET_URL="https://github.com/COMBINE-lab/salmon/releases/download/v${LATEST}/salmon-linux-aarch64.tar.gz"
+          NEXT_ASSET_TARBALL="${NEXT_ROOT}/salmon-next-aarch64.tar.gz"
+
+          ASSET_OK=1
+          if ! curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors -o "${NEXT_ASSET_TARBALL}" "${NEXT_ASSET_URL}"; then
+            ASSET_OK=0
           fi
-          if [ "$BUILD_OK" -eq 1 ]; then
-            cd "$NEXT_SRC"
-            git submodule update --init --recursive || BUILD_OK=0
+          if [ "${ASSET_OK}" -eq 1 ] && ! tar -xzf "${NEXT_ASSET_TARBALL}" -C "${NEXT_ROOT}"; then
+            ASSET_OK=0
           fi
-          if [ "$BUILD_OK" -eq 1 ]; then
-            for header in "$NEXT_SRC/include/SalmonConfig.hpp" "$NEXT_SRC/include/SalmonExceptions.hpp"; do
-              if [ -f "$header" ] && ! grep -q '^#include <cstdint>$' "$header"; then
-                sed -i '1i#include <cstdint>' "$header" || BUILD_OK=0
-              fi
-            done
-          fi
-          if [ "$BUILD_OK" -eq 1 ]; then
-            cmake -S "$NEXT_SRC" -B "$NEXT_BUILD" -DCMAKE_BUILD_TYPE=Release || BUILD_OK=0
-          fi
-          if [ "$BUILD_OK" -eq 1 ]; then
-            cmake --build "$NEXT_BUILD" --target salmon -j2 || BUILD_OK=0
-          fi
-          if [ "$BUILD_OK" -eq 1 ]; then
-            cmake --install "$NEXT_BUILD" --prefix "$NEXT_INSTALL" || BUILD_OK=0
+          if [ "${ASSET_OK}" -eq 1 ]; then
+            NEXT_BIN="$(find "${NEXT_ROOT}" -type f -name salmon -perm -111 | head -n1 || true)"
+            if [ -z "${NEXT_BIN}" ] || [ ! -x "${NEXT_BIN}" ]; then
+              ASSET_OK=0
+            fi
           fi
 
-          NEXT_BIN="$NEXT_INSTALL/bin/salmon"
-          if [ "$BUILD_OK" -eq 1 ] && [ ! -x "$NEXT_BIN" ]; then
-            NEXT_BIN=$(find "$NEXT_BUILD" -type f -name salmon | head -n1 || true)
-          fi
-          if [ "$BUILD_OK" -eq 0 ] || [ -z "${NEXT_BIN:-}" ] || [ ! -x "$NEXT_BIN" ]; then
-            rm -rf "$NEXT_ROOT"
-            emit_result "failed" "next_install_failed" \
-              "Next version install failed on Arm64" \
-              "Current pinned Salmon version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not produce a usable Arm64 Salmon binary from the official upstream source tag." \
-              "install_failed"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [ "${ASSET_OK}" -ne 1 ]; then
+            NEXT_INSTALL_MODE="source_build_fallback"
+            BUILD_OK=1
+            if ! git clone --depth 1 --branch "v${LATEST}" https://github.com/COMBINE-lab/salmon "$NEXT_SRC"; then
+              BUILD_OK=0
+            fi
+            if [ "$BUILD_OK" -eq 1 ]; then
+              cd "$NEXT_SRC"
+              git submodule update --init --recursive || BUILD_OK=0
+            fi
+            if [ "$BUILD_OK" -eq 1 ]; then
+              for header in "$NEXT_SRC/include/SalmonConfig.hpp" "$NEXT_SRC/include/SalmonExceptions.hpp"; do
+                if [ -f "$header" ] && ! grep -q '^#include <cstdint>$' "$header"; then
+                  sed -i '1i#include <cstdint>' "$header" || BUILD_OK=0
+                fi
+              done
+            fi
+            if [ "$BUILD_OK" -eq 1 ]; then
+              cmake -S "$NEXT_SRC" -B "$NEXT_BUILD" -DCMAKE_BUILD_TYPE=Release || BUILD_OK=0
+            fi
+            if [ "$BUILD_OK" -eq 1 ]; then
+              cmake --build "$NEXT_BUILD" --target salmon -j2 || BUILD_OK=0
+            fi
+            if [ "$BUILD_OK" -eq 1 ]; then
+              cmake --install "$NEXT_BUILD" --prefix "$NEXT_INSTALL" || BUILD_OK=0
+            fi
+            NEXT_BIN="$NEXT_INSTALL/bin/salmon"
+            if [ "$BUILD_OK" -eq 1 ] && [ ! -x "$NEXT_BIN" ]; then
+              NEXT_BIN=$(find "$NEXT_BUILD" -type f -name salmon | head -n1 || true)
+            fi
+            if [ "$BUILD_OK" -ne 1 ] || [ -z "${NEXT_BIN:-}" ] || [ ! -x "$NEXT_BIN" ]; then
+              rm -rf "$NEXT_ROOT"
+              emit_result "failed" "next_install_failed" \
+                "Next version install failed on Arm64" \
+                "Current pinned Salmon version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} failed both official Arm64 release-asset install and fallback source-build validation." \
+                "install_failed"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
 
           NEXT_REPORTED="$("$NEXT_BIN" --version 2>&1 | grep -Eo '[0-9]+([.][0-9]+)+' | head -n1 || true)"
@@ -450,12 +471,12 @@ jobs:
           if [ "$RESULT" -eq 0 ] && [ "$NEXT_REPORTED" = "$LATEST" ] && [ -f "$WORKDIR/quant/quant.sf" ] && grep -q '^Name' "$WORKDIR/quant/quant.sf"; then
             emit_result "passed" "next_install_validated" \
               "Next version installed successfully on Arm64" \
-              "Current pinned Salmon version ${CURRENT} passed smoke tests in this run. Regression validation rebuilt candidate source tag ${LATEST} on Arm64, the candidate binary reported the expected version, and it completed the same tiny transcriptome index plus quantification smoke successfully on Arm64." \
+              "Current pinned Salmon version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate ${LATEST} via ${NEXT_INSTALL_MODE}, the candidate binary reported the expected version, and it completed the same tiny transcriptome index plus quantification smoke successfully on Arm64." \
               "$NEXT_REPORTED"
           else
             emit_result "failed" "next_install_failed" \
               "Next version install failed on Arm64" \
-              "Current pinned Salmon version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not complete the Arm64 source-build plus tiny quantification smoke successfully." \
+              "Current pinned Salmon version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} installed via ${NEXT_INSTALL_MODE} did not complete the Arm64 tiny quantification smoke successfully." \
               "${NEXT_REPORTED:-install_failed}"
           fi
 

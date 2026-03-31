@@ -308,19 +308,32 @@ jobs:
             exit 0
           fi
 
-          NEXT="$(
-            if ! curl -fsSL https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/maven-metadata.xml | \
-              python3 - "${CURRENT}" <<'PY'
+          METADATA_URL="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/maven-metadata.xml"
+          METADATA_XML="${RUNNER_TEMP}/apache-maven-metadata.xml"
+          LOOKUP_STATUS="failed"
+          NEXT=""
+
+          for attempt in 1 2 3; do
+            if curl -fsSL --retry 5 --retry-delay 2 "${METADATA_URL}" -o "${METADATA_XML}"; then
+              NEXT="$(
+                python3 - "${CURRENT}" "${METADATA_XML}" <<'PY'
           import re
           import sys
           import xml.etree.ElementTree as ET
 
           current = (sys.argv[1] or "").strip()
+          metadata_path = (sys.argv[2] or "").strip()
+
           if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", current):
               print("")
               raise SystemExit(0)
 
-          root = ET.fromstring(sys.stdin.read())
+          try:
+              root = ET.parse(metadata_path).getroot()
+          except ET.ParseError:
+              print("__LOOKUP_FAILED__")
+              raise SystemExit(0)
+
           versions = []
           for node in root.findall("versioning/versions/version"):
               value = (node.text or "").strip()
@@ -338,10 +351,20 @@ jobs:
           )
           print(candidates[0] if candidates else "")
           PY
-            then
-              echo "__LOOKUP_FAILED__"
+              )"
+
+              if [ "${NEXT}" != "__LOOKUP_FAILED__" ]; then
+                LOOKUP_STATUS="ok"
+                break
+              fi
             fi
-          )"
+
+            sleep 2
+          done
+
+          if [ "${LOOKUP_STATUS}" != "ok" ]; then
+            NEXT="__LOOKUP_FAILED__"
+          fi
 
           if [ "$NEXT" = "__LOOKUP_FAILED__" ]; then
             echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"

@@ -564,8 +564,10 @@ jobs:
           REGRESSION_DEFERRED=0
           REGRESSION_NOT_APPLICABLE_PM=0
           REGRESSION_NOT_CONFIGURED=0
-          REGRESSION_LIST=""
-          REGRESSION_NA_LIST=""
+          REGRESSION_PASS_LIST=""
+          REGRESSION_FAIL_LIST=""
+          REGRESSION_DEFERRED_LIST=""
+          REGRESSION_NOT_CONFIGURED_LIST=""
 
           for result_dir in test-results/*/; do
             for json_file in "$result_dir"*.json; do
@@ -588,6 +590,7 @@ jobs:
               NAME=$(jq -r '.package.name' "$json_file")
               VERSION=$(jq -r '.package.version' "$json_file")
               STATUS=$(jq -r '.run.status' "$json_file")
+              BADGE_STATUS=$(jq -r '.metadata.badge_status // ""' "$json_file")
               PASSED_COUNT=$(jq -r '.tests.passed' "$json_file")
               FAILED_COUNT=$(jq -r '.tests.failed' "$json_file")
               SKIPPED_COUNT=$(jq -r '.tests.skipped // 0' "$json_file")
@@ -606,7 +609,12 @@ jobs:
                 VERSION="unknown"
               fi
 
-              if [ "$STATUS" = "success" ]; then
+              EFFECTIVE_STATUS="$STATUS"
+              if [ "$EFFECTIVE_STATUS" = "success" ] && { [ "$FAILED_COUNT" -gt 0 ] || [ "$BADGE_STATUS" = "failing" ]; }; then
+                EFFECTIVE_STATUS="failure"
+              fi
+
+              if [ "$EFFECTIVE_STATUS" = "success" ]; then
                 PASS=$((PASS + 1))
                 PASS_LIST="${PASS_LIST}| ✅ $NAME | $VERSION | $PASSED_COUNT/$TOTAL_TESTS passed |"$'\n'
               else
@@ -616,13 +624,15 @@ jobs:
 
               if [ "$REGRESSION_APPLICABILITY" = "not_applicable" ] && [ "$REGRESSION_REASON" = "package_manager_installed" ]; then
                 REGRESSION_NOT_APPLICABLE_PM=$((REGRESSION_NOT_APPLICABLE_PM + 1))
-                [ -z "$REGRESSION_NOTE" ] && REGRESSION_NOTE="Installed via package manager in Tests 1-5; regression validation is not applicable under current policy."
-                REGRESSION_NA_LIST="${REGRESSION_NA_LIST}| ${NAME} | ${VERSION} | ${REGRESSION_NOTE} |"$'\n'
                 continue
               fi
 
               if [ "$REGRESSION_APPLICABILITY" = "not_configured" ] || { [ -z "$REGRESSION_APPLICABILITY" ] && [ -z "$REGRESSION_ENTRY" ]; }; then
                 REGRESSION_NOT_CONFIGURED=$((REGRESSION_NOT_CONFIGURED + 1))
+                if [ -z "$REGRESSION_NOTE" ]; then
+                  REGRESSION_NOTE="Workflow did not emit regression classification or Test 6 result metadata for this run."
+                fi
+                REGRESSION_NOT_CONFIGURED_LIST="${REGRESSION_NOT_CONFIGURED_LIST}| ${NAME} | ${VERSION} | ${REGRESSION_NOTE} |"$'\n'
                 continue
               fi
 
@@ -715,7 +725,17 @@ jobs:
                 REGRESSION_RESULT=$(echo "$REGRESSION_RESULT" | sed 's/|/\\|/g')
                 [ -z "$COMPARISON" ] && COMPARISON="No regression note recorded."
 
-                REGRESSION_LIST="${REGRESSION_LIST}| ${NAME} | ${CURRENT_VERSION} | ${LATEST_VERSION} | ${NEXT_INSTALLED_VERSION} | ${REGRESSION_RESULT} | ${COMPARISON} |"$'\n'
+                case "$REGRESSION_CLASS" in
+                  passed)
+                    REGRESSION_PASS_LIST="${REGRESSION_PASS_LIST}| ${NAME} | ${CURRENT_VERSION} | ${LATEST_VERSION} | ${NEXT_INSTALLED_VERSION} | ${REGRESSION_RESULT} | ${COMPARISON} |"$'\n'
+                    ;;
+                  failed)
+                    REGRESSION_FAIL_LIST="${REGRESSION_FAIL_LIST}| ${NAME} | ${CURRENT_VERSION} | ${LATEST_VERSION} | ${NEXT_INSTALLED_VERSION} | ${REGRESSION_RESULT} | ${COMPARISON} |"$'\n'
+                    ;;
+                  *)
+                    REGRESSION_DEFERRED_LIST="${REGRESSION_DEFERRED_LIST}| ${NAME} | ${CURRENT_VERSION} | ${LATEST_VERSION} | ${DECISION} | ${REGRESSION_RESULT} |"$'\n'
+                    ;;
+                esac
               fi
             done
           done
@@ -737,19 +757,38 @@ jobs:
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ $REGRESSION_TOTAL -gt 0 ]; then
+          if [ $REGRESSION_PASS -gt 0 ]; then
             echo "## 🔁 Regression Validation Snapshot" >> $GITHUB_STEP_SUMMARY
             echo "| Package | Current Tested | Next Candidate | Next Installed | Regression Result | Notes |" >> $GITHUB_STEP_SUMMARY
             echo "| :--- | :--- | :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
-            echo -e "$REGRESSION_LIST" >> $GITHUB_STEP_SUMMARY
+            echo -e "$REGRESSION_PASS_LIST" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
 
-          if [ $REGRESSION_NOT_APPLICABLE_PM -gt 0 ]; then
-            echo "## 📦 Regression Not Applicable (Package Manager Installed)" >> $GITHUB_STEP_SUMMARY
-            echo "| Package | Version | Note |" >> $GITHUB_STEP_SUMMARY
+          if [ $REGRESSION_FAIL -gt 0 ]; then
+            echo "## ❌ Regression Validation Failed" >> $GITHUB_STEP_SUMMARY
+            echo "| Package | Current Tested | Next Candidate | Next Installed | Regression Result | Notes |" >> $GITHUB_STEP_SUMMARY
+            echo "| :--- | :--- | :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+            echo -e "$REGRESSION_FAIL_LIST" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ $REGRESSION_DEFERRED -gt 0 ]; then
+            echo "## ⏸️ Regression Validation Deferred / Not Applicable" >> $GITHUB_STEP_SUMMARY
+            echo "| Package | Current Tested | Next Candidate | Decision | Reason |" >> $GITHUB_STEP_SUMMARY
+            echo "| :--- | :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+            echo -e "$REGRESSION_DEFERRED_LIST" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ $REGRESSION_NOT_CONFIGURED -gt 0 ]; then
+            echo "## ⚠️ Regression Not Configured / Not Emitted" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "These workflows did not emit enough regression metadata for this run." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Package | Version | Reason |" >> $GITHUB_STEP_SUMMARY
             echo "| :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
-            echo -e "$REGRESSION_NA_LIST" >> $GITHUB_STEP_SUMMARY
+            echo -e "$REGRESSION_NOT_CONFIGURED_LIST" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
 

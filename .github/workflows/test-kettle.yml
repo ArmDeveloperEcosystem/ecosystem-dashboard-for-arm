@@ -123,8 +123,10 @@ jobs:
         id: install
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y openjdk-11-jdk maven unzip curl git
+          if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y git curl
+          fi
 
           KETTLE_TAG=$(git ls-remote --tags "${KETTLE_REPO}" | awk -F/ '/refs\/tags\/[0-9]/{print $3}' | sed 's/\^{}//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$' | sort -uV | tail -n 1)
           if [ -z "$KETTLE_TAG" ]; then
@@ -133,20 +135,61 @@ jobs:
           fi
           echo "tag=$KETTLE_TAG" >> "$GITHUB_OUTPUT"
 
-          # Preflight: Pentaho artifacts occasionally return HTML/error pages instead of Maven XML.
-          POM_URL="https://repo.orl.eng.hitachivantara.com/artifactory/pnt-mvn/org/pentaho/pentaho-ce-jar-parent-pom/${KETTLE_TAG}/pentaho-ce-jar-parent-pom-${KETTLE_TAG}.pom"
-          POM_PROBE="/tmp/kettle-parent-pom-probe.xml"
-          CONTENT_TYPE=$(curl -fsSL -o "$POM_PROBE" -w '%{content_type}' "$POM_URL" || true)
-          if ! grep -q '<project' "$POM_PROBE"; then
+          # Preflight: verify parent POM endpoint is actually Maven XML before heavy build/setup.
+          POM_PATH="org/pentaho/pentaho-ce-jar-parent-pom/${KETTLE_TAG}/pentaho-ce-jar-parent-pom-${KETTLE_TAG}.pom"
+          LEGACY_POM_URL="https://repo.orl.eng.hitachivantara.com/artifactory/pnt-mvn/${POM_PATH}"
+          JFROG_POM_URL="https://hitachiedge1.jfrog.io/artifactory/pnt-mvn/${POM_PATH}"
+          LEGACY_HEADERS="/tmp/kettle-parent-pom-legacy.headers"
+          LEGACY_BODY="/tmp/kettle-parent-pom-legacy.xml"
+          JFROG_HEADERS="/tmp/kettle-parent-pom-jfrog.headers"
+          JFROG_BODY="/tmp/kettle-parent-pom-jfrog.xml"
+
+          LEGACY_META=$(curl -sS -L --retry 3 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 90 \
+            -H 'Accept: application/xml,text/xml,*/*' \
+            -D "$LEGACY_HEADERS" -o "$LEGACY_BODY" -w '%{http_code}|%{content_type}|%{url_effective}' "$LEGACY_POM_URL" || true)
+          LEGACY_STATUS="${LEGACY_META%%|*}"
+          LEGACY_REST="${LEGACY_META#*|}"
+          LEGACY_CONTENT_TYPE="${LEGACY_REST%%|*}"
+          LEGACY_EFFECTIVE_URL="${LEGACY_META##*|}"
+
+          ACTIVE_POM_URL=""
+          ACTIVE_REPO_BASE="https://repo.orl.eng.hitachivantara.com/artifactory/pnt-mvn"
+          if grep -q '<project' "$LEGACY_BODY"; then
+            ACTIVE_POM_URL="$LEGACY_POM_URL"
+          else
+            JFROG_META=$(curl -sS --retry 3 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 90 \
+              -H 'Accept: application/xml,text/xml,*/*' \
+              -D "$JFROG_HEADERS" -o "$JFROG_BODY" -w '%{http_code}|%{content_type}|%{url_effective}' "$JFROG_POM_URL" || true)
+            JFROG_STATUS="${JFROG_META%%|*}"
+            JFROG_REST="${JFROG_META#*|}"
+            JFROG_CONTENT_TYPE="${JFROG_REST%%|*}"
+
+            if grep -q '<project' "$JFROG_BODY"; then
+              ACTIVE_POM_URL="$JFROG_POM_URL"
+              ACTIVE_REPO_BASE="https://hitachiedge1.jfrog.io/artifactory/pnt-mvn"
+            fi
+          fi
+
+          if [ -z "$ACTIVE_POM_URL" ]; then
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
-            echo "install_blocker=upstream_pentaho_repo_returned_non_maven_content" >> "$GITHUB_OUTPUT"
-            echo "install_blocker_details=Pentaho artifact endpoint returned non-Maven content (content-type: ${CONTENT_TYPE:-unknown}) for ${POM_URL}." >> "$GITHUB_OUTPUT"
-            head -n 40 "$POM_PROBE" || true
+            if [ "${JFROG_STATUS:-0}" = "401" ] || grep -q '"message" : "Unauthorized"' "$JFROG_BODY" 2>/dev/null; then
+              echo "install_blocker=upstream_pentaho_repo_requires_authentication" >> "$GITHUB_OUTPUT"
+              echo "install_blocker_details=Legacy Pentaho endpoint did not return Maven XML (status: ${LEGACY_STATUS:-unknown}, content-type: ${LEGACY_CONTENT_TYPE:-unknown}, effective URL: ${LEGACY_EFFECTIVE_URL:-unknown}); direct JFrog artifact endpoint returned HTTP 401 Unauthorized for ${JFROG_POM_URL}." >> "$GITHUB_OUTPUT"
+            else
+              echo "install_blocker=upstream_pentaho_repo_returned_non_maven_content" >> "$GITHUB_OUTPUT"
+              echo "install_blocker_details=Pentaho artifact endpoint returned non-Maven content (legacy status: ${LEGACY_STATUS:-unknown}, legacy content-type: ${LEGACY_CONTENT_TYPE:-unknown}, effective URL: ${LEGACY_EFFECTIVE_URL:-unknown}; jfrog status: ${JFROG_STATUS:-unknown}, jfrog content-type: ${JFROG_CONTENT_TYPE:-unknown})." >> "$GITHUB_OUTPUT"
+            fi
+            head -n 30 "$LEGACY_BODY" || true
+            head -n 30 "$JFROG_BODY" || true
             exit 1
           fi
 
+          sudo apt-get update
+          sudo apt-get install -y openjdk-11-jdk maven unzip curl git
+
           mkdir -p "$HOME/.m2"
-          curl -fsSL "${KETTLE_SETTINGS_URL}" -o "$HOME/.m2/settings.xml"
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 3 "${KETTLE_SETTINGS_URL}" -o "$HOME/.m2/settings.xml"
+          sed -i "s#https://repo.orl.eng.hitachivantara.com/artifactory/pnt-mvn#${ACTIVE_REPO_BASE}#g" "$HOME/.m2/settings.xml"
 
           rm -rf /tmp/kettle-base /tmp/kettle-dist
           git clone --depth 1 --branch "$KETTLE_TAG" "${KETTLE_REPO}" /tmp/kettle-base
@@ -154,7 +197,7 @@ jobs:
 
           BUILD_OK=0
           for attempt in 1 2; do
-            if timeout 45m mvn -B -s "$HOME/.m2/settings.xml" -DskipTests -DskipITs -Dmaven.javadoc.skip=true -pl assemblies/client -am package | tee /tmp/kettle-build.log; then
+            if timeout 45m mvn -B -s "$HOME/.m2/settings.xml" -Dmaven.wagon.http.retryHandler.count=5 -DskipTests -DskipITs -Dmaven.javadoc.skip=true -pl assemblies/client -am package | tee /tmp/kettle-build.log; then
               BUILD_OK=1
               break
             fi
@@ -164,7 +207,10 @@ jobs:
             fi
           done
           if [ "$BUILD_OK" -ne 1 ]; then
-            if grep -q "Expected root element 'project' but found 'html'" /tmp/kettle-build.log; then
+            if grep -Eq "status: 401|Return code is: 401|Unauthorized" /tmp/kettle-build.log; then
+              echo "install_blocker=upstream_pentaho_repo_requires_authentication" >> "$GITHUB_OUTPUT"
+              echo "install_blocker_details=Pentaho Maven dependency resolution failed with unauthorized access (HTTP 401) during source build." >> "$GITHUB_OUTPUT"
+            elif grep -q "Expected root element 'project' but found 'html'" /tmp/kettle-build.log; then
               echo "install_blocker=upstream_pentaho_repo_returned_non_maven_content" >> "$GITHUB_OUTPUT"
               echo "install_blocker_details=Pentaho Maven dependency resolution returned HTML/non-POM payload during source build." >> "$GITHUB_OUTPUT"
             fi
