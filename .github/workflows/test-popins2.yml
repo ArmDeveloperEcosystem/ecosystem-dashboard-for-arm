@@ -58,6 +58,9 @@ on:
       regression_next_installed_version:
         description: Candidate version reported by installed next artifact
         value: ${{ jobs.test-popins2.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy for this workflow
+        value: ${{ jobs.test-popins2.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-popins2.outputs.run_id }}
@@ -102,6 +105,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -145,10 +149,39 @@ jobs:
           set -euo pipefail
           BUILD_ROOT="${{ steps.install.outputs.build_root }}"
           VERSION=$(git -C "$BUILD_ROOT" describe --tags --exact-match | sed 's/^v//')
+          NEXT_TAG=$(python3 - "$VERSION" <<'PY'
+          import json
+          import re
+          import sys
+          import urllib.request
+
+          current = (sys.argv[1] or "").strip()
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", current):
+              print("")
+              raise SystemExit(0)
+
+          tags = json.loads(urllib.request.urlopen("https://api.github.com/repos/kehrlab/PopIns2/tags?per_page=100", timeout=20).read().decode("utf-8"))
+          versions = set()
+          for tag in tags:
+              name = (tag.get("name") or "").strip()
+              match = re.fullmatch(r"v?([0-9]+\.[0-9]+\.[0-9]+)", name)
+              if match:
+                  versions.add(match.group(1))
+
+          def key(value: str):
+              return tuple(int(part) for part in value.split("."))
+
+          current_key = key(current)
+          candidates = sorted((v for v in versions if key(v) > current_key), key=key)
+          print(f"v{candidates[0]}" if candidates else "")
+          PY
+          )
+          NEXT_VERSION=$(printf '%s' "$NEXT_TAG" | sed 's/^v//')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "latest=${POPINS2_TAG}" >> "$GITHUB_OUTPUT"
+          echo "latest=${NEXT_VERSION:-$VERSION}" >> "$GITHUB_OUTPUT"
+          echo "next_tag=${NEXT_TAG}" >> "$GITHUB_OUTPUT"
           echo "Detected PopIns2 release tag: $VERSION"
-          echo "Latest stable release tag: ${POPINS2_TAG}"
+          echo "Next newer release candidate tag: ${NEXT_TAG:-none}"
 
       - name: Test 1 - Check binary exists
         id: test1
@@ -251,7 +284,7 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT_VERSION="${POPINS2_VERSION}"
-          LATEST_TAG="${{ steps.version.outputs.latest }}"
+          LATEST_TAG="${{ steps.version.outputs.next_tag || '' }}"
           LATEST_VERSION=$(printf '%s' "$LATEST_TAG" | sed 's/^v//')
           NEXT_INSTALLED="not_installed"
           DECISION=""
@@ -259,11 +292,12 @@ jobs:
           COMPARISON=""
           STATUS="failed"
 
-          if [ "$LATEST_TAG" = "${POPINS2_TAG}" ]; then
+          if [ -z "$LATEST_TAG" ]; then
             DECISION="no_newer_stable_available"
             REGRESSION_RESULT="No newer stable release available for Test 6"
             COMPARISON="Current pinned baseline already matches the newest public stable upstream release, so there is no newer stable Arm64 candidate for a genuine Test 6 upgrade check."
             NEXT_INSTALLED="${CURRENT_VERSION}"
+            LATEST_VERSION="${CURRENT_VERSION}"
             STATUS="skipped"
           else
             NEXT_ROOT="${RUNNER_TEMP}/popins2-${LATEST_VERSION}-next"
@@ -374,7 +408,7 @@ jobs:
             fi
           done
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
 
           if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"

@@ -44,6 +44,9 @@ on:
       regression_result:
         description: Human readable regression result
         value: ${{ jobs.test-maven.outputs.regression_result }}
+      regression_policy:
+        description: Regression policy classification for publish pipeline
+        value: ${{ jobs.test-maven.outputs.regression_policy }}
       regression_comparison:
         description: Regression comparison note
         value: ${{ jobs.test-maven.outputs.regression_comparison }}
@@ -92,6 +95,7 @@ jobs:
       regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_policy: ${{ steps.test6.outputs.regression_policy || steps.metadata.outputs.regression_policy || 'applicable' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
@@ -111,6 +115,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=maven" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/maven" >> "$GITHUB_OUTPUT"
+          echo "regression_policy=applicable" >> "$GITHUB_OUTPUT"
       - name: Setup Java
         uses: actions/setup-java@v5
         with:
@@ -283,6 +288,7 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          echo "regression_policy=${{ steps.metadata.outputs.regression_policy || 'applicable' }}" >> "$GITHUB_OUTPUT"
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
              [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
@@ -299,34 +305,53 @@ jobs:
             exit 0
           fi
 
-          LATEST=$(curl -fsSL https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/maven-metadata.xml | \
-            python3 -c "import re,sys,xml.etree.ElementTree as ET;root=ET.fromstring(sys.stdin.read());r=(root.findtext('versioning/release') or '').strip();print(r if re.match(r'^[0-9]+(\\.[0-9]+)*$', r) else '')")
-          if [ -z "${LATEST}" ]; then
-            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-            echo "latest_version=unknown" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-            echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Could not resolve latest stable Maven release from metadata in this run." >> "$GITHUB_OUTPUT"
-            echo "comparison=Baseline ${CURRENT}; latest stable could not be determined automatically." >> "$GITHUB_OUTPUT"
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          NEXT=$(curl -fsSL https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/maven-metadata.xml | \
+            python3 - "${CURRENT}" <<'PY'
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
 
-          if [ "${LATEST}" = "${CURRENT}" ]; then
+          current = (sys.argv[1] or "").strip()
+          if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", current):
+              print("")
+              raise SystemExit(0)
+
+          root = ET.fromstring(sys.stdin.read())
+          versions = []
+          for node in root.findall("versioning/versions/version"):
+              value = (node.text or "").strip()
+              if re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", value):
+                  versions.append(value)
+
+          def key(v: str):
+              return tuple(int(part) for part in v.split("."))
+
+          current_key = key(current)
+          current_major = current.split(".")[0]
+          candidates = sorted(
+              {v for v in versions if v.split(".")[0] == current_major and key(v) > current_key},
+              key=key,
+          )
+          print(candidates[0] if candidates else "")
+          PY
+          )
+
+          if [ -z "${NEXT}" ]; then
             echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${CURRENT}" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
             echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-            echo "regression_result=No newer stable Maven version is available beyond the baseline." >> "$GITHUB_OUTPUT"
-            echo "comparison=Baseline ${CURRENT} matches latest stable ${LATEST}; next-version regression is not applicable for this run." >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable Maven release exists in the same major stream as the tested baseline." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT} has no higher stable version in the current major stream; Test 6 is not applicable for this run." >> "$GITHUB_OUTPUT"
             echo "status=skipped" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          NEXT_BASE="apache-maven-${LATEST}"
+          NEXT_BASE="apache-maven-${NEXT}"
           NEXT_DIR="${RUNNER_TEMP}/maven-next"
           NEXT_TARBALL="${RUNNER_TEMP}/${NEXT_BASE}-bin.tar.gz"
-          NEXT_URL="https://archive.apache.org/dist/maven/maven-3/${LATEST}/binaries/${NEXT_BASE}-bin.tar.gz"
+          NEXT_SERIES_DIR="maven-${NEXT%%.*}"
+          NEXT_URL="https://archive.apache.org/dist/maven/${NEXT_SERIES_DIR}/${NEXT}/binaries/${NEXT_BASE}-bin.tar.gz"
           rm -rf "${NEXT_DIR}"
           mkdir -p "${NEXT_DIR}"
           curl -fsSL --retry 5 --retry-delay 2 "${NEXT_URL}" -o "${NEXT_TARBALL}"
@@ -334,34 +359,34 @@ jobs:
           NEXT_BIN="${NEXT_DIR}/${NEXT_BASE}/bin/mvn"
           NEXT_INSTALLED=$("${NEXT_BIN}" -version 2>&1 | awk '/Apache Maven/ {print $3; exit}' | sed 's/\x1b\[[0-9;]*m//g')
 
-          if [ -z "${NEXT_INSTALLED}" ] || [ "${NEXT_INSTALLED}" != "${LATEST}" ]; then
+          if [ -z "${NEXT_INSTALLED}" ] || [ "${NEXT_INSTALLED}" != "${NEXT}" ]; then
             echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${NEXT}" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=${NEXT_INSTALLED:-not_installed}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_or_version_mismatch" >> "$GITHUB_OUTPUT"
             echo "regression_result=Failed to install and verify the selected next Maven release." >> "$GITHUB_OUTPUT"
-            echo "comparison=Baseline ${CURRENT}; attempted next ${LATEST}; observed ${NEXT_INSTALLED:-not_installed}." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT}; attempted next ${NEXT}; observed ${NEXT_INSTALLED:-not_installed}." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           "${NEXT_BIN}" -q -f my-app/pom.xml -DskipTests package >/tmp/maven-next-build.log 2>&1 || {
             echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${NEXT}" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
             echo "decision=next_regression_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next-version Maven build smoke test failed." >> "$GITHUB_OUTPUT"
-            echo "comparison=Baseline ${CURRENT}; next ${LATEST} installed, but build regression check did not pass." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT}; next ${NEXT} installed, but build regression check did not pass." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 0
           }
 
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${NEXT}" >> "$GITHUB_OUTPUT"
           echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
           echo "decision=validated_next_release" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Validated baseline Maven against the latest stable release with successful install and build smoke checks." >> "$GITHUB_OUTPUT"
-          echo "comparison=Baseline ${CURRENT} and next ${LATEST} both passed smoke validation; no regression observed in this workflow scope." >> "$GITHUB_OUTPUT"
+          echo "regression_result=Validated baseline Maven against the next newer stable release with successful install and build smoke checks." >> "$GITHUB_OUTPUT"
+          echo "comparison=Baseline ${CURRENT} and next ${NEXT} both passed smoke validation; no regression observed in this workflow scope." >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
 
             # ============================================================

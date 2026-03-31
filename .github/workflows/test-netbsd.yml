@@ -46,6 +46,9 @@ on:
       regression_result:
         description: Human readable regression result
         value: ${{ jobs.test-netbsd.outputs.regression_result }}
+      regression_policy:
+        description: Regression policy classification for publish pipeline
+        value: ${{ jobs.test-netbsd.outputs.regression_policy }}
       regression_comparison:
         description: Regression comparison note
         value: ${{ jobs.test-netbsd.outputs.regression_comparison }}
@@ -98,6 +101,7 @@ jobs:
       regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_policy: ${{ steps.test6.outputs.regression_policy || steps.metadata.outputs.regression_policy || 'applicable' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
@@ -117,6 +121,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=netbsd" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/netbsd" >> "$GITHUB_OUTPUT"
+          echo "regression_policy=applicable" >> "$GITHUB_OUTPUT"
           echo "current_version=${CURRENT_BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
       - name: Install NetBSD QEMU dependencies
         id: install
@@ -140,10 +145,16 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          LATEST=$(
-            python3 - <<'PY'
+          NEXT=$(
+            python3 - "${CURRENT_BASELINE_VERSION}" <<'PY'
           import re
+          import sys
           import urllib.request
+
+          current = (sys.argv[1] or "").strip()
+          if not re.fullmatch(r"[0-9]+\.[0-9]+", current):
+              print("")
+              raise SystemExit(0)
 
           html = urllib.request.urlopen("https://www.netbsd.org/releases/formal.html", timeout=20).read().decode("utf-8", "ignore")
           versions = []
@@ -151,13 +162,15 @@ jobs:
               major, minor = map(int, version.split("."))
               versions.append((major, minor, version))
           versions = sorted(set(versions))
-          print(versions[-1][2] if versions else "")
+          current_key = tuple(map(int, current.split(".")))
+          candidates = [entry[2] for entry in versions if (entry[0], entry[1]) > current_key]
+          print(candidates[0] if candidates else "")
           PY
           )
           echo "version=${CURRENT_BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "latest=${NEXT}" >> "$GITHUB_OUTPUT"
           echo "Detected NetBSD version: ${CURRENT_BASELINE_VERSION}"
-          echo "Detected latest stable release: ${LATEST}"
+          echo "Detected next newer stable release candidate: ${NEXT:-none}"
 
       - name: Test 1 - Check image archive exists
         id: test1
@@ -280,6 +293,8 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          echo "regression_policy=${{ steps.metadata.outputs.regression_policy || 'applicable' }}" >> "$GITHUB_OUTPUT"
+          START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || env.CURRENT_BASELINE_VERSION || 'unknown' }}"
           LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
 
@@ -295,17 +310,21 @@ jobs:
             echo "regression_result=Regression validation skipped because one or more baseline tests (1-5) failed." >> "$GITHUB_OUTPUT"
             echo "comparison=Baseline tests failed, so next-version validation is not trustworthy for this run." >> "$GITHUB_OUTPUT"
             echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           if [ -z "${LATEST}" ] || [ "${LATEST}" = "unknown" ]; then
             echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-            echo "latest_version=unknown" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-            echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Latest stable NetBSD release could not be resolved automatically in this run." >> "$GITHUB_OUTPUT"
-            echo "comparison=Baseline ${CURRENT}; latest stable release lookup was unavailable." >> "$GITHUB_OUTPUT"
+            echo "latest_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable NetBSD release is available beyond baseline." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT} has no higher stable release candidate from the formal NetBSD release stream, so Test 6 is not applicable for this run." >> "$GITHUB_OUTPUT"
             echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -317,16 +336,78 @@ jobs:
             echo "regression_result=No newer stable NetBSD release is available beyond baseline." >> "$GITHUB_OUTPUT"
             echo "comparison=Baseline ${CURRENT} matches latest stable ${LATEST}; next-version regression is not applicable for this run." >> "$GITHUB_OUTPUT"
             echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "regression_result=NetBSD uses full-image QEMU boot validation; next-version image boot is deferred for manual review in this workflow." >> "$GITHUB_OUTPUT"
-          echo "comparison=Baseline ${CURRENT} boot smoke passed; newer stable ${LATEST} detected, but full next-image boot regression is deferred to avoid non-deterministic CI hangs." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          NEXT_DIR=$(mktemp -d)
+          NEXT_GZ="${NEXT_DIR}/arm64-next.img.gz"
+          NEXT_IMG="${NEXT_DIR}/arm64-next.img"
+          NEXT_LOG="/tmp/netbsd-next-boot.log"
+          NEXT_URL="${NETBSD_MIRROR}/NetBSD-${LATEST}/${NETBSD_PLATFORM}/${NETBSD_GZIMG}"
+
+          if ! curl -fsSL -o "${NEXT_GZ}" "${NEXT_URL}"; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Detected next NetBSD release ${LATEST}, but its ARM64 image could not be downloaded from the formal release path." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if ! gzip -t "${NEXT_GZ}"; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Downloaded NetBSD ${LATEST} ARM64 image archive is corrupt and cannot be validated for boot regression testing." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          gzip -dc "${NEXT_GZ}" > "${NEXT_IMG}"
+          timeout 90 qemu-system-aarch64 \
+            -M virt \
+            -cpu cortex-a57 \
+            -m 1024 \
+            -nographic \
+            -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
+            -drive file="${NEXT_IMG}",if=virtio,format=raw \
+            > "${NEXT_LOG}" 2>&1 || true
+
+          if grep -q "NetBSD ${LATEST} (GENERIC64)" "${NEXT_LOG}" \
+            && grep -q "root on dk1" "${NEXT_LOG}"; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT} booted successfully in Tests 1-5, and next stable NetBSD ${LATEST} also booted successfully under the same QEMU Arm64 validation path." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat "${NEXT_LOG}" || true
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=boot_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT} booted in Tests 1-5, but next stable NetBSD ${LATEST} did not complete equivalent boot smoke checks under QEMU Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         if: always()

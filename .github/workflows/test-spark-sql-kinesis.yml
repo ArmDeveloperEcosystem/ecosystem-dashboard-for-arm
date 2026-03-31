@@ -177,10 +177,54 @@ jobs:
       - name: Get Spark-Sql-Kinesis version
         id: version
         run: |
+          set -euo pipefail
           cd spark-sql-kinesis
-          VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout || echo "1.2.x")
+          VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout || echo "unknown")
+          LATEST="$(
+            CURRENT_VERSION="$VERSION" python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.parse
+          import urllib.request
+
+          current = os.environ.get("CURRENT_VERSION", "").strip()
+          m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)_spark-\d+\.\d+", current)
+          if not m:
+              print("unknown")
+              raise SystemExit(0)
+          current_tuple = tuple(int(x) for x in m.groups())
+
+          query = urllib.parse.urlencode({
+              "q": 'g:"com.roncemer.spark" AND a:"spark-sql-kinesis_2.13"',
+              "core": "gav",
+              "rows": "200",
+              "wt": "json",
+          })
+          url = f"https://search.maven.org/solrsearch/select?{query}"
+          data = json.load(urllib.request.urlopen(url, timeout=30))
+
+          stable = []
+          for doc in data.get("response", {}).get("docs", []):
+              v = (doc.get("v") or "").strip()
+              mv = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)_spark-\d+\.\d+", v)
+              if not mv:
+                  continue
+              stable.append((tuple(int(x) for x in mv.groups()), v))
+
+          if not stable:
+              print(current)
+              raise SystemExit(0)
+
+          stable.sort(key=lambda item: item[0])
+          next_newer = next((v for parts, v in stable if parts > current_tuple), "")
+          print(next_newer if next_newer else current)
+          PY
+          )"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
           echo "Detected version: $VERSION"
+          echo "Detected next newer stable candidate: $LATEST"
       
       - name: Test 1 - Verify Jar Existence
         id: test1
@@ -279,26 +323,82 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT_VERSION="${{ steps.version.outputs.version || '1.2.1' }}"
-          NEXT_VERSION=""
-          RESULT="no_newer_stable_available"
-          DETAILS="Public Spark-Sql-Kinesis releases currently expose only 1.2.1, so there is no clean newer stable release for a real Arm64 Test 6 upgrade validation."
+          CURRENT_VERSION="${{ steps.version.outputs.version || 'unknown' }}"
+          NEXT_VERSION="${{ steps.version.outputs.latest || 'unknown' }}"
+
+          if [ -z "$NEXT_VERSION" ] || [ "$NEXT_VERSION" = "unknown" ]; then
+            RESULT="Next version lookup failed on Arm64"
+            DETAILS="Current pinned Spark-Sql-Kinesis version ${CURRENT_VERSION} passed baseline checks, but the next newer stable release could not be resolved from Maven Central."
+            echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+            echo "latest_version=unknown" >> $GITHUB_OUTPUT
+            echo "next_installed_version=lookup_failed" >> $GITHUB_OUTPUT
+            echo "decision=next_lookup_failed" >> $GITHUB_OUTPUT
+            echo "regression_result=${RESULT}" >> $GITHUB_OUTPUT
+            echo "comparison=${DETAILS}" >> $GITHUB_OUTPUT
+            echo "status=failed" >> $GITHUB_OUTPUT
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          if [ "$NEXT_VERSION" = "$CURRENT_VERSION" ]; then
+            RESULT="No newer stable release available for Test 6"
+            DETAILS="Current pinned Spark-Sql-Kinesis release ${CURRENT_VERSION} already matches the newest stable version available on Maven Central for artifact com.roncemer.spark:spark-sql-kinesis_2.13."
+            echo "=== Regression Validation (Next Version Install) ==="
+            echo "Current version tested in Tests 1-5: ${CURRENT_VERSION}"
+            echo "Next version targeted for install validation: ${NEXT_VERSION}"
+            echo "Regression install result: ${RESULT}"
+            echo "Details: ${DETAILS}"
+            echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+            echo "latest_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
+            echo "next_installed_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
+            echo "decision=no_newer_stable_available" >> $GITHUB_OUTPUT
+            echo "regression_result=${RESULT}" >> $GITHUB_OUTPUT
+            echo "comparison=${DETAILS}" >> $GITHUB_OUTPUT
+            echo "status=skipped" >> $GITHUB_OUTPUT
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          ARTIFACT="com.roncemer.spark:spark-sql-kinesis_2.13:${NEXT_VERSION}"
+          if mvn -q dependency:get -Dartifact="${ARTIFACT}" >/tmp/spark-sql-kinesis-regression.log 2>&1; then
+            RESULT="Next version installed successfully on Arm64"
+            DETAILS="Current pinned Spark-Sql-Kinesis release ${CURRENT_VERSION} passed baseline checks. Regression validation resolved next stable release ${NEXT_VERSION} from Maven Central and downloaded artifact ${ARTIFACT} successfully on Arm64."
+            NEXT_STATUS="${NEXT_VERSION}"
+            DECISION="next_install_validated"
+            STATUS="passed"
+          else
+            cat /tmp/spark-sql-kinesis-regression.log || true
+            RESULT="Next version install failed on Arm64"
+            DETAILS="Current pinned Spark-Sql-Kinesis release ${CURRENT_VERSION} passed baseline checks, but Maven artifact resolution failed for next stable release ${NEXT_VERSION} on Arm64."
+            NEXT_STATUS="not_installed"
+            DECISION="next_install_failed"
+            STATUS="failed"
+          fi
 
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT_VERSION}"
-          echo "Next version targeted for install validation: n/a"
+          echo "Next version targeted for install validation: ${NEXT_VERSION}"
           echo "Regression install result: ${RESULT}"
           echo "Details: ${DETAILS}"
 
-          echo "status=review" >> $GITHUB_OUTPUT
           echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-          echo "next_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
-          echo "result=${RESULT}" >> $GITHUB_OUTPUT
-          echo "details=${DETAILS}" >> $GITHUB_OUTPUT
+          echo "latest_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
+          echo "next_installed_version=${NEXT_STATUS}" >> $GITHUB_OUTPUT
+          echo "decision=${DECISION}" >> $GITHUB_OUTPUT
+          echo "regression_result=${RESULT}" >> $GITHUB_OUTPUT
+          echo "comparison=${DETAILS}" >> $GITHUB_OUTPUT
+          echo "status=${STATUS}" >> $GITHUB_OUTPUT
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+          if [ "$STATUS" = "failed" ]; then
+            exit 1
+          fi
       - name: Calculate test summary
         if: always()
         id: summary
@@ -394,6 +494,5 @@ jobs:
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "   - Result: ${{ steps.test6.outputs.result || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
-          echo "   - Details: ${{ steps.test6.outputs.details || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "   - Result: ${{ steps.test6.outputs.regression_result || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
+          echo "   - Details: ${{ steps.test6.outputs.comparison || 'n/a' }}" >> $GITHUB_STEP_SUMMARY

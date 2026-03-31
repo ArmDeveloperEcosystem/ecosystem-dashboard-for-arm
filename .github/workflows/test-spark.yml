@@ -158,9 +158,17 @@ jobs:
           fi
 
           LATEST="$(
-            python3 - <<'PY'
+            CURRENT_VERSION="$VERSION" python3 - <<'PY'
           import json
+          import os
           import urllib.request
+
+          current = os.environ.get("CURRENT_VERSION", "").strip()
+          try:
+              current_tuple = tuple(int(part) for part in current.split("."))
+          except Exception:
+              print("unknown")
+              raise SystemExit(0)
 
           data = json.load(urllib.request.urlopen("https://api.github.com/repos/apache/spark/tags?per_page=100", timeout=20))
           stable = []
@@ -171,8 +179,15 @@ jobs:
                   continue
               parts = name.split(".")
               if all(part.isdigit() for part in parts):
-                  stable.append(name)
-          print(max(stable, key=lambda value: tuple(int(part) for part in value.split("."))) if stable else "unknown")
+                  stable.append((tuple(int(part) for part in parts), name))
+
+          if not stable:
+              print("unknown")
+              raise SystemExit(0)
+
+          stable.sort(key=lambda item: item[0])
+          next_newer = next((name for version_tuple, name in stable if version_tuple > current_tuple), "")
+          print(next_newer if next_newer else current)
           PY
           )"
 
@@ -305,6 +320,26 @@ jobs:
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $LATEST"
 
+          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Spark version ${CURRENT} passed smoke tests in this run, but the next newer stable Spark release could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "$LATEST" = "$CURRENT" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Spark version ${CURRENT} already matches the newest stable upstream Spark release visible to this workflow, so there is no newer stable candidate for Arm64 Test 6." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           NEXT_TGZ="/tmp/spark-regression-${LATEST}.tgz"
           NEXT_DIR=$(mktemp -d)
           NEXT_ARCHIVE="spark-${LATEST}-bin-hadoop${HADOOP_VERSION}.tgz"
@@ -322,25 +357,25 @@ jobs:
               else
                 NEXT_INSTALLED_VERSION=$("$NEXT_BIN" --version 2>&1 | grep -Eo 'version [0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}' | head -n 1 || true)
               fi
-              cat > /tmp/pyspark_regression_test.py <<'EOF'
-              from pyspark.sql import SparkSession
-
-              spark = SparkSession.builder \
-                  .appName("ARM64 PySpark Regression Test") \
-                  .master("local[1]") \
-                  .getOrCreate()
-
-              data = [("candidate", 1), ("arm64", 2), ("spark", 3)]
-              df = spark.createDataFrame(data, ["name", "value"])
-
-              print("PySpark candidate DataFrame created successfully:")
-              df.show()
-              count = df.count()
-              print(f"Candidate row count: {count}")
-
-              spark.stop()
-              raise SystemExit(0 if count == 3 else 1)
-              EOF
+          cat > /tmp/pyspark_regression_test.py <<'PYSPARK_EOF'
+          from pyspark.sql import SparkSession
+          
+          spark = SparkSession.builder \
+              .appName("ARM64 PySpark Regression Test") \
+              .master("local[1]") \
+              .getOrCreate()
+          
+          data = [("candidate", 1), ("arm64", 2), ("spark", 3)]
+          df = spark.createDataFrame(data, ["name", "value"])
+          
+          print("PySpark candidate DataFrame created successfully:")
+          df.show()
+          count = df.count()
+          print(f"Candidate row count: {count}")
+          
+          spark.stop()
+          raise SystemExit(0 if count == 3 else 1)
+          PYSPARK_EOF
 
               export SPARK_HOME="$NEXT_ROOT"
               if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ] && \
@@ -353,11 +388,11 @@ jobs:
                  grep -q "Candidate row count: 3" /tmp/pyspark-regression.txt; then
                 echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
                 if [ "$LATEST" = "$CURRENT" ]; then
-                  echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-                  echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-                  echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-                  echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-                  echo "status=failed" >> "$GITHUB_OUTPUT"
+                  echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+                  echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+                  echo "comparison=Current pinned Spark version ${CURRENT} already matches the newest stable upstream Spark release visible to this workflow, so there is no newer stable candidate for Arm64 Test 6." >> "$GITHUB_OUTPUT"
+                  echo "Regression install result: No newer stable release available for Test 6"
+                  echo "status=skipped" >> "$GITHUB_OUTPUT"
                 else
                   echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
                   echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
@@ -366,7 +401,6 @@ jobs:
                   echo "status=passed" >> "$GITHUB_OUTPUT"
                 fi
                 echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
-                echo "status=passed" >> "$GITHUB_OUTPUT"
               else
                 cat /tmp/spark-regression-help.txt || true
                 cat /tmp/pyspark-regression-help.txt || true
@@ -417,6 +451,9 @@ jobs:
                 ;;
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              no_newer_stable_available)
+                REGRESSION_RESULT="No newer stable release available for Test 6"
                 ;;
               metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"

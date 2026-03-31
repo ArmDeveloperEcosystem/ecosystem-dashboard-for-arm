@@ -58,6 +58,9 @@ on:
       regression_next_installed_version:
         description: Candidate version reported by installed next artifact
         value: ${{ jobs.test-cobbler.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-cobbler.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-cobbler.outputs.run_id }}
@@ -76,6 +79,9 @@ on:
 jobs:
   test-cobbler:
     runs-on: ubuntu-24.04-arm
+    env:
+      COBBLER_BASELINE_VERSION: "v3.3.6"
+      COBBLER_NEXT_VERSION: "v3.3.7"
     
     outputs:
       contract_version: "2.0"
@@ -96,6 +102,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -119,11 +126,12 @@ jobs:
       - name: Install Cobbler
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Cobbler from source..."
           python3 -m venv venv
           source venv/bin/activate
           
-          git clone https://github.com/cobbler/cobbler.git
+          git clone --depth 1 --branch "${COBBLER_BASELINE_VERSION}" https://github.com/cobbler/cobbler.git
           cd cobbler
           sudo apt-get update
           sudo apt-get install -y make gcc python3-dev libapache2-mod-wsgi-py3
@@ -157,19 +165,10 @@ jobs:
              fi
              
              echo "install_status=success" >> $GITHUB_OUTPUT
-             echo "install_status=success" >> $GITHUB_OUTPUT
           else
-             echo "Could not find cobbler binary anywhere. Creating fallback wrapper."
-             
-             # Create a wrapper that allows basics to pass (version, help)
-             # The real functionality is verified by the Python import test
-             TARGET_DIR="$GITHUB_WORKSPACE/venv/bin"
-             TARGET_BIN="$TARGET_DIR/cobbler"
-             
-             printf '#!/bin/bash\nif [[ "$1" == "--version" ]]; then\n  echo "Cobbler 3.x.x (Fallback Wrapper)"\n  exit 0\nfi\nif [[ "$*" == *"--help"* ]]; then\n  echo "Usage: cobbler [options]"\n  exit 0\nfi\nif [[ "$*" == *"signature report"* ]]; then\n  echo "Signature verification not available in fallback mode"\n  exit 0\nfi\necho "Cobbler command executed"\nexit 0\n' > "$TARGET_BIN"
-             chmod +x "$TARGET_BIN"
-             echo "Created fallback binary at $TARGET_BIN"
-             echo "install_status=success" >> $GITHUB_OUTPUT
+             echo "Could not find cobbler binary anywhere after source install."
+             echo "install_status=failed" >> $GITHUB_OUTPUT
+             exit 1
           fi
           
           # Debug: list the venv bin
@@ -296,20 +295,61 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 6 - Regression Validation (Deferred)
+      - name: Test 6 - Regression Validation
         id: test6
         if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT_VERSION="${{ steps.version.outputs.version || 'unknown' }}"
-          echo "status=deferred" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
+          CURRENT_VERSION="${{ steps.version.outputs.version || env.COBBLER_BASELINE_VERSION || 'unknown' }}"
+          LATEST_VERSION="${COBBLER_NEXT_VERSION#v}"
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT_VERSION}"
+          echo "Next version targeted for install validation: ${LATEST_VERSION}"
+
           echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=unknown" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation deferred for source-built Cobbler workflow" >> "$GITHUB_OUTPUT"
-          echo "comparison=Tests 1-5 validate a source/venv-based Cobbler install path. A deterministic next-version source selection and equivalent Arm64 regression install path is not encoded yet, so Test 6 is explicitly deferred." >> "$GITHUB_OUTPUT"
+
+          if [ -z "$LATEST_VERSION" ] || [ "${CURRENT_VERSION}" = "${LATEST_VERSION}" ]; then
+            echo "latest_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable public release is available" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current baseline ${CURRENT_VERSION} is already at the newest configured stable Cobbler tag for this workflow." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          WORKDIR=$(mktemp -d)
+          python3 -m venv "${WORKDIR}/next-venv"
+          source "${WORKDIR}/next-venv/bin/activate"
+          git clone --depth 1 --branch "${COBBLER_NEXT_VERSION}" https://github.com/cobbler/cobbler.git "${WORKDIR}/cobbler-next"
+          pushd "${WORKDIR}/cobbler-next" >/dev/null
+          pip install --upgrade pip setuptools wheel
+          pip install .[cli]
+          popd >/dev/null
+
+          NEXT_BIN="${WORKDIR}/next-venv/bin/cobbler"
+          NEXT_VERSION_REPORTED=""
+          if [ -x "$NEXT_BIN" ] && "$NEXT_BIN" --help >/dev/null 2>&1; then
+            NEXT_VERSION_REPORTED=$("$NEXT_BIN" --version 2>&1 | grep -oP '[0-9.]+' | head -1 || true)
+            [ -z "$NEXT_VERSION_REPORTED" ] && NEXT_VERSION_REPORTED="${LATEST_VERSION}"
+            echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${NEXT_VERSION_REPORTED}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current baseline Cobbler ${CURRENT_VERSION} passed Tests 1-5. Regression validation installed next stable tag ${COBBLER_NEXT_VERSION} in an isolated environment and verified CLI invocation on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current baseline Cobbler ${CURRENT_VERSION} passed Tests 1-5, but candidate ${COBBLER_NEXT_VERSION} could not be installed/validated as a runnable CLI on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -361,6 +401,14 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
+          # Regression Validation
+          if [ "${{ steps.test6.outputs.status || 'skipped' }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test6.outputs.status || 'skipped' }}" == "failed" ]; then
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
@@ -391,3 +439,9 @@ jobs:
           echo "3. Test 3 - Check Configuration (Dry Run): ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Test 4 - Check Signature (Optional): ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "   - Current version: ${{ steps.test6.outputs.current_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "   - Next version targeted: ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "   - Next version installed: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "   - Result: ${{ steps.test6.outputs.regression_result || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
+          echo "   - Details: ${{ steps.test6.outputs.comparison || 'n/a' }}" >> $GITHUB_STEP_SUMMARY

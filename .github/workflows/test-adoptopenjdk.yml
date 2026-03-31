@@ -57,6 +57,9 @@ on:
       regression_next_installed_version:
         description: Candidate version reported by installed next artifact
         value: ${{ jobs.test-adoptopenjdk.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-adoptopenjdk.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-adoptopenjdk.outputs.run_id }}
@@ -75,6 +78,8 @@ on:
 jobs:
   test-adoptopenjdk:
     runs-on: ubuntu-24.04-arm
+    env:
+      ADOPTIUM_NEXT_MAJOR: "22"
 
     outputs:
       contract_version: "2.0"
@@ -95,6 +100,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -255,19 +261,80 @@ jobs:
         END_TIME=$(date +%s)
         echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-    - name: Test 6 - Regression Validation (Deferred)
+    - name: Test 6 - Regression Validation
       id: test6
       if: always()
       run: |
+        set -euo pipefail
         START_TIME=$(date +%s)
-        CURRENT_VERSION="${{ steps.version.outputs.version || 'unknown' }}"
-        echo "status=deferred" >> "$GITHUB_OUTPUT"
-        echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
+        CURRENT_VERSION="${{ steps.version.outputs.version || '21' }}"
+        NEXT_VERSION="${ADOPTIUM_NEXT_MAJOR}"
+        NEXT_JDK_DIR="$(mktemp -d)/jdk-next"
+
         echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
-        echo "latest_version=unknown" >> "$GITHUB_OUTPUT"
-        echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-        echo "regression_result=Regression validation deferred for setup-java-managed JDK stream on Arm64" >> "$GITHUB_OUTPUT"
-        echo "comparison=Current run validated JDK ${CURRENT_VERSION} via actions/setup-java. A deterministic next-version upgrade path is not encoded in this workflow yet, so Test 6 is explicitly deferred for manual regression planning." >> "$GITHUB_OUTPUT"
+        echo "latest_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+        echo "=== Regression Validation (Next Version Install) ==="
+        echo "Current version tested in Tests 1-5: ${CURRENT_VERSION}"
+        echo "Next version targeted for install validation: ${NEXT_VERSION}"
+
+        if ! curl -fsSL "https://api.adoptium.net/v3/binary/latest/${NEXT_VERSION}/ga/linux/aarch64/jdk/hotspot/normal/eclipse" -o /tmp/adoptopenjdk-next.tar.gz; then
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Could not resolve/download Adoptium JDK ${NEXT_VERSION} for Linux ARM64 from the official Adoptium API." >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+
+        mkdir -p "$NEXT_JDK_DIR"
+        tar -xzf /tmp/adoptopenjdk-next.tar.gz -C "$NEXT_JDK_DIR" --strip-components=1
+        NEXT_JAVA="${NEXT_JDK_DIR}/bin/java"
+        NEXT_JAVAC="${NEXT_JDK_DIR}/bin/javac"
+
+        if [ ! -x "$NEXT_JAVA" ] || [ ! -x "$NEXT_JAVAC" ]; then
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Adoptium JDK ${NEXT_VERSION} archive downloaded but java/javac binaries were not usable after extraction on Arm64." >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+
+        NEXT_INSTALLED_VERSION="$("$NEXT_JAVA" -version 2>&1 | grep -oE '\"[0-9]+' | head -1 | tr -d '\"' || true)"
+        cat << 'EOF' > /tmp/HelloNext.java
+        public class HelloNext {
+            public static void main(String[] args) {
+                System.out.println("Hello Arm Next");
+            }
+        }
+        EOF
+
+        if "$NEXT_JAVAC" /tmp/HelloNext.java 2>/tmp/adoptopenjdk-next-javac.log && \
+           NEXT_OUTPUT="$("$NEXT_JAVA" -cp /tmp HelloNext 2>/tmp/adoptopenjdk-next-java.log || true)" && \
+           [ "$NEXT_OUTPUT" = "Hello Arm Next" ] && \
+           [ "$NEXT_INSTALLED_VERSION" = "$NEXT_VERSION" ]; then
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Baseline JDK ${CURRENT_VERSION} passed Tests 1-5. Regression validation installed Adoptium JDK ${NEXT_VERSION} on Arm64 and verified compile/run using the candidate JDK binaries." >> "$GITHUB_OUTPUT"
+        else
+          cat /tmp/adoptopenjdk-next-javac.log || true
+          cat /tmp/adoptopenjdk-next-java.log || true
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=${NEXT_INSTALLED_VERSION:-install_failed}" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Adoptium JDK ${NEXT_VERSION} was downloaded on Arm64 but compile/run validation did not complete successfully with the candidate JDK." >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+
         END_TIME=$(date +%s)
         echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -357,3 +424,11 @@ jobs:
         echo "3. Check java -version output includes 21: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
         echo "4. Compile and run HelloWorld: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
         echo "5. Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+        echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY

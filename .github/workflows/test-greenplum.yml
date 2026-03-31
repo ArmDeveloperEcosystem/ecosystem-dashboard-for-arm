@@ -58,6 +58,9 @@ on:
       regression_next_installed_version:
         description: Candidate version reported by installed next artifact
         value: ${{ jobs.test-greenplum.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-greenplum.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-greenplum.outputs.run_id }}
@@ -98,6 +101,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -237,21 +241,97 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || steps.install.outputs.baseline_tag || env.GREENPLUMPYTHON_BASELINE_TAG }}"
+          export CURRENT
+          NEXT="$(
+            python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          current = os.environ.get("CURRENT", "").lstrip("vV")
+          tags = json.load(
+              urllib.request.urlopen(
+                  "https://api.github.com/repos/greenplum-db/GreenplumPython-archive/tags?per_page=100",
+                  timeout=20,
+              )
+          )
+
+          stable_versions = sorted(
+              {
+                  tuple(int(x) for x in tag["name"].lstrip("vV").split("."))
+                  for tag in tags
+                  if re.fullmatch(r"\d+\.\d+\.\d+", (tag.get("name") or "").lstrip("vV"))
+              }
+          )
+          if not stable_versions:
+              print("")
+              raise SystemExit(0)
+
+          next_version = ""
+          if re.fullmatch(r"\d+\.\d+\.\d+", current):
+              c = tuple(int(x) for x in current.split("."))
+              next_version = next(("{}.{}.{}".format(*v) for v in stable_versions if v > c), "")
+          else:
+              m = re.fullmatch(r"(\d+\.\d+\.\d+)-[0-9A-Za-z._-]+", current)
+              if m:
+                  base = tuple(int(x) for x in m.group(1).split("."))
+                  if base in stable_versions:
+                      next_version = "{}.{}.{}".format(*base)
+                  else:
+                      next_version = next(("{}.{}.{}".format(*v) for v in stable_versions if v > base), "")
+
+          print(next_version)
+          PY
+          )"
 
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-          echo "regression_result=No newer stable GreenplumPython release is available for Arm64 validation" >> "$GITHUB_OUTPUT"
-          echo "comparison=GreenplumPython ${CURRENT} is the only public tagged stable release published upstream today, so there is no newer stable source tag to validate in Test 6 yet." >> "$GITHUB_OUTPUT"
-          echo "status=review" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${NEXT:-$CURRENT}" >> "$GITHUB_OUTPUT"
 
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT}"
-          echo "Next version targeted for install validation: ${CURRENT}"
-          echo "Next version installed on Arm64: ${CURRENT}"
-          echo "Regression install result: No newer stable GreenplumPython release is available for Arm64 validation"
-          echo "Details: GreenplumPython ${CURRENT} is the only public tagged stable release published upstream today, so there is no newer stable source tag to validate in Test 6 yet."
+          echo "Next version targeted for install validation: ${NEXT:-none}"
+
+          if [ -z "${NEXT}" ]; then
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable GreenplumPython release is available for Arm64 validation" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned GreenplumPython version ${CURRENT} already matches the newest stable upstream release stream, so there is no newer stable source tag to validate in Test 6." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${CURRENT}"
+            echo "Regression install result: No newer stable GreenplumPython release is available for Arm64 validation"
+            echo "Details: Current pinned GreenplumPython version ${CURRENT} already matches the newest stable upstream release stream, so there is no newer stable source tag to validate in Test 6."
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          rm -rf /tmp/greenplumpython-next
+          git clone --depth 1 --branch "${NEXT}" https://github.com/greenplum-db/GreenplumPython-archive.git /tmp/greenplumpython-next
+          if python -m compileall -q /tmp/greenplumpython-next/greenplumpython \
+            && grep -Eq 'name *= *"greenplum-python"' /tmp/greenplumpython-next/setup.py \
+            && grep -qi 'GreenplumPython' /tmp/greenplumpython-next/README.md; then
+            echo "next_installed_version=${NEXT}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned GreenplumPython version ${CURRENT} passed Tests 1-5, and the next newer stable source tag ${NEXT} passed equivalent source-tree and compile checks on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT}"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned GreenplumPython version ${CURRENT} passed Tests 1-5, and the next newer stable source tag ${NEXT} passed equivalent source-tree and compile checks on Arm64."
+          else
+            echo "next_installed_version=${NEXT}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned GreenplumPython version ${CURRENT} passed Tests 1-5, but the next newer stable source tag ${NEXT} did not pass equivalent source-tree checks on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned GreenplumPython version ${CURRENT} passed Tests 1-5, but the next newer stable source tag ${NEXT} did not pass equivalent source-tree checks on Arm64."
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"

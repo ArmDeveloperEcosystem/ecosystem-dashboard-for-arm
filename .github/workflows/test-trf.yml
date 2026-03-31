@@ -46,6 +46,9 @@ on:
       regression_result:
         description: Human readable regression result
         value: ${{ jobs.test-trf.outputs.regression_result }}
+      regression_policy:
+        description: Regression policy classification for publish pipeline
+        value: ${{ jobs.test-trf.outputs.regression_policy }}
       regression_comparison:
         description: Regression comparison note
         value: ${{ jobs.test-trf.outputs.regression_comparison }}
@@ -94,6 +97,7 @@ jobs:
       regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_policy: ${{ steps.test6.outputs.regression_policy || steps.metadata.outputs.regression_policy || 'applicable' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
@@ -113,6 +117,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=trf" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/trf" >> "$GITHUB_OUTPUT"
+          echo "regression_policy=applicable" >> "$GITHUB_OUTPUT"
           echo "current_version=${TRF_VERSION}" >> "$GITHUB_OUTPUT"
       - name: Install TRF
         id: install
@@ -141,8 +146,49 @@ jobs:
         id: version
         run: |
           set -euo pipefail
+          NEXT_TAG="$(
+            CURRENT_TAG="${TRF_VERSION}" python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          current_tag = os.environ.get("CURRENT_TAG", "").strip()
+
+          def parse_tuple(tag: str):
+              clean = tag.lstrip("v")
+              if not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", clean):
+                  return None
+              parts = [int(x) for x in clean.split(".")]
+              while len(parts) < 3:
+                  parts.append(0)
+              return tuple(parts)
+
+          current_tuple = parse_tuple(current_tag)
+          if current_tuple is None:
+              print("unknown")
+              raise SystemExit(0)
+
+          data = json.load(urllib.request.urlopen("https://api.github.com/repos/Benson-Genomics-Lab/TRF/tags?per_page=100", timeout=20))
+          stable = []
+          for row in data:
+              name = (row.get("name") or "").strip()
+              lowered = name.lower()
+              if any(marker in lowered for marker in ("rc", "preview", "beta", "alpha")):
+                  continue
+              parsed = parse_tuple(name)
+              if parsed is None:
+                  continue
+              stable.append((parsed, name))
+
+          stable.sort(key=lambda item: item[0])
+          next_tag = next((name for parsed, name in stable if parsed > current_tuple), "")
+          print(next_tag if next_tag else current_tag)
+          PY
+          )"
+
           echo "version=${TRF_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest=${TRF_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest=${NEXT_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Binary Existence
         id: test1
@@ -234,6 +280,7 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          echo "regression_policy=${{ steps.metadata.outputs.regression_policy || 'applicable' }}" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
           CURRENT="${TRF_VERSION}"
           LATEST="${{ steps.version.outputs.latest }}"

@@ -45,6 +45,9 @@ on:
       regression_result:
         description: Human readable regression result
         value: ${{ jobs.test-logstash.outputs.regression_result }}
+      regression_policy:
+        description: Regression policy classification for publish pipeline
+        value: ${{ jobs.test-logstash.outputs.regression_policy }}
       regression_comparison:
         description: Regression comparison note
         value: ${{ jobs.test-logstash.outputs.regression_comparison }}
@@ -94,6 +97,7 @@ jobs:
       regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_policy: ${{ steps.test6.outputs.regression_policy || steps.metadata.outputs.regression_policy || 'applicable' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
@@ -113,6 +117,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=logstash" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/logstash" >> "$GITHUB_OUTPUT"
+          echo "regression_policy=applicable" >> "$GITHUB_OUTPUT"
           echo "current_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
       - name: Install Logstash
         id: install
@@ -262,20 +267,162 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 6 - Regression Validation (Deferred)
+      - name: Test 6 - Regression Validation
         id: test6
         if: always()
+        continue-on-error: true
         run: |
           set -euo pipefail
+          echo "regression_policy=${{ steps.metadata.outputs.regression_policy || 'applicable' }}" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
           CURRENT_VERSION="${{ steps.version.outputs.version || steps.install.outputs.baseline_version || env.BASELINE_VERSION }}"
-          echo "status=deferred" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=unknown" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation skipped because one or more baseline tests (1-5) failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline tests failed, so next-version validation is not trustworthy for this run." >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_VERSION=$(python3 - "${CURRENT_VERSION}" <<'PY'
+          import json
+          import re
+          import sys
+          import urllib.request
+
+          current = (sys.argv[1] or "").strip()
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", current):
+              print("")
+              raise SystemExit(0)
+
+          payload = urllib.request.urlopen("https://artifacts-api.elastic.co/v1/versions", timeout=30).read().decode("utf-8")
+          doc = json.loads(payload)
+          versions = [
+              value
+              for value in doc.get("versions", [])
+              if isinstance(value, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value)
+          ]
+
+          def key(v: str):
+              return tuple(int(part) for part in v.split("."))
+
+          current_key = key(current)
+          candidates = sorted({v for v in versions if key(v) > current_key}, key=key)
+          print(candidates[0] if candidates else "")
+          PY
+          )
+
+          if [ -z "${NEXT_VERSION}" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable Logstash release is available beyond the tested baseline." >> "$GITHUB_OUTPUT"
+            echo "comparison=Tests 1-5 validated baseline Logstash ${CURRENT_VERSION}; no higher stable candidate is currently published in the upstream version stream." >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_DEB="/tmp/logstash-${NEXT_VERSION}-arm64.deb"
+          NEXT_ROOT="/tmp/logstash-next-${NEXT_VERSION}-root"
+          NEXT_SETTINGS="/tmp/logstash-next-settings-${NEXT_VERSION}"
+          NEXT_DATA="/tmp/logstash-next-data-${NEXT_VERSION}"
+          NEXT_PIPELINE="/tmp/logstash-next-${NEXT_VERSION}.conf"
+          NEXT_URL="https://artifacts.elastic.co/downloads/logstash/logstash-${NEXT_VERSION}-arm64.deb"
+
+          rm -rf "${NEXT_ROOT}" "${NEXT_SETTINGS}" "${NEXT_DATA}"
+          mkdir -p "${NEXT_ROOT}" "${NEXT_DATA}"
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL "${NEXT_URL}" -o "${NEXT_DEB}"
+          dpkg-deb -x "${NEXT_DEB}" "${NEXT_ROOT}"
+          NEXT_BINARY="${NEXT_ROOT}/usr/share/logstash/bin/logstash"
+          cp -a "${NEXT_ROOT}/etc/logstash" "${NEXT_SETTINGS}"
+          printf '%s\n' 'input { stdin { } } output { stdout { codec => rubydebug } }' > "${NEXT_PIPELINE}"
+
+          if [ ! -x "${NEXT_BINARY}" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next-version Logstash binary was not installable on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT_VERSION} passed, but candidate ${NEXT_VERSION} did not produce a usable Logstash binary after package extraction." >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_VERSION_OUTPUT=$("${NEXT_BINARY}" --version 2>&1 | tee /tmp/logstash-next-version.log || true)
+          NEXT_REPORTED=$(printf '%s\n' "${NEXT_VERSION_OUTPUT}" | sed -nE '/[Ll]ogstash/ s/.*[Ll]ogstash[[:space:]]+([0-9]+(\.[0-9]+){2}).*/\1/p' | head -n 1)
+          if [ -z "${NEXT_REPORTED}" ]; then
+            NEXT_REPORTED="not_installed"
+          fi
+          NEXT_ARCH=$(dpkg-deb -f "${NEXT_DEB}" Architecture || echo "unknown")
+
+          if [ "${NEXT_REPORTED}" != "${NEXT_VERSION}" ] || [ "${NEXT_ARCH}" != "arm64" ]; then
+            cat /tmp/logstash-next-version.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${NEXT_REPORTED}" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next-version Logstash install/version validation failed on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT_VERSION} passed, but candidate ${NEXT_VERSION} reported version ${NEXT_REPORTED} with package arch ${NEXT_ARCH}." >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! "${NEXT_BINARY}" --help >/tmp/logstash-next-help.log 2>&1 || ! grep -Eiq 'Usage|Options|[Ll]ogstash' /tmp/logstash-next-help.log; then
+            cat /tmp/logstash-next-help.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${NEXT_REPORTED}" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next-version Logstash help/config validation failed on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT_VERSION} passed, but candidate ${NEXT_VERSION} did not pass help-output validation." >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! timeout 180 "${NEXT_BINARY}" \
+            --path.settings "${NEXT_SETTINGS}" \
+            --path.data "${NEXT_DATA}" \
+            -f "${NEXT_PIPELINE}" \
+            --config.test_and_exit >/tmp/logstash-next-config.log 2>&1; then
+            cat /tmp/logstash-next-config.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${NEXT_REPORTED}" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next-version Logstash config validation failed on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT_VERSION} passed, but candidate ${NEXT_VERSION} failed --config.test_and_exit in the same validation pattern." >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
           echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=unknown" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation deferred pending deterministic next-version candidate selection" >> "$GITHUB_OUTPUT"
-          echo "comparison=Tests 1-5 validated baseline Logstash ${CURRENT_VERSION} from the direct Arm64 artifact path. This workflow does not yet encode a stable automated next-version candidate resolver, so Test 6 is explicitly deferred." >> "$GITHUB_OUTPUT"
+          echo "latest_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=${NEXT_REPORTED}" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next stable Logstash candidate installed and validated successfully on Arm64." >> "$GITHUB_OUTPUT"
+          echo "comparison=Baseline ${CURRENT_VERSION} passed tests 1-5, and candidate ${NEXT_VERSION} passed install, version, help, architecture, and config validation in Test 6." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 

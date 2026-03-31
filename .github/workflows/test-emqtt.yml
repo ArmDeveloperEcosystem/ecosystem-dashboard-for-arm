@@ -112,6 +112,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+    env:
+      EMQTT_BENCH_BASELINE_VERSION: "0.4.8"
     
     outputs:
       contract_version: "2.0"
@@ -157,6 +159,7 @@ jobs:
       - name: Install emqtt-bench
         id: install
         run: |
+          set -euo pipefail
           echo "Installing emqtt-bench from source..."
           
           # Install dependencies
@@ -164,14 +167,9 @@ jobs:
           sudo apt-get install -y git make cmake build-essential
 
           
-          # Clone repository
-          # Clone repository
-          git clone https://github.com/emqx/emqtt-bench.git
+          # Clone baseline tag used for Tests 1-5.
+          git clone --depth 1 --branch "${EMQTT_BENCH_BASELINE_VERSION}" https://github.com/emqx/emqtt-bench.git
           cd emqtt-bench
-          
-          # Checkout a version compatible with Erlang 25 (e.g., 0.4.x)
-          # Master requires Erlang 27+
-          git checkout 0.4.8 || git checkout 0.4.5 || echo "Could not checkout specific tag, trying default"
           
           # Build
           # Use rebar3 provided by setup-beam (v3.20)
@@ -222,6 +220,7 @@ jobs:
       - name: Get emqtt-bench version
         id: version
         run: |
+          set -euo pipefail
           # Adjust this command based on how your package reports version
           # emqtt_bench might not have a --version flag, or it might print it in help
           RAW_VERSION=$(emqtt_bench --version 2>&1 | head -1 || true)
@@ -229,7 +228,7 @@ jobs:
           VERSION=$(echo "$RAW_VERSION" | grep -Eo '[0-9]+(\.[0-9]+)+' | head -1 || true)
           # If it doesn't support --version, we might just use the installed version string
           if [ -z "$VERSION" ]; then
-             VERSION="0.4.18"
+             VERSION="${EMQTT_BENCH_BASELINE_VERSION}"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected emqtt-bench version: $VERSION"
@@ -366,23 +365,146 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT_VERSION="${{ steps.version.outputs.version || '1.4.4' }}"
-          NEXT_VERSION=""
-          RESULT="no_newer_stable_available"
-          DETAILS="Public EMQTT releases do not expose a clean newer stable upgrade path beyond the tested 1.4.x line; newer assets are prerelease-style or toolchain-shifted, so there is no honest Test 6 target."
+          CURRENT_VERSION="${{ steps.version.outputs.version || env.EMQTT_BENCH_BASELINE_VERSION || 'unknown' }}"
+
+          export CURRENT_VERSION
+          NEXT_LOOKUP="$(
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          
+          current = os.environ.get("CURRENT_VERSION", "").strip()
+          match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', current.strip())
+          if not match:
+              print("__lookup_failed__")
+              raise SystemExit(0)
+          
+          current_tuple = tuple(int(x) for x in match.groups())
+          try:
+              out = subprocess.check_output(
+                  ['git', 'ls-remote', '--tags', 'https://github.com/emqx/emqtt-bench.git'],
+                  text=True,
+              )
+          except Exception:
+              print("__lookup_failed__")
+              raise SystemExit(0)
+          
+          candidates = set()
+          for line in out.splitlines():
+              ref = line.split('\t')[-1]
+              if not ref.startswith('refs/tags/'):
+                  continue
+              tag = ref.replace('refs/tags/', '').replace('^{}', '')
+              m = re.fullmatch(r'v?(\d+)\.(\d+)\.(\d+)', tag)
+              if not m:
+                  continue
+              tup = tuple(int(x) for x in m.groups())
+              if tup > current_tuple:
+                  candidates.add((tup, '.'.join(m.groups())))
+          
+          if not candidates:
+              print("")
+          else:
+              print(sorted(candidates)[0][1])
+          PY
+          )"
+
+          if [ "${NEXT_LOOKUP}" = "__lookup_failed__" ]; then
+            DECISION="next_lookup_failed"
+            REGRESSION_RESULT="Next version lookup failed on Arm64"
+            DETAILS="Baseline emqtt-bench version from Tests 1-5 could not be parsed or upstream tags could not be queried, so Test 6 could not resolve a deterministic next newer candidate."
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "decision=${DECISION}" >> $GITHUB_OUTPUT
+            echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+            echo "latest_version=lookup_failed" >> $GITHUB_OUTPUT
+            echo "next_installed_version=lookup_failed" >> $GITHUB_OUTPUT
+            echo "regression_result=${REGRESSION_RESULT}" >> $GITHUB_OUTPUT
+            echo "comparison=${DETAILS}" >> $GITHUB_OUTPUT
+            echo "next_version=lookup_failed" >> $GITHUB_OUTPUT
+            echo "result=${DECISION}" >> $GITHUB_OUTPUT
+            echo "details=${DETAILS}" >> $GITHUB_OUTPUT
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          NEXT_VERSION="${NEXT_LOOKUP}"
+
+          if [ -z "${NEXT_VERSION}" ]; then
+            DECISION="no_newer_stable_available"
+            REGRESSION_RESULT="No newer stable emqtt-bench release is available for Test 6"
+            DETAILS="Current baseline emqtt-bench ${CURRENT_VERSION} already matches the newest stable semver tag available for Arm64 build validation."
+            echo "status=skipped" >> $GITHUB_OUTPUT
+            echo "decision=${DECISION}" >> $GITHUB_OUTPUT
+            echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+            echo "latest_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+            echo "next_installed_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+            echo "regression_result=${REGRESSION_RESULT}" >> $GITHUB_OUTPUT
+            echo "comparison=${DETAILS}" >> $GITHUB_OUTPUT
+            echo "next_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+            echo "result=${DECISION}" >> $GITHUB_OUTPUT
+            echo "details=${DETAILS}" >> $GITHUB_OUTPUT
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Running next-version validation for emqtt-bench ${NEXT_VERSION}"
+          WORKDIR="$(mktemp -d)"
+          git clone --depth 1 --branch "${NEXT_VERSION}" https://github.com/emqx/emqtt-bench.git "${WORKDIR}/emqtt-bench-next"
+          (
+            cd "${WORKDIR}/emqtt-bench-next"
+            rebar3 escriptize
+          )
+
+          NEXT_BIN=""
+          if [ -f "${WORKDIR}/emqtt-bench-next/emqtt_bench" ]; then
+            NEXT_BIN="${WORKDIR}/emqtt-bench-next/emqtt_bench"
+          elif [ -f "${WORKDIR}/emqtt-bench-next/_build/default/bin/emqtt_bench" ]; then
+            NEXT_BIN="${WORKDIR}/emqtt-bench-next/_build/default/bin/emqtt_bench"
+          fi
+
+          if [ -n "${NEXT_BIN}" ] && "${NEXT_BIN}" --help >/dev/null 2>&1; then
+            DECISION="next_install_validated"
+            REGRESSION_RESULT="Next version installed successfully on Arm64"
+            DETAILS="Baseline emqtt-bench ${CURRENT_VERSION} passed Tests 1-5. Regression validation built and executed candidate ${NEXT_VERSION} on Arm64."
+            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "decision=${DECISION}" >> $GITHUB_OUTPUT
+            echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+            echo "latest_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
+            echo "next_installed_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
+            echo "regression_result=${REGRESSION_RESULT}" >> $GITHUB_OUTPUT
+            echo "comparison=${DETAILS}" >> $GITHUB_OUTPUT
+            echo "next_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
+            echo "result=${DECISION}" >> $GITHUB_OUTPUT
+            echo "details=${DETAILS}" >> $GITHUB_OUTPUT
+          else
+            DECISION="next_install_failed"
+            REGRESSION_RESULT="Next version install failed on Arm64"
+            DETAILS="Baseline emqtt-bench ${CURRENT_VERSION} passed Tests 1-5, but candidate ${NEXT_VERSION} failed to produce a runnable emqtt_bench binary on Arm64."
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "decision=${DECISION}" >> $GITHUB_OUTPUT
+            echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+            echo "latest_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
+            echo "next_installed_version=install_failed" >> $GITHUB_OUTPUT
+            echo "regression_result=${REGRESSION_RESULT}" >> $GITHUB_OUTPUT
+            echo "comparison=${DETAILS}" >> $GITHUB_OUTPUT
+            echo "next_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
+            echo "result=${DECISION}" >> $GITHUB_OUTPUT
+            echo "details=${DETAILS}" >> $GITHUB_OUTPUT
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            exit 1
+          fi
 
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT_VERSION}"
-          echo "Next version targeted for install validation: n/a"
-          echo "Regression install result: ${RESULT}"
+          echo "Next version targeted for install validation: ${NEXT_VERSION}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
           echo "Details: ${DETAILS}"
-
-          echo "status=review" >> $GITHUB_OUTPUT
-          echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-          echo "next_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
-          echo "result=${RESULT}" >> $GITHUB_OUTPUT
-          echo "details=${DETAILS}" >> $GITHUB_OUTPUT
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -492,5 +614,5 @@ jobs:
           echo "4. Test 4 - Check emqtt_bench subcommands (sub): ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Dry run connection: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "   - Result: ${{ steps.test6.outputs.result || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
-          echo "   - Details: ${{ steps.test6.outputs.details || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
+          echo "   - Result: ${{ steps.test6.outputs.regression_result || steps.test6.outputs.result || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
+          echo "   - Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.details || 'n/a' }}" >> $GITHUB_STEP_SUMMARY

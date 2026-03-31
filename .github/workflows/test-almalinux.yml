@@ -58,6 +58,9 @@ on:
       regression_next_installed_version:
         description: Candidate version reported by installed next artifact
         value: ${{ jobs.test-almalinux.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-almalinux.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-almalinux.outputs.run_id }}
@@ -77,7 +80,8 @@ jobs:
   test-almalinux:
     runs-on: ubuntu-24.04-arm
     env:
-      ALMALINUX_BASELINE_TAG: "10"
+      ALMALINUX_BASELINE_TAG: "10.0"
+      ALMALINUX_NEXT_TAG: "10.1"
 
     outputs:
       contract_version: "2.0"
@@ -98,6 +102,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -228,21 +233,65 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || steps.install.outputs.baseline_tag || env.ALMALINUX_BASELINE_TAG }}"
+          NEXT_TAG="${ALMALINUX_NEXT_TAG}"
+          NEXT_VERSION="unknown"
 
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-          echo "regression_result=No newer stable AlmaLinux release is available for Arm64 validation" >> "$GITHUB_OUTPUT"
-          echo "comparison=AlmaLinux ${CURRENT} is the dashboard-recommended Arm baseline and the newest stable AlmaLinux container line currently published, so there is no newer stable image tag to validate in Test 6 yet." >> "$GITHUB_OUTPUT"
-          echo "status=review" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${NEXT_TAG}" >> "$GITHUB_OUTPUT"
+
+          if ! sudo docker pull "docker.io/library/almalinux:${NEXT_TAG}" >/tmp/almalinux-next-pull.log 2>&1; then
+            cat /tmp/almalinux-next-pull.log || true
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current baseline AlmaLinux ${CURRENT} passed Tests 1-5, but candidate image tag ${NEXT_TAG} could not be pulled on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_VERSION=$(sudo docker run --rm "docker.io/library/almalinux:${NEXT_TAG}" bash -lc "grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"'" || echo "unknown")
+          NEXT_DNF_HELP=$(sudo docker run --rm "docker.io/library/almalinux:${NEXT_TAG}" bash -lc 'dnf --help | head -n 1' || true)
+          echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+
+          if printf '%s\n' "$NEXT_VERSION" "$CURRENT" | sort -V -C && [ "$NEXT_VERSION" = "$CURRENT" ]; then
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the selected next candidate" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline AlmaLinux ${CURRENT} and candidate ${NEXT_VERSION} resolved to the same effective version in this run. Repin baseline and next tags to a strictly newer pair for Test 6." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          REGRESSION_RESULT=""
+          COMPARISON=""
+          if printf '%s\n' "$CURRENT" "$NEXT_VERSION" | sort -V -C && echo "$NEXT_DNF_HELP" | grep -q '^usage: dnf'; then
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            REGRESSION_RESULT="Next version installed successfully on Arm64"
+            COMPARISON="Baseline AlmaLinux ${CURRENT} passed Tests 1-5. Regression validation pulled candidate tag ${NEXT_TAG} (version ${NEXT_VERSION}) and validated package-manager functionality inside the Arm64 container."
+            echo "regression_result=${REGRESSION_RESULT}" >> "$GITHUB_OUTPUT"
+            echo "comparison=${COMPARISON}" >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            REGRESSION_RESULT="Next version install failed on Arm64"
+            COMPARISON="Baseline AlmaLinux ${CURRENT} passed Tests 1-5, but candidate tag ${NEXT_TAG} did not provide a clean newer-version Arm64 validation path."
+            echo "regression_result=${REGRESSION_RESULT}" >> "$GITHUB_OUTPUT"
+            echo "comparison=${COMPARISON}" >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT}"
-          echo "Next version targeted for install validation: ${CURRENT}"
-          echo "Next version installed on Arm64: ${CURRENT}"
-          echo "Regression install result: No newer stable AlmaLinux release is available for Arm64 validation"
-          echo "Details: AlmaLinux ${CURRENT} is the dashboard-recommended Arm baseline and the newest stable AlmaLinux container line currently published, so there is no newer stable image tag to validate in Test 6 yet."
+          echo "Next version targeted for install validation: ${NEXT_TAG}"
+          echo "Next version installed on Arm64: ${NEXT_VERSION}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${COMPARISON}"
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"

@@ -58,6 +58,9 @@ on:
       regression_next_installed_version:
         description: Candidate version reported by installed next artifact
         value: ${{ jobs.test-stream.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy for this workflow
+        value: ${{ jobs.test-stream.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-stream.outputs.run_id }}
@@ -79,6 +82,7 @@ jobs:
     env:
       STREAM_REPO: "https://github.com/jeffhammond/STREAM.git"
       STREAM_BRANCH: "master"
+      STREAM_BASELINE_COMMIT: "e1a039c"
       STREAM_WORKROOT: "/tmp/stream-smoke"
 
     outputs:
@@ -100,6 +104,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -115,6 +120,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=stream" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/stream" >> "$GITHUB_OUTPUT"
+          echo "current_version=${STREAM_BASELINE_COMMIT}" >> "$GITHUB_OUTPUT"
       - name: Install Stream baseline
         id: install
         run: |
@@ -125,7 +131,12 @@ jobs:
           BASE_DIR="${STREAM_WORKROOT}/current"
           rm -rf "${STREAM_WORKROOT}"
           mkdir -p "${STREAM_WORKROOT}"
-          git clone --depth 1 --branch "${STREAM_BRANCH}" "${STREAM_REPO}" "${BASE_DIR}"
+          git clone --depth 200 --branch "${STREAM_BRANCH}" "${STREAM_REPO}" "${BASE_DIR}"
+          if ! git -C "${BASE_DIR}" rev-parse --verify --quiet "${STREAM_BASELINE_COMMIT}^{commit}" >/dev/null; then
+            echo "Pinned baseline commit ${STREAM_BASELINE_COMMIT} is not available in clone history." >&2
+            exit 1
+          fi
+          git -C "${BASE_DIR}" checkout -q "${STREAM_BASELINE_COMMIT}"
 
           test -f "${BASE_DIR}/stream.c"
           test -f "${BASE_DIR}/Makefile"
@@ -139,10 +150,12 @@ jobs:
           set -euo pipefail
           BASE_DIR="${{ steps.install.outputs.base_dir }}"
           CURRENT=$(git -C "${BASE_DIR}" rev-parse --short HEAD)
+          LATEST_FULL=$(git ls-remote "${STREAM_REPO}" "refs/heads/${STREAM_BRANCH}" | awk 'NR==1 {print $1}')
+          LATEST=$(printf '%s\n' "${LATEST_FULL}" | cut -c1-7)
           echo "version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "latest=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "Detected Stream revision: ${CURRENT}"
-          echo "Detected latest upstream head: ${CURRENT}"
+          echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "Detected Stream baseline revision: ${CURRENT}"
+          echo "Detected latest upstream head: ${LATEST:-unknown}"
 
       - name: Test 1 - Check source tree exists
         id: test1
@@ -259,11 +272,22 @@ jobs:
           echo "Current version tested in Tests 1-5: ${CURRENT}"
           echo "Next version targeted for install validation: ${LATEST}"
 
+          if [ -z "${LATEST}" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned STREAM baseline commit ${CURRENT} passed smoke tests in this run, but the latest upstream ${STREAM_BRANCH} commit could not be resolved for Arm64 regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           if [ "${CURRENT}" = "${LATEST}" ]; then
             echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
             echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-            echo "regression_result=No stable newer release is available for Test 6" >> "$GITHUB_OUTPUT"
-            echo "comparison=STREAM tracks a moving upstream branch instead of stable versioned releases, so this workflow cannot provide a credible newer-version Test 6 candidate without a policy exception or metadata change." >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer upstream commit is available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Tests 1-5 already validated the current upstream ${STREAM_BRANCH} head commit ${CURRENT} on Arm64. No newer commit is available to validate as a next candidate." >> "$GITHUB_OUTPUT"
             echo "status=skipped" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -273,6 +297,16 @@ jobs:
           rm -rf "${REGRESSION_DIR}"
           git clone --depth 1 --branch "${STREAM_BRANCH}" "${STREAM_REPO}" "${REGRESSION_DIR}"
           NEXT_INSTALLED=$(git -C "${REGRESSION_DIR}" rev-parse --short HEAD)
+          if [ "${NEXT_INSTALLED}" != "${LATEST}" ]; then
+            echo "next_installed_version=${NEXT_INSTALLED:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned STREAM baseline commit ${CURRENT} passed smoke tests in this run, but the freshly cloned upstream head (${NEXT_INSTALLED:-unknown}) did not match the resolved next candidate commit ${LATEST}." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           make -C "${REGRESSION_DIR}" stream > /tmp/stream-next-build.txt 2>&1
           NEXT_OUTPUT=$("${REGRESSION_DIR}/stream" 2>&1)
 
@@ -280,15 +314,9 @@ jobs:
              file "${REGRESSION_DIR}/stream" | grep -qi "ARM aarch64" && \
              printf '%s\n' "${NEXT_OUTPUT}" | grep -q "Solution Validates"; then
             echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
-            if [ "${CURRENT}" = "${LATEST}" ]; then
-              echo "decision=current_is_latest" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Current stable version already validated on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=STREAM does not publish stable release tags for this workflow path, so Tests 1-5 validated the current upstream master head ${CURRENT}. Regression validation re-cloned the latest upstream head in isolation and reconfirmed the real Arm64 benchmark smoke path successfully." >> "$GITHUB_OUTPUT"
-            else
-              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=STREAM does not publish stable release tags for this workflow path, so Tests 1-5 validated upstream head ${CURRENT}. Regression validation cloned the newer upstream head ${LATEST} in isolation and confirmed the real Arm64 benchmark smoke path successfully." >> "$GITHUB_OUTPUT"
-            fi
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Tests 1-5 validated pinned baseline commit ${CURRENT} on Arm64. Regression validation cloned the next upstream ${STREAM_BRANCH} head commit ${LATEST} in isolation and confirmed the real Arm64 STREAM benchmark smoke path successfully." >> "$GITHUB_OUTPUT"
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/stream-next-build.txt || true
@@ -296,7 +324,7 @@ jobs:
             echo "next_installed_version=${NEXT_INSTALLED:-not_installed}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=STREAM tracks the upstream master branch instead of stable releases. Tests 1-5 validated upstream head ${CURRENT}, but the fresh Arm64 regression clone for upstream head ${LATEST} did not complete the real benchmark smoke path successfully." >> "$GITHUB_OUTPUT"
+            echo "comparison=Tests 1-5 validated pinned baseline commit ${CURRENT} on Arm64, but regression validation of next upstream ${STREAM_BRANCH} head commit ${LATEST} did not complete the real benchmark smoke path successfully." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"

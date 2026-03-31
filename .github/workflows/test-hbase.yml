@@ -309,22 +309,48 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version }}"
-          LATEST="2.5.13"
+          export CURRENT
+          NEXT="$(
+            python3 - <<'PY'
+          import os
+          import re
+          import urllib.request
+
+          current = os.environ.get("CURRENT", "")
+          if not re.fullmatch(r"\d+\.\d+\.\d+", current):
+              print("")
+              raise SystemExit(0)
+
+          cparts = tuple(int(x) for x in current.split("."))
+          html = urllib.request.urlopen("https://archive.apache.org/dist/hbase/", timeout=20).read().decode("utf-8", "ignore")
+          versions = sorted(
+              set(re.findall(r'href="(\d+\.\d+\.\d+)/"', html)),
+              key=lambda s: tuple(int(x) for x in s.split(".")),
+          )
+          next_version = ""
+          for v in versions:
+              parts = tuple(int(x) for x in v.split("."))
+              if parts > cparts:
+                  next_version = v
+                  break
+          print(next_version)
+          PY
+          )"
 
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${NEXT:-$CURRENT}" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
-          echo "Next version targeted for install validation: $LATEST"
+          echo "Next version targeted for install validation: ${NEXT:-none}"
 
-          if [ "$CURRENT" = "$LATEST" ]; then
+          if [ -z "$NEXT" ]; then
             echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned HBase baseline ${CURRENT} is already at the newest stable release visible in the public Apache HBase version stream, so there is no newer Arm64 candidate to validate in Test 6." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $CURRENT"
-            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-            echo "Details: Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64, and the current stable release line remains ${LATEST}."
+            echo "Regression install result: No newer stable release available for Test 6"
+            echo "Details: Current pinned HBase version ${CURRENT} passed baseline startup smoke on Arm64, and no newer stable version was found in the public Apache HBase stream."
             echo "status=skipped" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -333,42 +359,42 @@ jobs:
 
           NEXT_DIR=$(mktemp -d)
           NEXT_TAR="$NEXT_DIR/hbase-next.tar.gz"
-          if ! curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 "https://downloads.apache.org/hbase/${LATEST}/hbase-${LATEST}-hadoop3-bin.tar.gz" -o "$NEXT_TAR"; then
+          if ! curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 "https://archive.apache.org/dist/hbase/${NEXT}/hbase-${NEXT}-hadoop3-bin.tar.gz" -o "$NEXT_TAR"; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64, but the candidate HBase ${LATEST} archive could not be downloaded for regression install validation." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64, but the next newer candidate HBase ${NEXT} archive could not be downloaded for regression install validation." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
-          NEXT_HOME="$NEXT_DIR/hbase-${LATEST}-hadoop3-bin"
+          NEXT_HOME="$NEXT_DIR/hbase-${NEXT}-hadoop3-bin"
           sed -i '/^export JAVA_HOME=/d' "$NEXT_HOME/conf/hbase-env.sh"
           echo "export JAVA_HOME=$JAVA_HOME" >> "$NEXT_HOME/conf/hbase-env.sh"
           NEXT_REPORTED=$("$NEXT_HOME/bin/hbase" version 2>&1 | awk '/^HBase / {print $2; exit}')
 
-          if [ "$NEXT_REPORTED" = "$LATEST" ] \
-            && [ -f "$NEXT_HOME/lib/hbase-server-${LATEST}.jar" ] \
+          if [ "$NEXT_REPORTED" = "$NEXT" ] \
+            && [ -f "$NEXT_HOME/lib/hbase-server-${NEXT}.jar" ] \
             && [ -f "$NEXT_HOME/conf/hbase-site.xml" ]; then
             echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64. Regression validation downloaded the official HBase ${LATEST} hadoop3 binary distribution, and the candidate reported version ${NEXT_REPORTED} while exposing the expected server JAR and configuration files." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64. Regression validation downloaded the next newer official HBase ${NEXT} hadoop3 binary distribution, and the candidate reported version ${NEXT_REPORTED} while exposing the expected server JAR and configuration files." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $NEXT_REPORTED"
             echo "Regression install result: Next version installed successfully on Arm64"
-            echo "Details: Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64. Regression validation downloaded the official HBase ${LATEST} hadoop3 binary distribution, and the candidate reported version ${NEXT_REPORTED} while exposing the expected server JAR and configuration files."
+            echo "Details: Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64. Regression validation downloaded the next newer official HBase ${NEXT} hadoop3 binary distribution, and the candidate reported version ${NEXT_REPORTED} while exposing the expected server JAR and configuration files."
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             "$NEXT_HOME/bin/hbase" version || true
             echo "next_installed_version=${NEXT_REPORTED:-unknown}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64, but the official candidate release ${LATEST} did not expose the expected versioned binary layout on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64, but the official next candidate release ${NEXT} did not expose the expected versioned binary layout on Arm64." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: ${NEXT_REPORTED:-unknown}"
             echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64, but the official candidate release ${LATEST} did not expose the expected versioned binary layout on Arm64."
+            echo "Details: Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64, but the official next candidate release ${NEXT} did not expose the expected versioned binary layout on Arm64."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"

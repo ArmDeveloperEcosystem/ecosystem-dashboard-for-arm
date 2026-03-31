@@ -57,6 +57,9 @@ on:
       regression_next_installed_version:
         description: Candidate version reported by installed next artifact
         value: ${{ jobs.test-bk_cmdb.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-bk_cmdb.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-bk_cmdb.outputs.run_id }}
@@ -81,6 +84,8 @@ jobs:
     env:
       BK_CMDB_REF: "release-v3.10.41"
       BK_CMDB_VERSION: "v3.10.41"
+      BK_CMDB_NEXT_REF: "release-v3.10.42"
+      BK_CMDB_NEXT_VERSION: "v3.10.42"
 
     outputs:
       contract_version: "2.0"
@@ -101,6 +106,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -237,20 +243,91 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 6 - Regression Validation (Deferred)
+      - name: Test 6 - Regression Validation
         id: test6
         if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT_VERSION="${{ steps.version.outputs.version || 'unknown' }}"
-          echo "status=deferred" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
+          NEXT_REF="${BK_CMDB_NEXT_REF}"
+          NEXT_VERSION="${BK_CMDB_NEXT_VERSION}"
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT_VERSION}"
+          echo "Next version targeted for install validation: ${NEXT_VERSION}"
+
           echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=unknown" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation deferred for source-built Bk-cmdb on Arm64" >> "$GITHUB_OUTPUT"
-          echo "comparison=Tests 1-5 validated source build ${CURRENT_VERSION} from pinned ref ${BK_CMDB_REF}. This workflow does not yet encode a safe automated next-ref selection and upgrade/install check, so Test 6 is explicitly deferred." >> "$GITHUB_OUTPUT"
+          echo "latest_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+
+          if [ -z "${NEXT_REF}" ] || [ -z "${NEXT_VERSION}" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Bk-cmdb version ${CURRENT_VERSION} passed smoke tests in this run, but the configured next-version metadata is missing." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "${CURRENT_VERSION}" = "${NEXT_VERSION}" ]; then
+            echo "next_installed_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the selected next candidate" >> "$GITHUB_OUTPUT"
+            echo "comparison=Configured Bk-cmdb baseline ${CURRENT_VERSION} matches configured Test 6 candidate ${NEXT_VERSION}. Repin baseline to an older release before running regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_DIR="${RUNNER_TEMP}/bk-cmdb-next"
+          rm -rf "${NEXT_DIR}"
+          if ! git clone --depth 1 --branch "${NEXT_REF}" https://github.com/TencentBlueKing/bk-cmdb.git "${NEXT_DIR}" >/tmp/bk-cmdb-next-clone.log 2>&1; then
+            cat /tmp/bk-cmdb-next-clone.log || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Bk-cmdb version ${CURRENT_VERSION} passed smoke tests in this run, but the candidate ref ${NEXT_REF} could not be cloned on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          pushd "${NEXT_DIR}/src/scene_server/admin_server" >/dev/null
+          if ! go build -o "${RUNNER_TEMP}/cmdb_adminserver_next" . >/tmp/bk-cmdb-next-build.log 2>&1; then
+            cat /tmp/bk-cmdb-next-build.log || true
+            popd >/dev/null || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Bk-cmdb version ${CURRENT_VERSION} passed smoke tests in this run, but candidate version ${NEXT_VERSION} failed to build cmdb_adminserver on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          popd >/dev/null
+
+          if ! timeout 10s "${RUNNER_TEMP}/cmdb_adminserver_next" --version >/tmp/bk-cmdb-next-version.log 2>&1; then
+            cat /tmp/bk-cmdb-next-version.log || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Bk-cmdb version ${CURRENT_VERSION} passed smoke tests in this run, but candidate version ${NEXT_VERSION} binary failed basic --version validation on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Current pinned Bk-cmdb version ${CURRENT_VERSION} passed smoke tests in this run. Regression validation built and validated candidate version ${NEXT_VERSION} from ref ${NEXT_REF} on Arm64." >> "$GITHUB_OUTPUT"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 

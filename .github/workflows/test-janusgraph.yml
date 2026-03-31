@@ -58,6 +58,9 @@ on:
       regression_next_installed_version:
         description: Candidate version reported by installed next artifact
         value: ${{ jobs.test-janusgraph.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-janusgraph.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-janusgraph.outputs.run_id }}
@@ -99,6 +102,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -137,8 +141,46 @@ jobs:
         id: version
         run: |
           set -euo pipefail
+          export JANUSGRAPH_VERSION
+          NEXT="$(
+            python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          current = os.environ.get("JANUSGRAPH_VERSION", "")
+          if not re.fullmatch(r"\d+\.\d+\.\d+", current):
+              print("")
+              raise SystemExit(0)
+
+          releases = json.load(
+              urllib.request.urlopen(
+                  "https://api.github.com/repos/JanusGraph/janusgraph/releases?per_page=100",
+                  timeout=20,
+              )
+          )
+          versions = []
+          for rel in releases:
+              if rel.get("draft") or rel.get("prerelease"):
+                  continue
+              raw = (rel.get("tag_name") or "").strip().lstrip("vV")
+              if re.fullmatch(r"\d+\.\d+\.\d+", raw):
+                  versions.append(tuple(int(x) for x in raw.split(".")))
+
+          versions = sorted(set(versions))
+          c = tuple(int(x) for x in current.split("."))
+          nxt = next(("{}.{}.{}".format(*v) for v in versions if v > c), "")
+          print(nxt)
+          PY
+          )"
           echo "version=${JANUSGRAPH_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest=${JANUSGRAPH_VERSION}" >> "$GITHUB_OUTPUT"
+          if [ -n "${NEXT}" ]; then
+            echo "latest=${NEXT}" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest=${JANUSGRAPH_VERSION}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "next=${NEXT}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Artifact Existence
         id: test1
@@ -229,6 +271,7 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          NEXT="${{ steps.version.outputs.next || '' }}"
           LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
           NEXT_URL="https://github.com/JanusGraph/janusgraph/releases/download/v${LATEST}/janusgraph-${LATEST}.zip"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
@@ -236,6 +279,19 @@ jobs:
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $LATEST"
+
+          if [ -z "$NEXT" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned JanusGraph version $CURRENT already matches the newest public stable JanusGraph release stream, so there is no newer stable upstream candidate for a genuine Test 6 upgrade check." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: No newer stable release available for Test 6"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ] || [ "$LATEST" = "not_yet_checked" ]; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
@@ -292,21 +348,12 @@ jobs:
 
           NEXT_INSTALLED_VERSION="$LATEST"
           echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
-          if [ "$CURRENT" = "$LATEST" ]; then
-            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned JanusGraph version $CURRENT already matches the newest public stable JanusGraph release. Tests 1-5 validate the real Arm64 download and prepare path, but there is no newer stable upstream candidate for a genuine Test 6 upgrade check." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
-            echo "Regression install result: No newer stable release available for Test 6"
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
-          else
-            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned JanusGraph version $CURRENT passed smoke tests in this run. Regression validation downloaded and prepared the candidate Arm64 artifact from $NEXT_URL successfully." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
-            echo "Regression install result: Next version installed successfully on Arm64"
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          fi
+          echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Current pinned JanusGraph version $CURRENT passed smoke tests in this run. Regression validation downloaded and prepared the next newer Arm64 artifact from $NEXT_URL successfully." >> "$GITHUB_OUTPUT"
+          echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+          echo "Regression install result: Next version installed successfully on Arm64"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -402,4 +449,3 @@ jobs:
             echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression validation result unavailable' }}"
             echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
           } >> "$GITHUB_STEP_SUMMARY"
-

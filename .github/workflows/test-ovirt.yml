@@ -45,6 +45,9 @@ on:
       regression_result:
         description: Human readable regression result
         value: ${{ jobs.test-ovirt.outputs.regression_result }}
+      regression_policy:
+        description: Regression policy classification for publish pipeline
+        value: ${{ jobs.test-ovirt.outputs.regression_policy }}
       regression_comparison:
         description: Regression comparison note
         value: ${{ jobs.test-ovirt.outputs.regression_comparison }}
@@ -77,7 +80,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 25
     env:
-      GH_TOKEN: ${{ github.token }}
+      OVIRT_BASELINE_TAG: "ovirt-engine-4.5.6"
+      OVIRT_NEXT_TAG: "ovirt-engine-4.5.7"
 
     outputs:
       contract_version: "2.0"
@@ -94,6 +98,7 @@ jobs:
       regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_policy: ${{ steps.test6.outputs.regression_policy || steps.metadata.outputs.regression_policy || 'applicable' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
@@ -113,6 +118,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=ovirt" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/ovirt" >> "$GITHUB_OUTPUT"
+          echo "regression_policy=applicable" >> "$GITHUB_OUTPUT"
 
       - name: Install OVirt
         id: install
@@ -121,7 +127,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl tar bash python3
 
-          RELEASE_TAG=$(gh release view --repo oVirt/ovirt-engine --json tagName --jq .tagName)
+          RELEASE_TAG="${OVIRT_BASELINE_TAG}"
           rm -rf /tmp/ovirt-src
           mkdir -p /tmp/ovirt-src
           curl -fsSL "https://api.github.com/repos/oVirt/ovirt-engine/tarball/${RELEASE_TAG}" -o /tmp/ovirt-engine.tar.gz
@@ -159,7 +165,7 @@ jobs:
           VERSION="${{ steps.install.outputs.release_tag }}"
           VERSION="${VERSION#ovirt-engine-}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "latest=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=${OVIRT_NEXT_TAG#ovirt-engine-}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check setup script exists
         id: test1
@@ -251,17 +257,75 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
+          echo "regression_policy=${{ steps.metadata.outputs.regression_policy || 'applicable' }}" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version }}"
+          LATEST_TAG="${OVIRT_NEXT_TAG}"
+          LATEST="${LATEST_TAG#ovirt-engine-}"
+          NEXT_INSTALLED="not_installed"
+          DECISION=""
+          REGRESSION_RESULT=""
+          COMPARISON=""
+          STATUS="failed"
+
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-          echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
-          echo "comparison=This workflow validates the latest published oVirt Engine release tarball ${CURRENT} on Arm64 by extracting the release content and exercising the released setup helper scripts. There is no newer stable release beyond ${CURRENT} for a genuine Test 6 upgrade check." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+
+          NEXT_ROOT="$(mktemp -d)"
+          trap 'rm -rf "$NEXT_ROOT"' EXIT
+          if ! curl -fsSL "https://api.github.com/repos/oVirt/ovirt-engine/tarball/${LATEST_TAG}" -o "$NEXT_ROOT/ovirt-engine.tar.gz"; then
+            NEXT_INSTALLED="not_installed"
+            DECISION="next_lookup_failed"
+            REGRESSION_RESULT="Next version lookup failed on Arm64"
+            COMPARISON="Current pinned oVirt Engine version ${CURRENT} passed smoke tests in this run, but the next stable release tag ${LATEST} could not be downloaded for Arm64 regression validation."
+            STATUS="failed"
+          else
+            tar -xzf "$NEXT_ROOT/ovirt-engine.tar.gz" -C "$NEXT_ROOT"
+            NEXT_DIR="$(find "$NEXT_ROOT" -mindepth 1 -maxdepth 1 -type d | head -n 1 || true)"
+            NEXT_SETUP_DIR="$NEXT_DIR/packaging/setup/bin"
+            NEXT_SETUP_BIN="$NEXT_SETUP_DIR/ovirt-engine-setup"
+            NEXT_REMOVE_BIN="$NEXT_SETUP_DIR/ovirt-engine-remove"
+            NEXT_RENAME_BIN="$NEXT_SETUP_DIR/ovirt-engine-rename"
+
+            if [ -n "$NEXT_DIR" ] && [ -x "$NEXT_SETUP_BIN" ] && [ -x "$NEXT_REMOVE_BIN" ] && [ -x "$NEXT_RENAME_BIN" ] \
+               && bash "$NEXT_SETUP_BIN" --help >/tmp/ovirt-next-setup-help.log 2>&1 \
+               && bash "$NEXT_REMOVE_BIN" --help >/tmp/ovirt-next-remove-help.log 2>&1 \
+               && bash "$NEXT_RENAME_BIN" --help >/tmp/ovirt-next-rename-help.log 2>&1; then
+              NEXT_INSTALLED="$LATEST"
+              DECISION="next_install_validated"
+              REGRESSION_RESULT="Next version installed successfully on Arm64"
+              COMPARISON="Current pinned oVirt Engine version ${CURRENT} passed smoke tests in this run. Regression validation downloaded candidate release ${LATEST}, confirmed the setup/remove/rename helper binaries, and verified all candidate help paths on Arm64."
+              STATUS="passed"
+            else
+              NEXT_INSTALLED="install_failed"
+              DECISION="next_install_failed"
+              REGRESSION_RESULT="Next version install failed on Arm64"
+              COMPARISON="Current pinned oVirt Engine version ${CURRENT} passed smoke tests in this run, but candidate release ${LATEST} did not expose the expected setup helper scripts or help paths on Arm64."
+              STATUS="failed"
+            fi
+          fi
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            DECISION="metadata_review_required"
+            REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+            COMPARISON="Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release."
+            STATUS="failed"
+            NEXT_INSTALLED="$CURRENT"
+          fi
+
+          echo "next_installed_version=$NEXT_INSTALLED" >> "$GITHUB_OUTPUT"
+          echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
+          echo "regression_result=$REGRESSION_RESULT" >> "$GITHUB_OUTPUT"
+          echo "comparison=$COMPARISON" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+          if [ "$STATUS" = "failed" ]; then
+            exit 1
+          fi
 
       - name: Show regression validation details
         if: always()

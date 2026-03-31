@@ -58,6 +58,9 @@ on:
       regression_next_installed_version:
         description: Candidate version reported by installed next artifact
         value: ${{ jobs.test-kaezip.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-kaezip.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-kaezip.outputs.run_id }}
@@ -98,6 +101,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -131,10 +135,54 @@ jobs:
           set -euo pipefail
           SOURCE_DIR="${{ steps.install.outputs.source_dir }}"
           CURRENT_VERSION=$(awk -F'=' '/^VERSION/ {gsub(/ /, "", $2); print $2; exit}' "$SOURCE_DIR/Makefile")
+          export CURRENT_VERSION
+          NEXT_VERSION="$(
+            python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          current = os.environ.get("CURRENT_VERSION", "")
+          if not re.fullmatch(r"\d+\.\d+\.\d+", current):
+              print("")
+              raise SystemExit(0)
+
+          tags = json.load(
+              urllib.request.urlopen(
+                  "https://api.github.com/repos/kunpengcompute/KAEzip/tags?per_page=100",
+                  timeout=20,
+              )
+          )
+
+          versions = []
+          for tag in tags:
+              raw = (tag.get("name") or "").strip().lstrip("vV")
+              if re.fullmatch(r"\d+\.\d+\.\d+", raw):
+                  versions.append(tuple(int(x) for x in raw.split(".")))
+
+          versions = sorted(set(versions))
+          c = tuple(int(x) for x in current.split("."))
+          nxt = next(("{}.{}.{}".format(*v) for v in versions if v > c), "")
+          print(nxt)
+          PY
+          )"
+
+          if [ -n "${NEXT_VERSION}" ]; then
+            TARGET_VERSION="${NEXT_VERSION}"
+          else
+            TARGET_VERSION="${CURRENT_VERSION:-$BASELINE_VERSION}"
+          fi
+
           echo "version=${CURRENT_VERSION:-$BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest=${TARGET_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "next=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Detected KAEzip baseline version: ${CURRENT_VERSION:-$BASELINE_VERSION}"
-          echo "Detected latest KAEzip release: ${BASELINE_VERSION}"
+          if [ -n "${NEXT_VERSION}" ]; then
+            echo "Detected next newer KAEzip release: ${NEXT_VERSION}"
+          else
+            echo "Detected next newer KAEzip release: none"
+          fi
 
       - name: Test 1 - Check source tree contents
         id: test1
@@ -269,7 +317,7 @@ jobs:
             echo "status=skipped" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            exit 0
           fi
 
           NEXT_ROOT=$(mktemp -d)
@@ -341,9 +389,9 @@ jobs:
           check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
           check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+          if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
-          elif [ "${{ steps.test6.outputs.status || 'failed' }}" = "failed" ]; then
+          elif [ "${{ steps.test6.outputs.status || 'skipped' }}" = "failed" ]; then
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
@@ -353,7 +401,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
 
           if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"

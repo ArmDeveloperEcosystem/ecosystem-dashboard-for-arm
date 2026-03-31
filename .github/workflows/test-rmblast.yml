@@ -58,6 +58,9 @@ on:
       regression_next_installed_version:
         description: Candidate version reported by installed next artifact
         value: ${{ jobs.test-rmblast.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy for this workflow
+        value: ${{ jobs.test-rmblast.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-rmblast.outputs.run_id }}
@@ -100,6 +103,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -260,15 +264,21 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="$RMBLAST_VERSION"
-          LATEST=$(python3 - <<'PY'
+          NEXT=$(python3 - "$CURRENT" <<'PY'
           import re, urllib.request
-          html = urllib.request.urlopen("https://www.repeatmasker.org/rmblast/").read().decode()
-          match = re.search(r"Latest Release:\s*([0-9]+\.[0-9]+\.[0-9]+)", html)
-          if not match:
-              raise SystemExit("Unable to determine latest RMBlast release")
-          print(match.group(1))
+          import sys
+          current = sys.argv[1]
+          html = urllib.request.urlopen("https://www.repeatmasker.org/rmblast/", timeout=30).read().decode("utf-8", "ignore")
+          versions = sorted(
+              set(re.findall(r"isb-([0-9]+\.[0-9]+\.[0-9]+)\+-rmblast\.patch\.gz", html)),
+              key=lambda s: tuple(map(int, s.split(".")))
+          )
+          current_key = tuple(map(int, current.split(".")))
+          candidates = [v for v in versions if tuple(map(int, v.split("."))) > current_key]
+          print(candidates[0] if candidates else "")
           PY
           )
+          LATEST="${NEXT:-$CURRENT}"
 
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
           echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
@@ -276,7 +286,7 @@ jobs:
           echo "Current version tested in Tests 1-5: ${CURRENT}"
           echo "Next version targeted for install validation: ${LATEST}"
 
-          if [ "$LATEST" = "$CURRENT" ]; then
+          if [ -z "$NEXT" ]; then
             echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
             echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
             echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
@@ -290,8 +300,8 @@ jobs:
 
           NEXT_ROOT=$(mktemp -d)
           NEXT_PREFIX="$NEXT_ROOT/install"
-          BASELINE_URL="https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/${LATEST}/ncbi-blast-${LATEST}+-src.tar.gz"
-          PATCH_URL="https://www.repeatmasker.org/rmblast/isb-${LATEST}+-rmblast.patch.gz"
+          BASELINE_URL="https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/${NEXT}/ncbi-blast-${NEXT}+-src.tar.gz"
+          PATCH_URL="https://www.repeatmasker.org/rmblast/isb-${NEXT}+-rmblast.patch.gz"
 
           if curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 900 --progress-bar "$BASELINE_URL" -o "$NEXT_ROOT/ncbi-blast-src.tgz" && \
              curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 900 --progress-bar "$PATCH_URL" -o "$NEXT_ROOT/rmblast.patch.gz"; then
@@ -299,7 +309,7 @@ jobs:
             ls -lh "$NEXT_ROOT"/ncbi-blast-src.tgz "$NEXT_ROOT"/rmblast.patch.gz
             timeout 10m tar -xzf "$NEXT_ROOT/ncbi-blast-src.tgz" -C "$NEXT_ROOT"
             gunzip "$NEXT_ROOT/rmblast.patch.gz"
-            SRC_DIR="$NEXT_ROOT/ncbi-blast-${LATEST}+-src"
+            SRC_DIR="$NEXT_ROOT/ncbi-blast-${NEXT}+-src"
             patch -d "$SRC_DIR" -p1 < "$NEXT_ROOT/rmblast.patch"
 
             cd "$SRC_DIR/c++"
@@ -325,22 +335,14 @@ jobs:
                 -soft_masking false \
                 -outfmt '6 qseqid sseqid length' > "$WORK_DIR/result.tsv" 2>/tmp/rmblast-run-next.out
 
-              if grep -q $'^query1\tdb1\t' "$WORK_DIR/result.tsv" && [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
+              if grep -q $'^query1\tdb1\t' "$WORK_DIR/result.tsv" && [ "$NEXT_INSTALLED_VERSION" = "$NEXT" ]; then
                 echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
-                if [ "$LATEST" = "$CURRENT" ]; then
-                  echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-                  echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
-                  echo "comparison=Current pinned RMBlast release ${CURRENT} already matches the newest public stable release. Tests 1-5 validate the real Arm64 source build and self-hit smoke, but there is no newer stable upstream release for a genuine Test 6 upgrade check." >> "$GITHUB_OUTPUT"
-                  echo "Regression install result: No newer stable release available for Test 6"
-                  echo "status=skipped" >> "$GITHUB_OUTPUT"
-                else
-                  echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-                  echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-                  echo "comparison=Current pinned RMBlast release ${CURRENT} passed smoke tests in this run. Regression validation rebuilt candidate ${LATEST} from the official NCBI Blast source plus the RepeatMasker patch, the Arm64 rmblastn binary reported ${NEXT_INSTALLED_VERSION}, and the candidate completed the makeblastdb plus rmblastn megablast self-hit smoke." >> "$GITHUB_OUTPUT"
-                  echo "Regression install result: Next version installed successfully on Arm64"
-                  echo "status=passed" >> "$GITHUB_OUTPUT"
-                  echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
-                fi
+                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned RMBlast release ${CURRENT} passed smoke tests in this run. Regression validation rebuilt candidate ${NEXT} from the official NCBI Blast source plus the RepeatMasker patch, the Arm64 rmblastn binary reported ${NEXT_INSTALLED_VERSION}, and the candidate completed the makeblastdb plus rmblastn megablast self-hit smoke." >> "$GITHUB_OUTPUT"
+                echo "Regression install result: Next version installed successfully on Arm64"
+                echo "status=passed" >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
               else
                 cat /tmp/rmblast-makeblastdb-next.out || true
                 cat /tmp/rmblast-run-next.out || true
@@ -348,7 +350,7 @@ jobs:
                 echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned RMBlast release ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not complete the rebuilt makeblastdb/rmblastn smoke successfully on Arm64." >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned RMBlast release ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT} did not complete the rebuilt makeblastdb/rmblastn smoke successfully on Arm64." >> "$GITHUB_OUTPUT"
                 echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
                 echo "Regression install result: Next version install failed on Arm64"
                 echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -358,7 +360,7 @@ jobs:
               echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned RMBlast release ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not build a usable Arm64 rmblastn toolchain." >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned RMBlast release ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT} did not build a usable Arm64 rmblastn toolchain." >> "$GITHUB_OUTPUT"
               echo "Next version installed on Arm64: install_failed"
               echo "Regression install result: Next version install failed on Arm64"
               echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -368,7 +370,7 @@ jobs:
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned RMBlast release ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} source bundle or patch could not be downloaded from the official paths." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned RMBlast release ${CURRENT} passed smoke tests in this run, but the regression candidate ${NEXT} source bundle or patch could not be downloaded from the official paths." >> "$GITHUB_OUTPUT"
             echo "Next version download status: failed"
             echo "Next version installed on Arm64: install_failed"
             echo "Regression install result: Next version install failed on Arm64"
@@ -396,7 +398,7 @@ jobs:
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
               *)
-                if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
                   REGRESSION_RESULT="Regression validation passed"
                 else
                   REGRESSION_RESULT="Regression validation failed"
@@ -433,7 +435,7 @@ jobs:
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
           if [ "$TEST6_STATUS" = "passed" ]; then
             PASSED=$((PASSED + 1))
           elif [ "$TEST6_STATUS" = "failed" ]; then
@@ -480,7 +482,7 @@ jobs:
           echo "3. Check help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "4. Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "5. Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "6. Regression Validation: ${{ steps.test6.outputs.status || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"

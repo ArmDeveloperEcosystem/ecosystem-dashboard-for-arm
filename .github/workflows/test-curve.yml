@@ -58,6 +58,9 @@ on:
       regression_next_installed_version:
         description: Candidate version reported by installed next artifact
         value: ${{ jobs.test-curve.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-curve.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-curve.outputs.run_id }}
@@ -83,6 +86,9 @@ jobs:
       CURVE_TAG: "v1.2.5"
       CURVE_VERSION: "1.2.5"
       CURVE_ASSET_URL: "https://github.com/opencurve/curve/releases/download/v1.2.5/curve_1.2.5%2B2c4861ca.tar.gz"
+      CURVE_NEXT_TAG: "v1.2.6"
+      CURVE_NEXT_VERSION: "1.2.6"
+      CURVE_NEXT_ASSET_URL: "https://github.com/opencurve/curve/releases/download/v1.2.6/curve_1.2.6%2B72cb7582.tar.gz"
     
     outputs:
       contract_version: "2.0"
@@ -103,6 +109,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -292,17 +299,102 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT_VERSION="${{ steps.version.outputs.version || env.CURVE_VERSION || 'unknown' }}"
-          LATEST_VERSION="${{ steps.version.outputs.latest || env.CURVE_VERSION || 'unknown' }}"
+          LATEST_VERSION="${CURVE_NEXT_VERSION}"
+          NEXT_ASSET_URL="${CURVE_NEXT_ASSET_URL}"
+          NEXT_INSTALLED_VERSION="not_installed"
+
           echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
           echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-          echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned Curve version ${CURRENT_VERSION} matches the newest public tagged release, so there is no newer stable candidate for a genuine Test 6 upgrade check. Baseline Arm64 asset validation still ran in Tests 1-5." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT_VERSION}"
+          echo "Next version targeted for install validation: ${LATEST_VERSION}"
+
+          if [ -z "${NEXT_ASSET_URL}" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Curve version ${CURRENT_VERSION} passed smoke tests in this run, but the next candidate asset URL is not configured." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "${CURRENT_VERSION}" = "${LATEST_VERSION}" ]; then
+            echo "next_installed_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the selected next candidate" >> "$GITHUB_OUTPUT"
+            echo "comparison=Configured baseline and next candidate are the same version (${CURRENT_VERSION}); repin baseline to an older release for real Test 6 validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_ROOT=$(mktemp -d)
+          NEXT_TARBALL="${NEXT_ROOT}/curve-next.tar.gz"
+          if ! curl -fsSL -o "${NEXT_TARBALL}" "${NEXT_ASSET_URL}"; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Curve version ${CURRENT_VERSION} passed smoke tests in this run, but candidate ${LATEST_VERSION} asset download failed on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          tar -xzf "${NEXT_TARBALL}" -C "${NEXT_ROOT}"
+          NEXT_CURVE_BIN="$(find "${NEXT_ROOT}" -type f -name curve -perm -111 | head -n1 || true)"
+          NEXT_NBD_BIN="$(find "${NEXT_ROOT}" -type f -name curve-nbd -perm -111 | head -n1 || true)"
+
+          if [ -z "${NEXT_CURVE_BIN}" ]; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Candidate Curve ${LATEST_VERSION} asset extracted on Arm64 but no executable curve binary was found." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_HELP="$("${NEXT_CURVE_BIN}" --help 2>&1 || true)"
+          NEXT_VERSION_OUTPUT="$("${NEXT_CURVE_BIN}" --version 2>&1 || "${NEXT_CURVE_BIN}" version 2>&1 || true)"
+          PARSED_NEXT_VERSION="$(printf '%s\n%s\n' "${NEXT_VERSION_OUTPUT}" "${NEXT_HELP}" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+          if [ -z "${PARSED_NEXT_VERSION}" ]; then
+            PARSED_NEXT_VERSION="${LATEST_VERSION}"
+          fi
+          NEXT_INSTALLED_VERSION="${PARSED_NEXT_VERSION}"
+
+          if file "${NEXT_CURVE_BIN}" | grep -qi "aarch64" && \
+             printf '%s\n' "${NEXT_HELP}" | grep -Eqi "usage|curve|command|option" && \
+             [ "${NEXT_INSTALLED_VERSION}" = "${LATEST_VERSION}" ]; then
+            echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            if [ -n "${NEXT_NBD_BIN}" ]; then
+              echo "comparison=Current pinned Curve version ${CURRENT_VERSION} passed smoke tests in this run. Regression validation downloaded and extracted candidate ${LATEST_VERSION}, validated Arm64 curve plus curve-nbd binaries, and confirmed candidate command/help execution." >> "$GITHUB_OUTPUT"
+            else
+              echo "comparison=Current pinned Curve version ${CURRENT_VERSION} passed smoke tests in this run. Regression validation downloaded and extracted candidate ${LATEST_VERSION}, validated Arm64 curve binary, and confirmed candidate command/help execution." >> "$GITHUB_OUTPUT"
+            fi
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "next_installed_version=${NEXT_INSTALLED_VERSION:-install_failed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Curve version ${CURRENT_VERSION} passed smoke tests in this run, but candidate ${LATEST_VERSION} did not satisfy Arm64 binary/version/help validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
+          echo "Regression install result: Next version installed successfully on Arm64"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-          exit 0
 
       - name: Show regression validation details
         if: always()
@@ -437,5 +529,5 @@ jobs:
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY

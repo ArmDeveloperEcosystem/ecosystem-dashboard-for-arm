@@ -46,6 +46,9 @@ on:
       regression_result:
         description: Human readable regression result
         value: ${{ jobs.test-uyuni.outputs.regression_result }}
+      regression_policy:
+        description: Regression policy classification for publish pipeline
+        value: ${{ jobs.test-uyuni.outputs.regression_policy }}
       regression_comparison:
         description: Regression comparison note
         value: ${{ jobs.test-uyuni.outputs.regression_comparison }}
@@ -98,6 +101,7 @@ jobs:
       regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_policy: ${{ steps.test6.outputs.regression_policy || steps.metadata.outputs.regression_policy || 'applicable' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
@@ -117,6 +121,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=uyuni" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/uyuni" >> "$GITHUB_OUTPUT"
+          echo "regression_policy=applicable" >> "$GITHUB_OUTPUT"
           echo "current_version=${UYUNI_BASELINE_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Install Uyuni baseline image
@@ -223,34 +228,58 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          echo "regression_policy=${{ steps.metadata.outputs.regression_policy || 'applicable' }}" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
           CURRENT="${UYUNI_BASELINE_TAG}"
           TAGS_JSON=$(curl -fsSL "https://registry.opensuse.org/v2/uyuni/server/tags/list")
-          LATEST=$(python3 -c 'import json,re,sys; tags=json.loads(sys.stdin.read()).get("tags", []); stable=[t for t in tags if re.fullmatch(r"\d{4}\.\d{2}", t)]; print(sorted(stable)[-1] if stable else "")' <<< "$TAGS_JSON")
+          NEXT=$(
+            CURRENT_TAG="${CURRENT}" TAGS_JSON_PAYLOAD="${TAGS_JSON}" python3 - <<'PY'
+          import json
+          import os
+          import re
+
+          current = os.environ.get("CURRENT_TAG", "")
+          tags = json.loads(os.environ.get("TAGS_JSON_PAYLOAD", "{}")).get("tags", [])
+          stable = sorted({t for t in tags if re.fullmatch(r"\d{4}\.\d{2}", t)})
+
+          def key(tag: str):
+              year, month = tag.split(".")
+              return int(year), int(month)
+
+          try:
+              current_key = key(current)
+          except Exception:
+              print("")
+              raise SystemExit(0)
+
+          next_tag = next((tag for tag in sorted(stable, key=key) if key(tag) > current_key), "")
+          print(next_tag)
+          PY
+          )
 
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${LATEST:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${NEXT:-$CURRENT}" >> "$GITHUB_OUTPUT"
 
-          if [ -z "$LATEST" ] || [ "$LATEST" = "$CURRENT" ]; then
+          if [ -z "$NEXT" ]; then
             echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "regression_result=No newer stable Uyuni tag available" >> "$GITHUB_OUTPUT"
             echo "comparison=Baseline ${CURRENT} is currently the latest stable tag available from the official registry." >> "$GITHUB_OUTPUT"
             echo "status=skipped" >> "$GITHUB_OUTPUT"
           else
-            CANDIDATE_IMAGE="${UYUNI_REGISTRY_REPO}:${LATEST}"
+            CANDIDATE_IMAGE="${UYUNI_REGISTRY_REPO}:${NEXT}"
             docker pull --quiet "$CANDIDATE_IMAGE"
             if docker run --rm --entrypoint /bin/sh "$CANDIDATE_IMAGE" -lc 'rpm -qa | grep -Eiq "(uyuni|susemanager|spacewalk)"'; then
               echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-              echo "next_installed_version=$LATEST" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=$NEXT" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next version install validated on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Baseline ${CURRENT} passed smoke tests and newer stable ${LATEST} also validated on Arm64." >> "$GITHUB_OUTPUT"
+              echo "comparison=Baseline ${CURRENT} passed smoke tests and the next newer stable ${NEXT} also validated on Arm64." >> "$GITHUB_OUTPUT"
               echo "status=passed" >> "$GITHUB_OUTPUT"
             else
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
               echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Baseline ${CURRENT} passed smoke tests, but candidate ${LATEST} failed package-footprint validation on Arm64." >> "$GITHUB_OUTPUT"
+              echo "comparison=Baseline ${CURRENT} passed smoke tests, but candidate ${NEXT} failed package-footprint validation on Arm64." >> "$GITHUB_OUTPUT"
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
             fi

@@ -46,6 +46,9 @@ on:
       regression_result:
         description: Human readable regression result
         value: ${{ jobs.test-linstor-server.outputs.regression_result }}
+      regression_policy:
+        description: Regression policy classification for publish pipeline
+        value: ${{ jobs.test-linstor-server.outputs.regression_policy }}
       regression_comparison:
         description: Regression comparison note
         value: ${{ jobs.test-linstor-server.outputs.regression_comparison }}
@@ -99,6 +102,7 @@ jobs:
       regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_policy: ${{ steps.test6.outputs.regression_policy || steps.metadata.outputs.regression_policy || 'applicable' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
@@ -118,6 +122,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=linstor-server" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/linstor-server" >> "$GITHUB_OUTPUT"
+          echo "regression_policy=applicable" >> "$GITHUB_OUTPUT"
           echo "current_version=${LINSTOR_BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
       - name: Install Linstor-server
         id: install
@@ -251,20 +256,100 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          echo "regression_policy=${{ steps.metadata.outputs.regression_policy || 'applicable' }}" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || steps.metadata.outputs.current_version }}"
-          LATEST="${{ steps.version.outputs.latest }}"
+          CURRENT_REF="${LINSTOR_BASELINE_REF}"
+          BASE_DIR="/tmp/linstor-base"
+
+          cd "$BASE_DIR"
+          git fetch origin --tags --quiet
+          DEFAULT_BRANCH="$(git remote show origin | sed -n '/HEAD branch/s/.*: //p')"
+          if [ -z "$DEFAULT_BRANCH" ]; then
+            DEFAULT_BRANCH="master"
+          fi
+          HEAD_REF="$(git rev-parse "origin/${DEFAULT_BRANCH}" 2>/dev/null || true)"
+
+          if [ -z "$HEAD_REF" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=unknown" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Could not resolve the latest commit on the default branch for LINSTOR regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          CURRENT_SHORT="$(git rev-parse --short "$CURRENT_REF")"
+          HEAD_SHORT="$(git rev-parse --short "$HEAD_REF")"
+          LATEST="master-${HEAD_SHORT}"
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
           echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT}"
           echo "Next version targeted for install validation: ${LATEST}"
-          echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-          echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
-          echo "comparison=Released LINSTOR tags currently fail to build on both Arm64 and AMD64 because the upstream getProtoc bootstrap downloads an x86_64 protoc binary. This workflow validates the current working master snapshot ${CURRENT} on Arm64 using system protoc, and there is no newer stable candidate beyond that working build for a genuine Test 6 upgrade check." >> "$GITHUB_OUTPUT"
-          echo "Regression install result: No newer stable release available for Test 6"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
+
+          if [ "$HEAD_REF" = "$CURRENT_REF" ]; then
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current LINSTOR baseline commit ${CURRENT_SHORT} already matches the latest default-branch commit ${HEAD_SHORT}, so there is no newer source snapshot candidate for Test 6." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: No newer stable release available for Test 6"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git merge-base --is-ancestor "$CURRENT_REF" "$HEAD_REF"; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline commit ${CURRENT_SHORT} is not an ancestor of candidate commit ${HEAD_SHORT}, so a deterministic next-newer source candidate cannot be selected safely." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          rm -rf /tmp/linstor-next
+          git clone --recursive --branch "$DEFAULT_BRANCH" "$LINSTOR_REPO" /tmp/linstor-next
+          cd /tmp/linstor-next
+          git checkout --detach "$HEAD_REF"
+          git submodule update --init --recursive
+          mkdir -p "tools/protoc-${LINSTOR_PROTOC_VERSION}/bin"
+          ln -sf "$(command -v protoc)" "tools/protoc-${LINSTOR_PROTOC_VERSION}/bin/protoc"
+          ./gradlew --no-daemon assemble
+
+          NEXT_CONTROLLER_TAR=$(find /tmp/linstor-next/controller/build/distributions -maxdepth 1 -type f -name 'controller-*.tar' | head -n 1 || true)
+          NEXT_SATELLITE_TAR=$(find /tmp/linstor-next/satellite/build/distributions -maxdepth 1 -type f -name 'satellite-*.tar' | head -n 1 || true)
+          NEXT_VERSION=$(awk -F= '/^version=/{print $2; exit}' /tmp/linstor-next/server/generated-resources/version-info.properties || true)
+          if [ -z "$NEXT_VERSION" ]; then
+            NEXT_VERSION="master-${HEAD_SHORT}"
+          fi
+
+          if [ -n "$NEXT_CONTROLLER_TAR" ] && [ -n "$NEXT_SATELLITE_TAR" ] && [ -f /tmp/linstor-next/server/generated-resources/version-info.properties ]; then
+            echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current LINSTOR baseline commit ${CURRENT_SHORT} passed Tests 1-5, and the next newer default-branch commit ${HEAD_SHORT} built successfully with controller and satellite distributions on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current LINSTOR baseline commit ${CURRENT_SHORT} passed Tests 1-5, but the next newer default-branch commit ${HEAD_SHORT} did not complete equivalent build artifact validation on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 

@@ -58,6 +58,9 @@ on:
       regression_next_installed_version:
         description: Candidate version reported by installed next artifact
         value: ${{ jobs.test-openvvc.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy for this workflow
+        value: ${{ jobs.test-openvvc.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-openvvc.outputs.run_id }}
@@ -99,6 +102,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -143,10 +147,38 @@ jobs:
           if [ -z "$VERSION" ] || [ "$VERSION" = "unknown" ]; then
             VERSION="$RAW_VERSION"
           fi
-          LATEST="${OPENVVC_VERSION}"
+          NEXT_TAG=$(python3 - "$VERSION" <<'PY'
+          import json
+          import re
+          import sys
+          import urllib.request
+
+          current = (sys.argv[1] or "").strip()
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", current):
+              print("")
+              raise SystemExit(0)
+
+          tags = json.loads(urllib.request.urlopen("https://api.github.com/repos/OpenVVC/OpenVVC/tags?per_page=100", timeout=20).read().decode("utf-8"))
+          versions = set()
+          for tag in tags:
+              name = (tag.get("name") or "").strip()
+              match = re.fullmatch(r"v?([0-9]+\.[0-9]+\.[0-9]+)", name)
+              if match:
+                  versions.add(match.group(1))
+
+          def key(value: str):
+              return tuple(int(part) for part in value.split("."))
+
+          current_key = key(current)
+          candidates = sorted((v for v in versions if key(v) > current_key), key=key)
+          print(f"v{candidates[0]}" if candidates else "")
+          PY
+          )
+          NEXT_VERSION=$(printf '%s' "$NEXT_TAG" | sed 's/^v//')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "reported_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "latest=${NEXT_VERSION:-$VERSION}" >> "$GITHUB_OUTPUT"
+          echo "next_tag=${NEXT_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Binary Existence
         id: test1
@@ -254,28 +286,87 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || env.OPENVVC_VERSION }}"
-          LATEST="${{ steps.version.outputs.latest || '' }}"
-          if [ -n "$LATEST" ]; then
-            LATEST_TAG="v${LATEST}"
-          else
-            LATEST_TAG=""
+          NEXT_TAG="${{ steps.version.outputs.next_tag || '' }}"
+
+          if [ -z "$NEXT_TAG" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable OpenVVC release is available for Arm64 validation" >> "$GITHUB_OUTPUT"
+            echo "comparison=OpenVVC ${CURRENT} is the newest public stable source tag on the upstream release path, so there is no newer release to validate in Test 6 yet." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          NEXT_VERSION=$(printf '%s' "$NEXT_TAG" | sed 's/^v//')
+          NEXT_ROOT=$(mktemp -d)
+          BASE_URL="http://openvvc.insa-rennes.fr/bitstreams/JVET_CTC/random_access"
+          SAMPLE="BQSquare_416x240_60_10_420_37_RA"
+
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT}"
-          echo "Next version targeted for install validation: ${LATEST}"
+          echo "Next version targeted for install validation: ${NEXT_VERSION}"
 
-          echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-          echo "regression_result=No newer stable OpenVVC release is available for Arm64 validation" >> "$GITHUB_OUTPUT"
-          echo "comparison=OpenVVC ${CURRENT} is the newest public stable source tag on the upstream release path, so there is no newer release to validate in Test 6 yet." >> "$GITHUB_OUTPUT"
-          echo "Next version installed on Arm64: ${CURRENT}"
-          echo "Regression install result: No newer stable OpenVVC release is available for Arm64 validation"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          if git clone --depth 1 --branch "${NEXT_TAG}" https://github.com/OpenVVC/OpenVVC.git "${NEXT_ROOT}/OpenVVC-next" \
+            && cd "${NEXT_ROOT}/OpenVVC-next" \
+            && autoreconf -fi \
+            && ./configure \
+            && make -j"$(nproc)"; then
+            REPORTED_NEXT=$(./examples/dectest --version 2>&1 | awk '/^libovvc version / {print $3; exit}' | sed -E 's/^([0-9]+(\.[0-9]+)+).*/\1/' || true)
+            mkdir -p "${NEXT_ROOT}/openvvc-next-smoke"
+            cd "${NEXT_ROOT}/openvvc-next-smoke"
+            curl -fsSLO "$BASE_URL/$SAMPLE.266"
+            curl -fsSLO "$BASE_URL/$SAMPLE.md5"
+
+            if "${NEXT_ROOT}/OpenVVC-next/examples/dectest" -i "$SAMPLE.266" -o out.yuv > decode.log 2>&1; then
+              OUTPUT_MD5=$(md5sum out.yuv | awk '{print $1}')
+              REFERENCE_MD5=$(awk '{print $1}' "$SAMPLE.md5")
+              if [ "$OUTPUT_MD5" = "$REFERENCE_MD5" ] && [ "$REPORTED_NEXT" = "$NEXT_VERSION" ]; then
+                echo "next_installed_version=${REPORTED_NEXT}" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=OpenVVC baseline ${CURRENT} passed Tests 1-5. Test 6 built and validated next release ${NEXT_VERSION} on Arm64 with matching decoder output checksums." >> "$GITHUB_OUTPUT"
+                echo "status=passed" >> "$GITHUB_OUTPUT"
+              else
+                cat decode.log || true
+                echo "next_installed_version=${REPORTED_NEXT:-unknown}" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=OpenVVC baseline ${CURRENT} passed Tests 1-5, but candidate ${NEXT_VERSION} did not meet version or checksum validation on Arm64." >> "$GITHUB_OUTPUT"
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                END_TIME=$(date +%s)
+                echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+            else
+              cat decode.log || true
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=OpenVVC baseline ${CURRENT} passed Tests 1-5, but candidate ${NEXT_VERSION} decode smoke failed on Arm64." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=OpenVVC baseline ${CURRENT} passed Tests 1-5, but candidate ${NEXT_VERSION} could not be built from source on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-          exit 0
 
       - name: Show regression validation details
         if: always()

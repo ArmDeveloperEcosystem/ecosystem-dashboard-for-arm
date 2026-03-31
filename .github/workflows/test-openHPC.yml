@@ -45,6 +45,9 @@ on:
       regression_result:
         description: Human readable regression result
         value: ${{ jobs.test-openhpc.outputs.regression_result }}
+      regression_policy:
+        description: Regression policy classification for publish pipeline
+        value: ${{ jobs.test-openhpc.outputs.regression_policy }}
       regression_comparison:
         description: Regression comparison note
         value: ${{ jobs.test-openhpc.outputs.regression_comparison }}
@@ -96,6 +99,7 @@ jobs:
       regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_policy: ${{ steps.test6.outputs.regression_policy || steps.metadata.outputs.regression_policy || 'applicable' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
@@ -115,6 +119,7 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=openHPC" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/openHPC" >> "$GITHUB_OUTPUT"
+          echo "regression_policy=applicable" >> "$GITHUB_OUTPUT"
           echo "current_version=${OPENHPC_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install OpenHPC release metadata
@@ -261,6 +266,8 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          echo "regression_policy=${{ steps.metadata.outputs.regression_policy || 'applicable' }}" >> "$GITHUB_OUTPUT"
+          START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || env.OPENHPC_VERSION || 'unknown' }}"
 
           if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
@@ -275,14 +282,48 @@ jobs:
             echo "regression_result=Regression validation skipped because one or more baseline tests (1-5) failed." >> "$GITHUB_OUTPUT"
             echo "comparison=Baseline tests failed, so next-version validation is not trustworthy for this run." >> "$GITHUB_OUTPUT"
             echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          LATEST=$(curl -fsSL https://api.github.com/repos/openhpc/ohpc/releases/latest | \
-            python3 -c "import json,sys;print((json.load(sys.stdin).get('tag_name') or '').strip())" || true)
-          if [ -z "${LATEST}" ]; then
-            LATEST="unknown"
-          fi
+          export CURRENT
+          NEXT="$(
+            python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          current = os.environ.get("CURRENT", "")
+          m = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)\.GA", current)
+          if not m:
+              print("")
+              raise SystemExit(0)
+          c = tuple(int(x) for x in m.groups())
+
+          releases = json.load(
+              urllib.request.urlopen(
+                  "https://api.github.com/repos/openhpc/ohpc/releases?per_page=100",
+                  timeout=20,
+              )
+          )
+          versions = []
+          for rel in releases:
+              if rel.get("draft") or rel.get("prerelease"):
+                  continue
+              tag = (rel.get("tag_name") or "").strip()
+              mm = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)\.GA", tag)
+              if mm:
+                  versions.append((tuple(int(x) for x in mm.groups()), tag if tag.startswith("v") else f"v{tag}"))
+
+          versions = sorted(set(versions), key=lambda x: x[0])
+          nxt = next((tag for parts, tag in versions if parts > c), "")
+          print(nxt)
+          PY
+          )"
+
+          LATEST="${NEXT:-$CURRENT}"
 
           if [ "${LATEST}" = "${CURRENT}" ]; then
             echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
@@ -292,16 +333,135 @@ jobs:
             echo "regression_result=No newer stable OpenHPC release is available beyond baseline." >> "$GITHUB_OUTPUT"
             echo "comparison=Baseline ${CURRENT} matches latest stable ${LATEST}; next-version regression is not applicable for this run." >> "$GITHUB_OUTPUT"
             echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "regression_result=OpenHPC regression validation deferred: full next-version validation requires reproducible EL repo matrix coverage beyond this Ubuntu-based smoke workflow." >> "$GITHUB_OUTPUT"
-          echo "comparison=Baseline ${CURRENT} metadata and Arm repo checks passed; latest release candidate ${LATEST} requires environment-aligned validation before claiming regression status." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          RELEASE_JSON="$(mktemp)"
+          curl -fsSL "https://api.github.com/repos/openhpc/ohpc/releases/tags/${LATEST}" -o "$RELEASE_JSON"
+          CANDIDATE_RPM_URL="$(
+            python3 - "$RELEASE_JSON" <<'PY'
+          import json
+          import re
+          import sys
+
+          with open(sys.argv[1], "r", encoding="utf-8") as f:
+              rel = json.load(f)
+          assets = rel.get("assets") or []
+          chosen = ""
+          for a in assets:
+              url = (a.get("browser_download_url") or "").strip()
+              name = (a.get("name") or "").strip()
+              joined = f"{name} {url}".lower()
+              if "ohpc-release" in joined and "aarch64" in joined and url.endswith(".rpm"):
+                  chosen = url
+                  break
+          print(chosen)
+          PY
+          )"
+
+          if [ -z "$CANDIDATE_RPM_URL" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Resolved next OpenHPC release ${LATEST}, but no arm64 ohpc-release RPM asset was published for equivalent metadata validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_WORKDIR="$(mktemp -d)"
+          curl -fsSL -o "$NEXT_WORKDIR/ohpc-release-next.rpm" "$CANDIDATE_RPM_URL"
+          bsdtar -xOf "$NEXT_WORKDIR/ohpc-release-next.rpm" ./etc/yum.repos.d/OpenHPC.repo > "$NEXT_WORKDIR/OpenHPC-next.repo"
+
+          if [ ! -s "$NEXT_WORKDIR/OpenHPC-next.repo" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Resolved next OpenHPC release ${LATEST}, but failed to extract usable OpenHPC.repo metadata from the candidate arm64 release RPM." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if python3 - "$NEXT_WORKDIR/OpenHPC-next.repo" <<'PY'
+          import gzip
+          import re
+          import sys
+          import urllib.request
+          import xml.etree.ElementTree as ET
+
+          repo_file = sys.argv[1]
+          repos = []
+          for line in open(repo_file, "r", encoding="utf-8"):
+              line = line.strip()
+              if line.startswith("baseurl="):
+                  url = line.split("=", 1)[1].strip()
+                  url = url.replace("$basearch", "aarch64").replace("${basearch}", "aarch64")
+                  url = url.replace("$releasever", "9").replace("${releasever}", "9")
+                  repos.append(url.rstrip("/"))
+          repos = [r for r in repos if r.startswith("http")]
+          if not repos:
+              raise SystemExit("no candidate repos found")
+
+          required = {"slurm-ohpc", "warewulf-ohpc", "lmod-ohpc"}
+          found = set()
+          for repo in repos:
+              repomd = ET.fromstring(urllib.request.urlopen(f"{repo}/repodata/repomd.xml", timeout=30).read())
+              ns = {"repo": "http://linux.duke.edu/metadata/repo"}
+              primary_href = None
+              for data in repomd.findall(".//repo:data", ns):
+                  if data.attrib.get("type") == "primary":
+                      loc = data.find("repo:location", ns)
+                      if loc is not None:
+                          primary_href = loc.attrib.get("href")
+                          break
+              if primary_href is None:
+                  continue
+              raw = urllib.request.urlopen(f"{repo}/{primary_href}", timeout=30).read()
+              if primary_href.endswith(".gz"):
+                  raw = gzip.decompress(raw)
+              primary = ET.fromstring(raw)
+              pns = {"common": "http://linux.duke.edu/metadata/common"}
+              for pkg in primary.findall(".//common:package", pns):
+                  name = pkg.findtext("common:name", namespaces=pns)
+                  arch = pkg.findtext("common:arch", namespaces=pns)
+                  if arch == "aarch64" and name in required:
+                      found.add(name)
+          missing = required - found
+          if missing:
+              raise SystemExit(f"missing packages: {sorted(missing)}")
+          PY
+          then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT} passed Tests 1-5, and the next newer OpenHPC release ${LATEST} provided arm64 release RPM metadata with valid repo data and required aarch64 package entries." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT} passed Tests 1-5, but the next newer OpenHPC release ${LATEST} did not provide equivalent arm64 repo metadata/package coverage for regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         if: always()

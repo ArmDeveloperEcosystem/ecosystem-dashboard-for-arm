@@ -58,6 +58,9 @@ on:
       regression_next_installed_version:
         description: Candidate version reported by installed next artifact
         value: ${{ jobs.test-freebsd.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-freebsd.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-freebsd.outputs.run_id }}
@@ -100,6 +103,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -233,22 +237,97 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          CURRENT_RELEASE="${FREEBSD_BASELINE_RELEASE}"
           CURRENT="${{ steps.version.outputs.version || '15.0' }}"
+          export CURRENT
+
+          NEXT_RELEASE="$(
+            python3 - <<'PY'
+          import os
+          import re
+          import urllib.request
+
+          current = os.environ.get("CURRENT", "")
+          if not re.fullmatch(r"\d+\.\d+", current):
+              print("")
+              raise SystemExit(0)
+
+          c = tuple(int(x) for x in current.split("."))
+          html = urllib.request.urlopen("https://download.freebsd.org/releases/VM-IMAGES/", timeout=20).read().decode("utf-8", "ignore")
+          releases = sorted(
+              set(re.findall(r'href="(\d+\.\d+-RELEASE)/"', html)),
+              key=lambda s: tuple(int(x) for x in s.replace("-RELEASE", "").split(".")),
+          )
+
+          nxt = ""
+          for rel in releases:
+              parts = tuple(int(x) for x in rel.replace("-RELEASE", "").split("."))
+              if parts > c:
+                  nxt = rel
+                  break
+          print(nxt)
+          PY
+          )"
 
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-          echo "regression_result=No newer stable FreeBSD Arm64 VM image release is available for validation" >> "$GITHUB_OUTPUT"
-          echo "comparison=FreeBSD ${CURRENT} is the newest public stable Arm64 VM image release line currently published at the official download location, so there is no newer stable image line to validate in Test 6 yet." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
 
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT}"
-          echo "Next version targeted for install validation: ${CURRENT}"
-          echo "Next version installed on Arm64: ${CURRENT}"
-          echo "Regression install result: No newer stable FreeBSD Arm64 VM image release is available for validation"
-          echo "Details: FreeBSD ${CURRENT} is the newest public stable Arm64 VM image release line currently published at the official download location, so there is no newer stable image line to validate in Test 6 yet."
+
+          if [ -z "${NEXT_RELEASE}" ]; then
+            echo "latest_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable FreeBSD Arm64 VM image release is available for validation" >> "$GITHUB_OUTPUT"
+            echo "comparison=FreeBSD ${CURRENT} is the newest public stable Arm64 VM image release line currently published at the official download location, so there is no newer stable image line to validate in Test 6 yet." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "Next version targeted for install validation: ${CURRENT}"
+            echo "Next version installed on Arm64: ${CURRENT}"
+            echo "Regression install result: No newer stable FreeBSD Arm64 VM image release is available for validation"
+            echo "Details: FreeBSD ${CURRENT} is the newest public stable Arm64 VM image release line currently published at the official download location, so there is no newer stable image line to validate in Test 6 yet."
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT="${NEXT_RELEASE%-RELEASE}"
+          NEXT_IMAGE_FILENAME="${FREEBSD_IMAGE_FILENAME/${CURRENT_RELEASE}/${NEXT_RELEASE}}"
+          NEXT_BASE_URL="https://download.freebsd.org/releases/VM-IMAGES/${NEXT_RELEASE}/aarch64/Latest"
+          NEXT_IMAGE_URL="${NEXT_BASE_URL}/${NEXT_IMAGE_FILENAME}"
+          NEXT_CHECKSUM_URL="${NEXT_BASE_URL}/CHECKSUM.SHA256"
+
+          echo "latest_version=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: ${NEXT}"
+
+          CHECKSUM_LINE="$(curl -fsSL "${NEXT_CHECKSUM_URL}" | grep "(${NEXT_IMAGE_FILENAME})" || true)"
+          HEADERS="$(curl -fsSIL "${NEXT_IMAGE_URL}" || true)"
+
+          if curl -fsSI "${NEXT_CHECKSUM_URL}" >/dev/null \
+            && curl -fsSI "${NEXT_IMAGE_URL}" >/dev/null \
+            && printf '%s\n' "${CHECKSUM_LINE}" | grep -Eq '^SHA256 \(.+\) = [0-9a-f]{64}$' \
+            && printf '%s\n' "${HEADERS}" | grep -Eqi '^HTTP/.* (200|301|302|303|307|308)' \
+            && ! printf '%s\n' "${HEADERS}" | grep -qi '^content-type: text/html'; then
+            echo "next_installed_version=${NEXT}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current FreeBSD baseline ${CURRENT} passed Tests 1-5, and regression validation found the next newer release ${NEXT_RELEASE} with a valid Arm64 image and matching checksum entry." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT}"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current FreeBSD baseline ${CURRENT} passed Tests 1-5, and regression validation found the next newer release ${NEXT_RELEASE} with a valid Arm64 image and matching checksum entry."
+          else
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current FreeBSD baseline ${CURRENT} passed Tests 1-5, but the next newer release ${NEXT_RELEASE} did not provide a fully valid Arm64 image/checksum path for equivalent validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current FreeBSD baseline ${CURRENT} passed Tests 1-5, but the next newer release ${NEXT_RELEASE} did not provide a fully valid Arm64 image/checksum path for equivalent validation."
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
