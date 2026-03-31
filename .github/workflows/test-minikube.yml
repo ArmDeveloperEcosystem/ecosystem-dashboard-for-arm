@@ -237,12 +237,12 @@ jobs:
           START_TIME=$(date +%s)
           COMPLETION_OUTPUT="$(minikube completion bash 2>&1 || true)"
           if [ -n "$COMPLETION_OUTPUT" ] \
-            && printf '%s\n' "$COMPLETION_OUTPUT" | grep -qiE '__start_minikube|complete -o|bash completion'; then
+            && grep -qiE '__start_minikube|complete -o|bash completion' <<< "$COMPLETION_OUTPUT"; then
              echo "✓ completion command works"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
              echo "✗ completion command failed"
-             printf '%s\n' "$COMPLETION_OUTPUT" | sed -n '1,20p' || true
+             awk 'NR<=20 {print}' <<< "$COMPLETION_OUTPUT" || true
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
             fi
@@ -260,7 +260,6 @@ jobs:
       - name: Test 6 - Regression Validation
         id: test6
         if: always()
-        continue-on-error: true
         run: |
           set -euo pipefail
           CURRENT="${{ steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
@@ -317,7 +316,7 @@ jobs:
             echo "regression_result=Failed to install and verify the selected next Minikube release." >> "$GITHUB_OUTPUT"
             echo "comparison=Baseline ${CURRENT}; attempted next ${LATEST}; observed ${NEXT_INSTALLED:-not_installed}." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
 
           "${NEXT_BIN}" help >/tmp/minikube-next-help.log 2>&1
@@ -341,18 +340,25 @@ jobs:
             echo "regression_result=Next-version Minikube smoke checks failed." >> "$GITHUB_OUTPUT"
             echo "comparison=Baseline ${CURRENT}; next ${LATEST} installed, but one or more CLI checks failed." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
 
             # ============================================================
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
       # UPDATE THIS: Calculate summary based on your number of tests
       # Add/remove test result checks to match your tests above
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           CORE_FAILED=0
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
           check_test() {
             local status="$1"
@@ -378,12 +384,24 @@ jobs:
           check_core "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
           check_core "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          TEST6_DURATION="${{ steps.test6.outputs.duration || 0 }}"
+          if [ "$TEST6_STATUS" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$TEST6_STATUS" = "failed" ]; then
+            FAILED=$((FAILED + 1))
+          else
+            SKIPPED=$((SKIPPED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + TEST6_DURATION))
+
           echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
-          if [ "$CORE_FAILED" -eq 0 ]; then
+          if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT

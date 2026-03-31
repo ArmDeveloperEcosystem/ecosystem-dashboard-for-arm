@@ -57,6 +57,9 @@ on:
       regression_next_installed_version:
         description: Candidate version reported by installed next artifact
         value: ${{ jobs.test-couchdb.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-couchdb.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-couchdb.outputs.run_id }}
@@ -77,6 +80,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       BASELINE_VERSION: "3.3.3"
+      NEXT_STABLE_VERSION: "3.4.1"
     
     outputs:
       contract_version: "2.0"
@@ -97,6 +101,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -255,12 +260,11 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
-        continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST=$(GH_TOKEN=${{ github.token }} gh api repos/apache/couchdb/tags --paginate --jq '.[].name' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          CURRENT="${{ steps.version.outputs.version || env.BASELINE_VERSION }}"
+          LATEST="${NEXT_STABLE_VERSION}"
           NEXT_NAME="couchdb-regression"
           NEXT_PORT="15984"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
@@ -269,13 +273,42 @@ jobs:
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $LATEST"
 
-          if [ -z "$LATEST" ]; then
+          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            echo "next_installed_version=not_validated" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation skipped because one or more baseline tests (1-5) failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Apache CouchDB validation did not pass in this run, so next-version install validation was not executed." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          MANIFEST_JSON="$(docker manifest inspect "apache/couchdb:${LATEST}" 2>/dev/null || true)"
+          if [ -z "$MANIFEST_JSON" ]; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Apache CouchDB version $CURRENT passed smoke tests in this run, but the next stable tag could not be resolved for Arm64 install validation." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache CouchDB version $CURRENT passed smoke tests in this run, but metadata for candidate image apache/couchdb:${LATEST} could not be resolved." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: not_installed"
             echo "Regression install result: Next version lookup failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if ! printf '%s' "$MANIFEST_JSON" | jq -e '.manifests[]?.platform | select(.os=="linux" and .architecture=="arm64")' >/dev/null; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_blocked_non_arm64_release_assets" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache CouchDB version $CURRENT passed smoke tests in this run, but candidate image apache/couchdb:${LATEST} does not publish a Linux arm64 manifest." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -341,6 +374,9 @@ jobs:
             echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
             echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           else
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
@@ -349,10 +385,12 @@ jobs:
             echo "Regression install result: Next version installed successfully on Arm64"
             echo "status=passed" >> "$GITHUB_OUTPUT"
           fi
-          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
       - name: Show regression validation details
         if: always()
         run: |
@@ -363,7 +401,7 @@ jobs:
               next_install_validated|safe_to_upgrade)
                 REGRESSION_RESULT="Next version installed successfully on Arm64"
                 ;;
-              next_install_failed|next_lookup_failed)
+              next_install_failed|next_lookup_failed|next_install_blocked_non_arm64_release_assets)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
               metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
@@ -396,37 +434,43 @@ jobs:
           set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
 
-          check_test() {
+          check_core_test() {
             local status=$1
             local duration=$2
-            local core=$3
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
-              if [ "$core" = "yes" ]; then
-                CORE_FAILED=$((CORE_FAILED + 1))
-              fi
+              CORE_FAILED=$((CORE_FAILED + 1))
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          check_test "${{ steps.test1.outputs.status }}" "${{ steps.test1.outputs.duration || 0 }}" yes
-          check_test "${{ steps.test2.outputs.status }}" "${{ steps.test2.outputs.duration || 0 }}" yes
-          check_test "${{ steps.test3.outputs.status }}" "${{ steps.test3.outputs.duration || 0 }}" yes
-          check_test "${{ steps.test4.outputs.status }}" "${{ steps.test4.outputs.duration || 0 }}" yes
-          check_test "${{ steps.test5.outputs.status }}" "${{ steps.test5.outputs.duration || 0 }}" yes
-          check_test "${{ steps.test6.outputs.status }}" "${{ steps.test6.outputs.duration || 0 }}" no
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          if [ "$TEST6_STATUS" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$TEST6_STATUS" = "failed" ]; then
+            FAILED=$((FAILED + 1))
+          else
+            SKIPPED=$((SKIPPED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
           echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
-
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
 
           if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
@@ -436,7 +480,7 @@ jobs:
             echo "badge_status=failing" >> $GITHUB_OUTPUT
           fi
 
-          if [ "$CORE_FAILED" -ne 0 ] || [ "$TEST6_STATUS" = "failed" ]; then
+          if [ "$CORE_FAILED" -ne 0 ]; then
             exit 1
           fi
       - name: Create test summary
@@ -483,4 +527,3 @@ jobs:
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY
-

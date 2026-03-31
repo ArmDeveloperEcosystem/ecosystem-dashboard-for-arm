@@ -298,7 +298,6 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
-        continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -310,6 +309,21 @@ jobs:
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $NEXT_VERSION"
+
+          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            echo "next_installed_version=not_validated" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation skipped because one or more baseline tests (1-5) failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ACL validation did not pass in this run, so next-version install validation was not executed." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if [ "$CURRENT" = "$NEXT_VERSION" ]; then
             echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
@@ -337,7 +351,7 @@ jobs:
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
 
           cd "$TMPDIR/acl-next"
@@ -356,7 +370,7 @@ jobs:
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
 
           if ! make -j"$(nproc)" >/tmp/acl-regression-make.log 2>&1; then
@@ -368,41 +382,73 @@ jobs:
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
 
-          PREFIX="$TMPDIR/install"
-          if ! cmake --install . --prefix "$PREFIX" >/tmp/acl-regression-install.log 2>&1; then
-            cat /tmp/acl-regression-install.log || true
-            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned ACL version $CURRENT passed smoke tests in this run, but the candidate source tag $NEXT_TAG failed install staging on Arm64." >> "$GITHUB_OUTPUT"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
+          STAGE_DIR="$TMPDIR/stage"
+          INSTALL_MODE="staged_prefix"
+          if ! DESTDIR="$STAGE_DIR" cmake --install . --prefix /usr/local >/tmp/acl-regression-install.log 2>&1; then
+            # ACL v3.6.6 still emits some absolute /usr/local install paths in upstream CMake,
+            # which can fail in non-sudo DESTDIR staging. Fallback to privileged install for
+            # this permission-only case so Test 6 verifies real Arm64 installability.
+            if grep -Eq "Operation not permitted|Permission denied" /tmp/acl-regression-install.log && \
+               grep -q "/usr/local" /tmp/acl-regression-install.log; then
+              if ! sudo cmake --install . --prefix /usr/local >>/tmp/acl-regression-install.log 2>&1; then
+                cat /tmp/acl-regression-install.log || true
+                echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned ACL version $CURRENT passed smoke tests in this run, but the candidate source tag $NEXT_TAG failed both non-privileged staging and privileged install on Arm64." >> "$GITHUB_OUTPUT"
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                END_TIME=$(date +%s)
+                echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              INSTALL_MODE="system_prefix"
+            else
+              cat /tmp/acl-regression-install.log || true
+              echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned ACL version $CURRENT passed smoke tests in this run, but the candidate source tag $NEXT_TAG failed install staging on Arm64." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
           fi
           NEXT_INSTALLED_VERSION=$(git -C "$TMPDIR/acl-next" describe --tags --exact-match 2>/dev/null | sed 's/^v//' || git -C "$TMPDIR/acl-next" describe --tags --always 2>/dev/null | sed 's/^v//' || echo "$NEXT_VERSION")
 
           # Use deeper and explicit install-content checks to avoid false negatives
-          # when CMake stages under prefix/usr/local.
-          if ! find "$PREFIX" -maxdepth 10 \( \
-            -type f -iname '*acl*.h' -o \
-            -type f -iname '*acl*.hpp' -o \
-            -type f -iname 'lib*acl*.a' -o \
-            -type f -iname 'lib*acl*.so*' -o \
-            -type d -iname '*acl*' \
-          \) | grep -q .; then
+          # when CMake stages under DESTDIR/usr/local.
+          if [ "$INSTALL_MODE" = "staged_prefix" ]; then
+            INSTALL_OK=0
+            if find "$STAGE_DIR" -maxdepth 10 \( \
+              -type f -iname '*acl*.h' -o \
+              -type f -iname '*acl*.hpp' -o \
+              -type f -iname 'lib*acl*.a' -o \
+              -type f -iname 'lib*acl*.so*' -o \
+              -type d -iname '*acl*' \
+            \) | grep -q .; then
+              INSTALL_OK=1
+            fi
+          else
+            INSTALL_OK=0
+            if grep -Eq "/usr/local/(include|lib).*acl" /tmp/acl-regression-install.log; then
+              INSTALL_OK=1
+            fi
+          fi
+
+          if [ "$INSTALL_OK" -ne 1 ]; then
             cat /tmp/acl-regression-install.log || true
             echo "next_installed_version=${NEXT_INSTALLED_VERSION:-not_installed}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned ACL version $CURRENT passed smoke tests in this run, but the candidate Arm64 build from source tag $NEXT_TAG did not install expected headers or libraries into the test prefix." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned ACL version $CURRENT passed smoke tests in this run, but the candidate Arm64 build from source tag $NEXT_TAG did not install expected ACL artifacts." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
 
           echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
@@ -411,16 +457,26 @@ jobs:
             echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
             echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           else
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned ACL version $CURRENT passed smoke tests in this run. Regression validation built and installed candidate version $NEXT_INSTALLED_VERSION from source tag $NEXT_TAG into an isolated Arm64 prefix." >> "$GITHUB_OUTPUT"
+            if [ "$INSTALL_MODE" = "staged_prefix" ]; then
+              echo "comparison=Current pinned ACL version $CURRENT passed smoke tests in this run. Regression validation built and installed candidate version $NEXT_INSTALLED_VERSION from source tag $NEXT_TAG into an isolated Arm64 staging prefix." >> "$GITHUB_OUTPUT"
+            else
+              echo "comparison=Current pinned ACL version $CURRENT passed smoke tests in this run. Regression validation built candidate version $NEXT_INSTALLED_VERSION from source tag $NEXT_TAG and validated install on Arm64 via privileged /usr/local fallback due upstream absolute install paths." >> "$GITHUB_OUTPUT"
+            fi
             echo "status=passed" >> "$GITHUB_OUTPUT"
           fi
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
       - name: Show regression validation details
         if: always()
         run: |
@@ -435,8 +491,10 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
 
@@ -463,11 +521,14 @@ jobs:
             PASSED=$((PASSED + 1))
           elif [ "$TEST6_STATUS" = "failed" ]; then
             FAILED=$((FAILED + 1))
+          else
+            SKIPPED=$((SKIPPED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
           echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
@@ -477,10 +538,13 @@ jobs:
             echo "badge_status=failing" >> $GITHUB_OUTPUT
           fi
 
-          if [ $FAILED -eq 0 ]; then
+          if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ]; then
             exit 1
           fi
       - name: Create test summary
