@@ -109,6 +109,10 @@ on:
 jobs:
   test-tinker:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    env:
+      TINKER_BASELINE_TAG: "v26.1.2"
+      TINKER_BASELINE_VERSION: "26.1.2"
     
     outputs:
       contract_version: "2.0"
@@ -153,8 +157,9 @@ jobs:
       - name: Build Tinker from source
         id: install
         run: |
+          set -euo pipefail
           echo "Cloning Tinker source from GitHub..."
-          git clone --depth 1 https://github.com/TinkerTools/tinker.git
+          git clone --depth 1 --branch "${TINKER_BASELINE_TAG}" https://github.com/TinkerTools/tinker.git
           cd tinker/source
           
           echo "Compiling Tinker (this may take a minute)..."
@@ -408,12 +413,8 @@ jobs:
       - name: Get Tinker version
         id: version
         run: |
-          # Try to get version from the source if available, else use a default based on the current release
-          if [ -f "tinker/source/tinker.f" ]; then
-             VERSION=$(grep "Version" tinker/source/tinker.f | head -n 1 | grep -oP '[0-9.]+' || echo "8.10.x")
-          else
-             VERSION="8.10.x"
-          fi
+          set -euo pipefail
+          VERSION="${TINKER_BASELINE_VERSION}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Tinker version: $VERSION"
       
@@ -534,14 +535,65 @@ jobs:
         id: test6
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          echo "current_version=${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=unknown" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Pending regression install validation" >> "$GITHUB_OUTPUT"
-          echo "comparison=Current pinned version was smoke-tested in this run. A latest-stable upgrade candidate was not automatically executed in this run and still needs explicit regression validation before any version bump." >> "$GITHUB_OUTPUT"
-          echo "note=Current pinned version passed smoke tests; upgrade-candidate validation is still pending." >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || env.TINKER_BASELINE_VERSION || 'unknown' }}"
+          LATEST="$(
+            CURRENT="$CURRENT" python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          current = os.environ.get("CURRENT", "").strip()
+          m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", current)
+          if not m:
+              print("")
+              raise SystemExit(0)
+          current_tuple = tuple(int(x) for x in m.groups())
+
+          releases = json.load(
+              urllib.request.urlopen(
+                  "https://api.github.com/repos/TinkerTools/tinker/releases?per_page=100",
+                  timeout=20,
+              )
+          )
+
+          tags = set()
+          for rel in releases:
+              if rel.get("draft") or rel.get("prerelease"):
+                  continue
+              tag = (rel.get("tag_name") or "").strip()
+              mm = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag)
+              if mm:
+                  tags.add(tuple(int(x) for x in mm.groups()))
+
+          newer = sorted(v for v in tags if v > current_tuple)
+          if newer:
+              print(".".join(str(x) for x in newer[0]))
+          else:
+              print("")
+          PY
+          )"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          if [ -n "$LATEST" ]; then
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=upgrade_candidate_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Newer stable release exists and requires explicit Arm64 regression install validation" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Tinker baseline ${CURRENT} passed Tests 1-5. Upstream stable release ${LATEST} is newer and should be validated before baseline bump." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "latest_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+          echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+          echo "comparison=Current pinned Tinker baseline ${CURRENT} passed Tests 1-5, and no newer stable upstream release was found for a genuine Arm64 upgrade regression check." >> "$GITHUB_OUTPUT"
           echo "status=skipped" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -559,11 +611,17 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
+              no_newer_stable_available)
+                REGRESSION_RESULT="No newer stable release available for Test 6"
+                ;;
               current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Current stable version already validated on Arm64"
                 ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
                 REGRESSION_RESULT="Pending regression install validation"
+                ;;
+              upgrade_candidate_available)
+                REGRESSION_RESULT="Newer stable release exists and requires explicit Arm64 regression install validation"
                 ;;
               *)
                 if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then

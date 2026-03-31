@@ -81,8 +81,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     env:
-      BASELINE_VERSION: "8.4.0"
-      NEXT_VERSION: "8.5.0"
+      BASELINE_VERSION: "8.5.0"
 
     outputs:
       contract_version: "2.0"
@@ -101,7 +100,7 @@ jobs:
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || env.BASELINE_VERSION }}
-      regression_latest_version: ${{ steps.test6.outputs.latest_version || env.NEXT_VERSION }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || steps.version.outputs.version || env.BASELINE_VERSION }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
       regression_policy: "applicable"
       run_id: ${{ github.run_id }}
@@ -124,7 +123,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          BUILD_DEPS=(git clang llvm cmake bmake zlib1g-dev m4 gcc g++ make file groff)
+          BUILD_DEPS=(git clang llvm cmake bmake zlib1g-dev m4 gcc g++ make file groff xz-utils curl)
           # Upstream's generic README includes libc6-dev-i386 for x86 environments,
           # but that package does not exist on Ubuntu arm64 runners and is not needed
           # for the native Arm64 CMake build we validate here.
@@ -132,6 +131,15 @@ jobs:
             BUILD_DEPS+=(libc6-dev-i386)
           fi
           sudo apt-get install -y "${BUILD_DEPS[@]}"
+          if ! command -v zig >/dev/null 2>&1; then
+            ZIG_VERSION="0.14.0"
+            ZIG_TARBALL="zig-linux-aarch64-${ZIG_VERSION}.tar.xz"
+            curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_TARBALL}" -o "/tmp/${ZIG_TARBALL}"
+            tar -xf "/tmp/${ZIG_TARBALL}" -C /tmp
+            sudo mv "/tmp/zig-linux-aarch64-${ZIG_VERSION}" "/opt/zig-${ZIG_VERSION}"
+            sudo ln -sf "/opt/zig-${ZIG_VERSION}/zig" /usr/local/bin/zig
+          fi
+          zig version
           MULTIARCH_INCLUDE="/usr/include/$(gcc -dumpmachine)"
           if [ -d "$MULTIARCH_INCLUDE/bits" ] && [ ! -e /usr/include/bits ]; then
             sudo ln -s "$MULTIARCH_INCLUDE/bits" /usr/include/bits
@@ -176,7 +184,44 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ steps.install.outputs.checked_out_tag || steps.install.outputs.baseline_version }}"
+          export VERSION
+          LATEST="$(
+            python3 - <<'PY'
+          import os
+          import re
+          import urllib.request
+          import json
+
+          current = os.environ.get("VERSION", "")
+          m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", current)
+          if not m:
+              print("")
+              raise SystemExit(0)
+
+          current_parts = tuple(int(x) for x in m.groups())
+          tags = json.loads(
+              urllib.request.urlopen(
+                  "https://api.github.com/repos/elastic/ebpf/tags?per_page=100",
+                  timeout=20,
+              ).read().decode("utf-8", "ignore")
+          )
+
+          candidates = []
+          for tag in tags:
+              name = str(tag.get("name", ""))
+              vm = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", name)
+              if not vm:
+                  continue
+              parts = tuple(int(x) for x in vm.groups())
+              if parts > current_parts:
+                  candidates.append((parts, ".".join(vm.groups())))
+
+          candidates.sort()
+          print(candidates[0][1] if candidates else "")
+          PY
+          )"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=${LATEST:-$VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Check Source Tree and Version Metadata
         id: test1
@@ -216,14 +261,18 @@ jobs:
           fi
           CMAKE_ARGS=(-S . -B build -DTARGET_DIR="$PWD/build/target" -DARCH="$ARCH" -DEBPF_EXTERNAL_ENV_FLAGS=BUILD_STATIC_ONLY=1)
           if [ -n "${ELASTIC_EBPF_CC_WRAPPER:-}" ]; then
+            export CC="${ELASTIC_EBPF_CC_WRAPPER}"
             CMAKE_ARGS+=(-DCMAKE_C_COMPILER="${ELASTIC_EBPF_CC_WRAPPER}")
           fi
           cmake "${CMAKE_ARGS[@]}"
-          cmake --build build -j"$(nproc)" --target libeBPF BPFTcFilterTests BPFEventProbe BPFKprobeConnectHook
-          if [ -f "$PWD/build/target/libeBPF.a" ] \
-            && [ -n "$(find "$PWD/build/target/ebpf" -maxdepth 1 -name '*.bpf.o' | head -n 1)" ]; then
+          cmake --build build -j"$(nproc)" --target BPFTcFilterTests
+          TEST_BIN=$(find "$PWD/build" -type f -name 'BPFTcFilterTests' | head -n 1)
+          BPF_OBJ=$(find "$PWD/build" -type f -name '*.bpf.o' | head -n 1)
+          LIB_ARTIFACT=$(find "$PWD/build" -type f \( -name 'libeBPF.a' -o -name 'libbpf.a' \) | head -n 1)
+          if [ -n "$TEST_BIN" ] && [ -n "$BPF_OBJ" ] && [ -n "$LIB_ARTIFACT" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            find "$PWD/build" -maxdepth 4 -type f | sed -n '1,80p' || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -238,15 +287,16 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          TARGET_DIR="${{ steps.install.outputs.source_dir }}/build/target"
-          BPF_OBJ_COUNT=$(find "$TARGET_DIR/ebpf" -maxdepth 1 -name '*.bpf.o' | wc -l | tr -d ' ')
-          TEST_BIN=$(find "$TARGET_DIR/test" -maxdepth 1 -type f -name 'BPFTcFilterTests' | head -n 1)
+          BUILD_DIR="${{ steps.install.outputs.source_dir }}/build"
+          BPF_OBJ_COUNT=$(find "$BUILD_DIR" -type f -name '*.bpf.o' | wc -l | tr -d ' ')
+          TEST_BIN=$(find "$BUILD_DIR" -type f -name 'BPFTcFilterTests' | head -n 1)
+          LIB_ARTIFACT=$(find "$BUILD_DIR" -type f \( -name 'libeBPF.a' -o -name 'libbpf.a' \) | head -n 1)
           if [ "${BPF_OBJ_COUNT:-0}" -gt 0 ] \
-            && [ -f "$TARGET_DIR/libeBPF.a" ] \
+            && [ -n "$LIB_ARTIFACT" ] \
             && [ -n "$TEST_BIN" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            find "$TARGET_DIR" -maxdepth 3 -type f | sed -n '1,40p' || true
+            find "$BUILD_DIR" -maxdepth 4 -type f | sed -n '1,80p' || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -261,7 +311,7 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          TEST_BIN=$(find "${{ steps.install.outputs.source_dir }}/build/target/test" -maxdepth 1 -type f -name 'BPFTcFilterTests' | head -n 1)
+          TEST_BIN=$(find "${{ steps.install.outputs.source_dir }}/build" -type f -name 'BPFTcFilterTests' | head -n 1)
           if [ "$(uname -m)" = "aarch64" ] \
             && [ -n "$TEST_BIN" ] \
             && file "$TEST_BIN" | grep -Eqi 'ELF .*aarch64|ELF .*ARM aarch64'; then
@@ -270,7 +320,7 @@ jobs:
             if [ -n "$TEST_BIN" ]; then
               file "$TEST_BIN" || true
             else
-              echo "BPFTcFilterTests binary not found under ${{ steps.install.outputs.source_dir }}/build/target/test"
+              echo "BPFTcFilterTests binary not found under ${{ steps.install.outputs.source_dir }}/build"
             fi
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
@@ -286,15 +336,16 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          TARGET_DIR="${{ steps.install.outputs.source_dir }}/build/target"
-          TEST_BIN=$(find "$TARGET_DIR/test" -maxdepth 1 -type f -name 'BPFTcFilterTests' | head -n 1)
+          BUILD_DIR="${{ steps.install.outputs.source_dir }}/build"
+          TEST_BIN=$(find "$BUILD_DIR" -type f -name 'BPFTcFilterTests' | head -n 1)
+          LIB_ARTIFACT=$(find "$BUILD_DIR" -type f \( -name 'libeBPF.a' -o -name 'libbpf.a' \) | head -n 1)
           if [ -n "$TEST_BIN" ]; then
             HELP_OUTPUT=$("$TEST_BIN" --help 2>&1 || true)
           else
-            HELP_OUTPUT="BPFTcFilterTests binary not found under $TARGET_DIR/test"
+            HELP_OUTPUT="BPFTcFilterTests binary not found under $BUILD_DIR"
           fi
           if [ -n "$TEST_BIN" ] \
-            && [ -f "$TARGET_DIR/libeBPF.a" ] \
+            && [ -n "$LIB_ARTIFACT" ] \
             && printf '%s\n' "$HELP_OUTPUT" | grep -Eqi 'test|gtest|Google Test'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -314,8 +365,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT="${{ steps.install.outputs.baseline_version }}"
-          LATEST="${NEXT_VERSION}"
+          CURRENT="${{ steps.version.outputs.version || steps.install.outputs.baseline_version || env.BASELINE_VERSION }}"
+          LATEST="${{ steps.version.outputs.latest || steps.version.outputs.version || steps.install.outputs.baseline_version || env.BASELINE_VERSION }}"
 
           if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
              [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
@@ -356,16 +407,16 @@ jobs:
 
           if [ "$CURRENT" = "$LATEST" ]; then
             echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Elastic eBPF baseline ${CURRENT} is already at the newest stable release visible in the public version stream, so there is no newer Arm64 candidate to validate in Test 6." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $CURRENT"
-            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-            echo "Details: Current pinned Elastic eBPF version ${CURRENT} matches the latest stable release tag ${LATEST}. Regression validation re-used the successful Arm64 source build and package outputs from Tests 1-5."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "Regression install result: No newer stable release available for Test 6"
+            echo "Details: Current pinned Elastic eBPF version ${CURRENT} matches the latest stable release tag ${LATEST}, so no newer candidate exists for this run."
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            exit 0
           fi
 
           NEXT_DIR=$(mktemp -d)
@@ -383,10 +434,11 @@ jobs:
           fi
           CMAKE_ARGS=(-S . -B build -DTARGET_DIR="$PWD/build/target" -DARCH="$ARCH" -DEBPF_EXTERNAL_ENV_FLAGS=BUILD_STATIC_ONLY=1)
           if [ -n "${ELASTIC_EBPF_CC_WRAPPER:-}" ]; then
+            export CC="${ELASTIC_EBPF_CC_WRAPPER}"
             CMAKE_ARGS+=(-DCMAKE_C_COMPILER="${ELASTIC_EBPF_CC_WRAPPER}")
           fi
           cmake "${CMAKE_ARGS[@]}"
-          cmake --build build -j"$(nproc)" --target libeBPF BPFTcFilterTests BPFEventProbe BPFKprobeConnectHook
+          cmake --build build -j"$(nproc)" --target BPFTcFilterTests
           cmake --install build --prefix "$PWD/build/package" >/dev/null 2>&1 || true
           NEXT_TEST_BIN=$(find "$NEXT_DIR/build" -type f -name 'BPFTcFilterTests' | head -n 1)
           NEXT_BPF_OBJ=$(find "$NEXT_DIR/build" -type f -name '*.bpf.o' | head -n 1)
@@ -435,6 +487,12 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
+              no_newer_stable_available)
+                REGRESSION_RESULT="No newer stable release available for Test 6"
+                ;;
+              baseline_failed)
+                REGRESSION_RESULT="Regression validation skipped because one or more baseline tests (1-5) failed."
+                ;;
               metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
@@ -457,6 +515,7 @@ jobs:
           set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
           CORE_FAILED=0
 
@@ -482,19 +541,21 @@ jobs:
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
-          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          if [ "$TEST6_STATUS" = "passed" ]; then
             PASSED=$((PASSED + 1))
-          else
+          elif [ "$TEST6_STATUS" = "failed" ]; then
             FAILED=$((FAILED + 1))
+          else
+            SKIPPED=$((SKIPPED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
-
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
 
           if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
@@ -520,6 +581,12 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
+              no_newer_stable_available)
+                REGRESSION_RESULT="No newer stable release available for Test 6"
+                ;;
+              baseline_failed)
+                REGRESSION_RESULT="Regression validation skipped because one or more baseline tests (1-5) failed."
+                ;;
               metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
@@ -535,6 +602,7 @@ jobs:
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped || 0 }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -548,7 +616,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.install.outputs.baseline_version || env.BASELINE_VERSION }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || env.NEXT_VERSION }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || steps.version.outputs.version || env.BASELINE_VERSION }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

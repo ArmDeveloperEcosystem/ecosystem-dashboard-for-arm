@@ -301,13 +301,32 @@ jobs:
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 6 - Regression Validation
+        if: always()
         id: test6
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version }}"
-          LATEST="${{ steps.version.outputs.latest }}"
+          CURRENT="${{ steps.version.outputs.version || env.BASELINE_VERSION }}"
+          LATEST="${{ steps.version.outputs.latest || env.SALMON_NEXT_VERSION }}"
+
+          emit_result() {
+            local status="$1"
+            local decision="$2"
+            local regression_result="$3"
+            local comparison="$4"
+            local next_installed="$5"
+            echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=$next_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=$decision" >> "$GITHUB_OUTPUT"
+            echo "regression_result=$regression_result" >> "$GITHUB_OUTPUT"
+            echo "comparison=$comparison" >> "$GITHUB_OUTPUT"
+            echo "status=$status" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $next_installed"
+            echo "Regression install result: $regression_result"
+            echo "Details: $comparison"
+          }
 
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
@@ -315,69 +334,82 @@ jobs:
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $LATEST"
 
-          if [ -z "$LATEST" ]; then
-            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Salmon version ${CURRENT} passed smoke tests in this run, but the latest stable release could not be resolved from GitHub." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: lookup_failed"
-            echo "Regression install result: Next version lookup failed on Arm64"
-            echo "Details: Current pinned Salmon version ${CURRENT} passed smoke tests in this run, but the latest stable release could not be resolved from GitHub."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            emit_result "skipped" "baseline_failed" \
+              "Regression validation skipped because one or more baseline tests (1-5) failed." \
+              "Current pinned Salmon version ${CURRENT} did not complete baseline smoke validation in this run, so next-version regression install validation was skipped." \
+              "not_installed"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            exit 0
+          fi
+
+          if [ -z "$LATEST" ]; then
+            emit_result "failed" "next_lookup_failed" \
+              "Next version lookup failed on Arm64" \
+              "Current pinned Salmon version ${CURRENT} passed smoke tests in this run, but the latest stable release could not be resolved from GitHub." \
+              "lookup_failed"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           if [ "$CURRENT" = "$LATEST" ]; then
-            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $CURRENT"
-            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-            echo "Details: Current pinned Salmon version ${CURRENT} passed smoke tests in this run and already matches the latest upstream stable release."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
+            emit_result "failed" "metadata_review_required" \
+              "Tests 1-5 baseline must be older than the latest stable release" \
+              "Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." \
+              "$CURRENT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            exit 0
           fi
 
           NEXT_ROOT=$(mktemp -d)
           NEXT_SRC="$NEXT_ROOT/salmon-src"
           NEXT_BUILD="$NEXT_ROOT/build"
           NEXT_INSTALL="$NEXT_ROOT/install"
-          git clone --depth 1 --branch "v${LATEST}" https://github.com/COMBINE-lab/salmon "$NEXT_SRC"
-          cd "$NEXT_SRC"
-          git submodule update --init --recursive
-          if ! grep -q '^#include <cstdint>$' "$NEXT_SRC/include/SalmonConfig.hpp"; then
-            sed -i '1i#include <cstdint>' "$NEXT_SRC/include/SalmonConfig.hpp"
+          BUILD_OK=1
+          if ! git clone --depth 1 --branch "v${LATEST}" https://github.com/COMBINE-lab/salmon "$NEXT_SRC"; then
+            BUILD_OK=0
           fi
-          if ! grep -q '^#include <cstdint>$' "$NEXT_SRC/include/SalmonExceptions.hpp"; then
-            sed -i '1i#include <cstdint>' "$NEXT_SRC/include/SalmonExceptions.hpp"
+          if [ "$BUILD_OK" -eq 1 ]; then
+            cd "$NEXT_SRC"
+            git submodule update --init --recursive || BUILD_OK=0
           fi
-          cmake -S "$NEXT_SRC" -B "$NEXT_BUILD" -DCMAKE_BUILD_TYPE=Release
-          cmake --build "$NEXT_BUILD" --target salmon -j2
-          cmake --install "$NEXT_BUILD" --prefix "$NEXT_INSTALL"
+          if [ "$BUILD_OK" -eq 1 ]; then
+            for header in "$NEXT_SRC/include/SalmonConfig.hpp" "$NEXT_SRC/include/SalmonExceptions.hpp"; do
+              if [ -f "$header" ] && ! grep -q '^#include <cstdint>$' "$header"; then
+                sed -i '1i#include <cstdint>' "$header" || BUILD_OK=0
+              fi
+            done
+          fi
+          if [ "$BUILD_OK" -eq 1 ]; then
+            cmake -S "$NEXT_SRC" -B "$NEXT_BUILD" -DCMAKE_BUILD_TYPE=Release || BUILD_OK=0
+          fi
+          if [ "$BUILD_OK" -eq 1 ]; then
+            cmake --build "$NEXT_BUILD" --target salmon -j2 || BUILD_OK=0
+          fi
+          if [ "$BUILD_OK" -eq 1 ]; then
+            cmake --install "$NEXT_BUILD" --prefix "$NEXT_INSTALL" || BUILD_OK=0
+          fi
+
           NEXT_BIN="$NEXT_INSTALL/bin/salmon"
-
-          if [ ! -x "$NEXT_BIN" ]; then
-            NEXT_BIN=$(find "$NEXT_BUILD" -type f -name salmon | head -n1)
+          if [ "$BUILD_OK" -eq 1 ] && [ ! -x "$NEXT_BIN" ]; then
+            NEXT_BIN=$(find "$NEXT_BUILD" -type f -name salmon | head -n1 || true)
           fi
-
-          if [ ! -x "$NEXT_BIN" ]; then
-            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Salmon version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not produce a usable Arm64 Salmon binary from the official upstream source tag." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: install_failed"
-            echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned Salmon version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not produce a usable Arm64 Salmon binary from the official upstream source tag."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
+          if [ "$BUILD_OK" -eq 0 ] || [ -z "${NEXT_BIN:-}" ] || [ ! -x "$NEXT_BIN" ]; then
             rm -rf "$NEXT_ROOT"
+            emit_result "failed" "next_install_failed" \
+              "Next version install failed on Arm64" \
+              "Current pinned Salmon version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not produce a usable Arm64 Salmon binary from the official upstream source tag." \
+              "install_failed"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            exit 0
           fi
 
           NEXT_REPORTED="$("$NEXT_BIN" --version 2>&1 | grep -Eo '[0-9]+([.][0-9]+)+' | head -n1 || true)"
@@ -416,30 +448,20 @@ jobs:
           fi
 
           if [ "$RESULT" -eq 0 ] && [ "$NEXT_REPORTED" = "$LATEST" ] && [ -f "$WORKDIR/quant/quant.sf" ] && grep -q '^Name' "$WORKDIR/quant/quant.sf"; then
-            echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Salmon version ${CURRENT} passed smoke tests in this run. Regression validation rebuilt candidate source tag ${LATEST} on Arm64, the candidate binary reported the expected version, and it completed the same tiny transcriptome index plus quantification smoke successfully on Arm64." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $NEXT_REPORTED"
-            echo "Regression install result: Next version installed successfully on Arm64"
-            echo "Details: Current pinned Salmon version ${CURRENT} passed smoke tests in this run. Regression validation rebuilt candidate source tag ${LATEST} on Arm64, the candidate binary reported the expected version, and it completed the same tiny transcriptome index plus quantification smoke successfully on Arm64."
-            echo "status=passed" >> "$GITHUB_OUTPUT"
+            emit_result "passed" "next_install_validated" \
+              "Next version installed successfully on Arm64" \
+              "Current pinned Salmon version ${CURRENT} passed smoke tests in this run. Regression validation rebuilt candidate source tag ${LATEST} on Arm64, the candidate binary reported the expected version, and it completed the same tiny transcriptome index plus quantification smoke successfully on Arm64." \
+              "$NEXT_REPORTED"
           else
-            echo "next_installed_version=${NEXT_REPORTED:-install_failed}" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Salmon version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not complete the Arm64 source-build plus tiny quantification smoke successfully." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: ${NEXT_REPORTED:-install_failed}"
-            echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned Salmon version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not complete the Arm64 source-build plus tiny quantification smoke successfully."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            emit_result "failed" "next_install_failed" \
+              "Next version install failed on Arm64" \
+              "Current pinned Salmon version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not complete the Arm64 source-build plus tiny quantification smoke successfully." \
+              "${NEXT_REPORTED:-install_failed}"
           fi
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: Show regression validation details
         if: always()

@@ -236,12 +236,48 @@ jobs:
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 6 - Regression Validation
+        if: always()
         id: test6
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || env.SOLR_VERSION }}"
+          LATEST=""
+
+          emit_result() {
+            local status="$1"
+            local decision="$2"
+            local regression_result="$3"
+            local comparison="$4"
+            local next_installed="$5"
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${next_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=${decision}" >> "$GITHUB_OUTPUT"
+            echo "regression_result=${regression_result}" >> "$GITHUB_OUTPUT"
+            echo "comparison=${comparison}" >> "$GITHUB_OUTPUT"
+            echo "status=${status}" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${next_installed}"
+            echo "Regression install result: ${regression_result}"
+            echo "Details: ${comparison}"
+          }
+
+          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            emit_result "skipped" "baseline_failed" \
+              "Regression validation skipped because one or more baseline tests (1-5) failed." \
+              "Current pinned Solr version ${CURRENT} did not complete baseline smoke validation in this run, so next-version regression install validation was skipped." \
+              "not_installed"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          set +e
           LATEST="$(
             CURRENT_VERSION="$CURRENT" python3 - <<'PY'
           import os
@@ -264,6 +300,11 @@ jobs:
           print(".".join(str(x) for x in next_versions[0]) if next_versions else "")
           PY
           )"
+          LOOKUP_RC=$?
+          set -e
+          if [ "$LOOKUP_RC" -ne 0 ]; then
+            LATEST=""
+          fi
 
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
           echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
@@ -272,38 +313,46 @@ jobs:
           echo "Next version targeted for install validation: ${LATEST}"
 
           if [ -z "${LATEST}" ]; then
-            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Solr version ${CURRENT} passed smoke tests in this run, but the latest stable Apache Solr release could not be resolved from the official download index for Arm64 install validation." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: not_installed"
-            echo "Regression install result: Next version lookup failed on Arm64"
-            echo "Details: Current pinned Solr version ${CURRENT} passed smoke tests in this run, but the latest stable Apache Solr release could not be resolved from the official download index for Arm64 install validation."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
+            emit_result "failed" "next_lookup_failed" \
+              "Next version lookup failed on Arm64" \
+              "Current pinned Solr version ${CURRENT} passed smoke tests in this run, but the latest stable Apache Solr release could not be resolved from the official download index for Arm64 install validation." \
+              "not_installed"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            exit 0
           fi
 
           if [ "${CURRENT}" = "${LATEST}" ]; then
-            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: ${CURRENT}"
-            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-            echo "Details: Current pinned Solr version ${CURRENT} passed smoke tests in this run and already matches the latest stable Apache Solr release from the official download index."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
+            emit_result "failed" "metadata_review_required" \
+              "Tests 1-5 baseline must be older than the latest stable release" \
+              "Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." \
+              "${CURRENT}"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            exit 0
           fi
 
           NEXT_ROOT=$(mktemp -d)
           NEXT_HOME="${NEXT_ROOT}/solr-${LATEST}"
-          curl -fsSL "https://downloads.apache.org/solr/solr/${LATEST}/solr-${LATEST}.tgz" -o "${NEXT_ROOT}/solr.tgz"
-          tar -xzf "${NEXT_ROOT}/solr.tgz" -C "${NEXT_ROOT}"
+          INSTALL_OK=1
+          if ! curl -fsSL "https://downloads.apache.org/solr/solr/${LATEST}/solr-${LATEST}.tgz" -o "${NEXT_ROOT}/solr.tgz"; then
+            INSTALL_OK=0
+          fi
+          if [ "$INSTALL_OK" -eq 1 ] && ! tar -xzf "${NEXT_ROOT}/solr.tgz" -C "${NEXT_ROOT}"; then
+            INSTALL_OK=0
+          fi
           NEXT_BIN="${NEXT_HOME}/bin/solr"
+          if [ "$INSTALL_OK" -ne 1 ] || [ ! -x "${NEXT_BIN}" ]; then
+            rm -rf "${NEXT_ROOT}"
+            emit_result "failed" "next_install_failed" \
+              "Next version install failed on Arm64" \
+              "Current pinned Solr version ${CURRENT} passed smoke tests in this run, but the candidate Apache Solr release ${LATEST} could not be downloaded or extracted from the official Apache mirror on Arm64." \
+              "not_installed"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           NEXT_REPORTED="$("${NEXT_BIN}" --version 2>&1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
           NEXT_PORT=8984
           cleanup() {
@@ -312,39 +361,47 @@ jobs:
           }
           trap cleanup EXIT
 
-          "${NEXT_BIN}" start --user-managed -p "${NEXT_PORT}" >/tmp/solr-next-start.log 2>&1
+          START_OK=1
+          if ! "${NEXT_BIN}" start --user-managed -p "${NEXT_PORT}" >/tmp/solr-next-start.log 2>&1; then
+            if ! "${NEXT_BIN}" start -p "${NEXT_PORT}" >/tmp/solr-next-start.log 2>&1; then
+              START_OK=0
+            fi
+          fi
+          if [ "$START_OK" -ne 1 ]; then
+            cat /tmp/solr-next-start.log || true
+            emit_result "failed" "next_install_failed" \
+              "Next version install failed on Arm64" \
+              "Current pinned Solr version ${CURRENT} passed smoke tests in this run, but the candidate Apache Solr release ${LATEST} did not start successfully on Arm64." \
+              "${NEXT_REPORTED:-not_installed}"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          INFO_OK=0
           for _ in {1..30}; do
             if curl -fsS "http://127.0.0.1:${NEXT_PORT}/solr/admin/info/system?wt=json" >/tmp/solr-next-info.json 2>/dev/null; then
+              INFO_OK=1
               break
             fi
             sleep 2
           done
 
-          if [ "${NEXT_REPORTED}" = "${LATEST}" ] && grep -q '"solr-spec-version"' /tmp/solr-next-info.json; then
-            echo "next_installed_version=${NEXT_REPORTED}" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Solr version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} from the official Apache Solr tarball on Arm64, the candidate binary reported ${NEXT_REPORTED}, and the isolated admin system endpoint responded successfully." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: ${NEXT_REPORTED}"
-            echo "Regression install result: Next version installed successfully on Arm64"
-            echo "Details: Current pinned Solr version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} from the official Apache Solr tarball on Arm64, the candidate binary reported ${NEXT_REPORTED}, and the isolated admin system endpoint responded successfully."
-            echo "status=passed" >> "$GITHUB_OUTPUT"
+          if [ "${NEXT_REPORTED}" = "${LATEST}" ] && [ "$INFO_OK" -eq 1 ] && grep -q '"solr-spec-version"' /tmp/solr-next-info.json; then
+            emit_result "passed" "next_install_validated" \
+              "Next version installed successfully on Arm64" \
+              "Current pinned Solr version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} from the official Apache Solr tarball on Arm64, the candidate binary reported ${NEXT_REPORTED}, and the isolated admin system endpoint responded successfully." \
+              "${NEXT_REPORTED}"
           else
             cat /tmp/solr-next-start.log || true
-            echo "next_installed_version=${NEXT_REPORTED:-not_installed}" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Solr version ${CURRENT} passed smoke tests in this run, but the candidate Apache Solr release ${LATEST} did not complete isolated Arm64 startup validation successfully." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: ${NEXT_REPORTED:-not_installed}"
-            echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Current pinned Solr version ${CURRENT} passed smoke tests in this run, but the candidate Apache Solr release ${LATEST} did not complete isolated Arm64 startup validation successfully."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            emit_result "failed" "next_install_failed" \
+              "Next version install failed on Arm64" \
+              "Current pinned Solr version ${CURRENT} passed smoke tests in this run, but the candidate Apache Solr release ${LATEST} did not complete isolated Arm64 startup validation successfully." \
+              "${NEXT_REPORTED:-not_installed}"
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: Show regression validation details
         if: always()

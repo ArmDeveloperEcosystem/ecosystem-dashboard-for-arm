@@ -82,7 +82,8 @@ jobs:
     env:
       BASELINE_VERSION: "1.12.0"
       NEXT_VERSION: "1.13.0"
-      BAZEL_VERSION: "8.4.0"
+      BAZELISK_VERSION: "v1.19.0"
+      USE_BAZEL_VERSION: "8.4.0"
 
     outputs:
       contract_version: "2.0"
@@ -141,9 +142,11 @@ jobs:
           if ! command -v java >/dev/null 2>&1; then
             sudo apt-get install -y openjdk-21-jdk-headless
           fi
-          sudo curl -fsSL https://github.com/bazelbuild/bazelisk/releases/download/v1.21.0/bazelisk-linux-arm64 -o /usr/local/bin/bazel
+          sudo curl -fsSL "https://github.com/bazelbuild/bazelisk/releases/download/${BAZELISK_VERSION}/bazelisk-linux-arm64" -o /usr/local/bin/bazel
           sudo chmod +x /usr/local/bin/bazel
-          echo "USE_BAZEL_VERSION=${BAZEL_VERSION}" >> "$GITHUB_ENV"
+          # dpkg-buildpackage sanitizes PATH; keep bazel visible in /usr/bin as well.
+          sudo ln -sf /usr/local/bin/bazel /usr/bin/bazel
+          echo "Configured USE_BAZEL_VERSION=${USE_BAZEL_VERSION}"
           bazel --version
 
       - name: Build and install baseline Cuttlefish package
@@ -182,7 +185,10 @@ jobs:
             protobuf-compiler \
             uuid-dev \
             xxd
-          timeout 1800 dpkg-buildpackage -uc -us -b
+          pushd "$BUILD_ROOT/src/base/cvd"
+          bazel build //:build_compilation_mode_txt
+          popd
+          timeout 1800 env PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" dpkg-buildpackage -uc -us -b
           popd
 
           BASELINE_DEB=$(find "$BUILD_ROOT/src" -maxdepth 1 -name 'cuttlefish-base_*_arm64.deb' | head -n 1)
@@ -334,16 +340,16 @@ jobs:
           if [ "$LATEST_VERSION" = "$CURRENT_VERSION" ]; then
             DETAILS="Current pinned Android-Cuttlefish package ${CURRENT_VERSION} already matches the latest stable release. The configured Arm64 package install and capability query both succeeded."
             echo "next_installed_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
-            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Android-Cuttlefish version ${CURRENT_VERSION} already matches the newest stable upstream release visible in the tested public source path, so there is no newer Arm64 candidate to validate in Test 6." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: $CURRENT_VERSION"
-            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
+            echo "Regression install result: No newer stable release available for Test 6"
             echo "Details: ${DETAILS}"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            exit 0
           fi
 
           NEXT_TAG="v${LATEST_VERSION}"
@@ -378,7 +384,10 @@ jobs:
             protobuf-compiler \
             uuid-dev \
             xxd
-          if ! timeout 1800 dpkg-buildpackage -uc -us -b; then
+          pushd "$NEXT_BUILD_ROOT/src/base/cvd"
+          bazel build //:build_compilation_mode_txt
+          popd
+          if ! timeout 1800 env PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" dpkg-buildpackage -uc -us -b; then
             DETAILS="Current pinned Android-Cuttlefish package ${CURRENT_VERSION} passed smoke tests in this run, but the next stable release ${LATEST_VERSION} did not build into an Arm64 Debian package on ubuntu-24.04-arm."
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
@@ -484,6 +493,7 @@ jobs:
           set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
 
@@ -493,24 +503,29 @@ jobs:
             local core=$3
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
-            else
+            elif [ "$status" = "failed" ]; then
               FAILED=$((FAILED + 1))
               if [ "$core" = "yes" ]; then
                 CORE_FAILED=$((CORE_FAILED + 1))
               fi
+            else
+              SKIPPED=$((SKIPPED + 1))
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
+
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
 
           check_test "${{ steps.test1.outputs.status }}" "${{ steps.test1.outputs.duration || 0 }}" yes
           check_test "${{ steps.test2.outputs.status }}" "${{ steps.test2.outputs.duration || 0 }}" yes
           check_test "${{ steps.test3.outputs.status }}" "${{ steps.test3.outputs.duration || 0 }}" yes
           check_test "${{ steps.test4.outputs.status }}" "${{ steps.test4.outputs.duration || 0 }}" yes
           check_test "${{ steps.test5.outputs.status }}" "${{ steps.test5.outputs.duration || 0 }}" yes
-          check_test "${{ steps.test6.outputs.status }}" "${{ steps.test6.outputs.duration || 0 }}" no
+          check_test "$TEST6_STATUS" "${{ steps.test6.outputs.duration || 0 }}" no
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
@@ -538,6 +553,12 @@ jobs:
               next_install_failed|next_lookup_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
+              no_newer_stable_available)
+                REGRESSION_RESULT="No newer stable release available for Test 6"
+                ;;
+              baseline_failed)
+                REGRESSION_RESULT="Regression validation skipped because one or more baseline tests (1-5) failed."
+                ;;
               metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
@@ -554,6 +575,7 @@ jobs:
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped || 0 }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Test 6 - Regression Validation:** ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
