@@ -120,7 +120,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          BUILD_DEPS=(git clang llvm cmake bmake zlib1g-dev m4 gcc g++ make file)
+          BUILD_DEPS=(git clang llvm cmake bmake zlib1g-dev m4 gcc g++ make file groff)
           # Upstream's generic README includes libc6-dev-i386 for x86 environments,
           # but that package does not exist on Ubuntu arm64 runners and is not needed
           # for the native Arm64 CMake build we validate here.
@@ -133,6 +133,23 @@ jobs:
             sudo ln -s "$MULTIARCH_INCLUDE/bits" /usr/include/bits
           fi
           echo "ELASTIC_EBPF_MULTIARCH_INCLUDE=$MULTIARCH_INCLUDE" >> "$GITHUB_ENV"
+          WRAPPER_DIR="$(mktemp -d)"
+          cat > "$WRAPPER_DIR/cc-wrap" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          args=()
+          for a in "$@"; do
+            if [[ "$a" == -Wl,-soname\ * ]]; then
+              v="${a#-Wl,-soname }"
+              args+=("-Wl,-soname,${v}")
+            else
+              args+=("$a")
+            fi
+          done
+          exec /usr/bin/gcc "${args[@]}"
+          EOF
+          chmod +x "$WRAPPER_DIR/cc-wrap"
+          echo "ELASTIC_EBPF_CC_WRAPPER=$WRAPPER_DIR/cc-wrap" >> "$GITHUB_ENV"
 
           CURRENT_VERSION="${BASELINE_VERSION}"
           SRC_DIR="/tmp/elastic-ebpf-${CURRENT_VERSION}"
@@ -193,8 +210,12 @@ jobs:
           if [ -d "$MULTIARCH_INCLUDE" ]; then
             export CPATH="$MULTIARCH_INCLUDE${CPATH:+:$CPATH}"
           fi
-          cmake -S . -B build -DTARGET_DIR="$PWD/build/target" -DARCH="$ARCH" -DEBPF_EXTERNAL_ENV_FLAGS=BUILD_STATIC_ONLY=1
-          cmake --build build -j"$(nproc)"
+          CMAKE_ARGS=(-S . -B build -DTARGET_DIR="$PWD/build/target" -DARCH="$ARCH" -DEBPF_EXTERNAL_ENV_FLAGS=BUILD_STATIC_ONLY=1)
+          if [ -n "${ELASTIC_EBPF_CC_WRAPPER:-}" ]; then
+            CMAKE_ARGS+=(-DCMAKE_C_COMPILER="${ELASTIC_EBPF_CC_WRAPPER}")
+          fi
+          cmake "${CMAKE_ARGS[@]}"
+          cmake --build build -j"$(nproc)" --target libeBPF BPFTcFilterTests BPFEventProbe BPFKprobeConnectHook
           if [ -f "$PWD/build/target/libeBPF.a" ] \
             && [ -n "$(find "$PWD/build/target/ebpf" -maxdepth 1 -name '*.bpf.o' | head -n 1)" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -338,8 +359,12 @@ jobs:
           if [ -d "$MULTIARCH_INCLUDE" ]; then
             export CPATH="$MULTIARCH_INCLUDE${CPATH:+:$CPATH}"
           fi
-          cmake -S . -B build -DTARGET_DIR="$PWD/build/target" -DARCH="$ARCH" -DEBPF_EXTERNAL_ENV_FLAGS=BUILD_STATIC_ONLY=1
-          cmake --build build -j"$(nproc)"
+          CMAKE_ARGS=(-S . -B build -DTARGET_DIR="$PWD/build/target" -DARCH="$ARCH" -DEBPF_EXTERNAL_ENV_FLAGS=BUILD_STATIC_ONLY=1)
+          if [ -n "${ELASTIC_EBPF_CC_WRAPPER:-}" ]; then
+            CMAKE_ARGS+=(-DCMAKE_C_COMPILER="${ELASTIC_EBPF_CC_WRAPPER}")
+          fi
+          cmake "${CMAKE_ARGS[@]}"
+          cmake --build build -j"$(nproc)" --target libeBPF BPFTcFilterTests BPFEventProbe BPFKprobeConnectHook
           cmake --install build --prefix "$PWD/build/package" >/dev/null 2>&1 || true
           NEXT_TEST_BIN=$(find "$NEXT_DIR/build" -type f -name 'BPFTcFilterTests' | head -n 1)
           NEXT_BPF_OBJ=$(find "$NEXT_DIR/build" -type f -name '*.bpf.o' | head -n 1)

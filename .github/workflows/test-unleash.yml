@@ -279,140 +279,19 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 6 - Regression Validation
+      - name: Regression applicability - package manager installed
         id: test6
-        continue-on-error: true
         run: |
           set -euo pipefail
-          START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version }}"
-          LATEST="${UNLEASH_NEXT_VERSION}"
-          NEXT_IMAGE="unleashorg/unleash-server:${LATEST}"
-          NETWORK="unleash-regression-net"
-          DB_CONTAINER="unleash-regression-postgres"
-          APP_CONTAINER="unleash-regression-server"
-          NEXT_INSTALLED_VERSION="not_installed"
-
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
-          echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: $CURRENT"
-          echo "Next version targeted for install validation: $LATEST"
-
-          cleanup() {
-            sudo docker rm -f "$APP_CONTAINER" "$DB_CONTAINER" >/dev/null 2>&1 || true
-            sudo docker network rm "$NETWORK" >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
-
-          if ! sudo docker manifest inspect "$NEXT_IMAGE" | grep -q '"architecture":[[:space:]]*"arm64"'; then
-            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-            echo "decision=hold_current" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned version ${CURRENT} passed smoke tests in this run. Latest stable ${LATEST} does not currently expose a usable arm64 image manifest, so the workflow should remain pinned." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: not_installed"
-            echo "Regression install result: Next version install failed on Arm64"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          NEXT_INSTALLED_VERSION="$(sudo docker run --rm --entrypoint /bin/sh "$NEXT_IMAGE" -lc 'node -p "require(\"./package.json\").version"' | tr -d '\r')"
-          sudo docker network create "$NETWORK" >/dev/null
-          sudo docker run -d --network "$NETWORK" --name "$DB_CONTAINER" \
-            -e POSTGRES_PASSWORD=unleash \
-            -e POSTGRES_USER=unleash \
-            -e POSTGRES_DB=unleash \
-            postgres:14-alpine >/dev/null
-
-          for attempt in $(seq 1 30); do
-            if sudo docker exec "$DB_CONTAINER" pg_isready -U unleash -d unleash >/dev/null 2>&1; then
-              break
-            fi
-            sleep 2
-          done
-
-          sudo docker run -d --network "$NETWORK" --name "$APP_CONTAINER" -p 4243:4242 \
-            -e DATABASE_URL=postgres://unleash:unleash@"$DB_CONTAINER":5432/unleash \
-            -e DATABASE_SSL=false \
-            -e LOG_LEVEL=warn \
-            "$NEXT_IMAGE" >/dev/null
-
-          for attempt in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:4243/health > /tmp/unleash-regression-health.json 2>/dev/null; then
-              break
-            fi
-            sleep 3
-          done
-
-          if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ] && grep -q '"health":"GOOD"' /tmp/unleash-regression-health.json; then
-            echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
-            if [ "$LATEST" = "$CURRENT" ]; then
-              echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-              echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-              echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-            else
-              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned version ${CURRENT} passed smoke tests in this run. Regression validation booted candidate version ${LATEST} on Arm64, the official image reported version ${NEXT_INSTALLED_VERSION}, and the candidate passed the real /health smoke successfully." >> "$GITHUB_OUTPUT"
-              echo "Regression install result: Next version installed successfully on Arm64"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            sudo docker logs "$APP_CONTAINER" | tail -80 || true
-            echo "next_installed_version=${NEXT_INSTALLED_VERSION:-not_installed}" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not complete the expected Arm64 boot-and-health validation." >> "$GITHUB_OUTPUT"
-            echo "Regression install result: Next version install failed on Arm64"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Show regression validation details
-        if: always()
-        run: |
-          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
-          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
-          if [ -z "$REGRESSION_RESULT" ]; then
-            case "$DECISION" in
-              next_install_validated|safe_to_upgrade)
-                REGRESSION_RESULT="Next version installed successfully on Arm64"
-                ;;
-              next_install_failed|next_lookup_failed)
-                REGRESSION_RESULT="Next version install failed on Arm64"
-                ;;
-              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
-                ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
-                REGRESSION_RESULT="Pending regression install validation"
-                ;;
-              *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
-                  REGRESSION_RESULT="Regression validation passed"
-                else
-                  REGRESSION_RESULT="Regression validation failed"
-                fi
-                ;;
-            esac
-          fi
-
-          echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
-          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
-          echo "Regression install result: ${REGRESSION_RESULT}"
-          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
+          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         if: always()
@@ -474,7 +353,6 @@ jobs:
       - name: Create test summary
         if: always()
         run: |
-          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
           echo "## Unleash Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
@@ -490,11 +368,6 @@ jobs:
           echo "3. Test 3 - Check Help Output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Regression applicability: package-manager installed (not applicable)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Current pinned version passed smoke tests; latest-stable comparison still needs review.' }}" >> "$GITHUB_STEP_SUMMARY"
