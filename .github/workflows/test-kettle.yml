@@ -133,6 +133,18 @@ jobs:
           fi
           echo "tag=$KETTLE_TAG" >> "$GITHUB_OUTPUT"
 
+          # Preflight: Pentaho artifacts occasionally return HTML/error pages instead of Maven XML.
+          POM_URL="https://repo.orl.eng.hitachivantara.com/artifactory/pnt-mvn/org/pentaho/pentaho-ce-jar-parent-pom/${KETTLE_TAG}/pentaho-ce-jar-parent-pom-${KETTLE_TAG}.pom"
+          POM_PROBE="/tmp/kettle-parent-pom-probe.xml"
+          CONTENT_TYPE=$(curl -fsSL -o "$POM_PROBE" -w '%{content_type}' "$POM_URL" || true)
+          if ! grep -q '<project' "$POM_PROBE"; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=upstream_pentaho_repo_returned_non_maven_content" >> "$GITHUB_OUTPUT"
+            echo "install_blocker_details=Pentaho artifact endpoint returned non-Maven content (content-type: ${CONTENT_TYPE:-unknown}) for ${POM_URL}." >> "$GITHUB_OUTPUT"
+            head -n 40 "$POM_PROBE" || true
+            exit 1
+          fi
+
           mkdir -p "$HOME/.m2"
           curl -fsSL "${KETTLE_SETTINGS_URL}" -o "$HOME/.m2/settings.xml"
 
@@ -152,6 +164,10 @@ jobs:
             fi
           done
           if [ "$BUILD_OK" -ne 1 ]; then
+            if grep -q "Expected root element 'project' but found 'html'" /tmp/kettle-build.log; then
+              echo "install_blocker=upstream_pentaho_repo_returned_non_maven_content" >> "$GITHUB_OUTPUT"
+              echo "install_blocker_details=Pentaho Maven dependency resolution returned HTML/non-POM payload during source build." >> "$GITHUB_OUTPUT"
+            fi
             tail -n 200 /tmp/kettle-build.log || true
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
             exit 1
@@ -297,10 +313,18 @@ jobs:
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
 
           if [ "${{ steps.install.outputs.install_status || '' }}" != "success" ]; then
+            BLOCKER="${{ steps.install.outputs.install_blocker || '' }}"
+            BLOCKER_DETAILS="${{ steps.install.outputs.install_blocker_details || '' }}"
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-            echo "decision=baseline_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Baseline source build/install failed before regression validation" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Kettle tag ${CURRENT} could not complete baseline source build/install in this run, so a genuine Arm64 next-version regression validation was not possible." >> "$GITHUB_OUTPUT"
+            if [ -n "$BLOCKER" ]; then
+              echo "decision=baseline_install_blocked_upstream_dependency" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Baseline source build blocked by upstream Pentaho Maven dependency access" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Kettle tag ${CURRENT} could not complete baseline source build/install in this run because upstream dependency fetch returned non-Maven content. ${BLOCKER_DETAILS}" >> "$GITHUB_OUTPUT"
+            else
+              echo "decision=baseline_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Baseline source build/install failed before regression validation" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Kettle tag ${CURRENT} could not complete baseline source build/install in this run, so a genuine Arm64 next-version regression validation was not possible." >> "$GITHUB_OUTPUT"
+            fi
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
