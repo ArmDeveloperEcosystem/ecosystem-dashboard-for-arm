@@ -353,6 +353,9 @@ function updateFacet(filter_group, item_name) {
     // Replace the filter group's tag with the currently selected item name
                                                                                 // license
     var filter_facet = document.getElementById('filter-facet-display-name-group-'+filter_group.toLowerCase());
+    if (!filter_facet) {
+        return;
+    }
     filter_facet.textContent = filter_group+": "+item_name;
 
     let ads_filter_component = filter_facet.closest('ads-tag');
@@ -471,12 +474,8 @@ function addFacet(element) {
         });
 }
 
-/* Hard-coded clearing of license and category filters */
+/* Reset all currently rendered radio-filter groups back to 'All'. */
 function clearAllFilters() {
-    // Reset Facets to 'All'
-    updateFacet('License','All');
-    updateFacet('Category','All');
-
     // Reset ADS-checkboxes to select 'All'
     let checkable_inputs = document.querySelectorAll('input.checkable-input');
     for (let input of checkable_inputs) {
@@ -489,9 +488,20 @@ function clearAllFilters() {
         }
     }
 
+    // Reset only the filter facets that exist on the current page.
+    let all_inputs = document.querySelectorAll('input.checkable-input.tag-all');
+    for (let input of all_inputs) {
+        let group_name = input.getAttribute('data-group-display-name');
+        if (group_name) {
+            updateFacet(group_name, 'All');
+        }
+    }
+
     // Update category description to all
     let paragraph_dom = document.getElementById('category-description');
-    paragraph_dom.innerText = "Filter by category and view the category description here.";
+    if (paragraph_dom) {
+        paragraph_dom.innerText = "Filter by category and view the category description here.";
+    }
 }
 
 
