@@ -133,28 +133,57 @@ jobs:
           sudo apt-get install -y "${BUILD_DEPS[@]}"
           # Ubuntu often ships /usr/bin/bpftool as a wrapper that requires a
           # kernel-specific linux-tools payload; command -v alone is insufficient.
-          if ! command -v bpftool >/dev/null 2>&1 || ! bpftool version >/dev/null 2>&1; then
-            sudo apt-get install -y bpftool || true
-            sudo apt-get install -y "linux-tools-$(uname -r)" "linux-cloud-tools-$(uname -r)" || true
-            sudo apt-get install -y linux-tools-azure linux-cloud-tools-azure linux-tools-common || true
+          BPFT_OK=0
+          if command -v bpftool >/dev/null 2>&1 && bpftool version >/dev/null 2>&1; then
+            BPFT_OK=1
+          fi
 
-            KERNEL_BPFT_PATH="/usr/lib/linux-tools-$(uname -r)/bpftool"
+          if [ "$BPFT_OK" -ne 1 ]; then
+            sudo apt-get install -y bpftool || true
+            sudo apt-get install -y "linux-tools-$(uname -r)" "linux-cloud-tools-$(uname -r)" linux-tools-common || true
+
+            KERNEL_TOOLS_DIR="/usr/lib/linux-tools-$(uname -r)"
+            KERNEL_BPFT_PATH="${KERNEL_TOOLS_DIR}/bpftool"
             BPFT_PATH=""
-            if [ -x "$KERNEL_BPFT_PATH" ]; then
+
+            if [ -x "$KERNEL_BPFT_PATH" ] && "$KERNEL_BPFT_PATH" version >/dev/null 2>&1; then
               BPFT_PATH="$KERNEL_BPFT_PATH"
-            else
-              BPFT_PATH="$(find /usr/lib/linux-tools* -type f -name bpftool 2>/dev/null | head -n1 || true)"
             fi
 
-            if [ -n "$BPFT_PATH" ] && [ -x "$BPFT_PATH" ]; then
+            if [ -z "$BPFT_PATH" ]; then
+              BPFT_PATH="$(
+                dpkg -L "linux-tools-$(uname -r)" 2>/dev/null \
+                | awk '/\/bpftool$/ {print; exit}'
+              )"
+            fi
+
+            if [ -z "$BPFT_PATH" ]; then
+              BPFT_PATH="$(
+                find /usr/lib -type f -path '*/linux-tools*/bpftool' 2>/dev/null \
+                | head -n1 || true
+              )"
+            fi
+
+            if [ -n "$BPFT_PATH" ] && [ -x "$BPFT_PATH" ] && "$BPFT_PATH" version >/dev/null 2>&1; then
+              # Elastic eBPF build tooling expects a kernel-specific bpftool path.
+              # If only a generic linux-tools provider exists, mirror it there.
+              if [ ! -x "$KERNEL_BPFT_PATH" ]; then
+                sudo mkdir -p "$KERNEL_TOOLS_DIR"
+                sudo ln -sf "$BPFT_PATH" "$KERNEL_BPFT_PATH"
+              fi
               sudo ln -sf "$BPFT_PATH" /usr/local/bin/bpftool
+              echo "$(dirname "$BPFT_PATH")" >> "$GITHUB_PATH"
+              if bpftool version >/dev/null 2>&1; then
+                BPFT_OK=1
+              fi
             fi
           fi
 
-          if ! command -v bpftool >/dev/null 2>&1 || ! bpftool version >/dev/null 2>&1; then
+          if [ "$BPFT_OK" -ne 1 ]; then
             echo "bpftool is unavailable/runnable on this Arm64 runner after installing available providers"
             echo "uname -r: $(uname -r)"
-            ls -l /usr/lib/linux-tools*/*bpftool 2>/dev/null || true
+            dpkg -L "linux-tools-$(uname -r)" 2>/dev/null | grep '/bpftool$' || true
+            find /usr/lib -type f -path '*/linux-tools*/bpftool' 2>/dev/null || true
             exit 1
           fi
           if ! command -v zig >/dev/null 2>&1; then
@@ -607,7 +636,7 @@ jobs:
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
           fi
 
-          if [ "$CORE_FAILED" -ne 0 ]; then
+          if [ "$FAILED" -ne 0 ]; then
             exit 1
           fi
 

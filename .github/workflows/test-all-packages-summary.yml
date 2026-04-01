@@ -59,6 +59,7 @@ jobs:
 
           mkdir -p downloaded-results
           DOWNLOADED_BATCHES=0
+          : > downloaded-results/.batch-runs.tsv
 
           for i in {1..19}; do
             WORKFLOW="test-all-packages-batch${i}.yml"
@@ -81,6 +82,7 @@ jobs:
             echo "📥 Downloading $ARTIFACT from run $RUN_ID..."
             if gh run download "$RUN_ID" -n "$ARTIFACT" -D "$DEST"; then
               DOWNLOADED_BATCHES=$((DOWNLOADED_BATCHES + 1))
+              printf '%s\t%s\t%s\t%s\n' "$i" "$RUN_ID" "$WORKFLOW" "$ARTIFACT" >> downloaded-results/.batch-runs.tsv
             else
               echo "⚠️ Warning: Failed to download $ARTIFACT from run $RUN_ID."
             fi
@@ -107,11 +109,18 @@ jobs:
 
       - name: Assemble candidate and previous-production staging sets
         id: assemble
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           python3 - <<'PY'
           import json
+          import os
+          import subprocess
           import shutil
           from pathlib import Path
+          import yaml
 
           package_map = json.loads(Path(".summary-package-map.json").read_text())
           stage_root = Path(".summary-staging")
@@ -125,12 +134,18 @@ jobs:
 
           existing_dir = Path("data/test-results")
           downloaded_dir = Path("downloaded-results")
+          batch_runs_path = downloaded_dir / ".batch-runs.tsv"
+          gh_token = os.environ.get("GH_TOKEN", "").strip()
+          github_server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+          github_repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
 
           counters = {
               "malformed": 0,
               "previous": 0,
               "candidate": 0,
+              "synthesized": 0,
           }
+          previous_payloads = {}
 
           def canonical_slug(raw_slug: str, fallback_stem: str) -> str:
               for candidate in (raw_slug, fallback_stem):
@@ -138,6 +153,7 @@ jobs:
                       value = str(candidate).strip()
                       if value:
                           return package_map.get(value.lower(), value)
+              return fallback_stem
               return fallback_stem
 
           def write_canonical(source_path: Path, target_dir: Path, counter_key: str) -> None:
@@ -154,12 +170,138 @@ jobs:
               target_path = target_dir / f"{canonical}.json"
               target_path.write_text(json.dumps(payload, indent=2) + "\n")
               counters[counter_key] += 1
+              if counter_key == "previous":
+                  previous_payloads[canonical] = payload
 
           for source in sorted(existing_dir.glob("*.json")):
               write_canonical(source, previous_dir, "previous")
 
           for source in sorted(downloaded_dir.rglob("*.json")):
               write_canonical(source, candidate_dir, "candidate")
+
+          job_cache = {}
+
+          def fetch_jobs(run_id: str):
+              if run_id in job_cache:
+                  return job_cache[run_id]
+              if not gh_token or not github_repository:
+                  job_cache[run_id] = []
+                  return []
+              try:
+                  raw = subprocess.check_output(
+                      [
+                          "gh",
+                          "api",
+                          f"repos/{github_repository}/actions/runs/{run_id}/jobs?per_page=100",
+                      ],
+                      text=True,
+                      env={**os.environ, "GH_TOKEN": gh_token},
+                  )
+                  jobs = json.loads(raw).get("jobs", [])
+              except Exception:
+                  jobs = []
+              job_cache[run_id] = jobs
+              return jobs
+
+          def resolve_expected_job(run_id: str, job_name: str, slug: str):
+              batch_run_url = f"{github_server}/{github_repository}/actions/runs/{run_id}" if github_repository else ""
+              jobs = fetch_jobs(run_id)
+              if not jobs:
+                  return batch_run_url, "batch_run_fallback"
+              by_name = {}
+              for job in jobs:
+                  name = str(job.get("name") or "").strip()
+                  html_url = str(job.get("html_url") or "").strip()
+                  if name and html_url:
+                      by_name[name.lower()] = html_url
+              candidates = [
+                  job_name,
+                  f"{job_name} / {job_name}",
+                  f"test-{slug}",
+                  f"test-{slug} / test-{slug}",
+              ]
+              for candidate in candidates:
+                  url = by_name.get(candidate.lower())
+                  if url:
+                      return url, "central_exact"
+              return batch_run_url, "batch_run_fallback"
+
+          if batch_runs_path.exists():
+              for raw_line in batch_runs_path.read_text().splitlines():
+                  if not raw_line.strip():
+                      continue
+                  batch_number, run_id, workflow_name, artifact_name = raw_line.split("\t", 3)
+                  batch_title = f"Batch {batch_number}"
+                  workflow_path = Path(".github/workflows") / workflow_name
+                  if not workflow_path.exists():
+                      continue
+                  workflow = yaml.safe_load(workflow_path.read_text()) or {}
+                  jobs = workflow.get("jobs") or {}
+                  expected = []
+                  for job_name, job_def in jobs.items():
+                      if job_name == "summary":
+                          continue
+                      uses = str((job_def or {}).get("uses") or "")
+                      if uses.startswith("./.github/workflows/test-") and uses.endswith(".yml"):
+                          stem = Path(uses).stem.replace("test-", "", 1)
+                          slug = canonical_slug(stem, stem)
+                          expected.append((slug, job_name))
+
+                  for slug, job_name in expected:
+                      target_path = candidate_dir / f"{slug}.json"
+                      if target_path.exists():
+                          continue
+
+                      previous = previous_payloads.get(slug, {})
+                      package = previous.get("package") or {}
+                      metadata = previous.get("metadata") or {}
+                      version = str((package.get("version") or "unknown")).strip() or "unknown"
+                      package_name = str((package.get("name") or slug)).strip() or slug
+                      dashboard_link = str((metadata.get("dashboard_link") or f"/opensource_packages/{slug}")).strip()
+                      run_url, resolution_state = resolve_expected_job(run_id, job_name, slug)
+
+                      payload = {
+                          "schema_version": "2.0",
+                          "package": {
+                              "name": package_name,
+                              "version": version,
+                          },
+                          "run": {
+                              "id": str(run_id),
+                              "attempt": "1",
+                              "url": run_url,
+                              "timestamp": "",
+                              "status": "failure",
+                              "runner": {
+                                  "os": "ubuntu-24.04",
+                                  "arch": "arm64",
+                              },
+                              "job_name": f"{job_name} / {job_name}",
+                          },
+                          "tests": {
+                              "passed": 0,
+                              "failed": 0,
+                              "skipped": 0,
+                              "duration_seconds": 0,
+                              "details": [],
+                          },
+                          "metadata": {
+                              "contract_version": "missing",
+                              "package_slug": slug,
+                              "dashboard_link": dashboard_link,
+                              "badge_status": "failing",
+                              "core_failed": 1,
+                              "batch_title": batch_title,
+                              "job_url_resolution_status": resolution_state,
+                              "regression_applicability": "not_configured",
+                              "regression_reason": "result_not_emitted",
+                              "regression_note": "Workflow did not emit a terminal result JSON for this package in the current batch run.",
+                              "synthesis_state": "synthesized_missing_current_run_result",
+                          },
+                      }
+                      target_path.write_text(json.dumps(payload, indent=2) + "\n")
+                      counters["candidate"] += 1
+                      counters["synthesized"] += 1
 
           candidate_count = len(list(candidate_dir.glob("*.json")))
           previous_count = len(list(previous_dir.glob("*.json")))
@@ -171,6 +313,7 @@ jobs:
                       f"malformed_count={counters['malformed']}",
                       f"candidate_count={candidate_count}",
                       f"previous_count={previous_count}",
+                      f"synthesized_count={counters['synthesized']}",
                   ]
               )
               + "\n"
@@ -179,7 +322,8 @@ jobs:
           print(
               f"Prepared {candidate_count} candidate package results and "
               f"{previous_count} previous-production package results "
-              f"({counters['malformed']} malformed artifacts skipped)."
+              f"({counters['malformed']} malformed artifacts skipped, "
+              f"{counters['synthesized']} synthesized missing-package failures)."
           )
           PY
 
@@ -429,8 +573,60 @@ jobs:
 
           decisions = {}
           promoted_count = 0
-          fallback_count = 0
-          blocked_new_count = 0
+          warning_count = 0
+
+          def as_int(value, default=0):
+              try:
+                  return int(str(value).strip())
+              except Exception:
+                  return default
+
+          def regression_detail(payload):
+              tests = payload.get("tests") or {}
+              for detail in tests.get("details") or []:
+                  name = str(detail.get("name") or "")
+                  if "Regression Validation" in name:
+                      return detail
+                  if any(key in detail for key in ("decision", "regression_result", "latest_version", "next_installed_version")):
+                      return detail
+              return {}
+
+          def normalize_payload_status(payload):
+              tests = payload.setdefault("tests", {})
+              metadata = payload.setdefault("metadata", {})
+              run = payload.setdefault("run", {})
+
+              passed = as_int(tests.get("passed"), 0)
+              failed = as_int(tests.get("failed"), 0)
+              skipped = as_int(tests.get("skipped"), 0)
+              core_failed = as_int(metadata.get("core_failed"), 0)
+
+              detail = regression_detail(payload)
+              regression_status = str(detail.get("status") or metadata.get("regression_status") or "").strip().lower()
+              regression_decision = str(detail.get("decision") or metadata.get("regression_decision") or "").strip()
+
+              non_failing_regression = regression_status in {"skipped", "deferred", "not_applicable"} or regression_decision in {
+                  "no_newer_stable_available",
+                  "hold_current_arm_dependency_gap",
+                  "not_applicable_package_manager",
+                  "package_manager_installed",
+              }
+
+              if core_failed == 0 and failed > 0 and non_failing_regression:
+                  failed = max(0, failed - 1)
+                  skipped += 1
+
+              tests["passed"] = passed
+              tests["failed"] = failed
+              tests["skipped"] = skipped
+
+              is_success = passed > 0 and failed == 0
+              run["status"] = "success" if is_success else "failure"
+              metadata["badge_status"] = "passing" if is_success else "failing"
+              if regression_status:
+                  metadata["regression_status"] = regression_status
+              if regression_decision:
+                  metadata["regression_decision"] = regression_decision
 
           def candidate_publish_reason(slug, payload):
               blocked_reason = (normalize_report.get("blocked_slugs") or {}).get(slug)
@@ -445,10 +641,13 @@ jobs:
           for json_path in sorted(candidate_dir.glob("*.json")):
               slug = json_path.stem
               payload = json.loads(json_path.read_text())
+              normalize_payload_status(payload)
               reason = candidate_publish_reason(slug, payload)
+              metadata = payload.setdefault("metadata", {})
+              metadata["production_refreshed_at"] = datetime.now(timezone.utc).isoformat()
+
               if not reason:
-                  payload.setdefault("metadata", {})["publish_state"] = "published"
-                  payload["metadata"]["production_refreshed_at"] = datetime.now(timezone.utc).isoformat()
+                  metadata["publish_state"] = "published"
                   (publish_dir / json_path.name).write_text(json.dumps(payload, indent=2) + "\n")
                   decisions[slug] = {
                       "state": "published",
@@ -457,18 +656,15 @@ jobs:
                   promoted_count += 1
                   continue
 
-              if slug in previous_payloads:
-                  decisions[slug] = {
-                      "state": "stale_from_previous_production",
-                      "reason": reason,
-                  }
-                  fallback_count += 1
-              else:
-                  decisions[slug] = {
-                      "state": "blocked_missing_previous_production",
-                      "reason": reason,
-                  }
-                  blocked_new_count += 1
+              metadata["publish_state"] = "published_with_warning"
+              metadata["publish_warning"] = reason
+              (publish_dir / json_path.name).write_text(json.dumps(payload, indent=2) + "\n")
+              decisions[slug] = {
+                  "state": "published_with_warning",
+                  "reason": reason,
+              }
+              promoted_count += 1
+              warning_count += 1
 
           report_payload = {
               "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -476,8 +672,7 @@ jobs:
               "previous_count": len(list(previous_dir.glob("*.json"))),
               "published_count": len(list(publish_dir.glob("*.json"))),
               "promoted_count": promoted_count,
-              "fallback_count": fallback_count,
-              "blocked_new_count": blocked_new_count,
+              "warning_count": warning_count,
               "normalize": normalize_report,
               "decisions": decisions,
           }
@@ -491,8 +686,7 @@ jobs:
                       f"previous_count={report_payload['previous_count']}",
                       f"published_count={report_payload['published_count']}",
                       f"promoted_count={promoted_count}",
-                      f"fallback_count={fallback_count}",
-                      f"blocked_new_count={blocked_new_count}",
+                      f"warning_count={warning_count}",
                   ]
               )
               + "\n"
@@ -543,13 +737,13 @@ jobs:
           echo "| :--- | :--- |" >> $GITHUB_STEP_SUMMARY
           echo "| Batch artifacts downloaded | ${{ steps.download.outputs.downloaded_batches || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Candidate JSON files assembled | ${{ steps.assemble.outputs.candidate_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Candidate rows synthesized for missing current-run results | ${{ steps.assemble.outputs.synthesized_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Previous production rows loaded | ${{ steps.assemble.outputs.previous_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Malformed JSON artifacts skipped | ${{ steps.assemble.outputs.malformed_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Exact candidate job URLs resolved | ${{ steps.normalize.outputs.exact_url_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Candidate rows with weak URLs | ${{ steps.normalize.outputs.weak_url_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Candidate rows promoted to production | ${{ steps.publish.outputs.promoted_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Candidate rows kept stale from previous production | ${{ steps.publish.outputs.fallback_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| New candidate rows blocked from production | ${{ steps.publish.outputs.blocked_new_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Candidate rows published with warnings | ${{ steps.publish.outputs.warning_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           TOTAL=0

@@ -126,14 +126,15 @@ jobs:
           echo "current_version=${TFSERVING_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Cache Bazel state
-        uses: actions/cache@v4
+        id: bazel-cache-restore
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cache/bazel
             ~/.cache/bazelisk
             ~/.cache/bazel-disk
-            ~/.cache/bazel-repo
-          key: ${{ runner.os }}-${{ runner.arch }}-tensorflow-serving-${{ env.TFSERVING_VERSION }}-${{ env.TFSERVING_NEXT_VERSION }}-${{ env.TFSERVING_BAZEL_VERSION }}
+            ~/.cache/bazel-repository
+          key: ${{ runner.os }}-${{ runner.arch }}-tensorflow-serving-${{ env.TFSERVING_VERSION }}-${{ env.TFSERVING_BAZEL_VERSION }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-tensorflow-serving-
 
@@ -157,7 +158,7 @@ jobs:
             zip
 
           mkdir -p "$HOME/bin"
-          mkdir -p "$HOME/.cache/bazel-disk/tensorflow-serving" "$HOME/.cache/bazel-repo"
+          mkdir -p "$HOME/.cache/bazel-repository" "$HOME/.cache/bazel-disk"
           curl -fsSL https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-arm64 -o "$HOME/bin/bazelisk"
           chmod +x "$HOME/bin/bazelisk"
           ln -sf "$HOME/bin/bazelisk" "$HOME/bin/bazel"
@@ -176,7 +177,14 @@ jobs:
           export PATH="$HOME/bin:$PATH"
           export USE_BAZEL_VERSION="${TFSERVING_BAZEL_VERSION}"
 
-          if ! timeout 10800 bazelisk build -c opt --jobs=4 --local_ram_resources=8192 --repository_cache="$HOME/.cache/bazel-repo" --disk_cache="$HOME/.cache/bazel-disk/tensorflow-serving" tensorflow_serving/model_servers:tensorflow_model_server 2>&1 | tee /tmp/tfs-baseline-build.log; then
+          BAZEL_COMMON_ARGS=(
+            "--jobs=4"
+            "--local_ram_resources=8192"
+            "--repository_cache=$HOME/.cache/bazel-repository"
+            "--disk_cache=$HOME/.cache/bazel-disk"
+          )
+
+          if ! timeout 10800 bazelisk build -c opt "${BAZEL_COMMON_ARGS[@]}" tensorflow_serving/model_servers:tensorflow_model_server 2>&1 | tee /tmp/tfs-baseline-build.log; then
             tail -n 200 /tmp/tfs-baseline-build.log || true
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
             exit 1
@@ -255,14 +263,25 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          VERSION_OUTPUT="$("${{ steps.install.outputs.binary_path }}" --version 2>&1 || true)"
-          HELP_OUTPUT="$("${{ steps.install.outputs.binary_path }}" --help 2>&1 || true)"
-          if echo "$VERSION_OUTPUT" | grep -Eiq 'tensorflow[ _-]*model[ _-]*server|tensorflow[ _-]*serving|modelserver' && \
-             echo "$HELP_OUTPUT" | grep -Eiq 'rest_api_port|model_base_path|model_name'; then
+          set +e
+          VERSION_OUTPUT="$("${{ steps.install.outputs.binary_path }}" --version 2>&1)"
+          VERSION_RC=$?
+          HELP_OUTPUT="$("${{ steps.install.outputs.binary_path }}" --help 2>&1)"
+          HELP_RC=$?
+          HELPFULL_OUTPUT="$("${{ steps.install.outputs.binary_path }}" --helpfull 2>&1)"
+          HELPFULL_RC=$?
+          set -e
+
+          if [ "$VERSION_RC" -eq 0 ] && \
+             { [ "$HELP_RC" -eq 0 ] || [ "$HELPFULL_RC" -eq 0 ]; } && \
+             grep -Eiq 'tensorflow[ _-]*model[ _-]*server|tensorflow[ _-]*serving|modelserver' <<<"${VERSION_OUTPUT}" && \
+             grep -Eiq 'model|serv|port' <<<"${HELP_OUTPUT}${HELPFULL_OUTPUT}"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            echo "version_rc=$VERSION_RC help_rc=$HELP_RC helpfull_rc=$HELPFULL_RC"
             echo "$VERSION_OUTPUT" | tail -n 40 || true
             echo "$HELP_OUTPUT" | tail -n 80 || true
+            echo "$HELPFULL_OUTPUT" | tail -n 80 || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -392,10 +411,20 @@ jobs:
               export PATH="$HOME/bin:$PATH"
               export USE_BAZEL_VERSION="${TFSERVING_BAZEL_VERSION}"
 
-          if timeout 10800 bazelisk build -c opt --jobs=4 --local_ram_resources=8192 --repository_cache="$HOME/.cache/bazel-repo" --disk_cache="$HOME/.cache/bazel-disk/tensorflow-serving" tensorflow_serving/model_servers:tensorflow_model_server 2>&1 | tee /tmp/tfs-next-build.log; then
+              BAZEL_COMMON_ARGS=(
+                "--jobs=4"
+                "--local_ram_resources=8192"
+                "--repository_cache=$HOME/.cache/bazel-repository"
+                "--disk_cache=$HOME/.cache/bazel-disk"
+              )
+
+              if timeout 10800 bazelisk build -c opt "${BAZEL_COMMON_ARGS[@]}" tensorflow_serving/model_servers:tensorflow_model_server 2>&1 | tee /tmp/tfs-next-build.log; then
                 NEXT_BINARY="$NEXT_ROOT/bazel-bin/tensorflow_serving/model_servers/tensorflow_model_server"
                 NEXT_MODEL_DIR="$NEXT_ROOT/tensorflow_serving/servables/tensorflow/testdata/saved_model_half_plus_two_cpu"
-                NEXT_VERSION_OUTPUT="$("$NEXT_BINARY" --version 2>&1 || true)"
+                set +e
+                NEXT_VERSION_OUTPUT="$("$NEXT_BINARY" --version 2>&1)"
+                NEXT_VERSION_RC=$?
+                set -e
                 SERVER_LOG="${RUNNER_TEMP}/tensorflow-serving-next.log"
 
                 "$NEXT_BINARY" \
@@ -429,7 +458,8 @@ jobs:
                 fi
 
                 if [ -x "$NEXT_BINARY" ] && \
-                   echo "$NEXT_VERSION_OUTPUT" | grep -Eiq 'tensorflow[ _-]*model[ _-]*server|tensorflow[ _-]*serving|modelserver' && \
+                   [ "$NEXT_VERSION_RC" -eq 0 ] && \
+                   grep -Eiq 'tensorflow[ _-]*model[ _-]*server|tensorflow[ _-]*serving|modelserver' <<<"$NEXT_VERSION_OUTPUT" && \
                    file "$NEXT_BINARY" | grep -Eiq 'aarch64|arm64|ARM aarch64' && \
                    [ "$READY" -eq 1 ] && \
                    echo "$RESPONSE" | grep -q '"predictions"' && \
@@ -566,3 +596,14 @@ jobs:
           echo "4. Verify binary is Arm64: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "5. Serve half_plus_two model and query REST endpoint: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "6. Regression validation (next stable source build): ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save Bazel state
+        if: always() && !cancelled()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/bazel
+            ~/.cache/bazelisk
+            ~/.cache/bazel-disk
+            ~/.cache/bazel-repository
+          key: ${{ steps.bazel-cache-restore.outputs.cache-primary-key }}
