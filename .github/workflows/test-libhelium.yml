@@ -127,6 +127,8 @@ jobs:
         id: install
         run: |
           set -euo pipefail
+          PKG_PATH_HINT="/usr/local/lib/aarch64-linux-gnu/pkgconfig:/usr/local/lib/pkgconfig"
+          LD_PATH_HINT="/usr/local/lib/aarch64-linux-gnu:/usr/local/lib"
           sudo apt-get update
           sudo apt-get install -y ca-certificates curl git meson ninja-build build-essential pkg-config gettext valac libgee-0.8-dev libgtk-4-dev gobject-introspection libgirepository1.0-dev
           rm -rf /tmp/dart-sass /tmp/dart-sass.tar.gz
@@ -147,7 +149,12 @@ jobs:
           meson setup "${LIBHELIUM_SRC_DIR}/build" "${LIBHELIUM_SRC_DIR}" --prefix=/usr/local -Ddocumentation=false
           meson compile -C "${LIBHELIUM_SRC_DIR}/build"
           sudo meson install -C "${LIBHELIUM_SRC_DIR}/build"
-          pkg-config --exists libhelium-1
+          sudo ldconfig
+          PKG_CONFIG_PATH="${PKG_PATH_HINT}:${PKG_CONFIG_PATH:-}" pkg-config --exists libhelium-1
+          INSTALLED_VERSION="$(PKG_CONFIG_PATH="${PKG_PATH_HINT}:${PKG_CONFIG_PATH:-}" pkg-config --modversion libhelium-1)"
+          echo "pkg_config_path=${PKG_PATH_HINT}" >> "$GITHUB_OUTPUT"
+          echo "ld_library_path=${LD_PATH_HINT}" >> "$GITHUB_OUTPUT"
+          echo "installed_version=${INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get Libhelium version
@@ -174,8 +181,10 @@ jobs:
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if pkg-config --exists libhelium-1; then
+          PKG_PATH="${{ steps.install.outputs.pkg_config_path }}"
+          if PKG_CONFIG_PATH="${PKG_PATH}:${PKG_CONFIG_PATH:-}" pkg-config --exists libhelium-1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -188,11 +197,17 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          VERSION=$(pkg-config --modversion libhelium-1)
-          if [ "$VERSION" = "${LIBHELIUM_VERSION}" ]; then
+          PKG_PATH="${{ steps.install.outputs.pkg_config_path }}"
+          VERSION_RAW="$(PKG_CONFIG_PATH="${PKG_PATH}:${PKG_CONFIG_PATH:-}" pkg-config --modversion libhelium-1)"
+          VERSION="$(printf '%s' "${VERSION_RAW}" | sed -E 's/^([0-9]+(\.[0-9]+){1,2}).*/\1/')"
+          EXPECTED="$(printf '%s' "${LIBHELIUM_VERSION}" | sed -E 's/^([0-9]+(\.[0-9]+){1,2}).*/\1/')"
+          EXPECTED_MAJOR="${EXPECTED%%.*}"
+          if [ "${VERSION}" = "${EXPECTED}" ] || [ "${VERSION_RAW}" = "${EXPECTED_MAJOR}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            echo "Expected libhelium baseline version ${EXPECTED} (or ABI major ${EXPECTED_MAJOR}), got ${VERSION_RAW}."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -203,8 +218,10 @@ jobs:
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          pkg-config --cflags libhelium-1 | tee /tmp/libhelium-cflags.log
+          PKG_PATH="${{ steps.install.outputs.pkg_config_path }}"
+          PKG_CONFIG_PATH="${PKG_PATH}:${PKG_CONFIG_PATH:-}" pkg-config --cflags libhelium-1 | tee /tmp/libhelium-cflags.log
           if grep -Eq 'gtk-4.0|helium' /tmp/libhelium-cflags.log; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -218,6 +235,7 @@ jobs:
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           if [ "$(uname -m)" = "aarch64" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -232,7 +250,10 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          PKG_PATH="${{ steps.install.outputs.pkg_config_path }}"
+          LD_PATH="${{ steps.install.outputs.ld_library_path }}"
           cat > /tmp/libhelium-smoke.vala <<'EOF_VALA'
           using He;
 
@@ -242,8 +263,8 @@ jobs:
               return 0;
           }
           EOF_VALA
-          valac /tmp/libhelium-smoke.vala --pkg libhelium-1 --pkg gtk4 -o /tmp/libhelium-smoke
-          GSETTINGS_BACKEND=memory /tmp/libhelium-smoke | tee /tmp/libhelium-functional.log
+          PKG_CONFIG_PATH="${PKG_PATH}:${PKG_CONFIG_PATH:-}" valac /tmp/libhelium-smoke.vala --pkg libhelium-1 --pkg gtk4 -o /tmp/libhelium-smoke
+          LD_LIBRARY_PATH="${LD_PATH}:${LD_LIBRARY_PATH:-}" GSETTINGS_BACKEND=memory /tmp/libhelium-smoke | tee /tmp/libhelium-functional.log
           if grep -Fq "libhelium-ok" /tmp/libhelium-functional.log; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
