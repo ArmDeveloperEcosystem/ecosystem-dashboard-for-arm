@@ -19,6 +19,10 @@ on:
         description: "Name of the workflow that triggered this summary (optional)"
         required: false
         default: ""
+      orchestrator_run_id:
+        description: "Caller orchestrator run id for nested batch artifact fallback (optional)"
+        required: false
+        default: ""
 
 jobs:
   global-summary:
@@ -51,6 +55,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           START_TIME: ${{ inputs.start_time }}
+          ORCHESTRATOR_RUN_ID: ${{ inputs.orchestrator_run_id }}
         run: |
           if [ -z "$START_TIME" ]; then
             echo "❌ Error: start_time input is required to locate the correct batch runs."
@@ -74,18 +79,31 @@ jobs:
               --limit 50 \
               --jq ".[] | select(.createdAt >= \"$START_TIME\") | .databaseId" | head -n 1)
 
-            if [ -z "$RUN_ID" ]; then
-              echo "⚠️ Warning: Could not find a batch run for $WORKFLOW after $START_TIME."
-              continue
+            if [ -n "$RUN_ID" ]; then
+              echo "📥 Downloading $ARTIFACT from run $RUN_ID..."
+              if gh run download "$RUN_ID" -n "$ARTIFACT" -D "$DEST"; then
+                DOWNLOADED_BATCHES=$((DOWNLOADED_BATCHES + 1))
+                printf "%s\t%s\t%s\t%s\n" "$i" "$RUN_ID" "$WORKFLOW" "$ARTIFACT" >> downloaded-results/.batch-runs.tsv
+                continue
+              fi
+              echo "⚠️ Warning: Failed to download $ARTIFACT from standalone run $RUN_ID."
+            else
+              echo "⚠️ Warning: Could not find a standalone batch run for $WORKFLOW after $START_TIME."
             fi
 
-            echo "📥 Downloading $ARTIFACT from run $RUN_ID..."
-            if gh run download "$RUN_ID" -n "$ARTIFACT" -D "$DEST"; then
-              DOWNLOADED_BATCHES=$((DOWNLOADED_BATCHES + 1))
-              printf '%s\t%s\t%s\t%s\n' "$i" "$RUN_ID" "$WORKFLOW" "$ARTIFACT" >> downloaded-results/.batch-runs.tsv
-            else
-              echo "⚠️ Warning: Failed to download $ARTIFACT from run $RUN_ID."
+            if [ -n "${ORCHESTRATOR_RUN_ID:-}" ]; then
+              echo "🪂 Trying orchestrator artifact fallback for $ARTIFACT from run $ORCHESTRATOR_RUN_ID..."
+              rm -rf "$DEST"
+              mkdir -p "$DEST"
+              if gh run download "$ORCHESTRATOR_RUN_ID" -n "$ARTIFACT" -D "$DEST"; then
+                DOWNLOADED_BATCHES=$((DOWNLOADED_BATCHES + 1))
+                printf "%s\t%s\t%s\t%s\n" "$i" "$ORCHESTRATOR_RUN_ID" "$WORKFLOW" "$ARTIFACT" >> downloaded-results/.batch-runs.tsv
+                continue
+              fi
+              echo "⚠️ Warning: Failed orchestrator fallback for $ARTIFACT from run $ORCHESTRATOR_RUN_ID."
             fi
+
+            echo "⚠️ Warning: No downloadable artifact found for $WORKFLOW."
           done
 
           echo "downloaded_batches=$DOWNLOADED_BATCHES" >> $GITHUB_OUTPUT

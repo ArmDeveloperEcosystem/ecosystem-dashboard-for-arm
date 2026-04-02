@@ -23,26 +23,27 @@ on:
 
 jobs:
   orchestrate-batches:
-    name: Trigger and Wait for All Batches
+    name: Trigger and Wait for Standalone Batches
     runs-on: ubuntu-24.04-arm
+    outputs:
+      start_time: ${{ steps.trigger.outputs.start_time }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Trigger all 21 batches
+      - name: Trigger standalone batches 1 through 19
         id: trigger
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           START_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           echo "start_time=$START_TIME" >> $GITHUB_OUTPUT
-          
-          echo "🚀 Triggering batches 1 through 21..."
-          for i in {1..21}; do
+
+          echo "🚀 Triggering standalone batches 1 through 19..."
+          for i in {1..19}; do
             WORKFLOW="test-all-packages-batch${i}.yml"
             echo "Triggering $WORKFLOW..."
-            
-            # Retry logic for workflow dispatch (up to 5 attempts)
+
             n=0
             until [ $n -ge 5 ]
             do
@@ -54,47 +55,39 @@ jobs:
               echo "⚠️ Failed to trigger $WORKFLOW (attempt $n/5). Retrying in 5s..."
               sleep 5
             done
-            
+
             if [ $n -ge 5 ]; then
               echo "❌ Error: Failed to trigger $WORKFLOW after 5 attempts."
               exit 1
             fi
 
-            # Rate-limiting delay
             sleep 3
           done
 
-          echo "✅ Batches 1-21 dispatched."
+          echo "✅ Standalone batches 1-19 dispatched."
 
-      - name: Wait for batches to complete
+      - name: Wait for standalone batches to complete
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           START_TIME="${{ steps.trigger.outputs.start_time }}"
-          echo "⏳ Waiting for batches triggered after $START_TIME..."
-          
-          # Initialize arrays for tracking
+          echo "⏳ Waiting for standalone batches triggered after $START_TIME..."
+
           BATCH_RUN_IDS=()
-          
-          # 1. Identify the Run IDs for each batch
-          # We wait a few seconds to ensure the runs have registered in the API
           sleep 15
-          
-          for i in {1..21}; do
+
+          for i in {1..19}; do
             WORKFLOW="test-all-packages-batch${i}.yml"
-            # Get the ID of the most recent run that started after our START_TIME
             RUN_ID=$(gh run list --workflow "$WORKFLOW" --branch ${{ github.ref_name }} --json databaseId,createdAt --limit 50 --jq ".[] | select(.createdAt >= \"$START_TIME\") | .databaseId" | head -n 1)
-            
+
             if [ -z "$RUN_ID" ]; then
               echo "⚠️ Warning: Could not find Run ID for $WORKFLOW. It might still be queuing."
-              # Optional: retry logic if Run ID is missing
             else
               echo "✅ Tracking $WORKFLOW (Run ID: $RUN_ID)"
               BATCH_RUN_IDS+=("$RUN_ID")
             fi
           done
-          
-          # 2. Monitor status until all are done
+
           while true; do
             STILL_RUNNING=0
             for RID in "${BATCH_RUN_IDS[@]}"; do
@@ -103,16 +96,36 @@ jobs:
                 STILL_RUNNING=$((STILL_RUNNING + 1))
               fi
             done
-            
+
             if [ "$STILL_RUNNING" -eq 0 ]; then
-              echo "🎉 All batches completed!"
+              echo "🎉 All standalone batches completed!"
               break
             fi
-            
-            echo "⌛ $STILL_RUNNING batches still running. Checking again in 1 minute..."
+
+            echo "⌛ $STILL_RUNNING standalone batches still running. Checking again in 1 minute..."
             sleep 60
           done
 
+  batch20:
+    name: Run Batch 20
+    needs: orchestrate-batches
+    uses: ./.github/workflows/test-all-packages-batch20.yml
+    secrets: inherit
+
+  batch21:
+    name: Run Batch 21
+    needs: orchestrate-batches
+    uses: ./.github/workflows/test-all-packages-batch21.yml
+    secrets: inherit
+
+  trigger-global-summary:
+    name: Trigger Global Summary
+    needs:
+      - orchestrate-batches
+      - batch20
+      - batch21
+    runs-on: ubuntu-24.04-arm
+    steps:
       - name: Trigger Global Summary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -120,5 +133,6 @@ jobs:
           echo "🏁 All batches finished. Triggering Global Summary..."
           gh workflow run test-all-packages-summary.yml \
             --ref ${{ github.ref_name }} \
-            -f start_time=${{ steps.trigger.outputs.start_time }} \
-            -f triggering_batch=orchestrator
+            -f start_time=${{ needs.orchestrate-batches.outputs.start_time }} \
+            -f triggering_batch=orchestrator \
+            -f orchestrator_run_id=${{ github.run_id }}
