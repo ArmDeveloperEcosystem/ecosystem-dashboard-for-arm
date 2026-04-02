@@ -17,6 +17,8 @@ optional_info:
         official_docs: https://github.com/AmpereComputingAI/llama.cpp#starting-container
         arm_content:
         partner_content:
+          - display_name: Oracle OCI
+            url: https://blogs.oracle.com/ai-and-datascience/llm-inferencing-armbased-oci-ampere-a1-compute
     arm_recommended_minimum_version:
         version_number:
         release_date:
