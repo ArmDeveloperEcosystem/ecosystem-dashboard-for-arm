@@ -2,12 +2,13 @@
 
 **Quick Navigation:**
 - [Overview](#overview)
-- [Quick Start (5 min)](#quick-start)
+- [Quick Start](#quick-start)
 - [Architecture](#architecture)
-- [Adding Packages](#adding-packages)
+- [Adding New Packages](#adding-new-packages)
 - [JSON Schema](#json-schema)
 - [Troubleshooting](#troubleshooting)
 - [Deployment](#deployment)
+- [Reference](#reference)
 
 ---
 
@@ -15,33 +16,40 @@
 
 ### What This Is
 
-An automated functional testing system for packages in the Arm Ecosystem Dashboard that:
-- ✅ Runs tests on native Arm64 GitHub runners
-- ✅ Validates package installation and functionality
-- ✅ Displays test results as badges on the dashboard
-- ✅ Runs automatically daily at 2 AM UTC
-- ✅ Scales easily from 2 to 20+ packages
+This repository now uses a centralized package-testing architecture for the Arm Ecosystem Dashboard that:
+- runs package tests on native Arm64 GitHub runners
+- keeps package workflows reusable and contract-driven
+- groups packages into `19` batch workflows
+- centralizes JSON generation and publication
+- renders dashboard package state from canonical JSON files
+
+The current system is **not** the older model where each package workflow committed its own result JSON.
 
 ### Current Status
 
-**Packages Tested:**
-- nginx (5 tests) ✅
-- Envoy (4 tests) ✅
-
-**Infrastructure:**
-- 3 GitHub Actions workflows (test-nginx, test-envoy, test-all-packages)
-- Template file for creating new package tests
-- Auto-conflict resolution with retry logic
-- Badge integration in dashboard UI
+Current production design:
+- package workflow contract version: `2.0`
+- package workflows are reusable `workflow_call` jobs
+- batch workflows run packages in parallel and collect canonical batch results
+- orchestrator triggers all batches and then the global summary
+- global summary publishes:
+  - `data/test-results/<package>.json`
+  - `data/test-results-index.json`
 
 ### How It Works
 
-```
-1. GitHub Actions (Arm64 runner) → Scheduled daily or manual trigger
-2. Install package → Run tests → Generate JSON results
-3. Auto-commit to data/test-results/<package>.json
-4. Hugo reads JSON at build time
-5. Badge displays on dashboard: "Arm64 Tests: X passing"
+```text
+1. A package workflow runs Tests 1-5 and optional Test 6
+2. The workflow emits reusable outputs only
+3. A batch workflow collects those outputs with collect-batch-results
+4. Batch artifacts are uploaded
+5. The orchestrator waits for all 21 batches
+6. The global summary downloads all batch artifacts
+7. It assembles candidate results and previous production results
+8. It normalizes statuses and resolves exact job URLs
+9. It writes canonical JSON to data/test-results/
+10. It writes data/test-results-index.json
+11. Hugo reads the index and per-package JSON at build time
 ```
 
 ---
@@ -56,83 +64,109 @@ An automated functional testing system for packages in the Arm Ecosystem Dashboa
 cp tests/template-package-test.yml .github/workflows/test-redis.yml
 ```
 
-**Step 2:** Customize `test-redis.yml`
+**Step 2:** Replace placeholders
 
-Replace all placeholders:
-- `<PACKAGE>` → `Redis` (display name)
-- `<package>` → `redis` (lowercase, matches .md filename)
+Update:
+- `<PACKAGE>` → display name, for example `Redis`
+- `<package>` → canonical slug, for example `redis`
 
-Update the install section:
-```yaml
-- name: Install Redis
-  run: |
-    echo "Installing Redis..."
-    sudo apt-get update
-    sudo apt-get install -y redis-server
-    
-    if command -v redis-server &> /dev/null; then
-      echo "Redis installed successfully"
-      echo "install_status=success" >> $GITHUB_OUTPUT
-    else
-      echo "Redis installation failed"
-      echo "install_status=failed" >> $GITHUB_OUTPUT
-      exit 1
-    fi
-```
+The slug must match the package page basename in:
+- `content/linux/opensource_packages/<package>.md`
 
-Update version detection:
-```yaml
-- name: Get Redis version
-  id: version
-  run: |
-    VERSION=$(redis-server --version | grep -oP '[0-9.]+' | head -1 || echo "unknown")
-    echo "version=$VERSION" >> $GITHUB_OUTPUT
-    echo "Detected Redis version: $VERSION"
-```
+**Step 3:** Implement baseline install and Tests 1-5
 
-Add/modify tests as needed (the template has 3 basic tests to start with).
+Tests 1-5 are the baseline smoke checks and decide:
+- package `run_status`
+- badge `badge_status`
+- whether baseline passed
 
-**Step 3:** Add to orchestrator
+Typical baseline tasks:
+- install package
+- detect version
+- binary or service existence
+- version/help command
+- Arm64 verification
+- one real functional smoke check
 
-Edit `.github/workflows/test-all-packages.yml`:
+**Step 4:** Choose the correct Test 6 policy
+
+There are two normal paths:
+
+1. **Applicable regression validation**
+- use this when the tested artifact comes from:
+  - source build
+  - direct tarball
+  - direct binary
+  - custom image
+  - manual upstream artifact
+
+2. **Package-manager installed, not applicable**
+- use this when Tests 1-5 install via:
+  - `apt`
+  - `dnf`
+  - `yum`
+  - `zypper`
+  - `apk`
+  - `snap`
+  - `pip`
+  - `npm`
+  - `cargo`
+  - or another package ecosystem
+
+In the not-applicable case, do **not** fake a next-version install. Emit a clear `not_applicable_package_manager` result instead.
+
+**Step 5:** Add the workflow to one batch
+
+Pick exactly one batch file:
+- `.github/workflows/test-all-packages-batchN.yml`
+
+Add:
 
 ```yaml
 jobs:
-  test-nginx:
-    uses: ./.github/workflows/test-nginx.yml
-  
-  test-envoy:
-    uses: ./.github/workflows/test-envoy.yml
-  
-  test-redis:  # Add this
+  test-redis:
     uses: ./.github/workflows/test-redis.yml
-  
-  summary:
-    needs: [test-nginx, test-envoy, test-redis]  # Update this list
 ```
 
-**Step 4:** Commit and run
+Then add `test-redis` to that batch file's `summary.needs` list.
+
+Do **not** edit the orchestrator for ordinary package additions. It already dispatches every batch file.
+
+**Step 6:** Validate locally
+
+Useful checks:
 
 ```bash
-git add .github/workflows/test-redis.yml .github/workflows/test-all-packages.yml
-git commit -m "Add Redis functional tests"
-git push
+# Run the Hugo dashboard locally
+hugo server --bind 127.0.0.1 --port 1313
+
+# Inspect workflow syntax
+python3 - <<'PY'
+import yaml, pathlib
+path = pathlib.Path('.github/workflows/test-redis.yml')
+yaml.safe_load(path.read_text())
+print('yaml ok')
+PY
 ```
 
-**Step 5:** Trigger test in GitHub Actions
+**Step 7:** Push and verify
 
-- Go to Actions → "Test Redis on Arm64" → Run workflow
-- Or wait for daily scheduled run (2 AM UTC)
+After pushing to `smoke_tests`:
+- package workflow runs inside a batch
+- batch uploads artifacts
+- orchestrator triggers global summary
+- global summary republishes canonical JSON
 
-**Step 6:** Verify badge appears
+Verify:
+- `data/test-results/redis.json`
+- `data/test-results-index.json`
+- dashboard row and package page
 
-The badge will automatically appear on the Redis package page after the first successful run!
-
-**💡 Pro Tips:**
-- Look at `test-nginx.yml` or `test-envoy.yml` for real working examples
-- Start with 3-4 basic tests, add more complex ones later
-- Template has extensive comments to guide you
-- All workflows follow the same pattern - easy to understand and debug
+**Pro tips**
+- Copy the most similar existing workflow, not just the generic template.
+- Keep Tests 1-5 baseline-focused.
+- Be explicit in Test 6 output fields.
+- Prefer honest `skipped`/deferred outcomes over fake greens or fake reds.
 
 ---
 
@@ -140,210 +174,221 @@ The badge will automatically appear on the Redis package page after the first su
 
 ### System Components
 
-**Workflows:**
-- `tests/template-package-test.yml` - Template for new packages (copy this!)
-- `test-nginx.yml` - nginx tests (5 tests, example of complex testing)
-- `test-envoy.yml` - Envoy tests (4 tests, example of binary download)
-- `test-all-packages.yml` - Orchestrator (runs all tests in parallel)
+**Package workflows**
+- located in `.github/workflows/test-<package>.yml`
+- reusable via `workflow_call`
+- emit contract `2.0` outputs
+- do not publish production JSON directly
 
-**Data:
-- Or wait for scheduled run (daily 2 AM UTC)
+**Batch workflows**
+- files: `.github/workflows/test-all-packages-batch1.yml` through `batch19.yml`
+- run many package workflows in parallel
+- each batch has a `summary` job
+- `summary` calls `.github/actions/collect-batch-results`
 
-**Step 5:** Verify
+**Collector action**
+- file: `.github/actions/collect-batch-results/action.yml`
+- builds canonical per-package JSON from `needs` outputs
+- normalizes success/failure from actual test counts
+- resolves exact package job URLs when possible
 
-- Check workflow completes successfully
-- Verify `data/test-results/<package>.json` is created
-- View badge on dashboard (package expanded view)
+**Orchestrator**
+- file: `.github/workflows/test-all-packages-orchestrator.yml`
+- scheduled daily at `2 AM UTC`
+- also runs on relevant pushes to `main` and `smoke_tests`
+- dispatches all `19` batches
+- waits for them to complete
+- triggers the global summary
+
+**Global summary**
+- file: `.github/workflows/test-all-packages-summary.yml`
+- downloads batch artifacts
+- assembles candidate and previous-production staging sets
+- synthesizes missing results when a package failed before publishing outputs
+- promotes validated candidate results to production data
+- rewrites:
+  - `data/test-results/*.json`
+  - `data/test-results-index.json`
+
+**Frontend**
+- package rows read `data/test-results-index.json`
+- package detail pages use canonical JSON in `data/test-results/*.json`
+
+### End-to-End Architecture Diagram
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                 GitHub Actions on ubuntu-24.04-arm                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌──────────────────────────────┐                                           │
+│  │ test-<package>.yml           │                                           │
+│  │ - install baseline           │                                           │
+│  │ - Tests 1-5                  │                                           │
+│  │ - Test 6 or applicability    │                                           │
+│  │ - emit contract v2.0 outputs │                                           │
+│  └──────────────┬───────────────┘                                           │
+│                 │                                                           │
+│                 ├────────────────────────────────────────────────────┐      │
+│                 │                                                    │      │
+│  ┌──────────────▼───────────────┐   ┌──────────────▼───────────────┐ │      │
+│  │ test-all-packages-batch1.yml │   │ test-all-packages-batch19.yml│ │ ...  │
+│  │ - many package jobs          │   │ - many package jobs          │ │      │
+│  │ - summary job                │   │ - summary job                │ │      │
+│  │ - collect-batch-results      │   │ - collect-batch-results      │ │      │
+│  └──────────────┬───────────────┘   └──────────────┬───────────────┘ │      │
+│                 │                                  │                 │      │
+│                 └───────────────┬──────────────────┴─────────────────┘      │
+│                                 │                                            │
+│                  batchN-test-results artifacts                               │
+│                                 │                                            │
+│  ┌──────────────────────────────▼───────────────────────────────┐            │
+│  │ test-all-packages-orchestrator.yml                           │            │
+│  │ - triggers all 21 batches                                   │            │
+│  │ - waits for completion                                      │            │
+│  │ - triggers global summary                                   │            │
+│  └──────────────────────────────┬───────────────────────────────┘            │
+│                                 │                                            │
+│  ┌──────────────────────────────▼───────────────────────────────┐            │
+│  │ test-all-packages-summary.yml                                │            │
+│  │ - downloads batch artifacts                                  │            │
+│  │ - assembles candidate + previous production results          │            │
+│  │ - synthesizes missing-package failures when needed           │            │
+│  │ - resolves exact job URLs                                    │            │
+│  │ - normalizes status from actual test counts                  │            │
+│  │ - publishes canonical production JSON                        │            │
+│  └──────────────────────────────┬───────────────────────────────┘            │
+│                                 │                                            │
+└─────────────────────────────────┼────────────────────────────────────────────┘
+                                  │
+                                  ▼
+         ┌───────────────────────────────────────────────────────────┐
+         │ data/test-results/<package>.json                         │
+         │ data/test-results-index.json                             │
+         └──────────────────────────────┬────────────────────────────┘
+                                        │
+                                        ▼
+         ┌───────────────────────────────────────────────────────────┐
+         │ Hugo dashboard                                            │
+         │ - row templates use test-results-index.json               │
+         │ - package detail views use data/test-results/*.json       │
+         └───────────────────────────────────────────────────────────┘
+```
 
 ### Installation Command Examples
 
-**APT package:**
+**APT package**
 ```yaml
-install_commands: |
-  [
-    "sudo apt-get update",
-    "sudo apt-get install -y redis-server"
-  ]
+- name: Install Redis
+  id: install
+  run: |
+    set -euo pipefail
+    sudo apt-get update
+    sudo apt-get install -y redis-server
 ```
 
-**Binary download:**
+**Binary download**
 ```yaml
-install_commands: |
-  [
-    "sudo curl -L -o /usr/local/bin/binary https://releases.example.com/binary-arm64",
-    "sudo chmod +x /usr/local/bin/binary"
-  ]
+- name: Install tool
+  id: install
+  run: |
+    set -euo pipefail
+    curl -L -o tool.tar.gz "https://example.com/tool-1.2.3-linux-arm64.tar.gz"
+    tar -xzf tool.tar.gz
+    sudo install -m 0755 tool /usr/local/bin/tool
 ```
 
-**Python package:**
+**Source build**
 ```yaml
-install_commands: |
-  [
-    "pip install <package>"
-  ]
-```
-
-**Docker image:**
-```yaml
-install_commands: |
-  [
-    "docker pull <image>:latest-arm64"
-  ]
+- name: Install package from source
+  id: install
+  run: |
+    set -euo pipefail
+    git clone --depth 1 --branch v1.2.3 https://github.com/example/project.git
+    cd project
+    ./configure
+    make -j"$(nproc)"
+    sudo make install
 ```
 
 ### Version Command Examples
 
-**Simple:**
+**Simple binary**
 ```bash
-nginx -v 2>&1 | grep -oP 'nginx/\K[0-9.]+'
+tool --version 2>&1 | grep -oE '[0-9]+([.][0-9]+)+' | head -1
 ```
 
-**With fallback:**
+**Fallback parsing**
 ```bash
-envoy --version 2>&1 | grep -oP 'version: [^/]+/\K[^/]+' || echo 'unknown'
+tool version 2>&1 | grep -oE '[0-9]+([.][0-9]+)+' | head -1 || echo "unknown"
 ```
 
-**Python/Node:**
+**Library / package-config**
 ```bash
-python -c "import <package>; print(<package>.__version__)"
-node -p "require('./package.json').version"
-```
-
----
-
-## Architecture
-
-### System Components
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                  GitHub Actions (Arm64)                     │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐           │
-│  │ test-nginx │  │ test-envoy │  │ test-pkg   │           │
-│  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘           │
-│        └────────────────┴───────────────┘                   │
-│                        │                                    │
-│              ┌─────────▼─────────┐                          │
-│              │ test-all-packages │ ◄── Daily 2 AM UTC      │
-│              └─────────┬─────────┘                          │
-└────────────────────────┼─────────────────────────────────────┘
-                         │
-                         ▼
-         ┌───────────────────────────┐
-         │ data/test-results/*.json  │
-         └───────────┬───────────────┘
-                     │
-                     ▼
-         ┌───────────────────────────┐
-         │   Hugo Dashboard          │
-         │   (Badge Display)         │
-         └───────────────────────────┘
-```
-
+pkg-config --modversion libhelium || echo "unknown"
 ```
 
 ### Workflow Pattern
 
-**Single Pattern:** Copy the template and customize
+Current package workflow pattern:
 
-```
-template-package-test.yml  →  Copy to test-<package>.yml  →  Customize  →  Results
-```
+1. metadata step
+2. install step
+3. version step
+4. Tests 1-5 baseline smoke checks
+5. optional Test 6 regression validation or applicability step
+6. summary step
+7. human-readable `GITHUB_STEP_SUMMARY`
+8. final failure enforcement
 
-All workflows follow the same structure:
-1. **Install** - Download/install the package
-2. **Version** - Detect package version
-3. **Test** - Run functional tests (3-10 tests typical)
-4. **JSON** - Generate test results in schema v1.0
-5. **Commit** - Auto-commit results with conflict resolution
-6. **Summary** - Display results in GitHub Actions
+Baseline Tests 1-5 decide:
+- `core_failed`
+- `badge_status`
+- overall baseline health
 
-**Examples:**
-- `test-nginx.yml` - Comprehensive example with 5 tests, service management, HTTP testing
-- `test-envoy.yml` - Binary download example with 4 tests
-- `template-package-test.yml` - Heavily commented template to copy
-
-**Time to add:** 15-20 minutes per package
+Test 6 decides:
+- regression pass
+- regression fail
+- regression skip/deferred/not-applicable
 
 ### Data Flow
 
-1. **Trigger** → Workflow starts (scheduled, manual, or on push)
-2. **Install** → Package installed on Arm64 runner
-3. **Test** → Execute test commands with timing
-4. **Generate** → Create JSON results (schema v1.0)
-5. **Commit** → Auto-commit to `data/test-results/`
-6. **Resolve** → Auto-resolve git conflicts (if concurrent runs)
-7. **Display** → Hugo reads JSON and shows badge
+```text
+test-<package>.yml
+  -> workflow_call outputs
+  -> batch summary job
+  -> collect-batch-results action
+  -> batch artifact
+  -> global summary
+  -> data/test-results/<slug>.json
+  -> data/test-results-index.json
+  -> Hugo frontend
+```
 
 ### Conflict Resolution
 
-When multiple workflows run concurrently:
-```
-1. Each workflow commits its own JSON file
-2. Git pull --rebase before push
-3. If conflict: git checkout --ours (take our version)
-4. Retry up to 5 times with exponential backoff (2s, 4s, 6s, 8s, 10s)
-5. Successfully push results
-```
+The old per-package "commit your own JSON" design is gone.
+
+Current publish model:
+- only the global summary writes production test JSON
+- that means fewer cross-workflow git conflicts
+- package workflows only emit outputs/artifacts
 
 ### Badge Generation and Display
 
-**How Badges Appear on the Dashboard:**
+Badge/state semantics today:
+- `badge_status` is driven by baseline Tests 1-5
+- row placement in Failed/Passing tables is normalized from **real counts**
+- regression tables are separate from overall package tables
 
-The badge system uses **direct template integration** in the Hugo theme:
-
-1. **Data Source:**
-   - Workflows generate JSON files in `data/test-results/<package>.json`
-   - JSON follows schema v1.0 (see Test Results JSON Schema section)
-
-2. **Template Integration:**
-   - File: `themes/arm-design-system-hugo-theme/layouts/partials/package-display/row-sub.html`
-   - This template renders the expanded package details when users click a package card
-   - It automatically reads test data from the JSON files
-
-3. **Badge Rendering Logic:**
-   ```go-html-template
-   {{- $packageSlug := .metadata.File.ContentBaseName -}}
-   {{- $testData := index $.metadata.Site.Data "test-results" $packageSlug -}}
-   {{- if $testData -}}
-     <!-- Badge HTML rendered here -->
-   {{- end -}}
-   ```
-
-4. **Badge Features:**
-   - **Color-coded status**: Green (#28a745) for passing, Red (#dc3545) for failing
-   - **Test summary**: "🔧 Arm64 Tests: X passing/failing"
-   - **Clickable link**: Links to GitHub Actions run URL
-   - **Metadata display**: Shows last tested timestamp and version
-   - **Expandable details**: 
-     - Individual test results with ✅/❌ indicators
-     - Test duration for each test
-     - Total duration and runner information
-
-5. **Automatic Display:**
-   - No manual configuration needed
-   - Badge appears automatically when:
-     - JSON file exists in `data/test-results/`
-     - Package slug matches (e.g., `nginx.md` → `nginx.json`)
-     - Hugo build succeeds
-   - Badge only visible in **expanded package view** (click package to expand)
-
-**Important Notes:**
-
-- **Template-based**: Badge integration is handled entirely in the `row-sub.html` template
-- **No shortcodes used**: The dashboard doesn't use Hugo shortcodes for badges because it doesn't render individual package pages
-- **No manual setup**: Badges appear automatically when JSON test results exist - no changes needed to package markdown files
-
-**Viewing Badges:**
-
-1. Start Hugo: `hugo server -D`
-2. Open: http://localhost:1313/
-3. Search for or scroll to the package (e.g., "nginx")
-4. Click the package card to expand it
-5. Badge appears in the expanded section with test details
-
-**Direct Link Pattern:**
-- http://localhost:1313/?package=nginx (auto-expands nginx)
+The current global summary renders separate sections for:
+- summary statistics
+- regression validation passed
+- regression validation failed
+- regression validation deferred / not applicable
+- regression not configured / not emitted
+- failed packages
+- passing packages
 
 ---
 
@@ -351,390 +396,134 @@ The badge system uses **direct template integration** in the Hugo theme:
 
 ### The Template Approach
 
-All packages follow the same pattern: **copy the template and customize**.
+Use `tests/template-package-test.yml` as the starting point, but prefer copying a nearby working workflow when possible:
 
-**Step-by-Step Example: Adding Redis**
+- package-manager workflow → copy another package-manager example
+- source-build workflow → copy a source-build example
+- tarball or binary workflow → copy a direct-download example
+- container/image workflow → copy an image-based example
 
-**1. Copy the template:**
-
-```bash
-cp tests/template-package-test.yml .github/workflows/test-redis.yml
-```
-
-**2. Customize the workflow:**
-
-Open `test-redis.yml` and make these changes:
-
-a) **Update the header:**
-```yaml
-name: Test Redis on Arm64  # Change from <PACKAGE>
-
-on:
-  workflow_dispatch:
-  workflow_call:
-  push:
-    branches: [main, smoke_tests]
-    paths:
-      - 'content/opensource_packages/redis.md'  # Change from <package>
-      - '.github/workflows/test-redis.yml'       # Change from <package>
-
-jobs:
-  test-redis:  # Change from test-<package>
-    runs-on: ubuntu-24.04-arm
-```
-
-b) **Update metadata:**
-```yaml
-- name: Set test metadata
-  id: metadata
-  run: |
-    echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-    echo "package_slug=redis" >> $GITHUB_OUTPUT  # Change from <package>
-    echo "dashboard_link=/opensource_packages/redis" >> $GITHUB_OUTPUT
-```
-
-c) **Customize installation:**
-```yaml
-- name: Install Redis  # Change from <PACKAGE>
-  id: install
-  run: |
-    echo "Installing Redis..."
-    sudo apt-get update
-    sudo apt-get install -y redis-server
-    
-    if command -v redis-server &> /dev/null; then
-      echo "Redis installed successfully"
-      echo "install_status=success" >> $GITHUB_OUTPUT
-    else
-      echo "Redis installation failed"
-      echo "install_status=failed" >> $GITHUB_OUTPUT
-      exit 1
-    fi
-```
-
-d) **Update version detection:**
-```yaml
-- name: Get Redis version
-  id: version
-  run: |
-    VERSION=$(redis-server --version | grep -oP '[0-9.]+' | head -1 || echo "unknown")
-    echo "version=$VERSION" >> $GITHUB_OUTPUT
-    echo "Detected Redis version: $VERSION"
-```
-
-e) **Customize tests** (the template has 3 basic tests - modify as needed):
-```yaml
-- name: Test 1 - Check redis-server binary exists
-  id: test1
-  run: |
-    START_TIME=$(date +%s)
-    
-    if command -v redis-server &> /dev/null; then
-      echo "✓ redis-server binary found"
-      echo "status=passed" >> $GITHUB_OUTPUT
-    else
-      echo "✗ redis-server binary not found"
-      echo "status=failed" >> $GITHUB_OUTPUT
-      exit 1
-    fi
-    
-    END_TIME=$(date +%s)
-    echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-- name: Test 2 - Check redis-cli binary exists
-  id: test2
-  run: |
-    START_TIME=$(date +%s)
-    
-    if command -v redis-cli &> /dev/null; then
-      echo "✓ redis-cli binary found"
-      echo "status=passed" >> $GITHUB_OUTPUT
-    else
-      echo "✗ redis-cli binary not found"
-      echo "status=failed" >> $GITHUB_OUTPUT
-      exit 1
-    fi
-    
-    END_TIME=$(date +%s)
-    echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-# Add more tests as needed (test3, test4, etc.)
-```
-
-f) **Update JSON generation** (update package metadata and test details list):
-```yaml
-- name: Generate test results JSON
-  if: always()
-  run: |
-    mkdir -p test-results
-    
-    cat > test-results/redis.json << EOF
-    {
-      "schema_version": "1.0",
-      "package": {
-        "name": "Redis",
-        "version": "${{ steps.version.outputs.version }}",
-        "language": "c",
-        "category": "Database"
-      },
-      "run": {
-        ...
-      },
-      "tests": {
-        "passed": ${{ steps.summary.outputs.passed }},
-        "failed": ${{ steps.summary.outputs.failed }},
-        "skipped": 0,
-        "duration_seconds": ${{ steps.summary.outputs.duration }},
-        "details": [
-          {
-            "name": "Check redis-server binary exists",
-            "status": "${{ steps.test1.outputs.status }}",
-            "duration_seconds": ${{ steps.test1.outputs.duration || 0 }}
-          },
-          {
-            "name": "Check redis-cli binary exists",
-            "status": "${{ steps.test2.outputs.status }}",
-            "duration_seconds": ${{ steps.test2.outputs.duration || 0 }}
-          }
-        ]
-      },
-      ...
-    }
-    EOF
-```
-
-**3. Add to orchestrator:**
-
-Edit `.github/workflows/test-all-packages.yml`:
-
-```yaml
-jobs:
-  test-nginx:
-    uses: ./.github/workflows/test-nginx.yml
-  
-  test-envoy:
-    uses: ./.github/workflows/test-envoy.yml
-  
-  test-redis:  # Add this
-    uses: ./.github/workflows/test-redis.yml
-  
-  summary:
-    needs: [test-nginx, test-envoy, test-redis]  # Add redis to the list
-```
-
-**4. Commit and test:**
-
-```bash
-git add .github/workflows/test-redis.yml .github/workflows/test-all-packages.yml
-git commit -m "Add Redis functional tests"
-git push
-```
-
-**5. Run the test:**
-- GitHub Actions → "Test Redis on Arm64" → Run workflow
-- Or wait for daily scheduled run
-
-**Time:** 15-20 minutes
+Keep the current output contract and summary structure intact.
 
 ### Examples to Learn From
 
-**Simple package (apt install):**
-- Look at `test-nginx.yml` - Shows comprehensive testing with 5 tests
-- Includes service management, HTTP testing, systemctl
-
-**Binary download:**
-- Look at `test-envoy.yml` - Shows how to download and install a binary
-- 4 simple tests checking binary functionality
-
-**Template:**
-- `tests/template-package-test.yml` - Heavily commented, shows all the patterns
+Good current references:
+- package manager / applicability:
+  - `.github/workflows/test-timescaledb.yml`
+- source build + real regression:
+  - `.github/workflows/test-acl.yml`
+- honest deferred next-version:
+  - `.github/workflows/test-curve.yml`
+- direct download / artifact validation:
+  - `.github/workflows/test-new-relic.yml`
 
 ### Common Customizations
 
-**For services (like nginx, redis):**
-```yaml
-- name: Test - Start Redis service
-  id: test3
-  run: |
-    START_TIME=$(date +%s)
-    
-    sudo systemctl start redis-server
-    sleep 2
-    
-    if sudo systemctl is-active redis-server; then
-      echo "✓ Redis service is active"
-      echo "status=passed" >> $GITHUB_OUTPUT
-    else
-      echo "✗ Redis service failed to start"
-      echo "status=failed" >> $GITHUB_OUTPUT
-      exit 1
-    fi
-    
-    END_TIME=$(date +%s)
-    echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-```
-
-**For network testing:**
-```yaml
-- name: Test - HTTP response
-  id: test4
-  run: |
-    START_TIME=$(date +%s)
-    
-    # Start redis-server in background
-    redis-server --port 6379 --daemonize yes
-    sleep 2
-    
-    # Test connection
-    if redis-cli ping | grep -q "PONG"; then
-      echo "✓ Redis responding to ping"
-      echo "status=passed" >> $GITHUB_OUTPUT
-    else
-      echo "✗ Redis not responding"
-      echo "status=failed" >> $GITHUB_OUTPUT
-      exit 1
-    fi
-    
-    END_TIME=$(date +%s)
-    echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-```
-
-**For binary downloads (like Envoy):**
-```yaml
-- name: Install Envoy
-  id: install
-  run: |
-    echo "Installing Envoy..."
-    
-    # Download official ARM64 binary
-    ENVOY_VERSION="v1.32.3"
-    wget https://github.com/envoyproxy/envoy/releases/download/${ENVOY_VERSION}/envoy-${ENVOY_VERSION}-linux-aarch64
-    
-    # Install to /usr/local/bin
-    sudo mv envoy-${ENVOY_VERSION}-linux-aarch64 /usr/local/bin/envoy
-    sudo chmod +x /usr/local/bin/envoy
-    
-    if command -v envoy &> /dev/null; then
-      echo "Envoy installed successfully"
-      echo "install_status=success" >> $GITHUB_OUTPUT
-    else
-      echo "Envoy installation failed"
-      echo "install_status=failed" >> $GITHUB_OUTPUT
-      exit 1
-    fi
-```
-
-**For complex version detection:**
-```yaml
-- name: Get package version
-  id: version
-  run: |
-    # Try multiple methods
-    VERSION=$(nginx -v 2>&1 | grep -oP '[0-9.]+' | head -1 || echo "unknown")
-    
-    # Or parse from config
-    VERSION=$(python3 --version 2>&1 | awk '{print $2}' || echo "unknown")
-    
-    # Or from package manager
-    VERSION=$(dpkg -s nginx | grep '^Version:' | awk '{print $2}' || echo "unknown")
-    
-    echo "version=$VERSION" >> $GITHUB_OUTPUT
-    echo "Detected version: $VERSION"
-```
+Common package-specific changes:
+- swap `apt` for tarball download
+- replace binary checks with service or HTTP checks
+- patch source for current toolchain compatibility
+- use staged install prefixes for regression candidate validation
+- detect x86-only or missing Arm64 assets and defer honestly
 
 ### Test Command Best Practices
 
-1. **Start simple:** Binary check, version, help
-2. **Add functionality:** Run actual operations
-3. **Include cleanup:** Don't leave processes running
-4. **Use timeouts:** Prevent hanging tests
-5. **Test actual Arm64 functionality:** Not just installation
-
-**Good test progression:**
-```yaml
-[
-  {"name": "Binary exists", "command": "command -v tool"},
-  {"name": "Version works", "command": "tool --version"},
-  {"name": "Help works", "command": "tool --help | grep -q 'USAGE'"},
-  {"name": "Basic operation", "command": "tool process-file input.txt"}
-]
-```
+- keep Tests 1-5 small and deterministic
+- use real functional checks, not only `--version`
+- verify Arm64 architecture when installing binaries or libraries
+- emit explicit Test 6 fields:
+  - `current_version`
+  - `latest_version`
+  - `next_installed_version`
+  - `decision`
+  - `regression_result`
+  - `comparison`
+  - `status`
+- use honest deferred reasons when appropriate:
+  - `no_newer_stable_available`
+  - `hold_current_arm_dependency_gap`
+  - `not_applicable_package_manager`
+  - `manual_review_needed`
 
 ---
 
 ## JSON Schema
 
-### Schema Version 1.0
+### Schema Version 2.0
 
-All test results follow this structure:
+Current canonical result shape:
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "package": {
-    "name": "Package Name",
-    "version": "1.2.3",
-    "language": "python",
-    "category": "Web Server"
+    "name": "ACL",
+    "version": "3.6.5"
   },
   "run": {
-    "id": "12345",
-    "url": "https://github.com/.../actions/runs/12345",
-    "timestamp": "2025-11-17T12:00:00Z",
+    "id": "23875415786",
+    "attempt": "1",
+    "url": "https://github.com/.../job/69617150032",
+    "timestamp": "2026-04-01T23:13:50Z",
     "status": "success",
     "runner": {
       "os": "ubuntu-24.04",
       "arch": "arm64"
-    }
+    },
+    "job_name": "test-acl / test-acl"
   },
   "tests": {
-    "passed": 5,
+    "passed": 6,
     "failed": 0,
     "skipped": 0,
-    "duration_seconds": 45,
-    "details": [
-      {
-        "name": "Test description",
-        "status": "passed",
-        "duration_seconds": 2
-      }
-    ]
+    "duration_seconds": 56,
+    "details": []
   },
   "metadata": {
-    "dashboard_link": "/opensource_packages/package",
-    "badge_status": "passing"
+    "contract_version": "2.0",
+    "package_slug": "acl",
+    "dashboard_link": "/linux/opensource_packages/acl",
+    "badge_status": "passing",
+    "core_failed": 0,
+    "batch_title": "Batch 1",
+    "job_url_resolution_status": "central_exact",
+    "regression_applicability": "applicable",
+    "regression_status": "passed",
+    "regression_decision": "next_install_validated",
+    "production_refreshed_at": "2026-04-01T23:53:13.065354+00:00",
+    "publish_state": "published"
   }
 }
 ```
 
 ### Field Descriptions
 
-**schema_version:** JSON format version (currently "1.0")
+**`package`**
+- user-facing package identity
 
-**package:**
-- `name` - Display name
-- `version` - Detected version from version_command
-- `language` - Programming language
-- `category` - Package category
+**`run`**
+- the concrete job/run that produced the current published result
 
-**run:**
-- `id` - GitHub Actions run ID
-- `url` - Link to workflow run
-- `timestamp` - ISO 8601 timestamp (UTC)
-- `status` - "success" or "failure"
-- `runner.os` - Operating system
-- `runner.arch` - Architecture (arm64)
+**`tests`**
+- normalized total counts and per-step detail
 
-**tests:**
-- `passed` - Count of passed tests
-- `failed` - Count of failed tests
-- `skipped` - Count of skipped tests
-- `duration_seconds` - Total test duration
-- `details` - Array of individual test results
+**`metadata.contract_version`**
+- reusable workflow contract version
 
-**metadata:**
-- `dashboard_link` - Relative URL to package page
-- `badge_status` - "passing" or "failing"
+**`metadata.badge_status`**
+- frontend badge state derived from baseline smoke checks
+
+**`metadata.core_failed`**
+- number of failed baseline Tests 1-5
+
+**`metadata.regression_*`**
+- regression classification and explanation used by global summary tables
+
+**`metadata.publish_state`**
+- whether the row was published normally or with warnings
+
+**`data/test-results-index.json`**
+- aggregated map of the same package payloads used for fast frontend lookup
 
 ---
 
@@ -742,92 +531,67 @@ All test results follow this structure:
 
 ### Badge Not Displaying
 
-**Problem:** Test results generated but badge doesn't show
+Check:
+1. package slug matches `content/linux/opensource_packages/<slug>.md` (or the legacy root content path in older trees)
+2. the workflow emits `package_slug` correctly
+3. the package is present in `data/test-results-index.json`
+4. the dashboard row template can find the canonical slug
 
-**Solution:** Badge only appears in package **expanded view** (click package card to expand)
+### Workflow Failing to Publish Correct Results
 
-**Check:**
-1. File exists: `data/test-results/<package>.json`
-2. File is valid JSON (no syntax errors)
-3. Package slug matches file basename (e.g., `nginx.md` → `nginx.json`)
-4. Hugo build succeeded (no errors)
+Remember:
+- package workflows do not publish production JSON directly
+- inspect:
+  - package workflow
+  - batch summary job
+  - collector output
+  - global summary
 
-### Workflow Failing to Push
-
-**Problem:** `error: failed to push some refs`
-
-**Solution:** Already implemented - auto-retry with rebase
-
-**If still failing:**
-1. Check retry count (should be 5 attempts)
-2. Check git config is set correctly
-3. Verify branch permissions
+If a package run is red in Actions but not on the dashboard, the old production JSON may still be in place because the latest failing package run did not publish a new canonical result.
 
 ### Version Detection Failing
 
-**Problem:** `version: unknown` in results
+Run the version command locally first:
 
-**Solutions:**
-
-1. **Check version command output:**
 ```bash
-# Run locally to see actual output
-package --version
+tool --version 2>&1
 ```
 
-2. **Adjust parsing:**
-```bash
-# Simple grep
-package --version | grep -oP '[0-9.]+'
-
-# With fallback
-package --version 2>&1 | grep -oP 'v\K[0-9.]+' || echo 'unknown'
-
-# Multi-step
-package --version | head -1 | awk '{print $2}'
-```
+Then choose the simplest stable extraction rule that works on Arm64.
 
 ### Tests Passing Locally But Failing in CI
 
-**Common causes:**
-
-1. **Package not available on ubuntu-24.04-arm:**
-   - Check ARM availability
-   - Use binary download instead of apt
-   - Try alternative sources (snap, pip, npm)
-
-2. **Version differences:**
-   - Test with ubuntu-24.04 specifically
-   - Adjust test commands for version differences
-
-3. **Missing dependencies:**
-   - Add dependency installation to install_commands
-   - Check package documentation for requirements
+Common causes:
+- missing packages on `ubuntu-24.04-arm`
+- network/download variability
+- exact job timeout caps
+- x86-only release assets
+- unguarded `set -u` / `pipefail` behavior
 
 ### JSON Parsing Errors
 
-**Problem:** `unmarshal failed: invalid character`
+Do not hand-edit:
+- `data/test-results/*.json`
+- `data/test-results-index.json`
 
-**Causes:**
-1. Missing commas in JSON arrays
-2. Unescaped quotes in command strings
-3. Incomplete JSON from failed workflow
+Those are generated by the summary pipeline.
 
-**Solutions:**
-1. Validate JSON locally: `jq . file.json`
-2. Use proper JSON escaping in YAML
-3. Delete invalid JSON file and re-run workflow
+If a package row is missing, inspect:
+- batch artifact JSON
+- collector action
+- global summary staging/publish steps
 
 ### Hugo Build Errors
 
-**Problem:** `ERROR failed to load data`
+Run locally:
 
-**Solution:** 
-1. Find and delete invalid JSON files
-2. Run `hugo` to verify build succeeds
-3. Re-run workflow to regenerate valid JSON
+```bash
+hugo server --bind 127.0.0.1 --port 1313
+```
 
-**Prevention:** Workflow only commits valid JSON (always check)
+If rows look stale:
+- confirm `data/test-results-index.json` updated
+- confirm the package slug matches the page filename
 
 ---
 
@@ -835,86 +599,44 @@ package --version | head -1 | awk '{print $2}'
 
 ### Pre-Deployment Checklist
 
-**Infrastructure:**
-- [ ] GitHub Actions workflows tested
-- [ ] Badge display working on dashboard
-- [ ] JSON schema validated
-- [ ] Documentation reviewed
-
-**Quality Checks:**
-- [ ] All tests passing (100% success rate)
-- [ ] Hugo builds without errors
-- [ ] Git conflicts resolve automatically
-- [ ] No breaking changes to existing code
-
-**Files to Review:**
-- `.github/workflows/test-nginx.yml`
-- `.github/workflows/test-envoy.yml`
-- `.github/workflows/template-package-test.yml`
-- `.github/workflows/test-all-packages.yml`
-- `themes/.../layouts/partials/package-display/row-sub.html`
-- `data/test-results/*.json`
+- workflow YAML parses cleanly
+- shell blocks are syntax-valid
+- package is assigned to exactly one batch
+- batch `summary.needs` list includes the package
+- Test 6 policy is honest
+- no hand edits to published JSON
+- dashboard renders locally with Hugo
 
 ### Deployment Steps
 
-**1. Merge to Main**
-```bash
-git checkout main
-git merge smoke_tests
-git push origin main
-```
-
-**2. Trigger Initial Run**
-- Go to GitHub Actions
-- Select "Test All Packages on Arm64"
-- Click "Run workflow"
-- Select `main` branch
-- Click "Run workflow"
-
-**3. Verify Results**
-- Monitor workflow execution (~5 min)
-- Check all tests pass
-- Verify JSON files committed
-- Check badges appear on dashboard
-
-**4. Monitor Scheduled Runs**
-- First scheduled run: Next day at 2 AM UTC
-- Check email/notifications for failures
-- Review test results weekly
+1. commit workflow/doc changes
+2. push to `smoke_tests`
+3. orchestrator dispatches batches
+4. batches upload artifacts
+5. global summary downloads artifacts and republishes canonical JSON
+6. verify:
+   - `data/test-results/*.json`
+   - `data/test-results-index.json`
+   - dashboard rows and package page
 
 ### Post-Deployment
 
-**Week 1:**
-- Monitor daily runs for stability
-- Fix any issues that arise
-- Add 3-5 high-priority packages
-
-**Month 1:**
-- Expand to 10-15 packages
-- Gather team feedback
-- Optimize test coverage
-
-**Month 3:**
-- Cover 20+ priority packages
-- Consider advanced features:
-  - Performance benchmarking
-  - Multi-version testing
-  - Trend tracking
+Review:
+- failed packages table
+- regression failed table
+- deferred/not applicable table
+- any `published_with_warning` package rows
 
 ### Rollback Plan
 
-If issues arise:
+If a workflow change is bad:
 
 ```bash
-# Revert merge
-git revert -m 1 <merge-commit-hash>
-git push origin main
-
-# Or temporarily disable workflows
-# Add this to workflow files:
-on:
-  workflow_dispatch:  # Manual only, remove schedule
+git revert <commit>
+git push origin smoke_tests
 ```
+
+If only a package workflow is bad, revert that workflow change rather than editing generated JSON directly.
 
 ---
 
@@ -922,34 +644,20 @@ on:
 
 ### Customizing the Template
 
-The template provides a flexible starting point for all package types:
-
-**Common customizations:**
-- **Service management:** systemd, supervisord, etc.
-- **HTTP/network testing:** curl, wget, connection tests
-- **Performance benchmarking:** timing tests, load tests
-- **Multi-step scenarios:** Complex setup/teardown
-
-**Example of comprehensive testing:** See `.github/workflows/test-nginx.yml` (370 lines)
-- Shows 5 different test types
-- Service lifecycle management
-- HTTP response testing
-- Detailed error handling
+The template is intentionally generic. For real packages you will usually customize:
+- install lane
+- version detection
+- functional smoke check
+- regression applicability
+- summary wording
 
 ### Matrix Testing (Future)
 
-Test multiple versions of the same package:
+Matrix testing is possible, but the current production system is optimized for:
+- one published baseline per package
+- one optional next-version regression decision per package
 
-```yaml
-strategy:
-  matrix:
-    version: ['1.24', '1.25', '1.26']
-
-steps:
-  - name: Install nginx ${{ matrix.version }}
-    run: |
-      sudo apt-get install -y nginx=${{ matrix.version }}.*
-```
+If matrix testing is introduced later, it should still collapse to one canonical published package row.
 
 ---
 
@@ -957,84 +665,61 @@ steps:
 
 ### File Locations
 
-```
-.github/workflows/
-├── test-nginx.yml              # nginx tests (370 lines, 5 tests)
-├── test-envoy.yml              # Envoy tests (295 lines, 4 tests)
-└── test-all-packages.yml       # Orchestrator (runs all tests daily)
-
-tests/
-└── template-package-test.yml   # Template file for new packages
-
-data/test-results/
-├── nginx.json                  # nginx results
-└── envoy.json                  # Envoy results
-
-themes/arm-design-system-hugo-theme/layouts/
-└── partials/package-display/row-sub.html   # Badge display template
-```
+- `tests/template-package-test.yml`
+- `.github/workflows/test-<package>.yml`
+- `.github/workflows/test-all-packages-batch*.yml`
+- `.github/workflows/test-all-packages-orchestrator.yml`
+- `.github/workflows/test-all-packages-summary.yml`
+- `.github/actions/collect-batch-results/action.yml`
+- `data/test-results/*.json`
+- `data/test-results-index.json`
+- `themes/arm-design-system-hugo-theme/layouts/partials/package-display/row-sub.html`
 
 ### Workflow Triggers
 
-**Automatic:**
-- Daily at 2 AM UTC (test-all-packages.yml)
-- On push to main/smoke_tests branches
-- On changes to package .md files
-- On changes to workflow files
+**Package workflows**
+- `workflow_dispatch`
+- `workflow_call`
 
-**Manual:**
-- GitHub Actions → Select workflow → Run workflow
-
-**Skip CI:**
-- Commits with `[skip ci]` are ignored
-- Test result commits include `[skip ci]` automatically
+**Orchestrator**
+- daily schedule at `0 2 * * *`
+- manual dispatch
+- push to `main` or `smoke_tests` when relevant markdown/workflow files change
 
 ### Key Metrics
 
-**Current (2 packages):**
-- 100% test pass rate (9/9 tests)
-- ~3 min average test duration
-- 0 manual interventions required
-- 0 Hugo build errors
-
-**Target (20 packages):**
-- 95%+ test pass rate
-- <60 min total execution (parallel)
-- Fully automated
-- 100% top priority coverage
+Current summary tracks:
+- total packages
+- passed / failed / malformed
+- regression passed / failed / deferred / not applicable / not configured
+- candidate rows promoted and published with warnings
+- exact vs weak job URL resolution
 
 ---
 
 ## Getting Help
 
-**Documentation:**
-- This guide (complete reference)
-- `SMOKE_TESTS_BRANCH_SUMMARY.md` (detailed technical overview)
-- `EXECUTIVE_SUMMARY.md` (quick management summary)
-- `ARCHITECTURE_DIAGRAMS.md` (visual diagrams)
+If you are adding or debugging a package:
 
-**Example Workflows:**
-- `test-nginx.yml` - Comprehensive testing with 5 tests, service management
-- `test-envoy.yml` - Binary download and basic functionality tests
-- `tests/template-package-test.yml` - Copy this template for new packages
+1. start with `tests/template-package-test.yml`
+2. compare with a similar live workflow
+3. run Hugo locally
+4. inspect the package workflow log
+5. inspect the batch summary artifact
+6. inspect the global summary output and published JSON
 
-**Common Commands:**
+Useful commands:
+
 ```bash
-# Test locally
-hugo server
+# Start the dashboard
+hugo server --bind 127.0.0.1 --port 1313
 
-# Validate JSON
-jq . data/test-results/<package>.json
+# View an Actions run log
+gh run view <run-id> --log
 
-# Check workflow syntax
-cat .github/workflows/test-<package>.yml | yq eval
-
-# View test results
-cat data/test-results/<package>.json | jq '.tests'
+# Validate one workflow YAML file
+python3 - <<'PY'
+import yaml, pathlib
+print(yaml.safe_load(pathlib.Path('.github/workflows/test-example.yml').read_text()) is not None)
+PY
 ```
-
----
-
-*Last Updated: November 17, 2025*  
-*Version: 1.0*  
-*Status: Production Ready*

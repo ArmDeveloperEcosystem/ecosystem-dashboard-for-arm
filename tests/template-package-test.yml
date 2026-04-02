@@ -1,40 +1,42 @@
 # Package Test Template
 #
-# This template is stored in tests/ and will not run directly.
-# Copy it to .github/workflows/test-<package>.yml and customize:
-# 1. Replace <PACKAGE> with the display name.
-# 2. Replace <package> with the exact basename used in content/opensource_packages/<package>.md.
-#    Preserve the page's case and punctuation so result slugs match package pages exactly.
-# 3. Replace install/version commands with package-specific logic.
-# 4. Keep Tests 1-5 as baseline smoke checks.
-# 5. Add Test 6 - Regression Validation only for packages whose tested artifact is
-#    installed through a non-package-manager path (source build, direct tarball,
-#    manual binary, custom image, etc.).
-# 6. If Tests 1-5 install the tested package via a package manager/package ecosystem
-#    (apt, yum, dnf, zypper, apk, snap, pip, npm, cargo, etc.), do not perform a
-#    real next-version regression check. Instead, emit a not-applicable decision such as:
-#    echo "current_version=${{ steps.version.outputs.version }}" >> "$GITHUB_OUTPUT"
-#    echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
-#    echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-#    echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-#    echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-#    echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
-#    echo "status=skipped" >> "$GITHUB_OUTPUT"
+# This file lives in tests/ and is a starter only.
+# Copy it to .github/workflows/test-<package>.yml and customize it.
 #
-# Reusable workflow output contract:
-# Contract version: 2.0
+# Current production architecture:
+# - package workflows emit reusable workflow outputs only
+# - batch summary jobs convert those outputs into canonical batch JSON
+# - the global summary republishes data/test-results/*.json and data/test-results-index.json
+# - package workflows do not publish production JSON directly
+#
+# Checklist when creating a new package workflow:
+# 1. Replace <PACKAGE> with the display name.
+# 2. Replace <package> with the exact page basename from content/linux/opensource_packages/<package>.md
+#    (or the legacy content/opensource_packages/<package>.md path in older trees).
+# 3. Implement baseline install, version detection, and Tests 1-5.
+# 4. Decide Test 6 policy:
+#    - applicable for source builds, direct tarballs, manual binaries, custom images, and similar non-package-manager lanes
+#    - not_applicable_package_manager for package-manager/package-ecosystem installs
+# 5. Add the new workflow to exactly one batch workflow file and its summary.needs list.
+# 6. Do not edit the orchestrator for a normal package add; it already triggers all batch workflows.
+#
+# Reusable workflow output contract (v2.0):
 # - package_slug, package_name, package_version
 # - run_status, badge_status, core_failed
 # - tests_passed, tests_failed, tests_skipped, duration_seconds
 # - regression_status, regression_decision, regression_result, regression_comparison
 # - regression_current_version, regression_latest_version, regression_next_installed_version
+# - regression_policy
 # - run_id, run_attempt, job_name, dashboard_link, timestamp, contract_version
 #
-# Production architecture note:
-# - package workflows own testing truth only
-# - batch collectors build per-package JSON centrally
-# - exact job URL resolution happens centrally in batch/global collection
-# - package workflows do not own final artifact publishing
+# Package-manager-installed policy example:
+# echo "current_version=${{ steps.version.outputs.version }}" >> "$GITHUB_OUTPUT"
+# echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
+# echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+# echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
+# echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
+# echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
+# echo "status=skipped" >> "$GITHUB_OUTPUT"
 
 name: Test <PACKAGE> on Arm64
 
@@ -98,7 +100,7 @@ on:
         value: ${{ jobs.test-<package>.outputs.regression_next_installed_version }}
       regression_policy:
         description: Regression applicability policy for this workflow
-        value: ${{ jobs.template-package-test.outputs.regression_policy }}
+        value: ${{ jobs.test-<package>.outputs.regression_policy }}
       run_id:
         description: GitHub run id
         value: ${{ jobs.test-<package>.outputs.run_id }}
@@ -114,6 +116,7 @@ on:
       timestamp:
         description: UTC timestamp for this package run
         value: ${{ jobs.test-<package>.outputs.timestamp }}
+
 jobs:
   test-<package>:
     permissions:
@@ -155,17 +158,19 @@ jobs:
         run: |
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=<package>" >> "$GITHUB_OUTPUT"
-          echo "dashboard_link=/opensource_packages/<package>" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/linux/opensource_packages/<package>" >> "$GITHUB_OUTPUT"
 
       - name: Install <PACKAGE>
         id: install
         run: |
           set -euo pipefail
+          PACKAGE_APT_NAME="<package-apt-name>"
+          PACKAGE_CMD="<package-command>"
           echo "Installing <PACKAGE>..."
 
           # Example for apt packages:
           sudo apt-get update
-          sudo apt-get install -y <package>
+          sudo apt-get install -y "$PACKAGE_APT_NAME"
 
           # Example for direct-download packages:
           # VERSION="REPLACE_ME"
@@ -173,7 +178,7 @@ jobs:
           # tar -xzf <package>.tar.gz
           # sudo install -m 0755 <package> /usr/local/bin/<package>
 
-          if command -v <package> > /dev/null 2>&1; then
+          if command -v "$PACKAGE_CMD" > /dev/null 2>&1; then
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
@@ -184,7 +189,8 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(<package> --version 2>&1 | grep -oE '[0-9]+([.][0-9]+)+' | head -1 || true)
+          PACKAGE_CMD="<package-command>"
+          VERSION=$("$PACKAGE_CMD" --version 2>&1 | grep -oE '[0-9]+([.][0-9]+)+' | head -1 || true)
           if [ -z "$VERSION" ]; then
             VERSION="unknown"
           fi
@@ -197,7 +203,7 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if command -v <package> > /dev/null 2>&1; then
+          if command -v "$PACKAGE_CMD" > /dev/null 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -211,8 +217,9 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          PACKAGE_CMD="<package-command>"
           START_TIME=$(date +%s)
-          if <package> --version > /dev/null 2>&1; then
+          if "$PACKAGE_CMD" --version > /dev/null 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -226,8 +233,9 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          PACKAGE_CMD="<package-command>"
           START_TIME=$(date +%s)
-          if <package> --help > /dev/null 2>&1; then
+          if "$PACKAGE_CMD" --help > /dev/null 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -257,10 +265,11 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          PACKAGE_CMD="<package-command>"
           START_TIME=$(date +%s)
           # Replace this with a package-specific real execution check.
           # Python packages should usually import the module instead.
-          if <package> --version > /dev/null 2>&1 || <package> --help > /dev/null 2>&1; then
+          if "$PACKAGE_CMD" --version > /dev/null 2>&1 || "$PACKAGE_CMD" --help > /dev/null 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"

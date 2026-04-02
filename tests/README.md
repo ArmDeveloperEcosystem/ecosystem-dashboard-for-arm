@@ -1,40 +1,41 @@
 # Package Testing Infrastructure
 
-Welcome to the Arm Ecosystem Dashboard package testing system! This directory contains all documentation and resources for our automated functional testing infrastructure.
+Welcome to the Arm Ecosystem Dashboard package testing system. This directory contains the current documentation and starter template for the production testing pipeline used on `smoke_tests`.
 
 ## 📚 Documentation Guide
 
-We've organized our documentation to help you find what you need quickly:
-
 ### **[COMPLETE_GUIDE.md](./COMPLETE_GUIDE.md)** - Your Main Resource
-**Start here!** This is your comprehensive, all-in-one guide covering:
-- System overview and architecture
-- Quick start guide (5 minutes to first test)
-- Step-by-step package addition instructions
-- Test results JSON schema reference
-- Troubleshooting and debugging
-- Deployment workflows
+Start here for the full current design:
+- system overview and live architecture
+- adding or moving package workflows
+- output contract and result schema
+- regression-validation policy
+- troubleshooting and deployment guidance
 
 ### **[PIPELINE_REFERENCE.md](./PIPELINE_REFERENCE.md)** - Advanced Topics
-For advanced users and maintainers:
-- Detailed pipeline execution flow
-- Advanced customization options
-- Performance optimization techniques
-- Complex debugging scenarios
-- Edge cases and special configurations
+Use this for deeper maintenance and pipeline work:
+- batch/orchestrator flow
+- collector and summary internals
+- performance and timeout tuning
+- debugging missing or misleading results
+- advanced workflow patterns
 
 ---
 
 ## 🚀 Quick Start (15-20 Minutes)
 
-### 1. **Understand the System**
-- Tests run on native ARM64 GitHub runners (`ubuntu-24.04-arm`)
-- Results stored as JSON badges in `data/test-results/`
-- Badges auto-display on the Hugo dashboard
+### 1. **Understand the Current System**
+- Package workflows run on native `ubuntu-24.04-arm` runners.
+- Each package workflow is a reusable `workflow_call` job with a shared output contract.
+- The repo is no longer a single "test-all-packages" workflow.
+- Production execution is now:
+  - package workflow
+  - batch workflow
+  - batch collector
+  - global summary
+  - published JSON in `data/test-results/` and `data/test-results-index.json`
 
 ### 2. **Copy the Template**
-
-Start with our template file:
 
 ```bash
 cp tests/template-package-test.yml .github/workflows/test-redis.yml
@@ -43,150 +44,193 @@ cp tests/template-package-test.yml .github/workflows/test-redis.yml
 ### 3. **Customize for Your Package**
 
 Edit `test-redis.yml` and replace placeholders:
-- Change `<PACKAGE>` → `Redis` (display name)
-- Change `<package>` → `redis` (lowercase, matches filename)
-- Update install commands (apt, binary download, etc.)
-- Update version detection command
-- Add/modify test steps as needed
+- `<PACKAGE>` → `Redis`
+- `<package>` → `redis`
 
-Example install section:
-```yaml
-- name: Install Redis
-  run: |
-    sudo apt-get update
-    sudo apt-get install -y redis-server
-```
+Then customize:
+- installation logic
+- version detection
+- Tests 1-5 baseline smoke checks
+- Test 6 regression validation policy
+- the package page path, which is now typically `content/linux/opensource_packages/<package>.md`
 
-### 4. **Add to Orchestrator**
+### 4. **Add the Package to One Batch**
 
-Edit `.github/workflows/test-all-packages.yml` and add:
+Add the new workflow to exactly one batch file such as:
 
 ```yaml
-test-redis:
-  uses: ./.github/workflows/test-redis.yml
+jobs:
+  test-redis:
+    uses: ./.github/workflows/test-redis.yml
 ```
+
+Also add it to that batch file's `summary.needs` list.
+
+You do **not** need to edit the orchestrator when adding a normal package. The orchestrator already triggers all batch workflows.
 
 ### 5. **Run and Verify**
 
+Useful checks:
+
 ```bash
-# Test locally with act (optional)
-act workflow_dispatch -j test-redis
+# Start the local dashboard
+hugo server --bind 127.0.0.1 --port 1313
 
-# Or trigger via GitHub
-gh workflow run test-redis.yml
-
-# Check the results
-cat data/test-results/redis.json
+# Run one workflow manually from GitHub Actions
+gh workflow run test-redis.yml --ref smoke_tests
 ```
 
-### 6. **See the Badge**
+After the batch and global summary complete, verify:
+- `data/test-results/redis.json`
+- `data/test-results-index.json`
+- dashboard row and package page
 
-The badge will automatically appear on the Redis package page in the Hugo dashboard!
+### 6. **See the Dashboard Result**
 
-**💡 Tip:** Look at `test-nginx.yml` or `test-envoy.yml` for real working examples.
+Current frontend behavior:
+- per-package row status is driven by `data/test-results-index.json`
+- detailed package pages and drilldowns use `data/test-results/<slug>.json`
+- regression tables come from the global summary workflow, not directly from package workflows
 
 ---
 
 ## 📊 System Overview
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  test-all-packages.yml (Orchestrator)                   │
-│  • Triggers all package tests in parallel               │
-│  • Runs daily at 2 AM UTC                               │
-│  • Aggregates results                                   │
-└─────────────────────────────────────────────────────────┘
-                           │
-        ┌──────────────────┼──────────────────┐
-        ▼                  ▼                  ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│ test-nginx   │  │ test-envoy   │  │ test-redis   │
-│   .yml       │  │   .yml       │  │   .yml       │
-│              │  │              │  │              │
-│ 1. Install   │  │ 1. Install   │  │ 1. Install   │
-│ 2. Version   │  │ 2. Version   │  │ 2. Version   │
-│ 3. Test      │  │ 3. Test      │  │ 3. Test      │
-│ 4. JSON      │  │ 4. JSON      │  │ 4. JSON      │
-│ 5. Commit    │  │ 5. Commit    │  │ 5. Commit    │
-└──────────────┘  └──────────────┘  └──────────────┘
-        │                  │                  │
-        ▼                  ▼                  ▼
-┌─────────────────────────────────────────────────────────┐
-│  data/test-results/*.json                               │
-│  • JSON schema v1.0                                     │
-│  • Auto-committed [skip ci]                             │
-└─────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│  Hugo Dashboard Badge Display                           │
-│  • Integrated in row-sub.html                           │
-│  • Green/Red color coding                               │
-└─────────────────────────────────────────────────────────┘
-```
+```text
+test-<package>.yml
+  └─ emits contract v2.0 outputs only
 
-**Pattern:** All workflows follow the same structure - copy `template-package-test.yml` and customize.
+test-all-packages-batchN.yml
+  ├─ runs many package workflows in parallel
+  └─ uses .github/actions/collect-batch-results
+       to build canonical per-package JSON artifacts for the batch
+
+test-all-packages-orchestrator.yml
+  ├─ triggers all 21 batches
+  ├─ waits for them to finish
+  └─ triggers test-all-packages-summary.yml
+
+test-all-packages-summary.yml
+  ├─ downloads batch artifacts
+  ├─ assembles candidate + previous production results
+  ├─ resolves exact job URLs
+  ├─ normalizes result status from real test counts
+  ├─ writes data/test-results/*.json
+  └─ writes data/test-results-index.json
+
+Hugo dashboard
+  ├─ row templates read data/test-results-index.json
+  └─ package details read data/test-results/*.json
+```
 
 ---
 
 ## 🎯 Current Status
 
-| Package | Tests | Status | Workflow |
-|---------|-------|--------|----------|
-| nginx | 5 | ✅ Passing | `test-nginx.yml` |
-| Envoy | 4 | ✅ Passing | `test-envoy.yml` |
-
-**Overall Test Pass Rate:** 100% (9/9 tests)
+- Shared result contract: `2.0`
+- Execution model: `21` batch workflows plus one orchestrator and one global summary
+- Result publication model: centralized in the global summary workflow
+- Regression policy model:
+  - real Test 6 for non-package-manager lanes
+  - explicit not-applicable for package-manager-installed lanes
+  - explicit deferred/skipped decisions for honest non-failing cases
+- Dashboard status source:
+  - `data/test-results-index.json` for row lookups
+  - `data/test-results/*.json` for canonical per-package payloads
 
 ---
 
 ## 🔧 Key Files
 
-- **`tests/template-package-test.yml`** - Template for new package tests (copy this!)
-- **`.github/workflows/test-nginx.yml`** - nginx example (5 tests)
-- **`.github/workflows/test-envoy.yml`** - Envoy example (4 tests)
-- **`.github/workflows/test-all-packages.yml`** - Orchestrator
-- **`data/test-results/*.json`** - Test result JSON files
-- **`themes/.../row-sub.html`** - Badge display template
+- [tests/template-package-test.yml](./template-package-test.yml)
+  - starter reusable workflow template
+- [tests/COMPLETE_GUIDE.md](./COMPLETE_GUIDE.md)
+  - current end-to-end guide
+- [tests/PIPELINE_REFERENCE.md](./PIPELINE_REFERENCE.md)
+  - technical deep dive
+- `.github/workflows/test-all-packages-batch*.yml`
+  - batch execution groups
+- `.github/workflows/test-all-packages-orchestrator.yml`
+  - batch dispatcher and waiter
+- `.github/workflows/test-all-packages-summary.yml`
+  - production data publisher and report generator
+- `.github/actions/collect-batch-results/action.yml`
+  - batch artifact collector and canonical JSON builder
+- `data/test-results/*.json`
+  - published per-package canonical results
+- `data/test-results-index.json`
+  - frontend lookup index for package rows
+- `themes/arm-design-system-hugo-theme/layouts/partials/package-display/row-sub.html`
+  - row-level frontend consumer of the index
 
 ---
 
 ## 📖 Learn More
 
-- **New to the system?** → Read [COMPLETE_GUIDE.md](./COMPLETE_GUIDE.md) from start to finish
-- **Need to add a package?** → Jump to the "Adding New Packages" section in [COMPLETE_GUIDE.md](./COMPLETE_GUIDE.md)
-- **Debugging an issue?** → Check the "Troubleshooting" section in [COMPLETE_GUIDE.md](./COMPLETE_GUIDE.md)
-- **Want to customize workflows?** → See [PIPELINE_REFERENCE.md](./PIPELINE_REFERENCE.md)
+- New maintainer: read [COMPLETE_GUIDE.md](./COMPLETE_GUIDE.md)
+- Collector / summary maintainer: read [PIPELINE_REFERENCE.md](./PIPELINE_REFERENCE.md)
+- Adding a package: start from [template-package-test.yml](./template-package-test.yml)
 
 ---
 
 ## 🤝 Contributing
 
-When adding new packages:
-1. Copy `template-package-test.yml` to `test-<package>.yml`
-2. Customize install, version, and test steps
-3. Add to `test-all-packages.yml`
-4. Test locally before committing
-5. Update this README's status table
+When adding a new package:
+1. Copy `template-package-test.yml` to `.github/workflows/test-<package>.yml`.
+2. Customize baseline install, version detection, and Tests 1-5.
+3. Decide whether Test 6 is:
+   - applicable
+   - package-manager not applicable
+   - honest deferred for no newer stable Arm64 candidate
+4. Add the workflow to exactly one batch file and update that batch's `summary.needs`.
+5. Validate syntax before pushing.
+6. Let the orchestrator/global summary publish canonical JSON.
+
+Do **not** hand-edit:
+- `data/test-results/*.json`
+- `data/test-results-index.json`
+
+Those are generated by the Actions pipeline.
 
 ---
 
 ## 📝 Schema Reference (Quick)
 
-Test results JSON structure:
+Current published result schema is `2.0`, for example:
+
 ```json
 {
-  "schema_version": "1.0",
-  "package_name": "nginx",
-  "status": "passing",
-  "tests_passed": 5,
-  "tests_failed": 0,
-  "last_updated": "2024-01-15T10:30:00Z"
+  "schema_version": "2.0",
+  "package": {
+    "name": "ACL",
+    "version": "3.6.5"
+  },
+  "run": {
+    "status": "success",
+    "url": "https://github.com/.../job/...",
+    "runner": {
+      "os": "ubuntu-24.04",
+      "arch": "arm64"
+    }
+  },
+  "tests": {
+    "passed": 6,
+    "failed": 0,
+    "skipped": 0,
+    "details": []
+  },
+  "metadata": {
+    "contract_version": "2.0",
+    "package_slug": "acl",
+    "badge_status": "passing",
+    "regression_applicability": "applicable",
+    "regression_decision": "next_install_validated"
+  }
 }
 ```
 
-For complete schema documentation, see [COMPLETE_GUIDE.md](./COMPLETE_GUIDE.md#test-results-json-schema).
+For the full schema and field meanings, see [COMPLETE_GUIDE.md](./COMPLETE_GUIDE.md#json-schema).
 
 ---
 
-**Questions?** Check [COMPLETE_GUIDE.md](./COMPLETE_GUIDE.md) or [PIPELINE_REFERENCE.md](./PIPELINE_REFERENCE.md) for detailed answers!
+Questions or unclear behavior? Start with [COMPLETE_GUIDE.md](./COMPLETE_GUIDE.md), then use [PIPELINE_REFERENCE.md](./PIPELINE_REFERENCE.md) for the exact execution and publishing flow.

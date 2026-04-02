@@ -1,9 +1,9 @@
 # Pipeline Reference - Technical Deep Dive
 
 **Navigation:**
-- [README](README.md) - Quick start
-- [Complete Guide](COMPLETE_GUIDE.md) - Main documentation
-- This document - Advanced topics
+- [README](README.md) - quick start
+- [Complete Guide](COMPLETE_GUIDE.md) - primary reference
+- this document - internals, maintenance, and advanced patterns
 
 ---
 
@@ -15,6 +15,8 @@
 - [Debugging](#debugging)
 - [Complex Scenarios](#complex-scenarios)
 - [Best Practices](#best-practices)
+- [Troubleshooting Guide](#troubleshooting-guide)
+- [Reference](#reference)
 
 ---
 
@@ -22,85 +24,75 @@
 
 ### Detailed Execution Sequence
 
-```
-1. Workflow Trigger
-   ├─ Scheduled (daily 2 AM UTC)
-   ├─ Manual (workflow_dispatch)
-   └─ On push (to main/smoke_tests)
+```text
+1. Orchestrator trigger
+   - scheduled
+   - manual
+   - push to main/smoke_tests for relevant files
 
-2. Runner Initialization
-   ├─ Provision ubuntu-24.04-arm
-   ├─ Checkout repository
-   └─ Set metadata (timestamp, package slug)
+2. Orchestrator dispatches batch1..batch19
+   - each batch is a reusable workflow group
+   - each batch runs many package workflows in parallel
 
-3. Package Installation
-   ├─ Parse install_commands JSON array
-   ├─ Execute each command sequentially
-   ├─ Capture stdout/stderr
-   └─ Set install_status output
+3. Package workflow execution
+   - checkout
+   - metadata
+   - install baseline
+   - version detection
+   - Tests 1-5 baseline smoke checks
+   - Test 6 regression validation or applicability decision
+   - summary outputs contract v2.0
 
-4. Version Detection
-   ├─ Execute version_command
-   ├─ Parse output (grep, awk, etc.)
-   ├─ Set version output variable
-   └─ Fallback to "unknown" on error
+4. Batch summary job
+   - receives needs outputs for all package jobs
+   - calls .github/actions/collect-batch-results
+   - writes canonical per-package JSON files for that batch
+   - uploads batch artifact
 
-5. Test Execution
-   ├─ Parse test_commands JSON array
-   ├─ For each test:
-   │  ├─ Record start time
-   │  ├─ Execute test command
-   │  ├─ Capture exit code
-   │  ├─ Record end time
-   │  ├─ Calculate duration
-   │  └─ Set status (passed/failed)
-   ├─ Aggregate results
-   └─ Set overall status
+5. Orchestrator waits for all batches
+   - tracks run ids
+   - polls status until all complete
 
-6. Results Generation
-   ├─ Create JSON (schema v1.0)
-   ├─ Include all test details
-   ├─ Add metadata (run URL, timestamp)
-   └─ Write to test-results/<package>.json
+6. Global summary workflow
+   - downloads batch artifacts
+   - loads previous production results from data/test-results/
+   - assembles candidate current-run results
+   - synthesizes missing-package failures if a job never emitted results
+   - resolves exact package job URLs when possible
+   - normalizes published status from test counts
+   - promotes candidate results into production
+   - rewrites data/test-results/*.json
+   - rewrites data/test-results-index.json
+   - commits aggregated results with [skip ci]
 
-7. Git Automation
-   ├─ Configure git user (github-actions[bot])
-   ├─ Stage JSON file
-   ├─ Create commit with [skip ci]
-   └─ Push with retry logic:
-      ├─ Attempt 1: Direct push
-      ├─ On fail: Pull --rebase
-      ├─ On conflict: Auto-resolve (--ours)
-      ├─ Retry up to 5 times
-      └─ Exponential backoff (2s, 4s, 6s, 8s, 10s)
-
-8. Workflow Completion
-   ├─ Upload artifact (test results)
-   ├─ Create GitHub Actions summary
-   └─ Exit with status code
+7. Hugo frontend render
+   - row templates read test-results-index.json
+   - detailed package views use data/test-results/<slug>.json
 ```
 
 ### Timing Breakdown
 
-**Typical Execution (nginx example):**
-```
-00:00 - Start workflow
-00:15 - Runner provisioned
-00:30 - Repository checked out
-00:45 - nginx installed (apt)
-01:00 - Version detected
-01:15 - Test 1: Binary check (1s)
-01:16 - Test 2: Version output (1s)
-01:17 - Test 3: Config syntax (2s)
-01:19 - Test 4: Service start (5s)
-01:24 - Test 5: HTTP response (3s)
-01:27 - JSON generated
-01:30 - Results committed
-01:45 - Git push successful
-02:00 - Workflow complete
-```
+There are now three time layers to think about:
 
-**Total:** ~2 minutes
+**Package workflow**
+- usually seconds to minutes
+- heavy source builds can be much longer
+
+**Batch workflow**
+- bounded by the slowest package in the batch
+
+**Global summary**
+- usually fast
+- dominated by artifact download, URL normalization, and file publication
+
+Typical flow:
+
+```text
+Package job      -> 1m to 15m for normal packages
+Heavy package    -> 20m to 45m+ for large source builds
+Batch summary    -> < 1m after package jobs finish
+Global summary   -> a few minutes after all batches finish
+```
 
 ---
 
@@ -108,156 +100,63 @@
 
 ### Custom Workflow Pattern
 
-For complex testing scenarios, create a dedicated workflow:
+Use the template when possible, but for complex packages keep these rules:
 
-**When to use:**
-- Service management (systemd, supervisord)
-- Network/HTTP testing
-- Performance benchmarking
-- Multi-step complex scenarios
-- Database initialization
-- Security scanning
+- preserve the reusable workflow output contract
+- keep Tests 1-5 as baseline smoke checks
+- keep Test 6 semantics explicit
+- do not publish production JSON inside the package workflow
 
-**Example structure:**
+Recommended structure:
 
 ```yaml
-name: Test Complex Package on Arm64
-
 jobs:
   test-package:
     runs-on: ubuntu-24.04-arm
-    
-    steps:
-      # 1. Setup
-      - name: Checkout
-        uses: actions/checkout@v4
-      
-      # 2. Install with custom logic
-      - name: Install package
-        id: install
-        run: |
-          # Complex installation
-          sudo apt-get update
-          sudo apt-get install -y dependencies
-          curl -L -o package.deb https://example.com/package.deb
-          sudo dpkg -i package.deb
-          sudo apt-get install -f
-          
-          echo "install_status=success" >> $GITHUB_OUTPUT
-      
-      # 3. Configure
-      - name: Configure service
-        run: |
-          sudo tee /etc/package/config.yml <<EOF
-          setting: value
-          EOF
-          sudo systemctl daemon-reload
-      
-      # 4. Individual test steps
-      - name: Test 1 - Service starts
-        id: test1
-        run: |
-          START=$(date +%s)
-          sudo systemctl start package
-          sleep 2
-          systemctl is-active package
-          END=$(date +%s)
-          echo "duration=$((END - START))" >> $GITHUB_OUTPUT
-          echo "status=passed" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - HTTP endpoint
-        id: test2
-        run: |
-          START=$(date +%s)
-          response=$(curl -s http://localhost:8080/health)
-          [[ "$response" == *"ok"* ]]
-          END=$(date +%s)
-          echo "duration=$((END - START))" >> $GITHUB_OUTPUT
-          echo "status=passed" >> $GITHUB_OUTPUT
-      
-      # 5. Generate results (manual JSON construction)
-      - name: Generate results
-        if: always()
-        run: |
-          cat > test-results/package.json <<EOF
-          {
-            "schema_version": "1.0",
-            "package": {
-              "name": "Package",
-              "version": "$(package --version)"
-            },
-            "tests": {
-              "passed": ${{ steps.test1.outcome == 'success' && steps.test2.outcome == 'success' && 2 || 0 }},
-              "failed": ${{ steps.test1.outcome == 'failure' || steps.test2.outcome == 'failure' && 1 || 0 }}
-            }
-          }
-          EOF
-      
-      # 6. Commit results
-      - name: Commit results
-        if: always()
-        run: |
-          # Use git automation pattern from existing workflows
-          git config --global user.name 'github-actions[bot]'
-          git add test-results/package.json
-          git commit -m "Update package test results [skip ci]"
-          
-          for i in {1..5}; do
-            if git pull --rebase origin ${{ github.ref_name }}; then
-              if git push; then
-                break
-              fi
-            else
-              git checkout --ours test-results/package.json
-              git add test-results/package.json
-              git rebase --continue || true
-            fi
-            sleep $((i * 2))
-          done
+    outputs:
+      contract_version: "2.0"
+      package_slug: ...
+      package_name: ...
+      package_version: ...
+      run_status: ...
+      badge_status: ...
+      core_failed: ...
+      tests_passed: ...
+      tests_failed: ...
+      tests_skipped: ...
+      duration_seconds: ...
+      regression_status: ...
+      regression_decision: ...
+      regression_result: ...
+      regression_comparison: ...
+      regression_current_version: ...
+      regression_latest_version: ...
+      regression_next_installed_version: ...
+      regression_policy: ...
 ```
 
 ### Multi-Version Testing
 
-Test multiple versions in parallel using matrix strategy:
-
-```yaml
-jobs:
-  test-package:
-    strategy:
-      matrix:
-        version: ['1.24', '1.25', '1.26']
-        include:
-          - version: '1.24'
-            expected_features: 'http2'
-          - version: '1.25'
-            expected_features: 'http2,http3'
-          - version: '1.26'
-            expected_features: 'http2,http3,quic'
-    
-    runs-on: ubuntu-24.04-arm
-    
-    steps:
-      - name: Install specific version
-        run: |
-          sudo apt-get install -y package=${{ matrix.version }}.*
-      
-      - name: Test version-specific features
-        run: |
-          for feature in $(echo ${{ matrix.expected_features }} | tr ',' ' '); do
-            package --feature $feature
-          done
-```
+The current product model publishes one canonical row per package. If you temporarily test multiple versions:
+- keep only one baseline row as the published truth
+- ensure Test 6 still collapses to one regression decision
+- avoid publishing multiple package variants into `data/test-results/`
 
 ### Conditional Testing
 
-Skip certain tests based on conditions:
+Common current patterns:
 
-```yaml
-- name: Test GPU functionality
-  if: runner.arch == 'arm64' && env.GPU_AVAILABLE == 'true'
-  run: |
-    package --use-gpu test-file.dat
-```
+**Package-manager installed**
+- emit `not_applicable_package_manager`
+- do not fake Test 6
+
+**No newer stable candidate**
+- emit `no_newer_stable_available`
+
+**Next candidate exists but lacks Arm64 assets**
+- use honest deferred decisions such as:
+  - `hold_current_arm_dependency_gap`
+  - `manual_review_needed`
 
 ---
 
@@ -265,66 +164,39 @@ Skip certain tests based on conditions:
 
 ### Caching Dependencies
 
-Speed up workflows by caching package installations:
+Use caches for:
+- heavy source builds
+- repeated upstream archives
+- package registries and toolchains
 
-```yaml
-- name: Cache APT packages
-  uses: actions/cache@v4
-  with:
-    path: /var/cache/apt/archives
-    key: apt-${{ runner.os }}-${{ hashFiles('**/packages.txt') }}
-    restore-keys: apt-${{ runner.os }}-
-
-- name: Install packages
-  run: |
-    sudo apt-get update
-    sudo apt-get install -y package
-```
+Examples:
+- Bazel caches
+- Maven/Gradle caches
+- cargo/pip/npm caches
+- extracted upstream archives where safe
 
 ### Parallel Test Execution
 
-Run independent tests in parallel:
+Parallelism now happens primarily at the batch level:
+- many package workflows in the same batch
+- 21 batches orchestrated across the whole repo
+- package pages now primarily live under `content/linux/opensource_packages/`, with legacy compatibility for older `content/opensource_packages/` trees
 
-```yaml
-jobs:
-  test-unit:
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - name: Run unit tests
-        run: package test --unit
-  
-  test-integration:
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - name: Run integration tests
-        run: package test --integration
-  
-  test-performance:
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - name: Run performance tests
-        run: package bench
-```
+When adding a new package:
+- place it in one batch only
+- keep heavy workflows distributed across batches
 
 ### Timeout Management
 
-Prevent hanging tests:
+Current timeout-risk packages usually fall into:
+- large archive download + extract
+- slow source build
+- multi-dependency service stack bring-up
 
-```yaml
-- name: Test with timeout
-  timeout-minutes: 5
-  run: |
-    package long-running-test
-```
-
-Or within commands:
-
-```yaml
-test_commands: |
-  [
-    {"name": "Test with timeout", "command": "timeout 30s package test"}
-  ]
-```
+If a package is consistently timing out:
+1. reduce work
+2. add cache
+3. increase timeout only after measuring
 
 ---
 
@@ -332,70 +204,58 @@ test_commands: |
 
 ### Enable Debug Logging
 
-Set secrets for verbose output:
+Inside a workflow step:
 
-```yaml
-env:
-  ACTIONS_RUNNER_DEBUG: true
-  ACTIONS_STEP_DEBUG: true
+```bash
+set -euxo pipefail
 ```
+
+Use it selectively on the failing step, not every step.
 
 ### Capture Detailed Logs
 
-```yaml
-- name: Test package
-  run: |
-    set -x  # Enable command echoing
-    package test 2>&1 | tee test-output.log
-    
-- name: Upload logs
-  if: failure()
-  uses: actions/upload-artifact@v4
-  with:
-    name: test-logs
-    path: test-output.log
+Helpful command:
+
+```bash
+gh run view <run-id> --log
 ```
+
+For package debugging, inspect:
+1. package workflow log
+2. batch summary job log
+3. global summary log
 
 ### Interactive Debugging
 
-Use tmate for live debugging:
+Best local checks:
 
-```yaml
-- name: Setup tmate session
-  if: failure()
-  uses: mxschmitt/action-tmate@v3
-  timeout-minutes: 15
+```bash
+hugo server --bind 127.0.0.1 --port 1313
 ```
+
+Then compare:
+- package workflow logic
+- `data/test-results/<slug>.json`
+- `data/test-results-index.json`
+- dashboard output
 
 ### Common Debug Patterns
 
-**Check environment:**
-```yaml
-- name: Debug environment
-  run: |
-    echo "=== System Info ==="
-    uname -a
-    cat /etc/os-release
-    
-    echo "=== Architecture ==="
-    dpkg --print-architecture
-    
-    echo "=== Available packages ==="
-    apt-cache policy package
-    
-    echo "=== Environment variables ==="
-    env | sort
-```
+**Actions green, dashboard red**
+- stale production JSON still published
+- latest failed job may not have replaced prior JSON
 
-**Verbose test execution:**
-```yaml
-test_commands: |
-  [
-    {"name": "Debug binary", "command": "which -a package && file $(which package)"},
-    {"name": "Debug version", "command": "package --version || package -v || package version"},
-    {"name": "Debug libs", "command": "ldd $(which package)"}
-  ]
-```
+**Package row in wrong table**
+- inspect normalized counts in the summary pipeline
+- check whether `tests.passed`, `tests.failed`, and `core_failed` are correct
+
+**Regression shown as failed when it should be deferred**
+- check Test 6 `decision`
+- check whether the workflow used `status=failed` instead of `status=skipped`
+
+**Missing exact job URL**
+- collector may have published with warning
+- summary can fall back to the run URL when exact job URL resolution fails
 
 ---
 
@@ -403,86 +263,36 @@ test_commands: |
 
 ### Database Testing
 
-**PostgreSQL example:**
-
-```yaml
-install_commands: |
-  [
-    "sudo apt-get update",
-    "sudo apt-get install -y postgresql",
-    "sudo systemctl start postgresql"
-  ]
-
-test_commands: |
-  [
-    {"name": "Check service", "command": "systemctl is-active postgresql"},
-    {"name": "Create database", "command": "sudo -u postgres createdb testdb"},
-    {"name": "Run query", "command": "sudo -u postgres psql testdb -c 'SELECT version();'"},
-    {"name": "Cleanup", "command": "sudo -u postgres dropdb testdb"}
-  ]
-```
+For databases and services:
+- install baseline
+- verify version
+- start the service
+- run one real command/query
+- keep Test 5 small and deterministic
 
 ### Container Testing
 
-**Docker example:**
-
-```yaml
-install_commands: |
-  [
-    "sudo apt-get update",
-    "sudo apt-get install -y docker.io",
-    "sudo systemctl start docker",
-    "sudo docker pull package:latest-arm64"
-  ]
-
-test_commands: |
-  [
-    {"name": "Check image", "command": "sudo docker images | grep package"},
-    {"name": "Run container", "command": "sudo docker run --rm package:latest-arm64 --version"},
-    {"name": "Test functionality", "command": "sudo docker run --rm package:latest-arm64 test-command"}
-  ]
-```
+For image-based packages:
+- verify image availability on Arm64
+- do not assume `amd64` tags are valid
+- if only x86 assets exist for the next version, defer honestly
 
 ### Language-Specific Testing
 
-**Python package:**
+Examples:
 
-```yaml
-install_commands: |
-  [
-    "python3 -m pip install --upgrade pip",
-    "pip install package"
-  ]
+**Python**
+- import check
+- CLI check if applicable
 
-version_command: "python3 -c 'import package; print(package.__version__)'"
+**Java**
+- prefer exact version extraction from package or service metadata
+- watch for JDK mismatches between baseline and candidate
 
-test_commands: |
-  [
-    {"name": "Import package", "command": "python3 -c 'import package'"},
-    {"name": "Run tests", "command": "python3 -m pytest --version && pip install pytest && pytest"},
-    {"name": "Check CLI", "command": "package-cli --help"}
-  ]
-```
-
-**Node.js package:**
-
-```yaml
-install_commands: |
-  [
-    "curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -",
-    "sudo apt-get install -y nodejs",
-    "npm install -g package"
-  ]
-
-version_command: "package --version"
-
-test_commands: |
-  [
-    {"name": "Check Node", "command": "node --version"},
-    {"name": "Check npm", "command": "npm --version"},
-    {"name": "Run package", "command": "package test-command"}
-  ]
-```
+**Source build packages**
+- minimize optional dependencies
+- prefer system libraries when upstream supports them
+- make the smoke test small after the build
 
 ---
 
@@ -490,82 +300,31 @@ test_commands: |
 
 ### Test Design
 
-**1. Start Simple, Add Complexity**
-```yaml
-# Phase 1: Basic
-{"name": "Binary exists", "command": "command -v package"}
+Recommended progression:
 
-# Phase 2: Functionality
-{"name": "Version works", "command": "package --version"}
-
-# Phase 3: Real Usage
-{"name": "Process file", "command": "package process test.dat"}
-
-# Phase 4: Integration
-{"name": "Full workflow", "command": "package init && package build && package deploy"}
-```
-
-**2. Idempotent Tests**
-- Each test should clean up after itself
-- Don't depend on test execution order
-- Use unique temporary files/directories
-
-**3. Fast Feedback**
-- Put quick tests first
-- Save long-running tests for later
-- Use timeouts to prevent hanging
-
-**4. Clear Failure Messages**
-```yaml
-{"name": "Check config", "command": "package validate config.yml || (echo 'Config validation failed' && cat config.yml && exit 1)"}
+```text
+Phase 1: binary or install existence
+Phase 2: version/help verification
+Phase 3: Arm64 architecture verification
+Phase 4: one real functional smoke check
+Phase 5: regression validation or honest applicability/deferred decision
 ```
 
 ### Error Handling
 
-**Graceful degradation:**
-
-```yaml
-version_command: "package --version 2>&1 | grep -oP '[0-9.]+' || package -v 2>&1 | grep -oP '[0-9.]+' || echo 'unknown'"
-```
-
-**Fail fast vs. Continue on error:**
-
-```yaml
-# Fail fast (default)
-test_commands: |
-  [
-    {"name": "Critical test", "command": "must-pass-test"}
-  ]
-
-# Continue on error
-test_commands: |
-  [
-    {"name": "Optional test", "command": "optional-test || true"}
-  ]
-```
+Use these rules:
+- fail baseline steps honestly
+- fail Test 6 only for real regression failures
+- skip Test 6 for honest non-failing conditions
+- do not let cleanup flip a green package red
 
 ### Maintenance
 
-**Version pinning:**
-```yaml
-install_commands: |
-  [
-    "sudo apt-get install -y package=1.2.3-*"
-  ]
-```
-
-**Automatic updates:**
-```yaml
-install_commands: |
-  [
-    "sudo apt-get install -y package"  # Always latest
-  ]
-```
-
-**Documentation:**
-- Add comments in workflow files
-- Document expected behavior
-- Note any quirks or workarounds
+When a package changes:
+- update the package workflow
+- do not hand-edit production JSON
+- verify the batch assignment still makes sense
+- verify regression policy still matches the current package lane
 
 ---
 
@@ -573,65 +332,28 @@ install_commands: |
 
 ### Issue: Tests Pass Locally But Fail in CI
 
-**Possible causes:**
-1. Architecture difference (x86 vs ARM)
-2. OS version difference
-3. Missing dependencies
-4. Different package versions
-
-**Solutions:**
-```yaml
-# Test in ubuntu-24.04-arm container locally
-docker run --rm -it --platform linux/arm64 ubuntu:24.04
-apt-get update && apt-get install -y package
-package test
-```
+Common causes:
+- Ubuntu Arm64 package availability differs from your local machine
+- runner network behavior differs
+- source builds need more disk or time
+- candidate artifact is x86-only
 
 ### Issue: Flaky Tests
 
-**Symptoms:** Tests pass sometimes, fail other times
-
-**Common causes:**
-- Race conditions
-- Network timeouts
-- Resource constraints
-
-**Solutions:**
-```yaml
-# Add retries
-test_commands: |
-  [
-    {"name": "Flaky test", "command": "for i in {1..3}; do package test && break || sleep 2; done"}
-  ]
-
-# Add delays
-test_commands: |
-  [
-    {"name": "Wait for service", "command": "sleep 5 && curl localhost:8080"}
-  ]
-```
+Use:
+- retries for artifact downloads
+- explicit service readiness checks
+- exact version parsing instead of full-string equality
 
 ### Issue: Version Detection Fails
 
-**Debug:**
+Pattern:
+
 ```bash
-# Run locally to see actual output
-package --version
-package -v
-package version
+tool --version 2>&1 | grep -oE '[0-9]+([.][0-9]+)+' | head -1 || echo "unknown"
 ```
 
-**Common version detection patterns:**
-```yaml
-# Pattern: Clean version string
-"package --version | grep -oP '[0-9.]+'"
-
-# Pattern: Multiple fallback methods
-"package --version 2>&1 | grep -oP 'v\K[0-9.]+' || package -v 2>&1 | awk '{print $2}'"
-
-# Pattern: From file
-"cat /usr/share/package/VERSION"
-```
+Prefer exact semver extraction over comparing entire banner strings.
 
 ---
 
@@ -639,51 +361,23 @@ package version
 
 ### Exit Codes
 
-- `0` - All tests passed
-- `1` - At least one test failed
-- `127` - Command not found
-- `130` - Terminated by Ctrl+C
-- `137` - Killed (OOM or timeout)
+- `0` → successful step
+- nonzero → failing step
+- skipped/deferred/not-applicable should normally remain non-failing at the step level
 
 ### Environment Variables
 
-Available in workflows:
-- `$GITHUB_WORKSPACE` - Checkout directory
-- `$GITHUB_REF_NAME` - Branch name
-- `$GITHUB_RUN_ID` - Workflow run ID
-- `$GITHUB_REPOSITORY` - Repository name
-- `$RUNNER_OS` - Operating system
-- `$RUNNER_ARCH` - Architecture
+Common current workflow values:
+- `github.run_id`
+- `github.run_attempt`
+- `github.job`
+- `github.ref_name`
+- package-specific version or install env vars
 
 ### Workflow Syntax
 
-**Conditionals:**
-```yaml
-if: success()           # Previous step succeeded
-if: failure()           # Previous step failed
-if: always()            # Run regardless
-if: cancelled()         # Workflow cancelled
-```
-
-**Step outputs:**
-```yaml
-- id: step1
-  run: echo "value=123" >> $GITHUB_OUTPUT
-
-- run: echo ${{ steps.step1.outputs.value }}
-```
-
-**Matrix strategy:**
-```yaml
-strategy:
-  matrix:
-    version: [1, 2, 3]
-    os: [ubuntu, debian]
-  fail-fast: false
-```
-
----
-
-*Last Updated: November 17, 2025*  
-*For basic usage, see [README.md](README.md)*  
-*For complete guide, see [COMPLETE_GUIDE.md](COMPLETE_GUIDE.md)*
+Current conventions:
+- `workflow_call` outputs
+- `if: always()` on summary steps
+- Tests 1-5 may use step-level tolerance but must emit accurate outputs
+- final summary/enforcement determines job success from normalized counts
