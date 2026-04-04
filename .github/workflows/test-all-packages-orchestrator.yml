@@ -72,19 +72,43 @@ jobs:
           echo "⏳ Waiting for batches triggered after $START_TIME..."
 
           BATCH_RUN_IDS=()
+          MISSING_WORKFLOWS=()
           sleep 15
 
           for i in {1..21}; do
             WORKFLOW="test-all-packages-batch${i}.yml"
-            RUN_ID=$(gh run list --workflow "$WORKFLOW" --branch ${{ github.ref_name }} --json databaseId,createdAt --limit 50 --jq ".[] | select(.createdAt >= "$START_TIME") | .databaseId" | head -n 1)
+            RUN_ID=""
+
+            for attempt in {1..12}; do
+              RUN_ID=$(gh run list \
+                --workflow "$WORKFLOW" \
+                --branch "${{ github.ref_name }}" \
+                --json databaseId,createdAt \
+                --limit 100 \
+                --jq ".[] | select(.createdAt >= \"$START_TIME\") | .databaseId" | head -n 1)
+
+              if [ -n "$RUN_ID" ]; then
+                break
+              fi
+
+              echo "⚠️ Run for $WORKFLOW not visible yet (attempt $attempt/12). Retrying in 10s..."
+              sleep 10
+            done
 
             if [ -z "$RUN_ID" ]; then
-              echo "⚠️ Warning: Could not find Run ID for $WORKFLOW. It might still be queuing."
+              echo "❌ Error: Could not find Run ID for $WORKFLOW after waiting for registration."
+              MISSING_WORKFLOWS+=("$WORKFLOW")
             else
               echo "✅ Tracking $WORKFLOW (Run ID: $RUN_ID)"
               BATCH_RUN_IDS+=("$RUN_ID")
             fi
           done
+
+          if [ "${#MISSING_WORKFLOWS[@]}" -gt 0 ]; then
+            echo "❌ Failed to discover the following dispatched batch runs:"
+            printf ' - %s\n' "${MISSING_WORKFLOWS[@]}"
+            exit 1
+          fi
 
           while true; do
             STILL_RUNNING=0
@@ -103,10 +127,12 @@ jobs:
             echo "⌛ $STILL_RUNNING batches still running. Checking again in 1 minute..."
             sleep 60
           done
-
       - name: Trigger Global Summary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "🏁 All batches finished. Triggering Global Summary..."
-          gh workflow run test-all-packages-summary.yml             --ref ${{ github.ref_name }}             -f start_time=${{ steps.trigger.outputs.start_time }}             -f triggering_batch=orchestrator
+          gh workflow run test-all-packages-summary.yml \
+            --ref "${{ github.ref_name }}" \
+            -f start_time="${{ steps.trigger.outputs.start_time }}" \
+            -f triggering_batch=orchestrator

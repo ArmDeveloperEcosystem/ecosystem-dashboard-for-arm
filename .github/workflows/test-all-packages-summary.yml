@@ -61,18 +61,40 @@ jobs:
           DOWNLOADED_BATCHES=0
           : > downloaded-results/.batch-runs.tsv
 
+          find_run_id() {
+            local workflow="$1"
+            gh api \
+              "repos/${{ github.repository }}/actions/workflows/${workflow}/runs" \
+              -f branch="${{ github.ref_name }}" \
+              -F per_page=50 2>/dev/null | python3 - "$START_TIME" <<'PY'
+          import json
+          import sys
+
+          start_time = sys.argv[1]
+          payload = json.load(sys.stdin)
+          runs = payload.get("workflow_runs", [])
+          runs = [run for run in runs if str(run.get("created_at", "")) >= start_time]
+          runs.sort(key=lambda run: str(run.get("created_at", "")), reverse=True)
+          if runs:
+              print(runs[0]["id"])
+          PY
+          }
+
           for i in {1..21}; do
             WORKFLOW="test-all-packages-batch${i}.yml"
             ARTIFACT="batch${i}-test-results"
             DEST="downloaded-results/batch${i}"
             mkdir -p "$DEST"
 
-            RUN_ID=$(gh run list \
-              --workflow "$WORKFLOW" \
-              --branch "${{ github.ref_name }}" \
-              --json databaseId,createdAt \
-              --limit 50 \
-              --jq ".[] | select(.createdAt >= \"$START_TIME\") | .databaseId" | head -n 1)
+            RUN_ID=""
+            for attempt in {1..10}; do
+              RUN_ID=$(find_run_id "$WORKFLOW" || true)
+              if [ -n "$RUN_ID" ]; then
+                break
+              fi
+              echo "⚠️ Waiting for run registration for $WORKFLOW (attempt $attempt/10)..."
+              sleep 10
+            done
 
             if [ -z "$RUN_ID" ]; then
               echo "⚠️ Warning: Could not find a batch run for $WORKFLOW after $START_TIME."
