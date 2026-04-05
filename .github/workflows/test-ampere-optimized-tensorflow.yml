@@ -171,158 +171,228 @@ jobs:
           echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected baseline version: $BASELINE_VERSION"
 
-      - name: Test 1 - Check baseline acquisition
+      - name: Define package-specific expectations
+        id: expectations
+        uses: ./.github/actions/derive-package-source-expectations
+        with:
+          package_slug: ${{ env.PACKAGE_SLUG }}
+
+      - name: Test 1 - Check package-specific baseline markers
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" = "success" ]; then
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          SOURCE_MARKERS="${{ steps.expectations.outputs.source_markers }}"
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=Baseline source or external metadata could not be acquired." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+            FOUND=0
+            HITS=""
+            IFS='|' read -r -a MARKERS <<< "$SOURCE_MARKERS"
+            REQUIRED=${#MARKERS[@]}
+            if [ "$REQUIRED" -gt 2 ]; then
+              REQUIRED=2
+            fi
+            if [ "$REQUIRED" -lt 1 ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=No package-specific source markers were derived for the baseline." >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            for marker in "${MARKERS[@]}"; do
+              if [ -n "$marker" ] && [ -e "$marker" ]; then
+                FOUND=$((FOUND + 1))
+                if [ -z "$HITS" ]; then
+                  HITS="$marker"
+                else
+                  HITS="$HITS, $marker"
+                fi
+              fi
+            done
+            if [ "$FOUND" -ge "$REQUIRED" ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "note=Found package-specific baseline markers: $HITS" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=Expected at least $REQUIRED package-specific markers from: $SOURCE_MARKERS" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          elif [ -f baseline-external/metadata.txt ]; then
+            grep -Fx "download=$DOWNLOAD_URL" baseline-external/metadata.txt >/dev/null
+            grep -Fx "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt >/dev/null
             echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Validated external baseline metadata for the published source links." >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=External baseline metadata was not emitted." >> "$GITHUB_OUTPUT"
             exit 1
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Check version evidence
+      - name: Test 2 - Check package-specific version and release evidence
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ -n "$BASELINE_VERSION" ]; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
+          CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
+          [ -f "$CONTENT_PAGE" ]
+          grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
+          grep -Fx "download_url: $DOWNLOAD_URL" "$CONTENT_PAGE" >/dev/null
+          grep -Fx "    homepage_url: $HOMEPAGE_URL" "$CONTENT_PAGE" >/dev/null
+          grep -Fx "        official_docs: $OFFICIAL_DOCS" "$CONTENT_PAGE" >/dev/null
+          grep -F "version_number: $BASELINE_VERSION" "$CONTENT_PAGE" >/dev/null
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Validated package metadata, baseline version, homepage, and docs alignment from the checked-in package page." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Check package manifests or entrypoints
+      - name: Test 3 - Check package-specific docs and entrypoints
         id: test3
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
+          DOC_MARKERS="${{ steps.expectations.outputs.doc_markers }}"
+          ENTRYPOINT_MARKERS="${{ steps.expectations.outputs.entrypoint_markers }}"
+          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
-            MANIFEST=""
-            for candidate in package.json pyproject.toml setup.py Cargo.toml go.mod pom.xml build.gradle CMakeLists.txt Makefile Dockerfile Chart.yaml docker-compose.yml compose.yaml; do
-              MANIFEST=$(find . -maxdepth 3 -type f -name "$candidate" -print -quit 2>/dev/null || true)
-              if [ -n "$MANIFEST" ]; then
-                break
+            FOUND=0
+            HITS=""
+            IFS='|' read -r -a MARKERS <<< "$DOC_MARKERS"
+            for marker in "${MARKERS[@]}"; do
+              if [ -n "$marker" ] && [ -e "$marker" ]; then
+                FOUND=$((FOUND + 1))
+                if [ -z "$HITS" ]; then
+                  HITS="$marker"
+                else
+                  HITS="$HITS, $marker"
+                fi
               fi
             done
-            if [ -n "$MANIFEST" ]; then
+            if [ -n "$IDENTITY_TARGET" ]; then
+              [ -e "$IDENTITY_TARGET" ]
+            fi
+            ENTRY_OK=0
+            if [ -n "$ENTRYPOINT_MARKERS" ]; then
+              IFS='|' read -r -a ENTRYPOINTS <<< "$ENTRYPOINT_MARKERS"
+              for marker in "${ENTRYPOINTS[@]}"; do
+                if [ -n "$marker" ] && [ -e "$marker" ]; then
+                  ENTRY_OK=1
+                  break
+                fi
+              done
+            else
+              ENTRY_OK=1
+            fi
+            if [ "$FOUND" -ge 1 ] && [ "$ENTRY_OK" -eq 1 ]; then
               echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "manifest=${MANIFEST#./}" >> "$GITHUB_OUTPUT"
+              echo "note=Validated package-specific docs and entrypoint markers: $HITS" >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=Expected package-specific docs and entrypoint markers from: $DOC_MARKERS / $ENTRYPOINT_MARKERS" >> "$GITHUB_OUTPUT"
               exit 1
             fi
-          else
-            if [ -f baseline-external/metadata.txt ]; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "manifest=external-metadata" >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 4 - Architecture Verification
-        id: test4
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          if [ "$(uname -m)" = "aarch64" ]; then
+          elif [ -f baseline-external/metadata.txt ]; then
+            grep -Fx "docs=$OFFICIAL_DOCS" baseline-external/metadata.txt >/dev/null
+            grep -Fx "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt >/dev/null
             echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Validated external documentation and homepage metadata for the baseline package." >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=External documentation metadata was not emitted." >> "$GITHUB_OUTPUT"
             exit 1
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Run bounded project smoke
+      - name: Test 4 - Verify Arm64 runner and lane assumptions
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
+          [ "$(uname -m)" = "aarch64" ]
+          grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          if echo "$LANE_KIND" | grep -Eiq 'gpu|specialized|manual-review'; then
+            echo "note=Validated Arm64 support metadata on a generic Arm runner; deeper runtime checks for this lane still require the package-specific environment: $LANE_KIND." >> "$GITHUB_OUTPUT"
+          else
+            echo "note=Validated Arm64 runner architecture and published Arm support metadata." >> "$GITHUB_OUTPUT"
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Run bounded package-specific smoke
         id: test5
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
+          IDENTITY_KIND="${{ steps.expectations.outputs.identity_kind }}"
+          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
+          IDENTITY_EXPECT="${{ steps.expectations.outputs.identity_expect }}"
+          EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
-            RESULT=""
-            if PKG_JSON=$(find . -maxdepth 3 -type f -name 'package.json' -print -quit 2>/dev/null) && [ -n "$PKG_JSON" ]; then
-              if command -v node >/dev/null 2>&1; then
-                node -e 'const p=require(process.argv[1]); if(!(p.name||p.version)) process.exit(1);' "$PKG_JSON"
-                RESULT="node-package-json"
-              else
-                python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d.get("name") or d.get("version")' "$PKG_JSON"
-                RESULT="package-json-metadata"
-              fi
-            elif PY_MARKER=$(find . -maxdepth 3 -type f \( -name 'pyproject.toml' -o -name 'setup.py' \) -print -quit 2>/dev/null) && [ -n "$PY_MARKER" ]; then
-              PY_FILE=$(find . -maxdepth 4 -type f -name '*.py' ! -path '*/tests/*' ! -path '*/.venv/*' -print -quit 2>/dev/null)
-              [ -n "$PY_FILE" ]
-              python3 -m py_compile "$PY_FILE"
-              RESULT="python-py_compile:${PY_FILE#./}"
-            elif CARGO_FILE=$(find . -maxdepth 3 -type f -name 'Cargo.toml' -print -quit 2>/dev/null) && [ -n "$CARGO_FILE" ]; then
-              if command -v cargo >/dev/null 2>&1; then
-                cargo metadata --format-version 1 --no-deps >/dev/null
-                RESULT="cargo-metadata"
-              else
-                grep -Eq '^name\s*=\s*".+"' "$CARGO_FILE"
-                RESULT="cargo-manifest"
-              fi
-            elif GO_FILE=$(find . -maxdepth 3 -type f -name 'go.mod' -print -quit 2>/dev/null) && [ -n "$GO_FILE" ]; then
-              if command -v go >/dev/null 2>&1; then
-                go list ./... >/dev/null
-                RESULT="go-list"
-              else
-                grep -Eq '^module ' "$GO_FILE"
-                RESULT="go-mod"
-              fi
-            elif POM_FILE=$(find . -maxdepth 3 -type f -name 'pom.xml' -print -quit 2>/dev/null) && [ -n "$POM_FILE" ]; then
-              python3 -c 'import sys,xml.etree.ElementTree as ET; root=ET.parse(sys.argv[1]).getroot(); text="".join(root.itertext()); assert "artifactId" in text or "groupId" in text' "$POM_FILE"
-              RESULT="pom-metadata"
-            elif CMAKE_FILE=$(find . -maxdepth 3 -type f -name 'CMakeLists.txt' -print -quit 2>/dev/null) && [ -n "$CMAKE_FILE" ]; then
-              grep -Eiq 'project\s*\(|add_(library|executable)\s*\(' "$CMAKE_FILE"
-              RESULT="cmake-project"
-            elif MAKE_FILE=$(find . -maxdepth 3 -type f -name 'Makefile' -print -quit 2>/dev/null) && [ -n "$MAKE_FILE" ]; then
-              make -n >/dev/null
-              RESULT="make-dry-run"
-            elif DOCKER_FILE=$(find . -maxdepth 3 -type f -name 'Dockerfile' -print -quit 2>/dev/null) && [ -n "$DOCKER_FILE" ]; then
-              grep -Eq '^FROM ' "$DOCKER_FILE"
-              RESULT="dockerfile-base-image"
-            elif CFG_FILE=$(find . -maxdepth 3 -type f \( -name 'Chart.yaml' -o -name 'docker-compose.yml' -o -name 'compose.yaml' \) -print -quit 2>/dev/null) && [ -n "$CFG_FILE" ]; then
-              grep -Eq '^(apiVersion:|name:|services:)' "$CFG_FILE"
-              RESULT="config-structure:${CFG_FILE#./}"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=No bounded smoke command could be selected from the baseline source layout." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
+            case "$IDENTITY_KIND" in
+              go_module)
+                grep -Fx "module $IDENTITY_EXPECT" "$IDENTITY_TARGET" >/dev/null
+                RESULT="Verified go module identity in $IDENTITY_TARGET"
+                ;;
+              toml_name)
+                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); name=(data.get('project') or {}).get('name') or ((data.get('tool') or {}).get('poetry') or {}).get('name'); assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
+                RESULT="Verified TOML package identity in $IDENTITY_TARGET"
+                ;;
+              package_json_name)
+                python3 -c "import json,sys; data=json.load(open(sys.argv[1], encoding='utf-8')); assert data.get('name') == sys.argv[2], (data.get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
+                RESULT="Verified package.json identity in $IDENTITY_TARGET"
+                ;;
+              cargo_package)
+                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); assert (data.get('package') or {}).get('name') == sys.argv[2], ((data.get('package') or {}).get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
+                RESULT="Verified Cargo package identity in $IDENTITY_TARGET"
+                ;;
+              chart_name)
+                python3 -c "from pathlib import Path; import sys; lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(); matches=[line.split(':', 1)[1].strip() for line in lines if line.startswith('name:')]; name=matches[0] if matches else ''; assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
+                RESULT="Verified chart identity in $IDENTITY_TARGET"
+                ;;
+              grep_file)
+                grep -Eiq "$IDENTITY_EXPECT" "$IDENTITY_TARGET"
+                RESULT="Verified package-specific content in $IDENTITY_TARGET"
+                ;;
+              *)
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                echo "note=No bounded identity check was configured for this package." >> "$GITHUB_OUTPUT"
+                exit 1
+                ;;
+            esac
             echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=Executed bounded project smoke: $RESULT" >> "$GITHUB_OUTPUT"
+            echo "note=$RESULT" >> "$GITHUB_OUTPUT"
           else
-            if [ -f baseline-external/metadata.txt ]; then
-              grep -Eq '^download=https?://' baseline-external/metadata.txt
-              grep -Eq '^homepage=https?://' baseline-external/metadata.txt
+            TEMP_PAGE=$(mktemp)
+            trap 'rm -f "$TEMP_PAGE"' EXIT
+            if curl -fsSL "$OFFICIAL_DOCS" -o "$TEMP_PAGE" || curl -fsSL "$HOMEPAGE_URL" -o "$TEMP_PAGE" || curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_PAGE"; then
+              grep -Eiq "$EXTERNAL_EXPECT" "$TEMP_PAGE"
               echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated external artifact metadata and source discovery links for the pinned baseline." >> "$GITHUB_OUTPUT"
+              echo "note=Verified external package identity from published docs or homepage content using /$EXTERNAL_EXPECT/." >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=Could not fetch published docs or homepage content for bounded external validation." >> "$GITHUB_OUTPUT"
               exit 1
             fi
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
       - name: Test 6 - Regression Validation
         id: test6
         run: |
