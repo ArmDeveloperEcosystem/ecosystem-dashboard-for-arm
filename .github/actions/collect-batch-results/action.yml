@@ -275,6 +275,15 @@ runs:
                 for index, detail in enumerate(details):
                     if is_regression_detail_name(detail.get("name")):
                         merged_detail = {**detail, **regression_entry}
+                        actual_status = str(detail.get("status") or "").strip().lower()
+                        emitted_status = str(regression_entry.get("status") or "").strip().lower()
+                        emitted_decision = str(regression_entry.get("decision") or "").strip()
+                        if actual_status == "failed" and emitted_status != "failed":
+                            merged_detail["status"] = "failed"
+                            if emitted_decision in {"", "applicable_deferred", "not_configured", "manual_review_needed"}:
+                                merged_detail["decision"] = "result_not_emitted"
+                                merged_detail["regression_result"] = "Regression validation step failed before emitting terminal outputs"
+                                merged_detail["comparison"] = "The Test 6 step failed in the job, but the workflow did not emit a terminal regression decision before exiting."
                         if as_int(detail.get("duration_seconds"), 0) > 0:
                             merged_detail["duration_seconds"] = as_int(detail.get("duration_seconds"), 0)
                         details[index] = merged_detail
@@ -551,6 +560,20 @@ runs:
             if regression_policy_info["applicability"] == "applicable":
                 regression_details.append(regression_detail(outputs, regression_policy_info))
             test_details = extract_test_details(resolved_job, regression_details)
+            regression_detail_entry = next(
+                (detail for detail in test_details if is_regression_detail_name(detail.get("name"))),
+                None,
+            )
+            if (
+                regression_policy_info["reason"] == "applicable_deferred"
+                and isinstance(regression_detail_entry, dict)
+                and str(regression_detail_entry.get("status") or "").strip().lower() == "failed"
+            ):
+                regression_policy_info = {
+                    "applicability": "applicable",
+                    "reason": "result_not_emitted",
+                    "note": "The Test 6 step failed before the workflow emitted a terminal regression decision.",
+                }
             detail_counts = summarize_detail_counts(test_details)
 
             tests_passed = emitted_tests_passed
@@ -577,6 +600,53 @@ runs:
                     use_detail_counts = True
 
             if use_detail_counts:
+                tests_passed = detail_counts["passed"]
+                tests_failed = detail_counts["failed"]
+                tests_skipped = detail_counts["skipped"]
+                core_failed = detail_counts["core_failed"]
+
+            workflow_result = str(payload.get("result") or "").strip().lower()
+            resolved_job_conclusion = str((resolved_job or {}).get("conclusion") or "").strip().lower()
+            job_failed = workflow_result == "failure" or resolved_job_conclusion == "failure"
+            failed_detail_exists = any(
+                str(detail.get("status") or "").strip().lower() == "failed"
+                for detail in test_details
+            )
+
+            if job_failed and not failed_detail_exists:
+                promoted_regression_failure = False
+                if isinstance(regression_detail_entry, dict):
+                    regression_detail_entry["status"] = "failed"
+                    if str(regression_detail_entry.get("decision") or "").strip() in {
+                        "",
+                        "applicable_deferred",
+                        "not_configured",
+                        "manual_review_needed",
+                    }:
+                        regression_detail_entry["decision"] = "result_not_emitted"
+                        regression_detail_entry["regression_result"] = "Regression validation step failed before emitting terminal outputs"
+                        regression_detail_entry["comparison"] = "The package job failed in Actions, but the workflow did not emit a terminal regression decision before exiting."
+                    promoted_regression_failure = True
+                    if regression_policy_info["reason"] == "applicable_deferred":
+                        regression_policy_info = {
+                            "applicability": "applicable",
+                            "reason": "result_not_emitted",
+                            "note": "The Test 6 step failed before the workflow emitted a terminal regression decision.",
+                        }
+
+                if not promoted_regression_failure:
+                    test_details.append(
+                        {
+                            "name": "Workflow Finalization",
+                            "status": "failed",
+                            "duration_seconds": 0,
+                            "decision": "job_failed_without_emitted_result",
+                            "regression_result": "Package job failed before the workflow emitted a trustworthy final summary",
+                            "comparison": "Actions marked this package job as failed, but no terminal failure payload was emitted for publication.",
+                        }
+                    )
+
+                detail_counts = summarize_detail_counts(test_details)
                 tests_passed = detail_counts["passed"]
                 tests_failed = detail_counts["failed"]
                 tests_skipped = detail_counts["skipped"]
