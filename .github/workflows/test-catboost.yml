@@ -171,7 +171,7 @@ jobs:
           echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected baseline version: $BASELINE_VERSION"
 
-      - name: Test 1 - Baseline artifact exists
+      - name: Test 1 - Check baseline acquisition
         id: test1
         continue-on-error: true
         run: |
@@ -185,7 +185,7 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Baseline metadata check
+      - name: Test 2 - Check version evidence
         id: test2
         continue-on-error: true
         run: |
@@ -199,15 +199,25 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Source or documentation presence
+      - name: Test 3 - Check package manifests or entrypoints
         id: test3
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if [ "${{ steps.install.outputs.install_mode || '' }}" = "github_source" ]; then
-            if find baseline-src -maxdepth 2 -type f \( -name 'README*' -o -name 'LICENSE*' -o -name 'Makefile' -o -name 'pyproject.toml' -o -name 'go.mod' -o -name 'Cargo.toml' -o -name 'pom.xml' -o -name 'CMakeLists.txt' -o -name 'package.json' \) -print -quit | grep -q .; then
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+            MANIFEST=""
+            for candidate in package.json pyproject.toml setup.py Cargo.toml go.mod pom.xml build.gradle CMakeLists.txt Makefile Dockerfile Chart.yaml docker-compose.yml compose.yaml; do
+              MANIFEST=$(find . -maxdepth 3 -type f -name "$candidate" -print -quit 2>/dev/null || true)
+              if [ -n "$MANIFEST" ]; then
+                break
+              fi
+            done
+            if [ -n "$MANIFEST" ]; then
               echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "manifest=${MANIFEST#./}" >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
@@ -215,6 +225,7 @@ jobs:
           else
             if [ -f baseline-external/metadata.txt ]; then
               echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "manifest=external-metadata" >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
@@ -237,7 +248,7 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Bounded functional validation
+      - name: Test 5 - Run bounded project smoke
         id: test5
         continue-on-error: true
         run: |
@@ -245,21 +256,65 @@ jobs:
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           if [ "$MODE" = "github_source" ]; then
-            if [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
-                echo "note=Specialized accelerator or GPU runtime is not available on generic Arm runners; this workflow validates baseline source integrity and bounded artifact readiness only." >> "$GITHUB_OUTPUT"
+            cd baseline-src
+            RESULT=""
+            if PKG_JSON=$(find . -maxdepth 3 -type f -name 'package.json' -print -quit 2>/dev/null) && [ -n "$PKG_JSON" ]; then
+              if command -v node >/dev/null 2>&1; then
+                node -e 'const p=require(process.argv[1]); if(!(p.name||p.version)) process.exit(1);' "$PKG_JSON"
+                RESULT="node-package-json"
               else
-                echo "note=This generic migration workflow validates baseline source availability and bounded artifact integrity on Arm64. Package-specific runtime smoke can be added later." >> "$GITHUB_OUTPUT"
+                python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d.get("name") or d.get("version")' "$PKG_JSON"
+                RESULT="package-json-metadata"
               fi
+            elif PY_MARKER=$(find . -maxdepth 3 -type f \( -name 'pyproject.toml' -o -name 'setup.py' \) -print -quit 2>/dev/null) && [ -n "$PY_MARKER" ]; then
+              PY_FILE=$(find . -maxdepth 4 -type f -name '*.py' ! -path '*/tests/*' ! -path '*/.venv/*' -print -quit 2>/dev/null)
+              [ -n "$PY_FILE" ]
+              python3 -m py_compile "$PY_FILE"
+              RESULT="python-py_compile:${PY_FILE#./}"
+            elif CARGO_FILE=$(find . -maxdepth 3 -type f -name 'Cargo.toml' -print -quit 2>/dev/null) && [ -n "$CARGO_FILE" ]; then
+              if command -v cargo >/dev/null 2>&1; then
+                cargo metadata --format-version 1 --no-deps >/dev/null
+                RESULT="cargo-metadata"
+              else
+                grep -Eq '^name\s*=\s*".+"' "$CARGO_FILE"
+                RESULT="cargo-manifest"
+              fi
+            elif GO_FILE=$(find . -maxdepth 3 -type f -name 'go.mod' -print -quit 2>/dev/null) && [ -n "$GO_FILE" ]; then
+              if command -v go >/dev/null 2>&1; then
+                go list ./... >/dev/null
+                RESULT="go-list"
+              else
+                grep -Eq '^module ' "$GO_FILE"
+                RESULT="go-mod"
+              fi
+            elif POM_FILE=$(find . -maxdepth 3 -type f -name 'pom.xml' -print -quit 2>/dev/null) && [ -n "$POM_FILE" ]; then
+              python3 -c 'import sys,xml.etree.ElementTree as ET; root=ET.parse(sys.argv[1]).getroot(); text="".join(root.itertext()); assert "artifactId" in text or "groupId" in text' "$POM_FILE"
+              RESULT="pom-metadata"
+            elif CMAKE_FILE=$(find . -maxdepth 3 -type f -name 'CMakeLists.txt' -print -quit 2>/dev/null) && [ -n "$CMAKE_FILE" ]; then
+              grep -Eiq 'project\s*\(|add_(library|executable)\s*\(' "$CMAKE_FILE"
+              RESULT="cmake-project"
+            elif MAKE_FILE=$(find . -maxdepth 3 -type f -name 'Makefile' -print -quit 2>/dev/null) && [ -n "$MAKE_FILE" ]; then
+              make -n >/dev/null
+              RESULT="make-dry-run"
+            elif DOCKER_FILE=$(find . -maxdepth 3 -type f -name 'Dockerfile' -print -quit 2>/dev/null) && [ -n "$DOCKER_FILE" ]; then
+              grep -Eq '^FROM ' "$DOCKER_FILE"
+              RESULT="dockerfile-base-image"
+            elif CFG_FILE=$(find . -maxdepth 3 -type f \( -name 'Chart.yaml' -o -name 'docker-compose.yml' -o -name 'compose.yaml' \) -print -quit 2>/dev/null) && [ -n "$CFG_FILE" ]; then
+              grep -Eq '^(apiVersion:|name:|services:)' "$CFG_FILE"
+              RESULT="config-structure:${CFG_FILE#./}"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=No bounded smoke command could be selected from the baseline source layout." >> "$GITHUB_OUTPUT"
               exit 1
             fi
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Executed bounded project smoke: $RESULT" >> "$GITHUB_OUTPUT"
           else
             if [ -f baseline-external/metadata.txt ]; then
+              grep -Eq '^download=https?://' baseline-external/metadata.txt
+              grep -Eq '^homepage=https?://' baseline-external/metadata.txt
               echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=This workflow validated external artifact or documentation reachability on Arm64. A package-specific install/runtime lane may still be needed for deeper smoke coverage." >> "$GITHUB_OUTPUT"
+              echo "note=Validated external artifact metadata and source discovery links for the pinned baseline." >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
@@ -267,7 +322,6 @@ jobs:
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Test 6 - Regression Validation
         id: test6

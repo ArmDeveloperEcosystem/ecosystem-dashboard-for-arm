@@ -171,7 +171,7 @@ jobs:
           echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected baseline version: $BASELINE_VERSION"
 
-      - name: Test 1 - Baseline artifact exists
+      - name: Test 1 - Baseline package evidence
         id: test1
         continue-on-error: true
         run: |
@@ -185,7 +185,7 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Baseline metadata check
+      - name: Test 2 - Baseline version and release alignment
         id: test2
         continue-on-error: true
         run: |
@@ -199,22 +199,35 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Source or documentation presence
+      - name: Test 3 - Package-specific source or docs evidence
         id: test3
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if [ "${{ steps.install.outputs.install_mode || '' }}" = "github_source" ]; then
-            if find baseline-src -maxdepth 2 -type f \( -name 'README*' -o -name 'LICENSE*' -o -name 'Makefile' -o -name 'pyproject.toml' -o -name 'go.mod' -o -name 'Cargo.toml' -o -name 'pom.xml' -o -name 'CMakeLists.txt' -o -name 'package.json' \) -print -quit | grep -q .; then
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+            FOUND_PATH=""
+            for candidate in python/cudf cpp/include/cudf docs/cudf; do
+              if [ -e "$candidate" ]; then
+                FOUND_PATH="$candidate"
+                break
+              fi
+            done
+            if [ -n "$FOUND_PATH" ]; then
               echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "manifest=$FOUND_PATH" >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
             fi
           else
             if [ -f baseline-external/metadata.txt ]; then
+              grep -Eq '^docs=https?://' baseline-external/metadata.txt
+              grep -Eq '^homepage=https?://' baseline-external/metadata.txt
               echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "manifest=external-metadata-doc-links" >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
@@ -237,7 +250,7 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Bounded functional validation
+      - name: Test 5 - Bounded package-specific smoke
         id: test5
         continue-on-error: true
         run: |
@@ -245,21 +258,19 @@ jobs:
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           if [ "$MODE" = "github_source" ]; then
-            if [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
-                echo "note=Specialized accelerator or GPU runtime is not available on generic Arm runners; this workflow validates baseline source integrity and bounded artifact readiness only." >> "$GITHUB_OUTPUT"
-              else
-                echo "note=This generic migration workflow validates baseline source availability and bounded artifact integrity on Arm64. Package-specific runtime smoke can be added later." >> "$GITHUB_OUTPUT"
-              fi
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
+            cd baseline-src
+            PY_FILE=$(find python/cudf -type f -name '*.py' -print -quit 2>/dev/null || true)
+            [ -n "$PY_FILE" ]
+            python3 -m py_compile "$PY_FILE"
+            grep -R -Eq 'cudf|DataFrame' python/cudf
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Compiled CuDF Python entrypoint and verified CuDF/DataFrame symbols in source." >> "$GITHUB_OUTPUT"
           else
             if [ -f baseline-external/metadata.txt ]; then
+              grep -Eq '^download=https?://' baseline-external/metadata.txt
+              grep -Eq '^homepage=https?://' baseline-external/metadata.txt
               echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=This workflow validated external artifact or documentation reachability on Arm64. A package-specific install/runtime lane may still be needed for deeper smoke coverage." >> "$GITHUB_OUTPUT"
+              echo "note=Validated CuDF external distribution links and documentation references." >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1

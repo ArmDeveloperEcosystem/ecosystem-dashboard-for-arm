@@ -87,6 +87,14 @@ jobs:
       HOMEPAGE_URL: "https://steveicarus.github.io/iverilog/index.html"
       OFFICIAL_DOCS: "https://steveicarus.github.io/iverilog/usage/installation.html#"
       GITHUB_REPO: "steveicarus/iverilog"
+      EXTRA_APT_PACKAGES: "autoconf gperf"
+      EXTRA_TAG_CANDIDATES: "0.9.7|v0_9_7"
+      TEST1_COMMAND: >-
+        test -f README.md && test -f configure.ac && test -f autoconf.sh && test -d Documentation && test "$RESOLVED_TAG" = "v0_9_7"
+      TEST3_COMMAND: >-
+        test -d Documentation && test -d driver && grep -Fq 'Running `iverilog`' README.md
+      TEST5_COMMAND: >-
+        sh autoconf.sh >/dev/null && test -f configure && ./configure --help >/dev/null
 
     outputs:
       contract_version: "2.0"
@@ -131,16 +139,27 @@ jobs:
           set -euo pipefail
           sudo apt-get update >/dev/null
           sudo apt-get install -y git curl jq tar unzip file ca-certificates >/dev/null
+          if [ -n "${EXTRA_APT_PACKAGES:-}" ]; then
+            sudo apt-get install -y ${EXTRA_APT_PACKAGES} >/dev/null
+          fi
           rm -rf baseline-src baseline-external
           mkdir -p baseline-src baseline-external
           if [ -n "$GITHUB_REPO" ]; then
             RESOLVED_TAG=""
-            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
+            CANDIDATE_TAGS="$BASELINE_VERSION|v$BASELINE_VERSION"
+            if [ -n "${EXTRA_TAG_CANDIDATES:-}" ]; then
+              CANDIDATE_TAGS="${CANDIDATE_TAGS}|${EXTRA_TAG_CANDIDATES}"
+            fi
+            OLD_IFS="$IFS"
+            IFS='|'
+            for CANDIDATE in $CANDIDATE_TAGS; do
+              [ -n "$CANDIDATE" ] || continue
               if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
                 RESOLVED_TAG="$CANDIDATE"
                 break
               fi
             done
+            IFS="$OLD_IFS"
             if [ -n "$RESOLVED_TAG" ]; then
               git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
               echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
@@ -155,7 +174,11 @@ jobs:
             fi
           fi
           if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
+            {
+              echo "download=$DOWNLOAD_URL"
+              echo "homepage=$HOMEPAGE_URL"
+              echo "docs=$OFFICIAL_DOCS"
+            } > baseline-external/metadata.txt
             echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
             echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
             echo "install_status=success" >> "$GITHUB_OUTPUT"
@@ -164,111 +187,93 @@ jobs:
           echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
           echo "install_status=failed" >> "$GITHUB_OUTPUT"
           exit 1
-
       - name: Get baseline version
         id: version
         run: |
           echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected baseline version: $BASELINE_VERSION"
 
-      - name: Test 1 - Baseline artifact exists
+      - name: Test 1 - Baseline package evidence
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" = "success" ]; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          RESOLVED_TAG="${{ steps.install.outputs.resolved_tag || '' }}"
+          INSTALL_STATUS="${{ steps.install.outputs.install_status || 'failed' }}"
+          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+          if [ "$INSTALL_STATUS" != "success" ]; then
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+          fi
+          eval "$TEST1_COMMAND"
+          if [ "$MODE" = "github_source" ] && [ "$RESOLVED_TAG" = "default_branch" ]; then
+            echo "note=Upstream source smoke used the default branch because no exact source tag matched the published baseline version." >> "$GITHUB_OUTPUT"
+          fi
+          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 2 - Baseline metadata check
+      - name: Test 2 - Baseline version and release alignment
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ -n "$BASELINE_VERSION" ]; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
+          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+          export DOC_PATH BASELINE_VERSION DOWNLOAD_URL
+          python3 -c "from pathlib import Path; import os; text=Path(os.environ['DOC_PATH']).read_text(); version=os.environ['BASELINE_VERSION']; download=os.environ['DOWNLOAD_URL']; assert f'version_number: {version}' in text; assert f'download_url: {download}' in text"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 3 - Source or documentation presence
+      - name: Test 3 - Package-specific source or docs evidence
         id: test3
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if [ "${{ steps.install.outputs.install_mode || '' }}" = "github_source" ]; then
-            if find baseline-src -maxdepth 2 -type f \( -name 'README*' -o -name 'LICENSE*' -o -name 'Makefile' -o -name 'pyproject.toml' -o -name 'go.mod' -o -name 'Cargo.toml' -o -name 'pom.xml' -o -name 'CMakeLists.txt' -o -name 'package.json' \) -print -quit | grep -q .; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          else
-            if [ -f baseline-external/metadata.txt ]; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
           fi
+          eval "$TEST3_COMMAND"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 4 - Architecture Verification
+      - name: Test 4 - Arm64 support gate
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ "$(uname -m)" = "aarch64" ]; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
+          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+          test "$(uname -m)" = "aarch64"
+          grep -Fq "works_on_arm: true" "$DOC_PATH"
+          if [ -n "${TEST4_COMMAND:-}" ]; then
+            eval "$TEST4_COMMAND"
           fi
+          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 5 - Bounded functional validation
+      - name: Test 5 - Bounded package-specific smoke
         id: test5
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
+          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
           if [ "$MODE" = "github_source" ]; then
-            if [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
-                echo "note=Specialized accelerator or GPU runtime is not available on generic Arm runners; this workflow validates baseline source integrity and bounded artifact readiness only." >> "$GITHUB_OUTPUT"
-              else
-                echo "note=This generic migration workflow validates baseline source availability and bounded artifact integrity on Arm64. Package-specific runtime smoke can be added later." >> "$GITHUB_OUTPUT"
-              fi
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          else
-            if [ -f baseline-external/metadata.txt ]; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=This workflow validated external artifact or documentation reachability on Arm64. A package-specific install/runtime lane may still be needed for deeper smoke coverage." >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
+            cd baseline-src
           fi
+          eval "$TEST5_COMMAND"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-
       - name: Test 6 - Regression Validation
         id: test6
         uses: ./.github/actions/generic-source-regression-check

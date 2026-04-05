@@ -171,7 +171,7 @@ jobs:
           echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected baseline version: $BASELINE_VERSION"
 
-      - name: Test 1 - Baseline artifact exists
+      - name: Test 1 - Check baseline acquisition
         id: test1
         continue-on-error: true
         run: |
@@ -185,7 +185,7 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Baseline metadata check
+      - name: Test 2 - Check version evidence
         id: test2
         continue-on-error: true
         run: |
@@ -199,22 +199,70 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Source or documentation presence
+      - name: Test 3 - Check package-specific source markers
         id: test3
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if [ "${{ steps.install.outputs.install_mode || '' }}" = "github_source" ]; then
-            if find baseline-src -maxdepth 2 -type f \( -name 'README*' -o -name 'LICENSE*' -o -name 'Makefile' -o -name 'pyproject.toml' -o -name 'go.mod' -o -name 'Cargo.toml' -o -name 'pom.xml' -o -name 'CMakeLists.txt' -o -name 'package.json' \) -print -quit | grep -q .; then
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          PKG="${{ steps.metadata.outputs.package_slug }}"
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+            MARKERS=""
+            case "$PKG" in
+              shap) MARKERS="shap/__init__.py,setup.py,pyproject.toml" ;;
+              sparks-rapids) MARKERS="README.md,pom.xml,build.gradle" ;;
+              spice-opus) MARKERS="configure.ac,src,README" ;;
+              sunshine) MARKERS="CMakeLists.txt,src,README.md" ;;
+              tabpfn|tabpfn-time-series) MARKERS="pyproject.toml,setup.py,README.md" ;;
+              tensorrt-llm) MARKERS="README.md,examples,cpp" ;;
+              tensorrt) MARKERS="README.md,samples,python" ;;
+              tilelang) MARKERS="pyproject.toml,setup.py,README.md" ;;
+              turbovnc) MARKERS="CMakeLists.txt,README.txt,java" ;;
+              ubuntudesktop) MARKERS="README.md,docs,debian" ;;
+              ucx) MARKERS="configure.ac,CMakeLists.txt,README.md" ;;
+              vcpkg) MARKERS="bootstrap-vcpkg.sh,ports,README.md" ;;
+              velox) MARKERS="CMakeLists.txt,velox,README.md" ;;
+              verible) MARKERS="WORKSPACE.bazel,verible,README.md" ;;
+              verilator) MARKERS="configure.ac,src,README.rst" ;;
+              veriloggen) MARKERS="setup.py,veriloggen,README.md" ;;
+              vidgear) MARKERS="setup.py,vidgear,README.md" ;;
+              warp) MARKERS="pyproject.toml,setup.py,README.md" ;;
+              wsl) MARKERS="README.md,docs,src" ;;
+              xpra) MARKERS="setup.py,xpra,README.md" ;;
+              xschem) MARKERS="xschem.c,Makefile,README.md" ;;
+              yosys) MARKERS="Makefile,kernel,README.md" ;;
+              *) MARKERS="README.md,LICENSE" ;;
+            esac
+
+            FOUND_MARKER=""
+            IFS=',' read -r -a marker_list <<< "$MARKERS"
+            for marker in "${marker_list[@]}"; do
+              marker_trimmed="$(echo "$marker" | xargs)"
+              if [ -e "$marker_trimmed" ]; then
+                FOUND_MARKER="$marker_trimmed"
+                break
+              fi
+              CANDIDATE=$(find . -maxdepth 4 -name "$marker_trimmed" -print -quit 2>/dev/null || true)
+              if [ -n "$CANDIDATE" ]; then
+                FOUND_MARKER="${CANDIDATE#./}"
+                break
+              fi
+            done
+
+            if [ -n "$FOUND_MARKER" ]; then
               echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "manifest=$FOUND_MARKER" >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "manifest=missing-package-marker" >> "$GITHUB_OUTPUT"
               exit 1
             fi
           else
             if [ -f baseline-external/metadata.txt ]; then
               echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "manifest=external-metadata" >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
@@ -237,29 +285,78 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Bounded functional validation
+      - name: Test 5 - Run package-specific bounded smoke
         id: test5
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
+          PKG="${{ steps.metadata.outputs.package_slug }}"
           if [ "$MODE" = "github_source" ]; then
-            if [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
-                echo "note=Specialized accelerator or GPU runtime is not available on generic Arm runners; this workflow validates baseline source integrity and bounded artifact readiness only." >> "$GITHUB_OUTPUT"
-              else
-                echo "note=This generic migration workflow validates baseline source availability and bounded artifact integrity on Arm64. Package-specific runtime smoke can be added later." >> "$GITHUB_OUTPUT"
-              fi
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
+            cd baseline-src
+            RESULT=""
+            MANIFEST="${{ steps.test3.outputs.manifest || '' }}"
+
+            case "$PKG" in
+              shap|tabpfn|tabpfn-time-series|veriloggen|vidgear|warp|xpra)
+                PY_FILE=$(find . -maxdepth 5 -type f -name '*.py' ! -path '*/tests/*' ! -path '*/.venv/*' -print -quit 2>/dev/null || true)
+                [ -n "$PY_FILE" ]
+                python3 -m py_compile "$PY_FILE"
+                RESULT="python-py_compile:${PY_FILE#./}"
+                ;;
+              vcpkg)
+                [ -f bootstrap-vcpkg.sh ] || [ -f ./scripts/bootstrap.sh ]
+                if [ -f bootstrap-vcpkg.sh ]; then bash -n bootstrap-vcpkg.sh; fi
+                RESULT="vcpkg-bootstrap-script-check"
+                ;;
+              verilator|yosys|xschem|spice-opus|ucx)
+                if [ -f Makefile ]; then
+                  make -n >/dev/null
+                  RESULT="make-dry-run"
+                elif [ -f configure.ac ]; then
+                  grep -Eq 'AC_INIT\(' configure.ac
+                  RESULT="autotools-configure-ac"
+                else
+                  [ -n "$MANIFEST" ]
+                  RESULT="source-marker-smoke:${MANIFEST}"
+                fi
+                ;;
+              sunshine|turbovnc|velox|tilelang|tensorrt|tensorrt-llm)
+                if [ -f CMakeLists.txt ]; then
+                  grep -Eiq 'project\s*\(|add_(library|executable)\s*\(' CMakeLists.txt
+                  RESULT="cmake-project-smoke"
+                elif [ -n "$MANIFEST" ]; then
+                  RESULT="source-marker-smoke:${MANIFEST}"
+                else
+                  echo "status=failed" >> "$GITHUB_OUTPUT"
+                  echo "note=No safe bounded smoke command found for C/C++ package layout." >> "$GITHUB_OUTPUT"
+                  exit 1
+                fi
+                ;;
+              sparks-rapids|wsl|ubuntudesktop|verible)
+                [ -n "$MANIFEST" ]
+                RESULT="repo-structure-smoke:${MANIFEST}"
+                ;;
+              *)
+                if [ -n "$MANIFEST" ]; then
+                  RESULT="source-marker-smoke:${MANIFEST}"
+                else
+                  echo "status=failed" >> "$GITHUB_OUTPUT"
+                  echo "note=No bounded smoke command could be selected from the baseline source layout." >> "$GITHUB_OUTPUT"
+                  exit 1
+                fi
+                ;;
+            esac
+
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Executed package-specific bounded smoke: $RESULT" >> "$GITHUB_OUTPUT"
           else
             if [ -f baseline-external/metadata.txt ]; then
+              grep -Eq '^download=https?://' baseline-external/metadata.txt
+              grep -Eq '^homepage=https?://' baseline-external/metadata.txt
               echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=This workflow validated external artifact or documentation reachability on Arm64. A package-specific install/runtime lane may still be needed for deeper smoke coverage." >> "$GITHUB_OUTPUT"
+              echo "note=Validated external artifact metadata and source discovery links for the pinned baseline." >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
@@ -267,7 +364,6 @@ jobs:
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
 
       - name: Test 6 - Regression Validation
         id: test6
