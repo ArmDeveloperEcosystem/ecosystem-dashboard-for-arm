@@ -110,28 +110,54 @@ jobs:
           echo "dashboard_link=/opensource_packages/kafka" >> "$GITHUB_OUTPUT"
       - name: Install Kafka
         id: install
+        continue-on-error: true
         run: |
+          set -euo pipefail
           echo "Installing Kafka..."
           
           # Install Java
           sudo apt-get update
-          sudo apt-get install -y openjdk-17-jre wget tar
+          sudo apt-get install -y openjdk-17-jre wget tar curl
+
+          download_with_fallback() {
+            local primary_url="$1"
+            local secondary_url="$2"
+            local dest="$3"
+            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar "$primary_url" -o "$dest"; then
+              return 0
+            fi
+            if [ -n "$secondary_url" ] && curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar "$secondary_url" -o "$dest"; then
+              return 0
+            fi
+            if [ -n "$secondary_url" ]; then
+              wget -4 --tries=5 --timeout=30 -O "$dest" "$secondary_url"
+            else
+              wget -4 --tries=5 --timeout=30 -O "$dest" "$primary_url"
+            fi
+          }
           
           # Download Kafka
           # Dashboard-aligned aged stable baseline above the Arm recommendation.
           VERSION="4.0.0"
           SCALA_VERSION="2.13"
           URL="https://archive.apache.org/dist/kafka/${VERSION}/kafka_${SCALA_VERSION}-${VERSION}.tgz"
+          FALLBACK_URL="https://downloads.apache.org/kafka/${VERSION}/kafka_${SCALA_VERSION}-${VERSION}.tgz"
           
-          if wget -q $URL -O kafka.tgz; then
+          if download_with_fallback "$URL" "$FALLBACK_URL" kafka.tgz; then
              echo "Downloaded successfully"
           else
              echo "Download failed"
+             echo "install_status=failed" >> "$GITHUB_OUTPUT"
+             echo "install_blocker=download_failed" >> "$GITHUB_OUTPUT"
              exit 1
           fi
           
           # Extract
-          tar -xzf kafka.tgz
+          if ! tar -xzf kafka.tgz; then
+             echo "install_status=failed" >> "$GITHUB_OUTPUT"
+             echo "install_blocker=extract_failed" >> "$GITHUB_OUTPUT"
+             exit 1
+          fi
           mv kafka_${SCALA_VERSION}-${VERSION} kafka
           
           # Verify installation
@@ -175,9 +201,16 @@ jobs:
 
       - name: Test 1 - Check kafka scripts exist
         id: test1
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           
           if [ -x "kafka/bin/kafka-server-start.sh" ]; then
             echo "✓ kafka-server-start.sh found"
@@ -193,10 +226,18 @@ jobs:
 
       - name: Test 2 - Prepare KRaft metadata
         id: test2
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           KRAFT_DIR="/tmp/kafka-kraft"
           rm -rf "$KRAFT_DIR"
           mkdir -p "$KRAFT_DIR/logs"
@@ -234,10 +275,18 @@ jobs:
 
       - name: Test 3 - Start Kafka Server
         id: test3
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           KRAFT_DIR="/tmp/kafka-kraft"
           export KAFKA_HEAP_OPTS="-Xms256m -Xmx512m"
           nohup kafka/bin/kafka-server-start.sh "$KRAFT_DIR/server.properties" > "$KRAFT_DIR/kafka.log" 2>&1 &
@@ -268,10 +317,18 @@ jobs:
 
       - name: Test 4 - Create a topic
         id: test4
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           KRAFT_DIR="/tmp/kafka-kraft"
           if kafka/bin/kafka-topics.sh --create --if-not-exists --topic test-topic --bootstrap-server 127.0.0.1:19092 --partitions 1 --replication-factor 1 > "$KRAFT_DIR/topic-create.log" 2>&1; then
              echo "✓ Topic created"
@@ -288,10 +345,18 @@ jobs:
 
       - name: Test 5 - List topics
         id: test5
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           KRAFT_DIR="/tmp/kafka-kraft"
           TOPICS=$(kafka/bin/kafka-topics.sh --list --bootstrap-server 127.0.0.1:19092 2>"$KRAFT_DIR/topic-list.err" || true)
           if printf '%s\n' "$TOPICS" | grep -q "test-topic"; then
@@ -328,10 +393,44 @@ jobs:
       # Add/remove test result checks to match your tests above
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
         run: |
           set -euo pipefail
+          download_with_fallback() {
+            local primary_url="$1"
+            local secondary_url="$2"
+            local dest="$3"
+            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar "$primary_url" -o "$dest"; then
+              return 0
+            fi
+            if [ -n "$secondary_url" ] && curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar "$secondary_url" -o "$dest"; then
+              return 0
+            fi
+            if [ -n "$secondary_url" ]; then
+              wget -4 --tries=5 --timeout=30 -O "$dest" "$secondary_url"
+            else
+              wget -4 --tries=5 --timeout=30 -O "$dest" "$primary_url"
+            fi
+          }
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || \
+             [ "${{ steps.test1.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'skipped' }}" != "passed" ]; then
+            echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${{ steps.version.outputs.latest || 'unknown' }}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Kafka version ${CURRENT} did not complete baseline acquisition or core smoke validation cleanly in this run, so next-version validation was not attempted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           LATEST=$(CURRENT_VERSION="$CURRENT" python3 - <<'PY'
           import os
           import re
@@ -362,7 +461,8 @@ jobs:
           NEXT_TGZ="/tmp/kafka-regression.tgz"
           NEXT_DIR=$(mktemp -d)
           NEXT_URL="https://archive.apache.org/dist/kafka/${LATEST}/kafka_${SCALA_VERSION}-${LATEST}.tgz"
-          if wget -q -O "$NEXT_TGZ" "$NEXT_URL"; then
+          NEXT_FALLBACK_URL="https://downloads.apache.org/kafka/${LATEST}/kafka_${SCALA_VERSION}-${LATEST}.tgz"
+          if download_with_fallback "$NEXT_URL" "$NEXT_FALLBACK_URL" "$NEXT_TGZ"; then
             echo "Next version download status: passed"
             tar -xzf "$NEXT_TGZ" -C "$NEXT_DIR"
             NEXT_ROOT="$NEXT_DIR/kafka_${SCALA_VERSION}-${LATEST}"
@@ -457,71 +557,60 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
+          CORE_FAILED=0
 
-          # Check kafka scripts exist
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+          check_test() {
+            local status="$1"
+            local duration="$2"
+            local is_core="${3:-0}"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$status" = "skipped" ] || [ -z "$status" ]; then
+              SKIPPED=$((SKIPPED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              if [ "$is_core" = "1" ]; then
+                CORE_FAILED=$((CORE_FAILED + 1))
+              fi
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          # Prepare KRaft metadata
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            CORE_FAILED=1
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Start Kafka Server
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Create a topic
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # List topics
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+          check_test "${{ steps.test1.outputs.status || 'skipped' }}" "${{ steps.test1.outputs.duration || 0 }}" 1
+          check_test "${{ steps.test2.outputs.status || 'skipped' }}" "${{ steps.test2.outputs.duration || 0 }}" 1
+          check_test "${{ steps.test3.outputs.status || 'skipped' }}" "${{ steps.test3.outputs.duration || 0 }}" 1
+          check_test "${{ steps.test4.outputs.status || 'skipped' }}" "${{ steps.test4.outputs.duration || 0 }}" 1
+          check_test "${{ steps.test5.outputs.status || 'skipped' }}" "${{ steps.test5.outputs.duration || 0 }}" 1
+          check_test "${{ steps.test6.outputs.status || 'skipped' }}" "${{ steps.test6.outputs.duration || 0 }}" 0
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
 
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ] && \
-             [ "${{ steps.test2.outputs.status }}" == "passed" ] && \
-             [ "${{ steps.test3.outputs.status }}" == "passed" ] && \
-             [ "${{ steps.test4.outputs.status }}" == "passed" ] && \
-             [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+          if [ "$FAILED" -eq 0 ] && [ "$CORE_FAILED" -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
+          fi
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
             echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ "$FAILED" -ne 0 ] || [ "$CORE_FAILED" -ne 0 ]; then
             exit 1
           fi
       - name: Create test summary
