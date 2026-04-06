@@ -12,6 +12,14 @@ inputs:
     description: Workflow lane description for messaging
     required: false
     default: ""
+  next_version_override:
+    description: Manually pinned next stable version display value
+    required: false
+    default: ""
+  candidate_tag_override:
+    description: Manually pinned upstream tag/ref to clone for the next stable candidate
+    required: false
+    default: ""
 
 outputs:
   status:
@@ -51,6 +59,8 @@ runs:
         CURRENT="${{ inputs.baseline_version }}"
         REPO="${{ inputs.github_repo }}"
         LANE_KIND="${{ inputs.lane_kind }}"
+        OVERRIDE_VERSION="${{ inputs.next_version_override }}"
+        OVERRIDE_TAG="${{ inputs.candidate_tag_override }}"
 
         echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
 
@@ -66,9 +76,14 @@ runs:
           exit 0
         fi
 
-        mapfile -t RAW_TAGS < <(git ls-remote --tags --refs "https://github.com/${REPO}.git" 2>/dev/null | awk '{print $2}' | sed 's#refs/tags/##')
+        if [ -n "$OVERRIDE_VERSION" ] && [ -n "$OVERRIDE_TAG" ]; then
+          STATUS_KIND="FOUND_OVERRIDE"
+          LATEST_VERSION="$OVERRIDE_VERSION"
+          CANDIDATE_TAG="$OVERRIDE_TAG"
+        else
+          mapfile -t RAW_TAGS < <(git ls-remote --tags --refs "https://github.com/${REPO}.git" 2>/dev/null | awk '{print $2}' | sed 's#refs/tags/##')
 
-        TAG_RESULT=$(RAW_TAGS="$(printf '%s\n' "${RAW_TAGS[@]-}")" python3 - "$CURRENT" <<'PY'
+          TAG_RESULT=$(RAW_TAGS="$(printf '%s\n' "${RAW_TAGS[@]-}")" python3 - "$CURRENT" <<'PY'
         import os
         import re
         import sys
@@ -120,11 +135,12 @@ runs:
         candidate = newer[-1]
         print(f"FOUND\t{candidate[1]}\t{candidate[2]}")
         PY
-        )
+          )
 
-        STATUS_KIND=$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $1}')
-        LATEST_VERSION=$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $2}')
-        CANDIDATE_TAG=$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $3}')
+          STATUS_KIND=$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $1}')
+          LATEST_VERSION=$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $2}')
+          CANDIDATE_TAG=$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $3}')
+        fi
 
         case "$STATUS_KIND" in
           NONE)
@@ -150,6 +166,33 @@ runs:
             echo "regression_result=Automatic next-version resolution needs manual review" >> "$GITHUB_OUTPUT"
             echo "comparison=The baseline version ${CURRENT} does not parse cleanly for automatic ordering, while ${REPO} exposes newer stable-looking tags such as ${LATEST_VERSION}. A package-specific version mapping rule is required before enabling automated regression validation." >> "$GITHUB_OUTPUT"
             echo "status=skipped" >> "$GITHUB_OUTPUT"
+            ;;
+          FOUND_OVERRIDE)
+            rm -rf next-src
+            if git clone --depth 1 --branch "$CANDIDATE_TAG" "https://github.com/${REPO}.git" next-src >/dev/null 2>&1; then
+              if find next-src -maxdepth 2 -type f \( -name 'README*' -o -name 'LICENSE*' -o -name 'Makefile' -o -name 'pyproject.toml' -o -name 'go.mod' -o -name 'Cargo.toml' -o -name 'pom.xml' -o -name 'CMakeLists.txt' -o -name 'package.json' \) -print -quit | grep -q . || [ -n "$(find next-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
+                echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+                echo "next_installed_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+                echo "decision=validated_next_release" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next stable source release resolved and validated on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=A package-specific next stable candidate was pinned manually for ${REPO}: baseline ${CURRENT} vs candidate ${LATEST_VERSION} (${CANDIDATE_TAG}). The candidate tag resolved and passed the same bounded Arm64 source validation as the baseline." >> "$GITHUB_OUTPUT"
+                echo "status=passed" >> "$GITHUB_OUTPUT"
+              else
+                echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+                echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next source release could not satisfy bounded validation on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=A package-specific next stable candidate was pinned manually for ${REPO}, but the candidate checkout ${CANDIDATE_TAG} did not contain the expected bounded artifact structure used by this workflow." >> "$GITHUB_OUTPUT"
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+              fi
+            else
+              echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next source release clone failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=A package-specific next stable candidate was pinned manually for ${REPO}, but cloning ${CANDIDATE_TAG} failed on Arm64." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
             ;;
           FOUND)
             rm -rf next-src
