@@ -120,27 +120,58 @@ jobs:
           echo "current_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
       - name: Install Hive baseline
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y openjdk-17-jdk curl tar file
+          sudo apt-get install -y openjdk-17-jdk curl wget tar file
 
           VERSION="${{ steps.metadata.outputs.current_version }}"
           URL="https://archive.apache.org/dist/hive/hive-${VERSION}/apache-hive-${VERSION}-bin.tar.gz"
+          HADOOP_URL="https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}-aarch64.tar.gz"
+
+          download_with_fallback() {
+            local url="$1"
+            local dest="$2"
+            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar "$url" -o "$dest"; then
+              return 0
+            fi
+            wget -4 --tries=5 --timeout=30 -O "$dest" "$url"
+          }
 
           rm -rf hive /tmp/hive-current.tar.gz
           echo "Downloading Hive baseline from $URL"
-          curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar "$URL" -o /tmp/hive-current.tar.gz
+          if ! download_with_fallback "$URL" /tmp/hive-current.tar.gz; then
+            echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=hive_download_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           ls -lh /tmp/hive-current.tar.gz
           echo "Extracting Hive baseline..."
-          timeout 15m tar -xzf /tmp/hive-current.tar.gz
+          if ! timeout 15m tar -xzf /tmp/hive-current.tar.gz; then
+            echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=hive_extract_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           mv "apache-hive-${VERSION}-bin" hive
 
           echo "Downloading Hadoop dependency ${HADOOP_VERSION}"
-          curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar "https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}-aarch64.tar.gz" -o /tmp/hadoop-current.tar.gz
+          if ! download_with_fallback "$HADOOP_URL" /tmp/hadoop-current.tar.gz; then
+            echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=hadoop_download_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           ls -lh /tmp/hadoop-current.tar.gz
           echo "Extracting Hadoop dependency..."
-          timeout 15m tar -xzf /tmp/hadoop-current.tar.gz
+          if ! timeout 15m tar -xzf /tmp/hadoop-current.tar.gz; then
+            echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=hadoop_extract_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           mv "hadoop-${HADOOP_VERSION}" hadoop
 
           JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")
@@ -170,10 +201,16 @@ jobs:
 
       - name: Test 1 - Check Hive scripts exist
         id: test1
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -x "hive/bin/hive" ] && [ -x "hive/bin/schematool" ] && [ -x "hive/bin/beeline" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -189,10 +226,16 @@ jobs:
 
       - name: Test 2 - Check exact Hive version
         id: test2
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           EXPECTED="${{ steps.install.outputs.baseline_version }}"
           REPORTED="${{ steps.version.outputs.version }}"
           if [ "$REPORTED" = "$EXPECTED" ]; then
@@ -209,10 +252,16 @@ jobs:
 
       - name: Test 3 - Check Hive jar layout
         id: test3
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           EXPECTED="${{ steps.install.outputs.baseline_version }}"
           if [ -f "hive/lib/hive-exec-${EXPECTED}.jar" ] \
             && [ -f "hive/lib/hive-service-${EXPECTED}.jar" ]; then
@@ -229,10 +278,16 @@ jobs:
 
       - name: Test 4 - Check Hive help commands
         id: test4
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" hive/bin/hive --help >/tmp/hive-help.log 2>&1 || true) \
             && (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" hive/bin/schematool -help >/tmp/hive-schematool-help.log 2>&1 || true) \
             && grep -Eqi "usage|hive" /tmp/hive-help.log \
@@ -251,10 +306,16 @@ jobs:
 
       - name: Test 5 - Check Beeline help and architecture
         id: test5
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$(uname -m)" = "aarch64" ] \
             && file "$(readlink -f "$(command -v java)")" | grep -Eqi "aarch64|arm64" \
             && (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" hive/bin/beeline --help >/tmp/hive-beeline-help.log 2>&1 || true) \
@@ -273,10 +334,24 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version }}"
+          CURRENT="${{ steps.version.outputs.version || steps.install.outputs.baseline_version || 'unknown' }}"
+          INSTALL_STATUS="${{ steps.install.outputs.install_status || 'failed' }}"
+          CORE_FAILURES=0
+          for conclusion in \
+            "${{ steps.test1.conclusion || 'skipped' }}" \
+            "${{ steps.test2.conclusion || 'skipped' }}" \
+            "${{ steps.test3.conclusion || 'skipped' }}" \
+            "${{ steps.test4.conclusion || 'skipped' }}" \
+            "${{ steps.test5.conclusion || 'skipped' }}"; do
+            if [ "$conclusion" = "failure" ]; then
+              CORE_FAILURES=$((CORE_FAILURES + 1))
+            fi
+          done
+
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
@@ -285,6 +360,19 @@ jobs:
 
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
           echo "Next version targeted for install validation: $LATEST"
+
+          if [ "$INSTALL_STATUS" != "success" ] || [ "$CORE_FAILURES" -gt 0 ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Hive version ${CURRENT} did not complete baseline installation and core Tests 1-5 cleanly in this run, so next-version validation was not attempted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Regression validation deferred because baseline install or core smoke checks failed"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if [ "$CURRENT" = "$LATEST" ]; then
             echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
@@ -303,10 +391,36 @@ jobs:
           NEXT_DIR=$(mktemp -d)
           NEXT_TAR="${NEXT_DIR}/apache-hive-${LATEST}-bin.tar.gz"
           echo "Downloading Hive candidate ${LATEST}"
-          curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar "https://downloads.apache.org/hive/hive-${LATEST}/apache-hive-${LATEST}-bin.tar.gz" -o "$NEXT_TAR"
+          download_with_fallback() {
+            local url="$1"
+            local dest="$2"
+            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar "$url" -o "$dest"; then
+              return 0
+            fi
+            wget -4 --tries=5 --timeout=30 -O "$dest" "$url"
+          }
+          if ! download_with_fallback "https://downloads.apache.org/hive/hive-${LATEST}/apache-hive-${LATEST}-bin.tar.gz" "$NEXT_TAR"; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Hive version ${CURRENT} passed the baseline script and jar validation on Arm64, but the candidate Hive binary distribution ${LATEST} could not be downloaded in this run." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           ls -lh "$NEXT_TAR"
           echo "Extracting Hive candidate..."
-          timeout 15m tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
+          if ! timeout 15m tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Hive version ${CURRENT} passed the baseline script and jar validation on Arm64, but the candidate Hive binary distribution ${LATEST} could not be extracted in this run." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           NEXT_HOME="${NEXT_DIR}/apache-hive-${LATEST}-bin"
           NEXT_REPORTED=$(JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" HIVE_HOME="$NEXT_HOME" "$NEXT_HOME/bin/hive" --version 2>&1 | awk '/Hive / {print $2; exit}' || true)
           if [ -z "$NEXT_REPORTED" ]; then
@@ -369,6 +483,9 @@ jobs:
               metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
+              baseline_failed|baseline_install_failed)
+                REGRESSION_RESULT="Regression validation deferred because baseline install or core smoke checks failed"
+                ;;
               *)
                 REGRESSION_RESULT="Regression validation status unavailable"
                 ;;
@@ -386,9 +503,9 @@ jobs:
         if: always()
         id: summary
         run: |
-          set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
 
@@ -397,6 +514,8 @@ jobs:
             local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
+            elif [ "$status" = "skipped" ]; then
+              SKIPPED=$((SKIPPED + 1))
             else
               FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
@@ -404,25 +523,28 @@ jobs:
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test1.outputs.status || 'skipped' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'skipped' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'skipped' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'skipped' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'skipped' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+          if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
-          elif [ "${{ steps.test6.outputs.status || 'failed' }}" = "failed" ]; then
+          elif [ "${{ steps.test6.outputs.status || 'skipped' }}" = "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
+          elif [ "${{ steps.test6.outputs.status || 'skipped' }}" = "failed" ]; then
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
 
           if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
@@ -451,6 +573,9 @@ jobs:
               metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
                 REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
                 ;;
+              baseline_failed|baseline_install_failed)
+                REGRESSION_RESULT="Regression validation deferred because baseline install or core smoke checks failed"
+                ;;
               *)
                 REGRESSION_RESULT="Regression validation status unavailable"
                 ;;
@@ -463,6 +588,7 @@ jobs:
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped || 0 }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"

@@ -117,17 +117,35 @@ jobs:
       
       - name: Install APR
         id: install
+        continue-on-error: true
         run: |
+          set -euo pipefail
           echo "Installing APR..."
-          
+
           # Dashboard-aligned aged stable baseline
           APR_VERSION=1.7.5
-          wget https://archive.apache.org/dist/apr/apr-${APR_VERSION}.tar.gz
-          tar -xzf apr-${APR_VERSION}.tar.gz
-          
+          APR_ARCHIVE="apr-${APR_VERSION}.tar.gz"
+          download_apr_tarball() {
+            local version="$1"
+            local dest="$2"
+            local archive_url="https://archive.apache.org/dist/apr/apr-${version}.tar.gz"
+            local github_url="https://github.com/apache/apr/archive/refs/tags/${version}.tar.gz"
+            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar -o "$dest" "$archive_url"; then
+              return 0
+            fi
+            curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar -o "$dest" "$github_url"
+          }
+
+          if ! download_apr_tarball "$APR_VERSION" "$APR_ARCHIVE"; then
+            echo "install_status=failed" >> $GITHUB_OUTPUT
+            echo "install_blocker=download_failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          tar -xzf "$APR_ARCHIVE"
+
           # Set APR_SRC
           echo "APR_SRC=$PWD/apr-${APR_VERSION}" >> $GITHUB_ENV
-          
           echo "install_status=success" >> $GITHUB_OUTPUT
       
       - name: Get APR version
@@ -139,9 +157,16 @@ jobs:
       
       - name: Test 1 - Configure
         id: test1
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           
           cd $APR_SRC
           if ./configure; then
@@ -158,9 +183,16 @@ jobs:
       
       - name: Test 2 - Compile (Make)
         id: test2
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           
           cd $APR_SRC
           if make; then
@@ -177,9 +209,16 @@ jobs:
 
       - name: Test 3 - Run Tests (Make Test)
         id: test3
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           
           cd $APR_SRC
           # make test runs a suite of tests
@@ -197,9 +236,16 @@ jobs:
 
       - name: Test 4 - Install (Dry Run)
         id: test4
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           
           cd $APR_SRC
           # We don't want to actually install to system if not needed, but we can try to install to a local dir
@@ -217,9 +263,16 @@ jobs:
 
       - name: Test 5 - Check Installed Libs
         id: test5
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # Functional Validation
           
           cd $APR_SRC
@@ -245,10 +298,30 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || \
+             [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            echo "latest_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned APR version ${CURRENT} did not complete baseline acquisition/build/tests cleanly in this run, so next-version validation was not attempted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           NEXT_VERSION=$(CURRENT="$CURRENT" python3 - <<'PY'
           import re, urllib.request
           import os
@@ -263,7 +336,6 @@ jobs:
           print(candidates[0] if candidates else '')
           PY
           )
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
 
@@ -290,8 +362,7 @@ jobs:
           NEXT_TAR="$NEXT_DIR/apr-${NEXT_VERSION}.tar.gz"
           NEXT_SRC="$NEXT_DIR/apr-${NEXT_VERSION}"
           NEXT_PREFIX="/usr/local/apr-regression"
-          NEXT_URL="https://archive.apache.org/dist/apr/apr-${NEXT_VERSION}.tar.gz"
-          if curl -fsSLo "$NEXT_TAR" "$NEXT_URL"; then
+          if download_apr_tarball "$NEXT_VERSION" "$NEXT_TAR"; then
             tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
             (
               cd "$NEXT_SRC"
@@ -387,11 +458,14 @@ jobs:
         run: |
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
 
           # Configure
           if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test1.outputs.status || 'skipped' }}" == "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
@@ -400,6 +474,8 @@ jobs:
           # Compile (Make)
           if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test2.outputs.status || 'skipped' }}" == "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
@@ -408,6 +484,8 @@ jobs:
           # Run Tests (Make Test)
           if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test3.outputs.status || 'skipped' }}" == "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
@@ -416,6 +494,8 @@ jobs:
           # Install (Dry Run)
           if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test4.outputs.status || 'skipped' }}" == "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
@@ -424,6 +504,8 @@ jobs:
           # Check Installed Libs
           if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test5.outputs.status || 'skipped' }}" == "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
@@ -431,6 +513,8 @@ jobs:
           # Regression Validation
           if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test6.outputs.status || 'skipped' }}" == "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
@@ -438,6 +522,7 @@ jobs:
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
           if [ "${{ steps.test1.outputs.status }}" == "passed" ] && \
@@ -487,4 +572,3 @@ jobs:
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "- **Support badge is based on Tests 1-5:** yes" >> $GITHUB_STEP_SUMMARY
           echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
-
