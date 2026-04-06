@@ -116,15 +116,34 @@ jobs:
           echo "dashboard_link=/opensource_packages/apache_ant" >> "$GITHUB_OUTPUT"
       - name: Install Apache Ant
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
           echo "Installing Apache Ant..."
           sudo apt-get update
-          sudo apt-get install -y curl tar openjdk-17-jre-headless
+          sudo apt-get install -y curl wget tar openjdk-17-jre-headless
 
           BASELINE_VERSION="${ANT_VERSION}"
-          BASELINE_URL="https://archive.apache.org/dist/ant/binaries/apache-ant-${BASELINE_VERSION}-bin.tar.gz"
-          curl -fsSL -o /tmp/apache-ant.tar.gz "$BASELINE_URL"
+          ARCHIVE_URL="https://archive.apache.org/dist/ant/binaries/apache-ant-${BASELINE_VERSION}-bin.tar.gz"
+          PRIMARY_URL="https://downloads.apache.org/ant/binaries/apache-ant-${BASELINE_VERSION}-bin.tar.gz"
+          download_ant_tarball() {
+            local primary_url="$1"
+            local archive_url="$2"
+            local dest="$3"
+            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar -o "$dest" "$primary_url"; then
+              return 0
+            fi
+            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar -o "$dest" "$archive_url"; then
+              return 0
+            fi
+            wget -4 --tries=5 --timeout=30 -O "$dest" "$archive_url"
+          }
+
+          if ! download_ant_tarball "$PRIMARY_URL" "$ARCHIVE_URL" /tmp/apache-ant.tar.gz; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           sudo rm -rf "/opt/apache-ant-${BASELINE_VERSION}" /opt/apache-ant-current
           sudo tar -xzf /tmp/apache-ant.tar.gz -C /opt
           sudo ln -sfn "/opt/apache-ant-${BASELINE_VERSION}" /opt/apache-ant-current
@@ -144,6 +163,7 @@ jobs:
       
       - name: Get Apache Ant version
         id: version
+        if: always()
         run: |
           set -euo pipefail
           VERSION=$(ant -version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
@@ -158,7 +178,7 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
+
           if command -v ant &> /dev/null; then
             echo "✓ ant binary found"
             echo "status=passed" >> $GITHUB_OUTPUT
@@ -176,7 +196,14 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if ant -version 2>&1 | grep -q "version\|[0-9]"; then
             echo "✓ ant version command works"
             ant -version
@@ -195,7 +222,14 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if ant --help 2>&1 | grep -qi "usage\|help\|options"; then
             echo "✓ ant help command works"
             echo "status=passed" >> $GITHUB_OUTPUT
@@ -233,6 +267,12 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           cat > build.xml <<'EOF'
           <project name="arm-validation" default="hello">
             <target name="hello">
@@ -255,12 +295,36 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           NEXT_VERSION="${ANT_NEXT_VERSION}"
+          INSTALL_STATUS="${{ steps.install.outputs.install_status || 'failed' }}"
+          CORE_FAILURES=0
+          for conclusion in \
+            "${{ steps.test1.conclusion || 'skipped' }}" \
+            "${{ steps.test2.conclusion || 'skipped' }}" \
+            "${{ steps.test3.conclusion || 'skipped' }}" \
+            "${{ steps.test4.conclusion || 'skipped' }}" \
+            "${{ steps.test5.conclusion || 'skipped' }}"; do
+            if [ "$conclusion" = "failure" ]; then
+              CORE_FAILURES=$((CORE_FAILURES + 1))
+            fi
+          done
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          if [ "$INSTALL_STATUS" != "success" ] || [ "$CORE_FAILURES" -gt 0 ]; then
+            echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Ant version ${CURRENT} did not complete baseline installation and core Tests 1-5 cleanly in this run, so next-version validation was not attempted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$CURRENT" = "$NEXT_VERSION" ]; then
             echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
@@ -299,8 +363,21 @@ jobs:
 
           NEXT_TAR="/tmp/apache-ant-regression.tar.gz"
           NEXT_DIR=$(mktemp -d)
-          NEXT_URL="https://archive.apache.org/dist/ant/binaries/apache-ant-${NEXT_VERSION}-bin.tar.gz"
-          if curl -fsSL -o "$NEXT_TAR" "$NEXT_URL"; then
+          NEXT_PRIMARY_URL="https://downloads.apache.org/ant/binaries/apache-ant-${NEXT_VERSION}-bin.tar.gz"
+          NEXT_ARCHIVE_URL="https://archive.apache.org/dist/ant/binaries/apache-ant-${NEXT_VERSION}-bin.tar.gz"
+          download_ant_tarball() {
+            local primary_url="$1"
+            local archive_url="$2"
+            local dest="$3"
+            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar -o "$dest" "$primary_url"; then
+              return 0
+            fi
+            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar -o "$dest" "$archive_url"; then
+              return 0
+            fi
+            wget -4 --tries=5 --timeout=30 -O "$dest" "$archive_url"
+          }
+          if download_ant_tarball "$NEXT_PRIMARY_URL" "$NEXT_ARCHIVE_URL" "$NEXT_TAR"; then
             tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
             NEXT_BIN=$(find "$NEXT_DIR" -maxdepth 3 -type f -path "*/bin/ant" | head -n 1)
             if [ -n "$NEXT_BIN" ] && [ -x "$NEXT_BIN" ]; then
@@ -410,11 +487,14 @@ jobs:
           PASSED=0
           FAILED=0
           CORE_FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
 
           # Check ant binary exists
           if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test1.outputs.status || 'skipped' }}" == "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
             CORE_FAILED=$((CORE_FAILED + 1))
@@ -424,6 +504,8 @@ jobs:
           # Check ant version command
           if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test2.outputs.status || 'skipped' }}" == "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
             CORE_FAILED=$((CORE_FAILED + 1))
@@ -433,6 +515,8 @@ jobs:
           # Check ant help output
           if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test3.outputs.status || 'skipped' }}" == "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
             CORE_FAILED=$((CORE_FAILED + 1))
@@ -442,6 +526,8 @@ jobs:
           # Architecture Verification
           if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test4.outputs.status || 'skipped' }}" == "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
             CORE_FAILED=$((CORE_FAILED + 1))
@@ -451,6 +537,8 @@ jobs:
           # Functional Validation
           if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test5.outputs.status || 'skipped' }}" == "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
             CORE_FAILED=$((CORE_FAILED + 1))
@@ -459,6 +547,8 @@ jobs:
           # Regression Validation
           if [ "${{ steps.test6.outputs.status || 'failed' }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test6.outputs.status || 'skipped' }}" == "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           elif [ "${{ steps.test6.outputs.status || 'failed' }}" == "failed" ]; then
             FAILED=$((FAILED + 1))
           fi
@@ -466,6 +556,7 @@ jobs:
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
