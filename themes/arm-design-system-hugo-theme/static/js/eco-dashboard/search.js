@@ -59,11 +59,26 @@ function normalizePackageName(input) {
 }
 
 function getDashboardPath(dashboardPath) {
-    if (dashboardPath) {
-        return dashboardPath.replace(/\/$/, '') || '/';
+    let normalizedPath = dashboardPath;
+
+    if (!normalizedPath) {
+        normalizedPath = window.location.pathname;
     }
 
-    return window.location.pathname.replace(/\/$/, '') || '/';
+    if (!normalizedPath) {
+        return '/';
+    }
+
+    normalizedPath = normalizedPath.trim();
+    if (!normalizedPath.startsWith('/')) {
+        normalizedPath = '/' + normalizedPath;
+    }
+
+    if (!normalizedPath.endsWith('/')) {
+        normalizedPath = normalizedPath + '/';
+    }
+
+    return normalizedPath;
 }
   
 function buildPackageDashboardUrl(packageSlug, dashboardPath) {
