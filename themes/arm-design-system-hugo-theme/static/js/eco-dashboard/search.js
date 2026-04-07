@@ -76,6 +76,24 @@ function getDashboardPath(dashboardPath) {
 
     return normalizedPath.replace(/\/$/, '') || '/';
 }
+
+function normalizeDashboardUrlInAddressBar() {
+    const currentPath = window.location.pathname;
+    if (!currentPath || currentPath === '/') {
+        return;
+    }
+
+    const normalizedPath = currentPath.replace(/\/+$/, '') || '/';
+    if (normalizedPath === currentPath) {
+        return;
+    }
+
+    window.history.replaceState(
+        window.history.state,
+        '',
+        normalizedPath + window.location.search + window.location.hash
+    );
+}
   
 function buildPackageDashboardUrl(packageSlug, dashboardPath) {
     const packageUrl = new URL(window.location.href);
@@ -750,6 +768,8 @@ function ifNeededMoveFiltersToMobileOrDesktop(state_is_below_breakpoint) {
         5. Activates URL search/filters
 */
 document.addEventListener("DOMContentLoaded", function () {
+
+    normalizeDashboardUrlInAddressBar();
 
 
 
