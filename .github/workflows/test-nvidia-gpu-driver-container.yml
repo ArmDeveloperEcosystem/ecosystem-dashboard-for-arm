@@ -82,11 +82,12 @@ jobs:
     env:
       BASELINE_VERSION: "535.288.01"
       PACKAGE_SLUG: "nvidia-gpu-driver-container"
-      LANE_KIND: "gpu/specialized/manual-review"
+      LANE_KIND: "gpu/specialized/external-image"
       DOWNLOAD_URL: "https://catalog.ngc.nvidia.com/orgs/nvidia/containers/driver"
       HOMEPAGE_URL: "https://github.com/NVIDIA/gpu-driver-container"
       OFFICIAL_DOCS: "https://github.com/NVIDIA/gpu-driver-container#gpu-driver-container"
-      GITHUB_REPO: "NVIDIA/gpu-driver-container"
+      GITHUB_REPO: ""
+      IMAGE_VARIANT: "ubuntu22.04"
 
     outputs:
       contract_version: "2.0"
@@ -125,12 +126,16 @@ jobs:
           echo "package_slug=nvidia-gpu-driver-container" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/linux/opensource_packages/nvidia-gpu-driver-container" >> "$GITHUB_OUTPUT"
 
+      - name: Bootstrap baseline dependencies
+        uses: ./.github/actions/apt-bootstrap
+        with:
+          packages: "git curl jq tar unzip file ca-certificates"
+          quiet: "true"
+
       - name: Install baseline source or artifact
         id: install
         run: |
           set -euo pipefail
-          sudo apt-get update >/dev/null
-          sudo apt-get install -y git curl jq tar unzip file ca-certificates >/dev/null
           rm -rf baseline-src baseline-external
           mkdir -p baseline-src baseline-external
           if [ -n "$GITHUB_REPO" ]; then
@@ -611,18 +616,67 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || env.BASELINE_VERSION }}"
+          PAGE_HTML="$(mktemp)"
+          trap 'rm -f "$PAGE_HTML"' EXIT
+          curl -fsSL "$DOWNLOAD_URL" -o "$PAGE_HTML"
+
+          TAG_RESULT="$(python3 - "$CURRENT" "$IMAGE_VARIANT" "$PAGE_HTML" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          current = tuple(int(part) for part in sys.argv[1].split("."))
+          variant = sys.argv[2]
+          html = pathlib.Path(sys.argv[3]).read_text(encoding="utf-8", errors="ignore")
+
+          pattern = re.compile(rf'([0-9]+\.[0-9]+\.[0-9]+)-{re.escape(variant)}')
+          tags = sorted({match.group(1) for match in pattern.finditer(html)}, key=lambda value: tuple(int(part) for part in value.split(".")))
+          newer = [value for value in tags if tuple(int(part) for part in value.split(".")) > current]
+          if not newer:
+              print("NONE\t\t")
+              raise SystemExit(0)
+
+          latest = newer[-1]
+          full_tag = f"{latest}-{variant}"
+          pos = html.find(full_tag)
+          window = html[max(0, pos - 400):pos + 400] if pos >= 0 else ""
+          multi = ('isMultiArchitecture\\":true' in window) or ('"isMultiArchitecture":true' in window)
+          print(("FOUND" if multi else "TAG_ONLY"), latest, full_tag, sep="\t")
+          PY
+          )"
+
+          STATUS_KIND="$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $1}')"
+          LATEST_VERSION="$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $2}')"
+          FULL_TAG="$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $3}')"
+
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=manual_review" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=manual_review" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          if echo "$LANE_KIND" | grep -Eiq 'gpu|specialized|manual-review'; then
-            echo "regression_result=Regression validation deferred pending a package-specific runtime environment" >> "$GITHUB_OUTPUT"
-            echo "comparison=Tests 1-5 validated package-specific baseline evidence on Arm64, but next-version install or runtime validation for this lane still requires a dedicated environment (${LANE_KIND})." >> "$GITHUB_OUTPUT"
-          else
-            echo "regression_result=Regression validation deferred pending package-specific automation" >> "$GITHUB_OUTPUT"
-            echo "comparison=Tests 1-5 validated package-specific baseline evidence on Arm64, but next-version install or runtime validation is not yet automated for this package." >> "$GITHUB_OUTPUT"
-          fi
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
+
+          case "$STATUS_KIND" in
+            NONE)
+              echo "latest_version=$CURRENT" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=n/a" >> "$GITHUB_OUTPUT"
+              echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+              echo "regression_result=No newer stable public Arm64 image tag is available" >> "$GITHUB_OUTPUT"
+              echo "comparison=Tests 1-5 validated the published NVIDIA GPU Driver Container metadata on Arm64, and the public NGC tag stream does not currently expose a newer stable ${IMAGE_VARIANT} image tag than ${CURRENT}." >> "$GITHUB_OUTPUT"
+              echo "status=skipped" >> "$GITHUB_OUTPUT"
+              ;;
+            FOUND)
+              echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=$FULL_TAG" >> "$GITHUB_OUTPUT"
+              echo "decision=next_image_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next stable image tag validated on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Tests 1-5 validated the published NVIDIA GPU Driver Container package metadata on Arm64. The public NGC page also exposes the newer multi-architecture image tag ${FULL_TAG}, so the next stable release is validated in the same non-runtime scope without claiming live GPU execution." >> "$GITHUB_OUTPUT"
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "latest_version=metadata_review" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=metadata_review" >> "$GITHUB_OUTPUT"
+              echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Automatic next-version resolution needs manual review" >> "$GITHUB_OUTPUT"
+              echo "comparison=The public NGC page exposes newer NVIDIA GPU Driver Container tags, but the workflow could not verify a trustworthy multi-architecture candidate object for the ${IMAGE_VARIANT} line automatically." >> "$GITHUB_OUTPUT"
+              echo "status=skipped" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
