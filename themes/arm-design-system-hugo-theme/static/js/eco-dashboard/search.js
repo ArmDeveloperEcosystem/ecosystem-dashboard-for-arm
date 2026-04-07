@@ -58,6 +58,11 @@ function normalizePackageName(input) {
         .toLowerCase();                 // Convert to lowercase
 }
 
+function shouldUseTrailingSlashForPackageUrl() {
+    const currentHost = window.location.hostname.toLowerCase();
+    return currentHost.includes('cloudfront.net');
+}
+
 function getDashboardPath(dashboardPath) {
     let normalizedPath = dashboardPath;
 
@@ -74,7 +79,13 @@ function getDashboardPath(dashboardPath) {
         normalizedPath = '/' + normalizedPath;
     }
 
-    return normalizedPath.replace(/\/$/, '') || '/';
+    normalizedPath = normalizedPath.replace(/\/+$/, '') || '/';
+
+    if (normalizedPath !== '/' && shouldUseTrailingSlashForPackageUrl()) {
+        normalizedPath = normalizedPath + '/';
+    }
+
+    return normalizedPath;
 }
 
 function normalizeDashboardUrlInAddressBar() {
@@ -83,7 +94,11 @@ function normalizeDashboardUrlInAddressBar() {
         return;
     }
 
-    const normalizedPath = currentPath.replace(/\/+$/, '') || '/';
+    let normalizedPath = currentPath.replace(/\/+$/, '') || '/';
+    if (normalizedPath !== '/' && shouldUseTrailingSlashForPackageUrl()) {
+        normalizedPath = normalizedPath + '/';
+    }
+
     if (normalizedPath === currentPath) {
         return;
     }
