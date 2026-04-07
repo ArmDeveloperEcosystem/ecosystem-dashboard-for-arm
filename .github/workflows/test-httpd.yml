@@ -112,44 +112,119 @@ jobs:
           echo "dashboard_link=/opensource_packages/httpd" >> "$GITHUB_OUTPUT"
       - name: Install Apache httpd baseline
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential curl ca-certificates file libapr1-dev libaprutil1-dev libssl-dev libpcre3-dev"
           CURRENT_VERSION="2.4.32"
           WORKDIR=$(mktemp -d)
           TARBALL="$WORKDIR/httpd-${CURRENT_VERSION}.tar.bz2"
-          curl -fsSL "https://archive.apache.org/dist/httpd/httpd-${CURRENT_VERSION}.tar.bz2" -o "$TARBALL"
-          tar -xjf "$TARBALL" -C "$WORKDIR"
+          PREFIX_ROOT="/opt/httpd-smoke"
+          PREFIX="$PREFIX_ROOT/current"
+          download_httpd_tarball() {
+            local version="$1"
+            local dest="$2"
+            DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=450 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=30 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh \
+                "$dest" \
+                "https://downloads.apache.org/httpd/httpd-${version}.tar.bz2" \
+                "https://archive.apache.org/dist/httpd/httpd-${version}.tar.bz2"
+          }
+
+          if ! download_httpd_tarball "$CURRENT_VERSION" "$TARBALL"; then
+            echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=download_failed" >> "$GITHUB_OUTPUT"
+            echo "HTTPD_INSTALL_STATUS=failed" >> "$GITHUB_ENV"
+            echo "HTTPD_INSTALL_BLOCKER=download_failed" >> "$GITHUB_ENV"
+            echo "HTTPD_HOME=" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if ! tar -xjf "$TARBALL" -C "$WORKDIR"; then
+            echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=extract_failed" >> "$GITHUB_OUTPUT"
+            echo "HTTPD_INSTALL_STATUS=failed" >> "$GITHUB_ENV"
+            echo "HTTPD_INSTALL_BLOCKER=extract_failed" >> "$GITHUB_ENV"
+            echo "HTTPD_HOME=" >> "$GITHUB_ENV"
+            exit 0
+          fi
           SRC_DIR="$WORKDIR/httpd-${CURRENT_VERSION}"
-          PREFIX="$WORKDIR/httpd-current"
+          BUILD_PREFIX="$WORKDIR/httpd-current"
           PCRE_CONFIG=$(command -v pcre-config || command -v pcre2-config)
           cd "$SRC_DIR"
-          ./configure --prefix="$PREFIX" --with-apr=/usr/bin/apr-1-config --with-apr-util=/usr/bin/apu-1-config --with-pcre="$PCRE_CONFIG" >/tmp/httpd-configure.log 2>&1
-          make -j"$(nproc)" >/tmp/httpd-make.log 2>&1
-          make install >/tmp/httpd-install.log 2>&1
+          if ! ./configure --prefix="$BUILD_PREFIX" --with-apr=/usr/bin/apr-1-config --with-apr-util=/usr/bin/apu-1-config --with-pcre="$PCRE_CONFIG" >/tmp/httpd-configure.log 2>&1; then
+            echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=configure_failed" >> "$GITHUB_OUTPUT"
+            echo "HTTPD_INSTALL_STATUS=failed" >> "$GITHUB_ENV"
+            echo "HTTPD_INSTALL_BLOCKER=configure_failed" >> "$GITHUB_ENV"
+            echo "HTTPD_HOME=" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if ! make -j"$(nproc)" >/tmp/httpd-make.log 2>&1; then
+            echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=build_failed" >> "$GITHUB_OUTPUT"
+            echo "HTTPD_INSTALL_STATUS=failed" >> "$GITHUB_ENV"
+            echo "HTTPD_INSTALL_BLOCKER=build_failed" >> "$GITHUB_ENV"
+            echo "HTTPD_HOME=" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if ! make install >/tmp/httpd-install.log 2>&1; then
+            echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=install_failed" >> "$GITHUB_OUTPUT"
+            echo "HTTPD_INSTALL_STATUS=failed" >> "$GITHUB_ENV"
+            echo "HTTPD_INSTALL_BLOCKER=install_failed" >> "$GITHUB_ENV"
+            echo "HTTPD_HOME=" >> "$GITHUB_ENV"
+            exit 0
+          fi
 
-          sed -i 's/^Listen 80$/Listen 18080/' "$PREFIX/conf/httpd.conf"
-          if ! grep -q '^ServerName 127.0.0.1$' "$PREFIX/conf/httpd.conf"; then
-            printf '\nServerName 127.0.0.1\n' >> "$PREFIX/conf/httpd.conf"
+          sudo rm -rf "$PREFIX_ROOT"
+          sudo mkdir -p "$PREFIX_ROOT"
+          sudo mv "$BUILD_PREFIX" "$PREFIX"
+
+          sudo sed -i 's/^Listen 80$/Listen 18080/' "$PREFIX/conf/httpd.conf"
+          if ! sudo grep -q '^ServerName 127.0.0.1$' "$PREFIX/conf/httpd.conf"; then
+            printf '\nServerName 127.0.0.1\n' | sudo tee -a "$PREFIX/conf/httpd.conf" >/dev/null
           fi
 
           echo "HTTPD_HOME=$PREFIX" >> "$GITHUB_ENV"
+          echo "HTTPD_INSTALL_STATUS=success" >> "$GITHUB_ENV"
+          echo "HTTPD_INSTALL_BLOCKER=" >> "$GITHUB_ENV"
           echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get httpd version
         id: version
+        if: always()
         run: |
           set -euo pipefail
+          if [ "${HTTPD_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "version=${{ steps.install.outputs.current_version || 'unknown' }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           VERSION=$("$HTTPD_HOME/bin/httpd" -v | awk -F'/' '/Server version/ {print $2}' | awk '{print $1}')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected httpd version: $VERSION"
 
       - name: Test 1 - Check httpd binary exists
         id: test1
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${HTTPD_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -x "$HTTPD_HOME/bin/httpd" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -161,9 +236,15 @@ jobs:
 
       - name: Test 2 - Validate baseline version
         id: test2
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${HTTPD_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           VERSION=$("$HTTPD_HOME/bin/httpd" -v | awk -F'/' '/Server version/ {print $2}' | awk '{print $1}')
           if [ "$VERSION" = "${{ steps.install.outputs.current_version }}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -176,9 +257,15 @@ jobs:
 
       - name: Test 3 - Check config syntax
         id: test3
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${HTTPD_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if "$HTTPD_HOME/bin/httpd" -t -d "$HTTPD_HOME" -f "$HTTPD_HOME/conf/httpd.conf"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -190,9 +277,15 @@ jobs:
 
       - name: Test 4 - Start server and curl localhost
         id: test4
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${HTTPD_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           "$HTTPD_HOME/bin/httpd" -d "$HTTPD_HOME" -f "$HTTPD_HOME/conf/httpd.conf"
           cleanup() {
             "$HTTPD_HOME/bin/httpd" -k stop -d "$HTTPD_HOME" -f "$HTTPD_HOME/conf/httpd.conf" >/dev/null 2>&1 || true
@@ -210,9 +303,15 @@ jobs:
 
       - name: Test 5 - Stop server and verify Arm64 binary
         id: test5
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${HTTPD_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           "$HTTPD_HOME/bin/httpd" -k stop -d "$HTTPD_HOME" -f "$HTTPD_HOME/conf/httpd.conf" >/dev/null 2>&1 || true
           if file "$HTTPD_HOME/bin/httpd" | grep -qi 'aarch64\|arm64\|ARM aarch64'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -225,12 +324,30 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "Current version tested in Tests 1-5: $CURRENT"
+
+          if [ "${HTTPD_INSTALL_STATUS:-failed}" != "success" ] || \
+             [ "${{ steps.test1.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'skipped' }}" != "passed" ]; then
+            echo "latest_version=not_attempted" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache httpd version ${CURRENT} did not complete baseline acquisition or core smoke validation cleanly in this run, so next-version validation was not attempted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           LATEST=$(CURRENT_VERSION="$CURRENT" python3 - <<'PY'
           import os
@@ -287,7 +404,30 @@ jobs:
           PCRE_CONFIG=$(command -v pcre-config || command -v pcre2-config)
           NEXT_DIR=$(mktemp -d)
           NEXT_TAR="$NEXT_DIR/httpd-${LATEST}.tar.bz2"
-          curl -fsSL "https://downloads.apache.org/httpd/httpd-${LATEST}.tar.bz2" -o "$NEXT_TAR"
+          download_httpd_tarball() {
+            local version="$1"
+            local dest="$2"
+            DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=450 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=30 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh \
+                "$dest" \
+                "https://downloads.apache.org/httpd/httpd-${version}.tar.bz2" \
+                "https://archive.apache.org/dist/httpd/httpd-${version}.tar.bz2"
+          }
+          if ! download_httpd_tarball "$LATEST" "$NEXT_TAR"; then
+            echo "next_installed_version=download_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_download_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version download failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache httpd version ${CURRENT} passed smoke tests in this run, but the candidate version ${LATEST} could not be downloaded from the official Apache mirrors on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           tar -xjf "$NEXT_TAR" -C "$NEXT_DIR"
           SRC_DIR="$NEXT_DIR/httpd-${LATEST}"
           PREFIX="$NEXT_DIR/httpd-next"
@@ -354,6 +494,7 @@ jobs:
           set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
 
@@ -362,6 +503,8 @@ jobs:
             local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
+            elif [ "$status" = "skipped" ] || [ -z "$status" ]; then
+              SKIPPED=$((SKIPPED + 1))
             else
               FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
@@ -369,21 +512,32 @@ jobs:
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
-
-          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
-            PASSED=$((PASSED + 1))
+          if [ "${HTTPD_INSTALL_STATUS:-failed}" != "success" ] || [ "${{ steps.test6.outputs.decision || '' }}" = "baseline_failed" ]; then
+            PASSED=0
+            FAILED=1
+            SKIPPED=5
+            CORE_FAILED=1
+            TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
           else
-            FAILED=$((FAILED + 1))
+            check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+            check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+            check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+            check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+            check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+
+            if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "${{ steps.test6.outputs.status || 'failed' }}" = "skipped" ] || [ -z "${{ steps.test6.outputs.status || '' }}" ]; then
+              SKIPPED=$((SKIPPED + 1))
+            else
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
@@ -400,4 +554,3 @@ jobs:
           if [ "$FAILED" -ne 0 ]; then
             exit 1
           fi
-
