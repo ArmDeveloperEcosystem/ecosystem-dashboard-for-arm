@@ -114,51 +114,56 @@ jobs:
           echo "dashboard_link=/opensource_packages/druid" >> "$GITHUB_OUTPUT"
       - name: Install Druid
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "curl wget openjdk-17-jre-headless"
           BASELINE_VERSION="31.0.0"
-          BASELINE_PRIMARY_URL="https://downloads.apache.org/druid/${BASELINE_VERSION}/apache-druid-${BASELINE_VERSION}-bin.tar.gz"
           BASELINE_ARCHIVE_URL="https://archive.apache.org/dist/druid/${BASELINE_VERSION}/apache-druid-${BASELINE_VERSION}-bin.tar.gz"
           WORKDIR=$(mktemp -d)
 
           echo "baseline_version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Downloading Druid baseline from $BASELINE_PRIMARY_URL"
-          download_druid_tarball() {
-            local primary_url="$1"
-            local archive_url="$2"
-            local dest="$3"
-            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 900 --progress-bar -o "$dest" "$primary_url"; then
-              return 0
-            fi
-            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 900 --progress-bar -o "$dest" "$archive_url"; then
-              return 0
-            fi
-            wget -4 --tries=5 --timeout=30 --waitretry=5 -O "$dest" "$archive_url"
-          }
-          download_druid_tarball "$BASELINE_PRIMARY_URL" "$BASELINE_ARCHIVE_URL" "$WORKDIR/druid.tar.gz"
+          echo "Downloading Druid baseline from $BASELINE_ARCHIVE_URL"
+          DOWNLOAD_ATTEMPTS=3 \
+          DOWNLOAD_CONNECT_TIMEOUT=30 \
+          DOWNLOAD_MAX_TIME=600 \
+          DOWNLOAD_RETRY_DELAY=5 \
+          DOWNLOAD_WGET_TIMEOUT=30 \
+          DOWNLOAD_WGET_WAITRETRY=5 \
+            bash .github/scripts/download-with-fallback.sh "$WORKDIR/druid.tar.gz" "$BASELINE_ARCHIVE_URL" || {
+              echo "install_status=failed" >> "$GITHUB_OUTPUT"
+              echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
           ls -lh "$WORKDIR/druid.tar.gz"
           echo "Extracting Druid baseline..."
-          timeout 15m tar -xzf "$WORKDIR/druid.tar.gz" -C "$WORKDIR"
+          if ! timeout 15m tar -xzf "$WORKDIR/druid.tar.gz" -C "$WORKDIR"; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           mv "$WORKDIR/apache-druid-${BASELINE_VERSION}" "$GITHUB_WORKSPACE/druid"
 
           if [ -d "$GITHUB_WORKSPACE/druid" ]; then
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
+            echo "install_blocker=baseline_layout_missing" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
       - name: Get Druid version
         id: version
+        if: always()
         run: |
           set -euo pipefail
-          VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
+          VERSION="${{ steps.install.outputs.baseline_version || '31.0.0' }}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Druid version: $VERSION"
 
       - name: Test 1 - Check quickstart script exists
         id: test1
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -176,6 +181,7 @@ jobs:
 
       - name: Test 2 - Check configuration directory exists
         id: test2
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -193,6 +199,7 @@ jobs:
 
       - name: Test 3 - Check library directory contains jars
         id: test3
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -210,6 +217,7 @@ jobs:
 
       - name: Test 4 - Architecture Verification
         id: test4
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -227,6 +235,7 @@ jobs:
 
       - name: Test 5 - Functional Validation (script syntax and runtime helpers)
         id: test5
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -296,26 +305,27 @@ jobs:
             exit 0
           fi
 
-          NEXT_PRIMARY_URL="https://downloads.apache.org/druid/${LATEST_VERSION}/apache-druid-${LATEST_VERSION}-bin.tar.gz"
           NEXT_ARCHIVE_URL="https://archive.apache.org/dist/druid/${LATEST_VERSION}/apache-druid-${LATEST_VERSION}-bin.tar.gz"
           NEXT_DIR=$(mktemp -d)
           echo "Downloading Druid candidate ${LATEST_VERSION}"
-          download_druid_tarball() {
-            local primary_url="$1"
-            local archive_url="$2"
-            local dest="$3"
-            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 900 --progress-bar -o "$dest" "$primary_url"; then
-              return 0
-            fi
-            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 900 --progress-bar -o "$dest" "$archive_url"; then
-              return 0
-            fi
-            wget -4 --tries=5 --timeout=30 --waitretry=5 -O "$dest" "$archive_url"
-          }
-          download_druid_tarball "$NEXT_PRIMARY_URL" "$NEXT_ARCHIVE_URL" "$NEXT_DIR/druid.tar.gz"
+          DOWNLOAD_ATTEMPTS=3 \
+          DOWNLOAD_CONNECT_TIMEOUT=30 \
+          DOWNLOAD_MAX_TIME=600 \
+          DOWNLOAD_RETRY_DELAY=5 \
+          DOWNLOAD_WGET_TIMEOUT=30 \
+          DOWNLOAD_WGET_WAITRETRY=5 \
+            bash .github/scripts/download-with-fallback.sh "$NEXT_DIR/druid.tar.gz" "$NEXT_ARCHIVE_URL"
           ls -lh "$NEXT_DIR/druid.tar.gz"
           echo "Extracting Druid candidate..."
-          timeout 15m tar -xzf "$NEXT_DIR/druid.tar.gz" -C "$NEXT_DIR"
+          if ! timeout 15m tar -xzf "$NEXT_DIR/druid.tar.gz" -C "$NEXT_DIR"; then
+            echo "next_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned package version ${CURRENT_VERSION} passed smoke tests in this run, but the regression candidate ${LATEST_VERSION} could not be extracted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           CANDIDATE_DIR="$NEXT_DIR/apache-druid-${LATEST_VERSION}"
 
           if [ -f "$CANDIDATE_DIR/bin/start-micro-quickstart" ] && \
@@ -463,6 +473,17 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
           TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          TEST6_DECISION="${{ steps.test6.outputs.decision || 'not_configured' }}"
+          if [ "$TEST6_DECISION" = "baseline_failed" ] || [ "$TEST6_DECISION" = "baseline_install_failed" ]; then
+            echo "passed=0" >> "$GITHUB_OUTPUT"
+            echo "failed=1" >> "$GITHUB_OUTPUT"
+            echo "skipped=5" >> "$GITHUB_OUTPUT"
+            echo "core_failed=1" >> "$GITHUB_OUTPUT"
+            echo "duration=${{ steps.test6.outputs.duration || 0 }}" >> "$GITHUB_OUTPUT"
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"

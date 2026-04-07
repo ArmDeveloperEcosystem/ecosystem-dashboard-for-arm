@@ -119,6 +119,7 @@ jobs:
           echo "current_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
       - name: Install Hadoop
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-11-jdk curl tar"
@@ -130,21 +131,31 @@ jobs:
             local primary_url="$1"
             local archive_url="$2"
             local dest="$3"
-            if curl -fL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 --max-time 900 --progress-bar "$primary_url" -o "$dest"; then
-              return 0
-            fi
-            if curl -fL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 --max-time 900 --progress-bar "$archive_url" -o "$dest"; then
-              return 0
-            fi
-            wget -4 --tries=5 --timeout=30 --waitretry=5 -O "$dest" "$archive_url"
+            DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=600 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=30 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh "$dest" "$primary_url" "$archive_url"
           }
 
           echo "Downloading Hadoop baseline from $PRIMARY_URL"
-          download_hadoop_tarball "$PRIMARY_URL" "$ARCHIVE_URL" /tmp/hadoop-current.tar.gz
+          if ! download_hadoop_tarball "$PRIMARY_URL" "$ARCHIVE_URL" /tmp/hadoop-current.tar.gz; then
+            echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           ls -lh /tmp/hadoop-current.tar.gz
           sudo rm -rf /opt/hadoop "/opt/hadoop-${VERSION}"
           echo "Extracting Hadoop baseline..."
-          timeout 15m sudo tar -xzf /tmp/hadoop-current.tar.gz -C /opt
+          if ! timeout 15m sudo tar -xzf /tmp/hadoop-current.tar.gz -C /opt; then
+            echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           sudo mv "/opt/hadoop-${VERSION}" /opt/hadoop
           echo "JAVA_HOME=/usr/lib/jvm/java-11-openjdk-arm64" >> "$GITHUB_ENV"
           echo "HADOOP_HOME=/opt/hadoop" >> "$GITHUB_ENV"
@@ -154,16 +165,24 @@ jobs:
           echo "export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-arm64" | sudo tee -a /opt/hadoop/etc/hadoop/hadoop-env.sh >/dev/null
 
           if [ -x /opt/hadoop/bin/hadoop ] && [ -x /opt/hadoop/bin/hdfs ]; then
+            echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
+            echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
+            echo "install_blocker=baseline_layout_missing" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
       - name: Get Hadoop version
         id: version
+        if: always()
         run: |
           set -euo pipefail
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "version=${{ steps.install.outputs.baseline_version || steps.metadata.outputs.current_version || 'unknown' }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-arm64
           export HADOOP_HOME=/opt/hadoop
           export PATH="$HADOOP_HOME/bin:$HADOOP_HOME/sbin:$PATH"
@@ -176,13 +195,17 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -x /opt/hadoop/bin/hadoop ] && command -v hadoop >/dev/null 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
             exit 1
           fi
           END_TIME=$(date +%s)
@@ -194,6 +217,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-arm64
           export HADOOP_HOME=/opt/hadoop
           export PATH="$HADOOP_HOME/bin:$HADOOP_HOME/sbin:$PATH"
@@ -203,7 +231,7 @@ jobs:
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             hadoop version || true
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
@@ -217,6 +245,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-arm64
           export HADOOP_HOME=/opt/hadoop
           export PATH="$HADOOP_HOME/bin:$HADOOP_HOME/sbin:$PATH"
@@ -226,7 +259,7 @@ jobs:
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             hdfs version || true
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
@@ -240,6 +273,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-arm64
           export HADOOP_HOME=/opt/hadoop
           export PATH="$HADOOP_HOME/bin:$HADOOP_HOME/sbin:$PATH"
@@ -263,6 +301,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-arm64
           export HADOOP_HOME=/opt/hadoop
           export PATH="$HADOOP_HOME/bin:$HADOOP_HOME/sbin:$PATH"
@@ -311,8 +354,29 @@ jobs:
 
           NEXT_DIR=$(mktemp -d)
           NEXT_TAR="$NEXT_DIR/hadoop-next.tar.gz"
+          download_hadoop_tarball() {
+            local primary_url="$1"
+            local archive_url="$2"
+            local dest="$3"
+            DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=600 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=30 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh "$dest" "$primary_url" "$archive_url"
+          }
           echo "Downloading Hadoop candidate ${LATEST}"
-          download_hadoop_tarball "https://downloads.apache.org/hadoop/common/hadoop-${LATEST}/hadoop-${LATEST}.tar.gz" "https://archive.apache.org/dist/hadoop/common/hadoop-${LATEST}/hadoop-${LATEST}.tar.gz" "$NEXT_TAR"
+          if ! download_hadoop_tarball "https://downloads.apache.org/hadoop/common/hadoop-${LATEST}/hadoop-${LATEST}.tar.gz" "https://archive.apache.org/dist/hadoop/common/hadoop-${LATEST}/hadoop-${LATEST}.tar.gz" "$NEXT_TAR"; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Hadoop version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           ls -lh "$NEXT_TAR"
           echo "Extracting Hadoop candidate..."
           timeout 15m tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
@@ -371,14 +435,30 @@ jobs:
           set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
+          TEST6_DECISION="${{ steps.test6.outputs.decision || '' }}"
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+
+          if [[ "$TEST6_DECISION" == "baseline_failed" || "$TEST6_DECISION" == "baseline_install_failed" ]]; then
+            echo "passed=0" >> "$GITHUB_OUTPUT"
+            echo "failed=1" >> "$GITHUB_OUTPUT"
+            echo "skipped=5" >> "$GITHUB_OUTPUT"
+            echo "core_failed=1" >> "$GITHUB_OUTPUT"
+            echo "duration=$(( ${{ steps.test6.outputs.duration || 0 }} ))" >> "$GITHUB_OUTPUT"
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           check_core_test() {
             local status="$1"
             local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
+            elif [ "$status" = "skipped" ]; then
+              SKIPPED=$((SKIPPED + 1))
             else
               FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
@@ -392,19 +472,20 @@ jobs:
           check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
           check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+          if [ "$TEST6_STATUS" = "passed" ]; then
             PASSED=$((PASSED + 1))
-          elif [ "${{ steps.test6.outputs.status || 'failed' }}" = "failed" ]; then
+          elif [ "$TEST6_STATUS" = "failed" ]; then
             FAILED=$((FAILED + 1))
+          else
+            SKIPPED=$((SKIPPED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
-
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
 
           if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"

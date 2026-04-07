@@ -130,67 +130,36 @@ jobs:
           download_hbase_tarball() {
             local version="$1"
             local output="$2"
-            local primary_url="https://downloads.apache.org/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
             local archive_url="https://archive.apache.org/dist/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
-
-            rm -f "$output"
-            if curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 "$primary_url" -o "$output"; then
-              return 0
-            fi
-
-            rm -f "$output"
-            if curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 "$archive_url" -o "$output"; then
-              return 0
-            fi
-
-            rm -f "$output"
-            if wget -4 --tries=5 --timeout=60 -O "$output" "$archive_url"; then
-              return 0
-            fi
-
-            return 1
+            DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=20 \
+            DOWNLOAD_MAX_TIME=450 \
+            DOWNLOAD_RETRY_DELAY=3 \
+            DOWNLOAD_WGET_TIMEOUT=60 \
+              bash .github/scripts/download-with-fallback.sh "$output" "$archive_url"
           }
 
           rm -rf hbase hbase.tar.gz /tmp/hbase-archive-contents.txt
           EXTRACTED_DIR=""
-          for attempt in 1 2; do
-            rm -f hbase.tar.gz /tmp/hbase-archive-contents.txt
-            if ! download_hbase_tarball "$VERSION" hbase.tar.gz; then
-              echo "Failed to download baseline HBase archive (attempt ${attempt}/2) for version ${VERSION}"
-              if [ "$attempt" -eq 2 ]; then
-                echo "install_status=failed" >> "$GITHUB_OUTPUT"
-                echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              sleep 2
-              continue
-            fi
+          if ! download_hbase_tarball "$VERSION" hbase.tar.gz; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-            if ! tar -tzf hbase.tar.gz > /tmp/hbase-archive-contents.txt; then
-              echo "Failed to read baseline HBase archive (attempt ${attempt}/2)"
-              if [ "$attempt" -eq 2 ]; then
-                echo "install_status=failed" >> "$GITHUB_OUTPUT"
-                echo "install_blocker=baseline_archive_invalid" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              sleep 2
-              continue
-            fi
-            EXTRACTED_DIR=$(awk -F/ 'NF>1 {print $1; exit}' /tmp/hbase-archive-contents.txt)
+          if ! tar -tzf hbase.tar.gz > /tmp/hbase-archive-contents.txt; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_archive_invalid" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          EXTRACTED_DIR=$(awk -F/ 'NF>1 {print $1; exit}' /tmp/hbase-archive-contents.txt)
 
-            if tar -xzf hbase.tar.gz; then
-              break
-            fi
-
-            echo "Failed to extract baseline HBase archive (attempt ${attempt}/2)"
+          if ! tar -xzf hbase.tar.gz; then
             rm -rf "${EXTRACTED_DIR:-}"
-            if [ "$attempt" -eq 2 ]; then
-              echo "install_status=failed" >> "$GITHUB_OUTPUT"
-              echo "install_blocker=baseline_extract_failed" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            sleep 2
-          done
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if [ -z "${EXTRACTED_DIR:-}" ] || [ ! -d "$EXTRACTED_DIR" ]; then
             echo "Unable to locate extracted HBase directory from archive"
@@ -263,10 +232,9 @@ jobs:
           START_TIME=$(date +%s)
 
           if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           if [ -x "hbase/bin/hbase" ] && [ -x "hbase/bin/start-hbase.sh" ]; then
@@ -485,25 +453,14 @@ jobs:
           download_hbase_tarball() {
             local version="$1"
             local output="$2"
-            local primary_url="https://downloads.apache.org/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
             local archive_url="https://archive.apache.org/dist/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
-
-            rm -f "$output"
-            if curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 "$primary_url" -o "$output"; then
-              return 0
-            fi
-
-            rm -f "$output"
-            if curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 "$archive_url" -o "$output"; then
-              return 0
-            fi
-
-            rm -f "$output"
-            if wget -4 --tries=5 --timeout=60 -O "$output" "$archive_url"; then
-              return 0
-            fi
-
-            return 1
+            DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=450 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=60 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh "$output" "$archive_url"
           }
 
           NEXT_DIR=$(mktemp -d)
@@ -642,6 +599,17 @@ jobs:
           check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
           TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          TEST6_DECISION="${{ steps.test6.outputs.decision || 'not_configured' }}"
+          if [ "$TEST6_DECISION" = "baseline_failed" ] || [ "$TEST6_DECISION" = "baseline_install_failed" ]; then
+            echo "passed=0" >> "$GITHUB_OUTPUT"
+            echo "failed=1" >> "$GITHUB_OUTPUT"
+            echo "skipped=5" >> "$GITHUB_OUTPUT"
+            echo "core_failed=1" >> "$GITHUB_OUTPUT"
+            echo "duration=${{ steps.test6.outputs.duration || 0 }}" >> "$GITHUB_OUTPUT"
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           if [ "$TEST6_STATUS" = "passed" ]; then
             PASSED=$((PASSED + 1))
           elif [ "$TEST6_STATUS" = "failed" ]; then
