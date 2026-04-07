@@ -120,6 +120,7 @@ jobs:
           echo "current_grails_version=6.2.3" >> "$GITHUB_OUTPUT"
       - name: Install Groovy and Grails
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
           GROOVY_VERSION="${{ steps.metadata.outputs.current_groovy_version }}"
@@ -131,21 +132,47 @@ jobs:
           sudo rm -rf /opt/groovy /opt/grails
           sudo mkdir -p /opt/groovy /opt/grails
 
-          curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 --progress-bar \
-            "https://archive.apache.org/dist/groovy/${GROOVY_VERSION}/distribution/apache-groovy-binary-${GROOVY_VERSION}.zip" \
-            -o /tmp/groovy-current.zip
-          curl --fail --location --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 --progress-bar \
-            "https://github.com/apache/grails-core/releases/download/v${GRAILS_VERSION}/grails-${GRAILS_VERSION}.zip" \
-            -o /tmp/grails-current.zip
+          download_with_fallback() {
+            local primary_url="$1"
+            local dest="$2"
+            if curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 900 --progress-bar "$primary_url" -o "$dest"; then
+              return 0
+            fi
+            wget -4 --tries=5 --timeout=30 -O "$dest" "$primary_url"
+          }
 
-          sudo unzip -q /tmp/groovy-current.zip -d /opt/groovy
-          sudo unzip -q /tmp/grails-current.zip -d /opt/grails
+          if ! download_with_fallback \
+            "https://archive.apache.org/dist/groovy/${GROOVY_VERSION}/distribution/apache-groovy-binary-${GROOVY_VERSION}.zip" \
+            /tmp/groovy-current.zip; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=groovy_download_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if ! download_with_fallback \
+            "https://github.com/apache/grails-core/releases/download/v${GRAILS_VERSION}/grails-${GRAILS_VERSION}.zip" \
+            /tmp/grails-current.zip; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=grails_download_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if ! sudo unzip -q /tmp/groovy-current.zip -d /opt/groovy; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=groovy_extract_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if ! sudo unzip -q /tmp/grails-current.zip -d /opt/grails; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=grails_extract_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           GROOVY_HOME=$(find /opt/groovy -maxdepth 1 -type d -name "groovy-*" -print -quit || true)
           GRAILS_HOME=$(find /opt/grails -maxdepth 1 -type d \( -name "grails-*" -o -name "apache-grails-*" \) -print -quit || true)
 
           if [ -z "$GROOVY_HOME" ] || [ -z "$GRAILS_HOME" ]; then
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=home_not_found" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
@@ -158,8 +185,15 @@ jobs:
 
       - name: Get installed versions
         id: version
+        if: always()
         run: |
           set -euo pipefail
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "groovy_version=unknown" >> "$GITHUB_OUTPUT"
+            echo "grails_version=unknown" >> "$GITHUB_OUTPUT"
+            echo "version=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           strip_ansi() {
             perl -pe 's/\e\[[0-9;]*[A-Za-z]//g'
           }
@@ -173,10 +207,16 @@ jobs:
 
       - name: Test 1 - Check Groovy binary exists
         id: test1
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -x "$GROOVY_HOME/bin/groovy" ] && command -v groovy >/dev/null 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -190,10 +230,16 @@ jobs:
 
       - name: Test 2 - Check Grails binary exists
         id: test2
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -x "$GRAILS_HOME/bin/grails" ] && command -v grails >/dev/null 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -207,10 +253,16 @@ jobs:
 
       - name: Test 3 - Check Groovy version output
         id: test3
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           EXPECTED="${{ steps.metadata.outputs.current_groovy_version }}"
           REPORTED=$(groovy --version | sed -n 's/.*Version: \([^ ]*\).*/\1/p')
           if [ "$REPORTED" = "$EXPECTED" ]; then
@@ -227,10 +279,16 @@ jobs:
 
       - name: Test 4 - Check Grails version output
         id: test4
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           strip_ansi() {
             perl -pe 's/\e\[[0-9;]*[A-Za-z]//g'
           }
@@ -250,10 +308,16 @@ jobs:
 
       - name: Test 5 - Functional validation
         id: test5
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           cat > /tmp/groovy-grails-hello.groovy <<'EOF'
           println "Hello from Groovy"
@@ -300,6 +364,7 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -344,6 +409,22 @@ jobs:
           LATEST="Groovy ${LATEST_GROOVY} / Grails ${LATEST_GRAILS}"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
           echo "Next version targeted for install validation: $LATEST"
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || \
+             [ "${{ steps.test1.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'skipped' }}" != "passed" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Groovy/Grails baseline ${CURRENT} did not complete baseline acquisition or core smoke validation cleanly in this run, so next-version validation was not attempted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if [ "$CURRENT" = "$LATEST" ]; then
             fail_regression \
@@ -493,6 +574,7 @@ jobs:
           set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
 
@@ -501,6 +583,8 @@ jobs:
             local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
+            elif [ "$status" = "skipped" ] || [ -z "$status" ]; then
+              SKIPPED=$((SKIPPED + 1))
             else
               FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
@@ -514,8 +598,15 @@ jobs:
           check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
           check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || [ "${{ steps.test6.outputs.decision || '' }}" = "baseline_failed" ]; then
+            PASSED=0
+            FAILED=1
+            SKIPPED=5
+            CORE_FAILED=1
+          elif [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test6.outputs.status || 'skipped' }}" = "skipped" ] || [ -z "${{ steps.test6.outputs.status || '' }}" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
@@ -523,6 +614,7 @@ jobs:
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
@@ -566,3 +658,10 @@ jobs:
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Finalize workflow status
+        if: always()
+        run: |
+          if [ "${{ steps.summary.outputs.overall_status || 'failure' }}" != "success" ]; then
+            exit 1
+          fi
