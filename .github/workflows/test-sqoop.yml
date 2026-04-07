@@ -123,13 +123,34 @@ jobs:
           echo "current_version=${SQOOP_VERSION}" >> "$GITHUB_OUTPUT"
       - name: Install Sqoop baseline
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "curl file"
           ROOT="/opt/sqoop-smoke/current"
           sudo mkdir -p /opt/sqoop-smoke
-          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSLo /tmp/sqoop-baseline.tar.gz \
-            "https://archive.apache.org/dist/sqoop/${SQOOP_VERSION}/${SQOOP_ARCHIVE_BASENAME}.tar.gz"
+
+          download_sqoop_tarball() {
+            local version="$1"
+            local dest="$2"
+            local filename="$3"
+            local primary_url="https://downloads.apache.org/sqoop/${version}/${filename}"
+            local archive_url="https://archive.apache.org/dist/sqoop/${version}/${filename}"
+            if curl -fL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 --max-time 900 --progress-bar -o "$dest" "$primary_url"; then
+              return 0
+            fi
+            if curl -fL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 --max-time 900 --progress-bar -o "$dest" "$archive_url"; then
+              return 0
+            fi
+            wget -4 --tries=5 --timeout=30 --waitretry=5 -O "$dest" "$archive_url"
+          }
+
+          if ! download_sqoop_tarball "$SQOOP_VERSION" /tmp/sqoop-baseline.tar.gz "${SQOOP_ARCHIVE_BASENAME}.tar.gz"; then
+            echo "baseline_version=${SQOOP_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=download_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           sudo tar -xzf /tmp/sqoop-baseline.tar.gz -C /opt/sqoop-smoke
           sudo mv "/opt/sqoop-smoke/${SQOOP_ARCHIVE_BASENAME}" "$ROOT"
           sudo chmod +x "$ROOT"/bin/*
@@ -142,17 +163,26 @@ jobs:
 
           if [ "$VERSION" = "$SQOOP_VERSION" ]; then
             echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+            echo "baseline_version=${SQOOP_VERSION}" >> "$GITHUB_OUTPUT"
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
             sqoop2-tool version || true
+            echo "baseline_version=${SQOOP_VERSION}" >> "$GITHUB_OUTPUT"
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=version_mismatch" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
       - name: Get Sqoop version
         id: version
+        if: always()
         run: |
           set -euo pipefail
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "version=${{ steps.install.outputs.baseline_version || steps.metadata.outputs.current_version || 'unknown' }}" >> "$GITHUB_OUTPUT"
+            echo "latest=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           ROOT="${{ steps.install.outputs.root }}"
           export SQOOP_HOME="$ROOT"
           export PATH="$SQOOP_HOME/bin:$PATH"
@@ -188,6 +218,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           ROOT="${{ steps.install.outputs.root }}"
           if [ -x "$ROOT/bin/sqoop2-tool" ] && [ -x "$ROOT/bin/sqoop2-shell" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -204,6 +239,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           ROOT="${{ steps.install.outputs.root }}"
           export SQOOP_HOME="$ROOT"
           export PATH="$SQOOP_HOME/bin:$PATH"
@@ -226,6 +266,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           ROOT="${{ steps.install.outputs.root }}"
           export SQOOP_HOME="$ROOT"
           export PATH="$SQOOP_HOME/bin:$PATH"
@@ -248,6 +293,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$(uname -m)" = "aarch64" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -263,6 +313,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           ROOT="${{ steps.install.outputs.root }}"
           export SQOOP_HOME="$ROOT"
           export PATH="$SQOOP_HOME/bin:$PATH"
@@ -281,11 +336,26 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || steps.metadata.outputs.current_version }}"
           LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+          INSTALL_STATUS="${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}"
+
+          if [ "$INSTALL_STATUS" != "success" ]; then
+            echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Sqoop version ${CURRENT} did not complete baseline installation and core Tests 1-5 cleanly in this run, so next-version validation was not attempted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
@@ -314,8 +384,18 @@ jobs:
           }
           trap cleanup EXIT
 
-          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSLo "$NEXT_ARCHIVE" \
-            "https://archive.apache.org/dist/sqoop/${LATEST}/sqoop-${LATEST}-bin-hadoop200.tar.gz"
+          if ! download_sqoop_tarball "$LATEST" "$NEXT_ARCHIVE" "sqoop-${LATEST}-bin-hadoop200.tar.gz"; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Sqoop version $CURRENT passed smoke tests in this run, but archived release $LATEST could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           mkdir -p "$NEXT_ROOT"
           tar -xzf "$NEXT_ARCHIVE" -C "$TMPDIR"
           NEXT_DIST="$TMPDIR/sqoop-${LATEST}-bin-hadoop200"
@@ -387,14 +467,39 @@ jobs:
           set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
+          INSTALL_STATUS="${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}"
+
+          if [ "$INSTALL_STATUS" != "success" ]; then
+            FAILED=1
+            SKIPPED=5
+            TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+            if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+              PASSED=1
+              SKIPPED=4
+            elif [ "${{ steps.test6.outputs.status || 'skipped' }}" = "failed" ]; then
+              FAILED=2
+              SKIPPED=4
+            fi
+            echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+            echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+            echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+            echo "core_failed=1" >> "$GITHUB_OUTPUT"
+            echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           check_core_test() {
             local status="$1"
             local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
+            elif [ "$status" = "skipped" ]; then
+              SKIPPED=$((SKIPPED + 1))
             else
               FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
@@ -410,6 +515,8 @@ jobs:
 
           if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test6.outputs.status || 'failed' }}" = "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
@@ -417,6 +524,7 @@ jobs:
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
