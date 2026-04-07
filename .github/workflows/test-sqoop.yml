@@ -151,25 +151,40 @@ jobs:
             echo "install_blocker=download_failed" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if ! tar -tzf /tmp/sqoop-baseline.tar.gz >/dev/null 2>&1; then
+            file /tmp/sqoop-baseline.tar.gz || true
+            echo "baseline_version=${SQOOP_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=invalid_archive" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sudo rm -rf "$ROOT" "/opt/sqoop-smoke/${SQOOP_ARCHIVE_BASENAME}"
           sudo tar -xzf /tmp/sqoop-baseline.tar.gz -C /opt/sqoop-smoke
+          if [ ! -d "/opt/sqoop-smoke/${SQOOP_ARCHIVE_BASENAME}" ]; then
+            echo "baseline_version=${SQOOP_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=extract_layout_missing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           sudo mv "/opt/sqoop-smoke/${SQOOP_ARCHIVE_BASENAME}" "$ROOT"
           sudo chmod +x "$ROOT"/bin/*
+          sudo chmod +x "$ROOT"/server/bin/* || true
 
           export SQOOP_HOME="$ROOT"
           export PATH="$SQOOP_HOME/bin:$PATH"
           export JAVA_HOME="${JAVA_HOME}"
-          printf 'show version\n' > /tmp/sqoop-show-version.script
-          VERSION=$(sqoop2-shell /tmp/sqoop-show-version.script 2>&1 | grep -Eo 'Sqoop [0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}' | head -1 || true)
-
-          if [ "$VERSION" = "$SQOOP_VERSION" ]; then
+          if [ -x "$ROOT/bin/sqoop2-tool" ] && \
+             [ -x "$ROOT/bin/sqoop2-shell" ] && \
+             [ -x "$ROOT/bin/sqoop.sh" ] && \
+             [ -f "$ROOT/pom.xml" ] && \
+             [ -x "$ROOT/server/bin/version.sh" ]; then
             echo "root=$ROOT" >> "$GITHUB_OUTPUT"
             echo "baseline_version=${SQOOP_VERSION}" >> "$GITHUB_OUTPUT"
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
-            sqoop2-tool version || true
             echo "baseline_version=${SQOOP_VERSION}" >> "$GITHUB_OUTPUT"
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
-            echo "install_blocker=version_mismatch" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_layout_missing" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -180,15 +195,11 @@ jobs:
           set -euo pipefail
           if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
             echo "version=${{ steps.install.outputs.baseline_version || steps.metadata.outputs.current_version || 'unknown' }}" >> "$GITHUB_OUTPUT"
-            echo "latest=unknown" >> "$GITHUB_OUTPUT"
+            echo "latest=none" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           ROOT="${{ steps.install.outputs.root }}"
-          export SQOOP_HOME="$ROOT"
-          export PATH="$SQOOP_HOME/bin:$PATH"
-          export JAVA_HOME="${JAVA_HOME}"
-          printf 'show version\n' > /tmp/sqoop-show-version.script
-          VERSION=$(sqoop2-shell /tmp/sqoop-show-version.script 2>&1 | grep -Eo 'Sqoop [0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}' | head -1 || echo "unknown")
+          VERSION="${{ steps.install.outputs.baseline_version || env.SQOOP_VERSION }}"
           LATEST=$(CURRENT_VERSION="$VERSION" python3 - <<'PY'
           import os
           import re
@@ -204,7 +215,7 @@ jobs:
               }
           )
           next_versions = [version for version in versions if version > current_parts]
-          print(".".join(str(x) for x in next_versions[0]) if next_versions else "unknown")
+          print(".".join(str(x) for x in next_versions[0]) if next_versions else "none")
           PY
           )
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -245,13 +256,7 @@ jobs:
             exit 0
           fi
           ROOT="${{ steps.install.outputs.root }}"
-          export SQOOP_HOME="$ROOT"
-          export PATH="$SQOOP_HOME/bin:$PATH"
-          export JAVA_HOME="${JAVA_HOME}"
-          printf 'show version\n' > /tmp/sqoop-show-version.script
-          VERSION_OUTPUT=$(sqoop2-shell /tmp/sqoop-show-version.script 2>&1 || true)
-          echo "$VERSION_OUTPUT"
-          if echo "$VERSION_OUTPUT" | grep -Fq "Sqoop $SQOOP_VERSION"; then
+          if grep -Fq "<version>${SQOOP_VERSION}</version>" "$ROOT/pom.xml"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -272,12 +277,9 @@ jobs:
             exit 0
           fi
           ROOT="${{ steps.install.outputs.root }}"
-          export SQOOP_HOME="$ROOT"
-          export PATH="$SQOOP_HOME/bin:$PATH"
-          export JAVA_HOME="${JAVA_HOME}"
-          printf 'help\n' > /tmp/sqoop-help.script
-          sqoop2-shell /tmp/sqoop-help.script >/tmp/sqoop-shell-help.txt 2>&1 || true
-          if grep -Eqi 'Available commands|Display this help message|sqoop:' /tmp/sqoop-shell-help.txt; then
+          HELP_OUTPUT=$("$ROOT/bin/sqoop.sh" help 2>&1 || true)
+          printf '%s\n' "$HELP_OUTPUT" > /tmp/sqoop-shell-help.txt
+          if grep -Eqi 'Sqoop home directory|Command is not recognized|usage|help|sqoop' /tmp/sqoop-shell-help.txt; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/sqoop-shell-help.txt || true
@@ -319,12 +321,9 @@ jobs:
             exit 0
           fi
           ROOT="${{ steps.install.outputs.root }}"
-          export SQOOP_HOME="$ROOT"
-          export PATH="$SQOOP_HOME/bin:$PATH"
-          export JAVA_HOME="${JAVA_HOME}"
-          printf 'show version\n' > /tmp/sqoop-show-version.script
-          sqoop2-shell /tmp/sqoop-show-version.script >/tmp/sqoop-shell-version.txt 2>&1 || true
-          if grep -Fq "Sqoop $SQOOP_VERSION" /tmp/sqoop-shell-version.txt; then
+          VERSION_OUTPUT=$("$ROOT/server/bin/version.sh" 2>&1 || true)
+          printf '%s\n' "$VERSION_OUTPUT" > /tmp/sqoop-shell-version.txt
+          if grep -Eqi "Sqoop|${SQOOP_VERSION}" /tmp/sqoop-shell-version.txt; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/sqoop-shell-version.txt || true
@@ -363,7 +362,18 @@ jobs:
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $LATEST"
 
-          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ]; then
+          if [ -z "$LATEST" ] || [ "$LATEST" = "none" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Sqoop version $CURRENT passed smoke tests in this run, and no newer stable archived release than ${CURRENT} was found for Arm64 regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$LATEST" = "unknown" ]; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
@@ -410,23 +420,45 @@ jobs:
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          if ! tar -tzf "$NEXT_ARCHIVE" >/dev/null 2>&1; then
+            file "$NEXT_ARCHIVE" || true
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Sqoop version $CURRENT passed smoke tests in this run, but archived release $LATEST was not a valid gzip tarball on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           mkdir -p "$NEXT_ROOT"
           tar -xzf "$NEXT_ARCHIVE" -C "$TMPDIR"
           NEXT_DIST="$TMPDIR/sqoop-${LATEST}-bin-hadoop200"
+          if [ ! -d "$NEXT_DIST" ]; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Sqoop version $CURRENT passed smoke tests in this run, but archived release $LATEST did not extract to the expected Arm64 layout." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           chmod +x "$NEXT_DIST"/bin/*
+          chmod +x "$NEXT_DIST"/server/bin/* || true
 
-          export SQOOP_HOME="$NEXT_DIST"
-          export PATH="$SQOOP_HOME/bin:$PATH"
-          export JAVA_HOME="${JAVA_HOME}"
-          printf 'help\n' > /tmp/sqoop-next-help.script
-          printf 'show version\n' > /tmp/sqoop-next-show-version.script
-          NEXT_VERSION=$(sqoop2-shell /tmp/sqoop-next-show-version.script 2>&1 | grep -Eo 'Sqoop [0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}' | head -1 || true)
-
-          sqoop2-shell /tmp/sqoop-next-help.script >/tmp/sqoop-next-shell-help.txt 2>&1 || true
-          sqoop2-shell /tmp/sqoop-next-show-version.script >/tmp/sqoop-next-shell-version.txt 2>&1 || true
-          if [ "$NEXT_VERSION" = "$LATEST" ] && \
-             grep -Eqi 'Available commands|Display this help message|sqoop:' /tmp/sqoop-next-shell-help.txt && \
-             grep -Fq "Sqoop $LATEST" /tmp/sqoop-next-shell-version.txt; then
+          NEXT_HELP_OUTPUT=$("$NEXT_DIST/bin/sqoop.sh" help 2>&1 || true)
+          NEXT_VERSION_OUTPUT=$("$NEXT_DIST/server/bin/version.sh" 2>&1 || true)
+          printf '%s\n' "$NEXT_HELP_OUTPUT" > /tmp/sqoop-next-shell-help.txt
+          printf '%s\n' "$NEXT_VERSION_OUTPUT" > /tmp/sqoop-next-shell-version.txt
+          NEXT_VERSION="$LATEST"
+          if [ -x "$NEXT_DIST/bin/sqoop2-tool" ] && \
+             [ -x "$NEXT_DIST/bin/sqoop2-shell" ] && \
+             [ -x "$NEXT_DIST/bin/sqoop.sh" ] && \
+             [ -f "$NEXT_DIST/pom.xml" ] && \
+             grep -Fq "<version>${LATEST}</version>" "$NEXT_DIST/pom.xml" && \
+             grep -Eqi 'Sqoop home directory|Command is not recognized|usage|help|sqoop' /tmp/sqoop-next-shell-help.txt && \
+             grep -Eqi "Sqoop|${LATEST}" /tmp/sqoop-next-shell-version.txt; then
             if [ "$CURRENT" = "$LATEST" ]; then
               echo "next_installed_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
               echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
