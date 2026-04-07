@@ -74,11 +74,7 @@ function getDashboardPath(dashboardPath) {
         normalizedPath = '/' + normalizedPath;
     }
 
-    if (!normalizedPath.endsWith('/')) {
-        normalizedPath = normalizedPath + '/';
-    }
-
-    return normalizedPath;
+    return normalizedPath.replace(/\/$/, '') || '/';
 }
   
 function buildPackageDashboardUrl(packageSlug, dashboardPath) {
