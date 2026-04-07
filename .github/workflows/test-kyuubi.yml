@@ -119,25 +119,55 @@ jobs:
           echo "current_version=${KYUUBI_VERSION}" >> "$GITHUB_OUTPUT"
       - name: Install Kyuubi
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "curl openjdk-17-jre-headless tar"
+          download_kyuubi_tarball() {
+            local version="$1"
+            local output="$2"
+            local urls=(
+              "https://downloads.apache.org/kyuubi/kyuubi-${version}/apache-kyuubi-${version}-bin.tgz"
+              "https://archive.apache.org/dist/kyuubi/kyuubi-${version}/apache-kyuubi-${version}-bin.tgz"
+            )
+            local url
+            for url in "${urls[@]}"; do
+              if curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar "$url" -o "$output"; then
+                return 0
+              fi
+              if wget -4 --tries=5 --waitretry=5 --retry-connrefused -O "$output" "$url"; then
+                return 0
+              fi
+            done
+            return 1
+          }
           rm -rf "${KYUUBI_DIR}"
           mkdir -p "${KYUUBI_DIR}"
           cd "${KYUUBI_DIR}"
-          curl -fsSLO "https://downloads.apache.org/kyuubi/kyuubi-${KYUUBI_RELEASE}/apache-kyuubi-${KYUUBI_RELEASE}-bin.tgz"
-          tar -xzf "apache-kyuubi-${KYUUBI_RELEASE}-bin.tgz"
+          if ! download_kyuubi_tarball "${KYUUBI_RELEASE}" "apache-kyuubi-${KYUUBI_RELEASE}-bin.tgz"; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if ! tar -xzf "apache-kyuubi-${KYUUBI_RELEASE}-bin.tgz"; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_extract_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           if [ -x "${KYUUBI_DIR}/apache-kyuubi-${KYUUBI_RELEASE}-bin/bin/kyuubi" ] && \
              [ -x "${KYUUBI_DIR}/apache-kyuubi-${KYUUBI_RELEASE}-bin/bin/kyuubi-ctl" ]; then
             echo "install_status=success" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=none" >> "$GITHUB_OUTPUT"
           else
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_layout_failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
       - name: Get Kyuubi version
         id: version
+        if: always()
         run: |
           echo "version=${KYUUBI_VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -145,7 +175,13 @@ jobs:
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || '' }}" != "success" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           if [ -x "${KYUUBI_DIR}/apache-kyuubi-${KYUUBI_RELEASE}-bin/bin/kyuubi" ] && \
              [ -x "${KYUUBI_DIR}/apache-kyuubi-${KYUUBI_RELEASE}-bin/bin/kyuubi-ctl" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -160,7 +196,13 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || '' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -d "${KYUUBI_DIR}/apache-kyuubi-${KYUUBI_RELEASE}-bin" ] && \
              [ -f "${KYUUBI_DIR}/apache-kyuubi-${KYUUBI_RELEASE}-bin.tgz" ] && \
              tar -tzf "${KYUUBI_DIR}/apache-kyuubi-${KYUUBI_RELEASE}-bin.tgz" | head -n 1 | grep -q "apache-kyuubi-${KYUUBI_RELEASE}-bin/"; then
@@ -176,7 +218,13 @@ jobs:
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || '' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           HELP_OUTPUT=$("${KYUUBI_DIR}/apache-kyuubi-${KYUUBI_RELEASE}-bin/bin/kyuubi" --help 2>&1)
           if printf '%s\n' "${HELP_OUTPUT}" | grep -q "Usage: bin/kyuubi command" && \
              printf '%s\n' "${HELP_OUTPUT}" | grep -q "start"; then
@@ -193,7 +241,13 @@ jobs:
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || '' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$(uname -m)" = "aarch64" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -207,7 +261,13 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || '' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           cd "${KYUUBI_DIR}/apache-kyuubi-${KYUUBI_RELEASE}-bin"
           timeout 30s bin/kyuubi start >/tmp/kyuubi-start.log 2>&1 || true
           STATUS_OUTPUT=$(timeout 10s bin/kyuubi status 2>&1 || true)
@@ -238,6 +298,16 @@ jobs:
           echo "Current version tested in Tests 1-5: ${CURRENT}"
           echo "Next version targeted for install validation: ${LATEST_VERSION}"
 
+          if [ "${{ steps.install.outputs.install_status || '' }}" != "success" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because the baseline Kyuubi install failed in this run" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Kyuubi release ${CURRENT} could not complete baseline install in this run, so next-version regression validation was not attempted." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [ -z "${LATEST_VERSION}" ]; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
@@ -253,8 +323,26 @@ jobs:
           trap 'rm -rf "$TMPDIR"' EXIT
           NEXT_ARCHIVE="${TMPDIR}/apache-kyuubi-${LATEST_VERSION}-bin.tgz"
           NEXT_DIR="${TMPDIR}/apache-kyuubi-${LATEST_VERSION}-bin"
+          download_kyuubi_tarball() {
+            local version="$1"
+            local output="$2"
+            local urls=(
+              "https://downloads.apache.org/kyuubi/kyuubi-${version}/apache-kyuubi-${version}-bin.tgz"
+              "https://archive.apache.org/dist/kyuubi/kyuubi-${version}/apache-kyuubi-${version}-bin.tgz"
+            )
+            local url
+            for url in "${urls[@]}"; do
+              if curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar "$url" -o "$output"; then
+                return 0
+              fi
+              if wget -4 --tries=5 --waitretry=5 --retry-connrefused -O "$output" "$url"; then
+                return 0
+              fi
+            done
+            return 1
+          }
 
-          if curl -fsSL "https://downloads.apache.org/kyuubi/kyuubi-${LATEST_VERSION}/apache-kyuubi-${LATEST_VERSION}-bin.tgz" -o "${NEXT_ARCHIVE}"; then
+          if download_kyuubi_tarball "${LATEST_VERSION}" "${NEXT_ARCHIVE}"; then
             echo "Next version download status: passed"
           else
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
@@ -321,6 +409,7 @@ jobs:
         run: |
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
           CORE_FAILED=0
 
@@ -329,6 +418,8 @@ jobs:
             local duration="$2"
             if [ "${status}" = "passed" ]; then
               PASSED=$((PASSED + 1))
+            elif [ "${status}" = "skipped" ]; then
+              SKIPPED=$((SKIPPED + 1))
             else
               FAILED=$((FAILED + 1))
             fi
@@ -353,6 +444,7 @@ jobs:
 
           echo "passed=${PASSED}" >> "$GITHUB_OUTPUT"
           echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+          echo "skipped=${SKIPPED}" >> "$GITHUB_OUTPUT"
           echo "duration=${TOTAL_DURATION}" >> "$GITHUB_OUTPUT"
           echo "core_failed=${CORE_FAILED}" >> "$GITHUB_OUTPUT"
 
@@ -379,6 +471,7 @@ jobs:
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped || 0 }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
