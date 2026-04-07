@@ -58,6 +58,11 @@ function normalizePackageName(input) {
         .toLowerCase();                 // Convert to lowercase
 }
 
+function shouldUseTrailingSlashForPackageUrl() {
+    const currentHost = window.location.hostname.toLowerCase();
+    return currentHost.includes('cloudfront.net');
+}
+
 function getDashboardPath(dashboardPath) {
     let normalizedPath = dashboardPath;
 
@@ -74,11 +79,35 @@ function getDashboardPath(dashboardPath) {
         normalizedPath = '/' + normalizedPath;
     }
 
-    if (!normalizedPath.endsWith('/')) {
+    normalizedPath = normalizedPath.replace(/\/+$/, '') || '/';
+
+    if (normalizedPath !== '/' && shouldUseTrailingSlashForPackageUrl()) {
         normalizedPath = normalizedPath + '/';
     }
 
     return normalizedPath;
+}
+
+function normalizeDashboardUrlInAddressBar() {
+    const currentPath = window.location.pathname;
+    if (!currentPath || currentPath === '/') {
+        return;
+    }
+
+    let normalizedPath = currentPath.replace(/\/+$/, '') || '/';
+    if (normalizedPath !== '/' && shouldUseTrailingSlashForPackageUrl()) {
+        normalizedPath = normalizedPath + '/';
+    }
+
+    if (normalizedPath === currentPath) {
+        return;
+    }
+
+    window.history.replaceState(
+        window.history.state,
+        '',
+        normalizedPath + window.location.search + window.location.hash
+    );
 }
   
 function buildPackageDashboardUrl(packageSlug, dashboardPath) {
@@ -754,6 +783,8 @@ function ifNeededMoveFiltersToMobileOrDesktop(state_is_below_breakpoint) {
         5. Activates URL search/filters
 */
 document.addEventListener("DOMContentLoaded", function () {
+
+    normalizeDashboardUrlInAddressBar();
 
 
 
