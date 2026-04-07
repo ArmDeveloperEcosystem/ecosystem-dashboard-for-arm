@@ -118,15 +118,26 @@ jobs:
           echo "current_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
       - name: Install Hadoop for HDFS baseline
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-11-jdk tar wget"
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-11-jdk tar wget curl"
           VERSION="${{ steps.metadata.outputs.current_version }}"
-          URL="https://archive.apache.org/dist/hadoop/common/hadoop-${VERSION}/hadoop-${VERSION}-aarch64.tar.gz"
 
           rm -rf hadoop hadoop.tar.gz
-          wget -q "$URL" -O hadoop.tar.gz
-          tar -xzf hadoop.tar.gz
+          if ! bash .github/scripts/download-with-fallback.sh \
+            hadoop.tar.gz \
+            "https://downloads.apache.org/hadoop/common/hadoop-${VERSION}/hadoop-${VERSION}-aarch64.tar.gz" \
+            "https://archive.apache.org/dist/hadoop/common/hadoop-${VERSION}/hadoop-${VERSION}-aarch64.tar.gz"; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=download_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! tar -xzf hadoop.tar.gz; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           mv "hadoop-${VERSION}" hadoop
 
           JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")
@@ -150,13 +161,20 @@ jobs:
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
+            echo "install_blocker=baseline_layout_missing" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
       - name: Get HDFS version
         id: version
+        if: always()
         run: |
           set -euo pipefail
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "version=${{ steps.metadata.outputs.current_version }}" >> "$GITHUB_OUTPUT"
+            echo "Detected HDFS/Hadoop version: ${{ steps.metadata.outputs.current_version }}"
+            exit 0
+          fi
           REPORTED=$(hadoop/bin/hdfs version 2>&1 | awk '/^Hadoop / {print $2; exit}')
           if [ -z "$REPORTED" ]; then
             REPORTED="${{ steps.metadata.outputs.current_version }}"
@@ -166,6 +184,7 @@ jobs:
 
       - name: Test 1 - Check hdfs binary exists
         id: test1
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -177,7 +196,6 @@ jobs:
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
             exit 1
           fi
 
@@ -186,6 +204,7 @@ jobs:
 
       - name: Test 2 - Check exact hdfs version
         id: test2
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -208,6 +227,7 @@ jobs:
 
       - name: Test 3 - Check HDFS jar layout
         id: test3
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -230,6 +250,7 @@ jobs:
 
       - name: Test 4 - Check hdfs config and classpath
         id: test4
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -253,6 +274,7 @@ jobs:
 
       - name: Test 5 - Check namenode help and architecture
         id: test5
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -274,6 +296,7 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -303,7 +326,21 @@ jobs:
 
           NEXT_DIR=$(mktemp -d)
           NEXT_TAR="$NEXT_DIR/hadoop-next.tar.gz"
-          wget -q "https://downloads.apache.org/hadoop/common/hadoop-${LATEST}/hadoop-${LATEST}-aarch64.tar.gz" -O "$NEXT_TAR"
+          if ! bash .github/scripts/download-with-fallback.sh \
+            "$NEXT_TAR" \
+            "https://downloads.apache.org/hadoop/common/hadoop-${LATEST}/hadoop-${LATEST}-aarch64.tar.gz" \
+            "https://archive.apache.org/dist/hadoop/common/hadoop-${LATEST}/hadoop-${LATEST}-aarch64.tar.gz"; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned HDFS version ${CURRENT} passed the baseline CLI validation on Arm64, but the official candidate release ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
           NEXT_HOME="$NEXT_DIR/hadoop-${LATEST}"
           sed -i '/^export JAVA_HOME=/d' "$NEXT_HOME/etc/hadoop/hadoop-env.sh"
@@ -397,14 +434,30 @@ jobs:
           set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
+          TEST6_DECISION="${{ steps.test6.outputs.decision || '' }}"
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || \
+             [ "$TEST6_DECISION" = "baseline_failed" ]; then
+            echo "passed=0" >> "$GITHUB_OUTPUT"
+            echo "failed=1" >> "$GITHUB_OUTPUT"
+            echo "skipped=5" >> "$GITHUB_OUTPUT"
+            echo "core_failed=1" >> "$GITHUB_OUTPUT"
+            echo "duration=${{ steps.test6.outputs.duration || 0 }}" >> "$GITHUB_OUTPUT"
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           check_core_test() {
             local status="$1"
             local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
+            elif [ "$status" = "skipped" ] || [ -z "$status" ]; then
+              SKIPPED=$((SKIPPED + 1))
             else
               FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
@@ -420,6 +473,8 @@ jobs:
 
           if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test6.outputs.status || 'failed' }}" = "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           elif [ "${{ steps.test6.outputs.status || 'failed' }}" = "failed" ]; then
             FAILED=$((FAILED + 1))
           fi
@@ -427,6 +482,7 @@ jobs:
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
@@ -471,6 +527,7 @@ jobs:
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped || 0 }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"

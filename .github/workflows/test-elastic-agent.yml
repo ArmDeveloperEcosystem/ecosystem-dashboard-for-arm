@@ -117,14 +117,27 @@ jobs:
           echo "dashboard_link=/opensource_packages/elastic-agent" >> "$GITHUB_OUTPUT"
       - name: Install Elastic Agent bundle
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
           CURRENT_VERSION="${ELASTIC_AGENT_VERSION}"
           INSTALL_DIR="/opt/elastic-agent-${CURRENT_VERSION}"
           sudo rm -rf "$INSTALL_DIR"
           sudo mkdir -p "$INSTALL_DIR"
-          curl -fsSL "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-${CURRENT_VERSION}-linux-arm64.tar.gz" -o "/tmp/elastic-agent-${CURRENT_VERSION}-linux-arm64.tar.gz"
-          sudo tar -xzf "/tmp/elastic-agent-${CURRENT_VERSION}-linux-arm64.tar.gz" --strip-components=1 -C "$INSTALL_DIR"
+          if ! bash .github/scripts/download-with-fallback.sh \
+            "/tmp/elastic-agent-${CURRENT_VERSION}-linux-arm64.tar.gz" \
+            "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-${CURRENT_VERSION}-linux-arm64.tar.gz"; then
+            echo "baseline_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=download_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! sudo tar -xzf "/tmp/elastic-agent-${CURRENT_VERSION}-linux-arm64.tar.gz" --strip-components=1 -C "$INSTALL_DIR"; then
+            echo "baseline_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           sudo tee /usr/local/bin/elastic-agent >/dev/null <<EOF
           #!/usr/bin/env bash
           exec "${INSTALL_DIR}/elastic-agent" "\$@"
@@ -135,14 +148,21 @@ jobs:
             echo "baseline_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
+            echo "baseline_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
+            echo "install_blocker=baseline_layout_missing" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
       - name: Get Elastic Agent version
         id: version
+        if: always()
         run: |
           set -euo pipefail
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "version=${{ steps.install.outputs.baseline_version || env.ELASTIC_AGENT_VERSION }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           VERSION=$(elastic-agent version --binary-only 2>&1 | sed -n 's/.*Binary: \([0-9.]*\).*/\1/p' | head -n 1)
           if [ -z "$VERSION" ]; then
             VERSION="${ELASTIC_AGENT_VERSION}"
@@ -151,6 +171,7 @@ jobs:
 
       - name: Test 1 - Check Binary Existence
         id: test1
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -168,6 +189,7 @@ jobs:
 
       - name: Test 2 - Check Version Output
         id: test2
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -186,6 +208,7 @@ jobs:
 
       - name: Test 3 - Check Help Output
         id: test3
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -205,6 +228,7 @@ jobs:
 
       - name: Test 4 - Architecture Verification
         id: test4
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -229,6 +253,7 @@ jobs:
 
       - name: Test 5 - Functional Validation
         id: test5
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -264,6 +289,7 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -275,8 +301,30 @@ jobs:
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
           echo "Next version targeted for install validation: $LATEST"
 
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Elastic Agent version ${CURRENT} did not complete baseline installation and core Tests 1-5 cleanly in this run, so next-version validation was not attempted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           NEXT_DIR=$(mktemp -d)
-          curl -fsSL "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-${LATEST}-linux-arm64.tar.gz" -o "$NEXT_DIR/elastic-agent-${LATEST}-linux-arm64.tar.gz"
+          if ! bash .github/scripts/download-with-fallback.sh \
+            "$NEXT_DIR/elastic-agent-${LATEST}-linux-arm64.tar.gz" \
+            "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-${LATEST}-linux-arm64.tar.gz"; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Elastic Agent version ${CURRENT} passed smoke tests in this run, but the latest Elastic Agent Arm64 bundle ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           tar -xzf "$NEXT_DIR/elastic-agent-${LATEST}-linux-arm64.tar.gz" --strip-components=1 -C "$NEXT_DIR"
           NEXT_AGENT_BIN=$(readlink -f "$NEXT_DIR/elastic-agent")
           COMPONENT=$(find "$NEXT_DIR/data" -path '*/components/pf-elastic-collector' -type f | head -n 1)
@@ -366,14 +414,30 @@ jobs:
         run: |
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
           CORE_FAILED=0
+          TEST6_DECISION="${{ steps.test6.outputs.decision || '' }}"
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || \
+             [ "$TEST6_DECISION" = "baseline_failed" ]; then
+            echo "passed=0" >> "$GITHUB_OUTPUT"
+            echo "failed=1" >> "$GITHUB_OUTPUT"
+            echo "skipped=5" >> "$GITHUB_OUTPUT"
+            echo "duration=${{ steps.test6.outputs.duration || 0 }}" >> "$GITHUB_OUTPUT"
+            echo "core_failed=1" >> "$GITHUB_OUTPUT"
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           check_core_test() {
             local status="$1"
             local duration="$2"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
+            elif [ "$status" = "skipped" ] || [ -z "$status" ]; then
+              SKIPPED=$((SKIPPED + 1))
             else
               FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
@@ -389,6 +453,8 @@ jobs:
 
           if [ "${{ steps.test6.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test6.outputs.status }}" = "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
@@ -396,6 +462,7 @@ jobs:
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
@@ -440,6 +507,7 @@ jobs:
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped || 0 }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"

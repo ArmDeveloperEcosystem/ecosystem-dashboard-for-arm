@@ -119,26 +119,30 @@ jobs:
           echo "dashboard_link=/opensource_packages/Flume" >> "$GITHUB_OUTPUT"
       - name: Install Flume (Tarball)
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
           echo "Installing Flume (Tarball)..."
           
           # Install Java (required)
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-11-jdk wget"
-          # Download Flume
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-11-jdk wget curl"
           FLUME_VERSION="${FLUME_BASELINE_VERSION}"
-          # Apache archive URL
-          URL="https://archive.apache.org/dist/flume/${FLUME_VERSION}/apache-flume-${FLUME_VERSION}-bin.tar.gz"
-          
-          if wget -q $URL -O flume.tar.gz; then
-            echo "Downloaded flume tarball"
-          else
-             # Try newer version if old one missing?
-             echo "Download failed, trying mirror or fallback"
-             exit 1
+          if ! bash .github/scripts/download-with-fallback.sh \
+            flume.tar.gz \
+            "https://downloads.apache.org/flume/${FLUME_VERSION}/apache-flume-${FLUME_VERSION}-bin.tar.gz" \
+            "https://archive.apache.org/dist/flume/${FLUME_VERSION}/apache-flume-${FLUME_VERSION}-bin.tar.gz"; then
+            echo "baseline_version=$FLUME_VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=download_failed" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           
-          tar -xzf flume.tar.gz
+          if ! tar -xzf flume.tar.gz; then
+            echo "baseline_version=$FLUME_VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           mv apache-flume-${FLUME_VERSION}-bin flume
           
           # Set up environment
@@ -149,16 +153,26 @@ jobs:
           if [ -f "flume/bin/flume-ng" ]; then
              chmod +x flume/bin/flume-ng
              echo "Flume binary found"
+             echo "baseline_version=$FLUME_VERSION" >> "$GITHUB_OUTPUT"
              echo "install_status=success" >> $GITHUB_OUTPUT
           else
              echo "Flume binary not found after extraction"
+             echo "baseline_version=$FLUME_VERSION" >> "$GITHUB_OUTPUT"
              echo "install_status=failed" >> $GITHUB_OUTPUT
-             exit 1
+             echo "install_blocker=baseline_layout_missing" >> "$GITHUB_OUTPUT"
+             exit 0
           fi
       
       - name: Get Flume version
         id: version
+        if: always()
         run: |
+          set -euo pipefail
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "version=${{ steps.install.outputs.baseline_version || env.FLUME_BASELINE_VERSION }}" >> "$GITHUB_OUTPUT"
+            echo "Detected Flume version: ${{ steps.install.outputs.baseline_version || env.FLUME_BASELINE_VERSION }}"
+            exit 0
+          fi
           # flume-ng version
           export PATH=$PATH:$(pwd)/flume/bin
           VERSION=$(flume-ng version 2>&1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
@@ -170,6 +184,7 @@ jobs:
       
       - name: Test 1 - Check flume-ng binary exists
         id: test1
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
@@ -188,6 +203,7 @@ jobs:
       
       - name: Test 2 - Check flume version command
         id: test2
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
@@ -207,6 +223,7 @@ jobs:
       
       - name: Test 3 - Check flume help output
         id: test3
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
@@ -226,6 +243,7 @@ jobs:
       
       - name: Test 4 - Architecture Verification
         id: test4
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
@@ -246,6 +264,7 @@ jobs:
       
       - name: Test 5 - Functional Validation (Configuration)
         id: test5
+        if: ${{ steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
@@ -281,11 +300,25 @@ jobs:
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT  
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
         run: |
           START_TIME=$(date +%s)
           set -euo pipefail
           CURRENT="$(echo "${{ steps.version.outputs.version || 'unknown' }}" | tr -d '[:space:]' | sed 's/^v//')"
           LATEST="${FLUME_NEXT_VERSION}"
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Flume version ${CURRENT} did not complete baseline installation and core Tests 1-5 cleanly in this run, so next-version validation was not attempted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           NEXT_INSTALLED="not_installed"
           DECISION="next_lookup_failed"
@@ -304,7 +337,10 @@ jobs:
           else
             NEXT_DIR=$(mktemp -d /tmp/flume-next-XXXXXX)
             NEXT_TARBALL="$NEXT_DIR/flume.tar.gz"
-            if curl -fsSL -o "$NEXT_TARBALL" "https://archive.apache.org/dist/flume/${LATEST}/apache-flume-${LATEST}-bin.tar.gz"; then
+            if bash .github/scripts/download-with-fallback.sh \
+              "$NEXT_TARBALL" \
+              "https://downloads.apache.org/flume/${LATEST}/apache-flume-${LATEST}-bin.tar.gz" \
+              "https://archive.apache.org/dist/flume/${LATEST}/apache-flume-${LATEST}-bin.tar.gz"; then
               tar -xzf "$NEXT_TARBALL" -C "$NEXT_DIR"
               NEXT_HOME=$(find "$NEXT_DIR" -maxdepth 1 -type d -name "apache-flume-${LATEST}-bin" | head -1)
               NEXT_BIN="$NEXT_HOME/bin/flume-ng"
@@ -410,57 +446,48 @@ jobs:
           set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
           TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          TEST6_DECISION="${{ steps.test6.outputs.decision || '' }}"
 
-          # Check flume-ng binary exists
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-            CORE_FAILED=$((CORE_FAILED + 1))
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || \
+             [ "$TEST6_DECISION" = "baseline_failed" ]; then
+            echo "passed=0" >> "$GITHUB_OUTPUT"
+            echo "failed=1" >> "$GITHUB_OUTPUT"
+            echo "skipped=5" >> "$GITHUB_OUTPUT"
+            echo "core_failed=1" >> "$GITHUB_OUTPUT"
+            echo "duration=${{ steps.test6.outputs.duration || 0 }}" >> "$GITHUB_OUTPUT"
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Check flume version command
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-            CORE_FAILED=$((CORE_FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+          check_core() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$status" = "skipped" ] || [ -z "$status" ]; then
+              SKIPPED=$((SKIPPED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          # Check flume help output
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-            CORE_FAILED=$((CORE_FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
+          check_core "${{ steps.test1.outputs.status || 'skipped' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core "${{ steps.test2.outputs.status || 'skipped' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core "${{ steps.test3.outputs.status || 'skipped' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core "${{ steps.test4.outputs.status || 'skipped' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core "${{ steps.test5.outputs.status || 'skipped' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          # Architecture Verification
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-            CORE_FAILED=$((CORE_FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Functional Validation (Configuration)
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-            CORE_FAILED=$((CORE_FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-          # Regression Validation
           if [ "$TEST6_STATUS" == "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "$TEST6_STATUS" == "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           elif [ "$TEST6_STATUS" == "failed" ]; then
             FAILED=$((FAILED + 1))
           fi
@@ -468,6 +495,7 @@ jobs:
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
           echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
@@ -495,6 +523,7 @@ jobs:
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped || 0 }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
