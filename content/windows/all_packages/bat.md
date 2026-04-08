@@ -1,7 +1,7 @@
 ---
 name: bat
 category: Cloud Tools
-description: cat clone with syntax highlighting and Git integration.
+description: Alternative to the Unix tool cat with syntax highlighting and Git integration.
 download_url: https://github.com/sharkdp/bat/releases
 works_on_arm: true
 supported_minimum_version:
