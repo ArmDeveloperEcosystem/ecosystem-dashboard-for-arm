@@ -120,19 +120,39 @@ jobs:
           echo "current_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
       - name: Install Apache Spark
         id: install
+        continue-on-error: true
         run: |
+          set -euo pipefail
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-17-jdk python3 python3-pip wget curl"
           JAVA_BIN=$(readlink -f "$(which java)")
           echo "JAVA_HOME=$(dirname "$(dirname "$JAVA_BIN")")" >> "$GITHUB_ENV"
 
           cd /tmp
           ARCHIVE="spark-${BASELINE_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz"
-          URL="https://archive.apache.org/dist/spark/spark-${BASELINE_VERSION}/${ARCHIVE}"
-          wget -q "$URL"
+          HELPER="$GITHUB_WORKSPACE/.github/scripts/download-with-fallback.sh"
+          if ! DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=900 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=60 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+            bash "$HELPER" "/tmp/${ARCHIVE}" \
+              "https://dlcdn.apache.org/spark/spark-${BASELINE_VERSION}/${ARCHIVE}" \
+              "https://downloads.apache.org/spark/spark-${BASELINE_VERSION}/${ARCHIVE}" \
+              "https://archive.apache.org/dist/spark/spark-${BASELINE_VERSION}/${ARCHIVE}" \
+              "http://archive.apache.org/dist/spark/spark-${BASELINE_VERSION}/${ARCHIVE}"; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=download_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           sudo rm -rf "/opt/spark-${BASELINE_VERSION}-bin-hadoop${HADOOP_VERSION}"
           sudo rm -f /opt/spark
-          sudo tar -xzf "$ARCHIVE" -C /opt/
+          if ! sudo tar -xzf "$ARCHIVE" -C /opt/; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           sudo ln -s "/opt/spark-${BASELINE_VERSION}-bin-hadoop${HADOOP_VERSION}" /opt/spark
 
           echo "SPARK_HOME=/opt/spark" >> "$GITHUB_ENV"
@@ -142,13 +162,19 @@ jobs:
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
+            echo "install_blocker=binary_missing" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
       - name: Detect Spark version
         id: version
         run: |
           set -euo pipefail
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "latest=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -f /opt/spark/RELEASE ]; then
             VERSION=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' /opt/spark/RELEASE | head -n 1)
           else
@@ -197,6 +223,11 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if command -v spark-submit >/dev/null 2>&1 && \
              command -v spark-shell >/dev/null 2>&1 && \
@@ -215,6 +246,11 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           VERSION_OUTPUT=$(/opt/spark/bin/spark-submit --version 2>&1 || true)
           if grep -q "${{ steps.version.outputs.version }}" <<< "$VERSION_OUTPUT"; then
@@ -233,6 +269,11 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if /opt/spark/bin/spark-submit --help >/dev/null 2>&1 && \
              /opt/spark/bin/pyspark --help >/dev/null 2>&1; then
@@ -250,6 +291,11 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           ARCH=$(uname -m)
           if [ "$ARCH" = "aarch64" ]; then
@@ -267,6 +313,11 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           cat > /tmp/pyspark_test.py <<'EOF'
           from pyspark.sql import SparkSession
@@ -317,6 +368,22 @@ jobs:
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $LATEST"
 
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || \
+             [ "${{ steps.test1.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'skipped' }}" != "passed" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed in this run" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Spark version ${CURRENT} did not complete baseline installation or core smoke validation cleanly in this run, so next-version validation was skipped on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ]; then
             echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
@@ -340,10 +407,19 @@ jobs:
           NEXT_TGZ="/tmp/spark-regression-${LATEST}.tgz"
           NEXT_DIR=$(mktemp -d)
           NEXT_ARCHIVE="spark-${LATEST}-bin-hadoop${HADOOP_VERSION}.tgz"
-          NEXT_URL_PRIMARY="https://downloads.apache.org/spark/spark-${LATEST}/${NEXT_ARCHIVE}"
-          NEXT_URL_FALLBACK="https://archive.apache.org/dist/spark/spark-${LATEST}/${NEXT_ARCHIVE}"
+          HELPER="$GITHUB_WORKSPACE/.github/scripts/download-with-fallback.sh"
 
-          if wget -q -O "$NEXT_TGZ" "$NEXT_URL_PRIMARY" || wget -q -O "$NEXT_TGZ" "$NEXT_URL_FALLBACK"; then
+          if DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=900 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=60 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+            bash "$HELPER" "$NEXT_TGZ" \
+              "https://dlcdn.apache.org/spark/spark-${LATEST}/${NEXT_ARCHIVE}" \
+              "https://downloads.apache.org/spark/spark-${LATEST}/${NEXT_ARCHIVE}" \
+              "https://archive.apache.org/dist/spark/spark-${LATEST}/${NEXT_ARCHIVE}" \
+              "http://archive.apache.org/dist/spark/spark-${LATEST}/${NEXT_ARCHIVE}"; then
             echo "Next version download status: passed"
             tar -xzf "$NEXT_TGZ" -C "$NEXT_DIR"
             NEXT_ROOT="$NEXT_DIR/spark-${LATEST}-bin-hadoop${HADOOP_VERSION}"
@@ -487,6 +563,17 @@ jobs:
           FAILED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
+
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || \
+             [ "${{ steps.test6.outputs.decision || '' }}" = "baseline_failed" ]; then
+            echo "passed=0" >> "$GITHUB_OUTPUT"
+            echo "failed=1" >> "$GITHUB_OUTPUT"
+            echo "core_failed=1" >> "$GITHUB_OUTPUT"
+            echo "duration=${{ steps.test6.outputs.duration || 0 }}" >> "$GITHUB_OUTPUT"
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           check_core_test() {
             local status=$1

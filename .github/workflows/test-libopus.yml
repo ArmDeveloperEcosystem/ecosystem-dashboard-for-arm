@@ -117,27 +117,70 @@ jobs:
           echo "current_version=${LIBOPUS_VERSION#v}" >> "$GITHUB_OUTPUT"
       - name: Install Libopus
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
+          HELPER="$GITHUB_WORKSPACE/.github/scripts/download-with-fallback.sh"
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential autoconf automake libtool pkg-config git"
           rm -rf /tmp/opus
           git clone --depth 1 --branch "${LIBOPUS_VERSION}" https://github.com/xiph/opus.git /tmp/opus
           cd /tmp/opus
-          ./autogen.sh
-          ./configure --prefix=/tmp/opus-install
-          make -j"$(nproc)"
-          make install
+          MODEL_HASH="$(awk -F'\"' '/dnn\\/download_model\\.sh/ {print $2; exit}' autogen.sh || true)"
+          if [ -n "${MODEL_HASH}" ]; then
+            MODEL_FILE="opus_data-${MODEL_HASH}.tar.gz"
+            mkdir -p dnn
+            if ! DOWNLOAD_ATTEMPTS=3 \
+              DOWNLOAD_CONNECT_TIMEOUT=30 \
+              DOWNLOAD_MAX_TIME=300 \
+              DOWNLOAD_RETRY_DELAY=5 \
+              DOWNLOAD_WGET_TIMEOUT=60 \
+              DOWNLOAD_WGET_WAITRETRY=5 \
+              bash "$HELPER" "dnn/${MODEL_FILE}" \
+                "https://media.xiph.org/opus/models/${MODEL_FILE}" \
+                "http://media.xiph.org/opus/models/${MODEL_FILE}"; then
+              echo "install_status=failed" >> "$GITHUB_OUTPUT"
+              echo "install_blocker=model_download_failed" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          if ! ./autogen.sh; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=autogen_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! ./configure --prefix=/tmp/opus-install; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=configure_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! make -j"$(nproc)"; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=build_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! make install; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=install_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -f /tmp/opus-install/include/opus/opus.h ] && { [ -f /tmp/opus-install/lib/libopus.so ] || [ -f /tmp/opus-install/lib/libopus.a ]; }; then
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
+            echo "install_blocker=layout_missing" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
       - name: Get Libopus version
         id: version
+        if: always()
         run: |
           set -euo pipefail
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "version=${LIBOPUS_VERSION#v}" >> "$GITHUB_OUTPUT"
+            echo "latest=${LIBOPUS_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           VERSION=$(git -C /tmp/opus describe --tags --abbrev=0 | sed 's/^v//')
           LATEST="${LIBOPUS_NEXT_VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -148,6 +191,11 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -f /tmp/opus-install/include/opus/opus.h ] && { [ -f /tmp/opus-install/lib/libopus.so ] || [ -f /tmp/opus-install/lib/libopus.a ]; }; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -163,6 +211,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           TAG_VERSION="$(git -C /tmp/opus describe --tags --abbrev=0 2>/dev/null || true)"
           if [ "${{ steps.version.outputs.version }}" = "${LIBOPUS_VERSION#v}" ] \
             || [ "${TAG_VERSION}" = "${LIBOPUS_VERSION}" ] \
@@ -181,6 +234,11 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if grep -q 'opus_encoder_create' /tmp/opus-install/include/opus/opus.h; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -195,6 +253,11 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           ARCH=$(uname -m)
           if [ "$ARCH" = "aarch64" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -211,6 +274,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           cat > /tmp/opus-smoke.c <<'EOF'
           #include <opus/opus.h>
           #include <stdio.h>
@@ -245,16 +313,47 @@ jobs:
           REGRESSION_TAG="v${LATEST}"
           REGRESSION_SRC_DIR="/tmp/opus-regression"
           REGRESSION_PREFIX="/tmp/opus-regression-install"
+          HELPER="$GITHUB_WORKSPACE/.github/scripts/download-with-fallback.sh"
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
           echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT}"
           echo "Next version targeted for install validation: ${LATEST}"
 
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || \
+             [ "${{ steps.test1.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'skipped' }}" != "passed" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed in this run" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned libopus baseline ${CURRENT} did not complete baseline installation or core smoke validation cleanly in this run, so next-version validation was skipped on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           rm -rf "${REGRESSION_SRC_DIR}" "${REGRESSION_PREFIX}"
           git clone --depth 1 --branch "${REGRESSION_TAG}" https://github.com/xiph/opus.git "${REGRESSION_SRC_DIR}" >/tmp/opus-regression-clone.log 2>&1
           (
             cd "${REGRESSION_SRC_DIR}"
+            MODEL_HASH="$(awk -F'\"' '/dnn\\/download_model\\.sh/ {print $2; exit}' autogen.sh || true)"
+            if [ -n "${MODEL_HASH}" ]; then
+              MODEL_FILE="opus_data-${MODEL_HASH}.tar.gz"
+              mkdir -p dnn
+              DOWNLOAD_ATTEMPTS=3 \
+              DOWNLOAD_CONNECT_TIMEOUT=30 \
+              DOWNLOAD_MAX_TIME=300 \
+              DOWNLOAD_RETRY_DELAY=5 \
+              DOWNLOAD_WGET_TIMEOUT=60 \
+              DOWNLOAD_WGET_WAITRETRY=5 \
+                bash "$HELPER" "dnn/${MODEL_FILE}" \
+                  "https://media.xiph.org/opus/models/${MODEL_FILE}" \
+                  "http://media.xiph.org/opus/models/${MODEL_FILE}"
+            fi
             ./autogen.sh >/tmp/opus-regression-build.log 2>&1
             ./configure --prefix="${REGRESSION_PREFIX}" >>/tmp/opus-regression-build.log 2>&1
             make -j"$(nproc)" >>/tmp/opus-regression-build.log 2>&1
@@ -357,6 +456,17 @@ jobs:
         id: summary
         run: |
           set -euo pipefail
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || \
+             [ "${{ steps.test6.outputs.decision || '' }}" = "baseline_failed" ]; then
+            echo "passed=0" >> "$GITHUB_OUTPUT"
+            echo "failed=1" >> "$GITHUB_OUTPUT"
+            echo "core_failed=1" >> "$GITHUB_OUTPUT"
+            echo "duration=${{ steps.test6.outputs.duration || 0 }}" >> "$GITHUB_OUTPUT"
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           PASSED=0
           FAILED=0
           CORE_FAILED=0
