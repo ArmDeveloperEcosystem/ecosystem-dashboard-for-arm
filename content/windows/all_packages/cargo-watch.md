@@ -1,0 +1,31 @@
+---
+name: cargo-watch
+category: Miscellaneous
+description: Utility for watching file changes and automatically running Cargo commands.
+download_url: https://github.com/watchexec/cargo-watch/releases
+works_on_arm: true
+supported_minimum_version:
+  version_number: 7.5.0
+  release_date: 2021/02/12
+
+
+optional_info:
+  homepage_url: https://github.com/watchexec/cargo-watch
+  support_caveats:
+  alternative_options:
+  getting_started_resources:
+    official_docs: https://github.com/watchexec/cargo-watch#readme
+    arm_content:
+    partner_content:
+  arm_recommended_minimum_version:
+    version_number:
+    release_date:
+    reference_content:
+    rationale:
+
+optional_hidden_info:
+  release_notes__supported_minimum:
+  release_notes__recommended_minimum:
+  other_info:
+
+---
