@@ -117,26 +117,44 @@ jobs:
           echo "current_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
       - name: Install Milvus baseline assets
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
           VERSION="${{ steps.metadata.outputs.current_version }}"
           WORK_DIR="/tmp/milvus-${VERSION}"
           COMPOSE_PATH="${WORK_DIR}/milvus-standalone-docker-compose.yml"
           COMPOSE_URL="https://github.com/milvus-io/milvus/releases/download/v${VERSION}/milvus-standalone-docker-compose.yml"
-
-          sudo apt-get update
-          sudo apt-get install -y curl
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "curl"
 
           sudo rm -rf "$WORK_DIR"
           mkdir -p "$WORK_DIR"
-          curl -fsSL "$COMPOSE_URL" -o "$COMPOSE_PATH"
+          if ! DOWNLOAD_ATTEMPTS=4 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=300 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=30 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+            bash .github/scripts/download-with-fallback.sh "$COMPOSE_PATH" "$COMPOSE_URL"; then
+            echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "compose_path=$COMPOSE_PATH" >> "$GITHUB_OUTPUT"
+            echo "work_dir=$WORK_DIR" >> "$GITHUB_OUTPUT"
+            echo "standalone_image=" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=download_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           STANDALONE_IMAGE=$(grep -E '^[[:space:]]*image:[[:space:]]*milvusdb/milvus:' "$COMPOSE_PATH" | awk '{print $2}' | head -n 1)
           EXPECTED_IMAGE="milvusdb/milvus:v${VERSION}"
 
           if [ "$STANDALONE_IMAGE" != "$EXPECTED_IMAGE" ]; then
-            echo "Expected Milvus image ${EXPECTED_IMAGE}, but compose file resolved ${STANDALONE_IMAGE}."
-            exit 1
+            echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "compose_path=$COMPOSE_PATH" >> "$GITHUB_OUTPUT"
+            echo "work_dir=$WORK_DIR" >> "$GITHUB_OUTPUT"
+            echo "standalone_image=${STANDALONE_IMAGE}" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=unexpected_image" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -144,12 +162,32 @@ jobs:
           echo "work_dir=$WORK_DIR" >> "$GITHUB_OUTPUT"
           echo "standalone_image=$STANDALONE_IMAGE" >> "$GITHUB_OUTPUT"
           echo "install_status=success" >> "$GITHUB_OUTPUT"
+          echo "install_blocker=none" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve Milvus install state
+        id: install_state
+        if: always()
+        run: |
+          set -euo pipefail
+          STATUS="${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}"
+          BLOCKER="${{ steps.install.outputs.install_blocker || '' }}"
+          COMPOSE_PATH="${{ steps.install.outputs.compose_path || '' }}"
+          EXPECTED_IMAGE="milvusdb/milvus:v${{ steps.install.outputs.baseline_version || steps.metadata.outputs.current_version }}"
+          if [ -f "$COMPOSE_PATH" ] && grep -q "image: ${EXPECTED_IMAGE}" "$COMPOSE_PATH"; then
+            STATUS="success"
+            [ -n "$BLOCKER" ] || BLOCKER="none"
+          fi
+          echo "MILVUS_INSTALL_STATUS=$STATUS" >> "$GITHUB_ENV"
+          echo "MILVUS_INSTALL_BLOCKER=$BLOCKER" >> "$GITHUB_ENV"
+          echo "install_status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "install_blocker=$BLOCKER" >> "$GITHUB_OUTPUT"
 
       - name: Get Milvus version
         id: version
+        if: always()
         run: |
           set -euo pipefail
-          VERSION="${{ steps.install.outputs.baseline_version }}"
+          VERSION="${{ steps.install.outputs.baseline_version || steps.metadata.outputs.current_version }}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "latest=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Detected Milvus version from official standalone image tag: $VERSION"
@@ -160,6 +198,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install_state.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -f "${{ steps.install.outputs.compose_path }}" ] \
             && grep -q "image: milvusdb/milvus:v${{ steps.install.outputs.baseline_version }}" "${{ steps.install.outputs.compose_path }}"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -178,6 +221,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install_state.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if DOCKER_VOLUME_DIRECTORY="${{ steps.install.outputs.work_dir }}" \
             docker compose -f "${{ steps.install.outputs.compose_path }}" config >/tmp/milvus-config.log 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -197,6 +245,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install_state.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           IMAGE="${{ steps.install.outputs.standalone_image }}"
           if DOCKER_VOLUME_DIRECTORY="${{ steps.install.outputs.work_dir }}" \
             docker compose -f "${{ steps.install.outputs.compose_path }}" pull standalone >/tmp/milvus-pull.log 2>&1 \
@@ -219,6 +272,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install_state.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           export COMPOSE_PROJECT_NAME="milvus-baseline-${{ github.run_id }}"
           export DOCKER_VOLUME_DIRECTORY="${{ steps.install.outputs.work_dir }}"
 
@@ -248,6 +306,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${{ steps.install_state.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           export COMPOSE_PROJECT_NAME="milvus-baseline-${{ github.run_id }}"
           export DOCKER_VOLUME_DIRECTORY="${{ steps.install.outputs.work_dir }}"
           IMAGE="${{ steps.install.outputs.standalone_image }}"
@@ -288,6 +351,18 @@ jobs:
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
+
+          if [ "${{ steps.install_state.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Milvus version ${CURRENT} did not complete baseline installation and core Tests 1-5 cleanly in this run, so next-version validation was not attempted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if [ -z "$LATEST" ]; then
             echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
@@ -334,7 +409,22 @@ jobs:
           }
           trap cleanup EXIT
 
-          curl -fsSL "$COMPOSE_URL" -o "$COMPOSE_PATH"
+          if ! DOWNLOAD_ATTEMPTS=4 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=300 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=30 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+            bash .github/scripts/download-with-fallback.sh "$COMPOSE_PATH" "$COMPOSE_URL"; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Milvus version ${CURRENT} passed the official standalone compose smoke path on Arm64, but the candidate compose asset for ${LATEST} could not be downloaded." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           NEXT_IMAGE=$(grep -E '^[[:space:]]*image:[[:space:]]*milvusdb/milvus:' "$COMPOSE_PATH" | awk '{print $2}' | head -n 1)
           NEXT_REPORTED="${NEXT_IMAGE##*:v}"
 
@@ -440,11 +530,29 @@ jobs:
           set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
+          INSTALL_STATUS="${{ steps.install_state.outputs.install_status || 'failed' }}"
+
+          if [ "$INSTALL_STATUS" != "success" ]; then
+            FAILED=1
+            SKIPPED=5
+            TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+            echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+            echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+            echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+            echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+            echo "core_failed=1" >> "$GITHUB_OUTPUT"
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           if [ "${{ steps.test1.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test1.outputs.status }}" = "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
             CORE_FAILED=$((CORE_FAILED + 1))
@@ -453,6 +561,8 @@ jobs:
 
           if [ "${{ steps.test2.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test2.outputs.status }}" = "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
             CORE_FAILED=$((CORE_FAILED + 1))
@@ -461,6 +571,8 @@ jobs:
 
           if [ "${{ steps.test3.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test3.outputs.status }}" = "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
             CORE_FAILED=$((CORE_FAILED + 1))
@@ -469,6 +581,8 @@ jobs:
 
           if [ "${{ steps.test4.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test4.outputs.status }}" = "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
             CORE_FAILED=$((CORE_FAILED + 1))
@@ -477,6 +591,8 @@ jobs:
 
           if [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test5.outputs.status }}" = "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
             CORE_FAILED=$((CORE_FAILED + 1))
@@ -485,6 +601,8 @@ jobs:
 
           if [ "${{ steps.test6.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test6.outputs.status || 'skipped' }}" = "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
@@ -492,6 +610,7 @@ jobs:
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
