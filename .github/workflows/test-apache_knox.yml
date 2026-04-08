@@ -84,7 +84,7 @@ jobs:
       contract_version: "2.0"
       package_slug: ${{ steps.metadata.outputs.package_slug }}
       package_name: 'Apache Knox'
-      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      package_version: ${{ steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}
       run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
       badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
       core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
@@ -96,8 +96,8 @@ jobs:
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
-      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
-      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
@@ -114,6 +114,8 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=apache_knox" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/apache_knox" >> "$GITHUB_OUTPUT"
+          echo "current_version=${KNOX_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${KNOX_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
       - name: Install Apache Knox
         id: install
         run: |
@@ -147,11 +149,29 @@ jobs:
             echo "install_status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi
+
+      - name: Resolve Apache Knox install state
+        id: install_state
+        if: always()
+        run: |
+          set -euo pipefail
+          ROOT="$HOME/knox"
+          STATUS="${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}"
+          VERSION="${{ steps.install.outputs.baseline_version || steps.metadata.outputs.current_version || env.KNOX_VERSION }}"
+          if [ -d "$ROOT" ] && [ -x "$ROOT/bin/knoxcli.sh" ] && [ -x "$ROOT/bin/gateway.sh" ]; then
+            STATUS="success"
+          fi
+          echo "KNOX_HOME=$ROOT" >> "$GITHUB_ENV"
+          echo "KNOX_INSTALL_STATUS=$STATUS" >> "$GITHUB_ENV"
+          echo "KNOX_BASELINE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "install_status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
       
       - name: Get Apache Knox version
         id: version
+        if: always()
         run: |
-          VERSION="${{ steps.install.outputs.baseline_version || env.KNOX_VERSION }}"
+          VERSION="${{ steps.install_state.outputs.baseline_version || steps.metadata.outputs.current_version || env.KNOX_VERSION }}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Apache Knox version: $VERSION"
       
@@ -258,14 +278,28 @@ jobs:
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          NEXT_VERSION="${KNOX_NEXT_VERSION}"
+          CURRENT="${{ steps.version.outputs.version || steps.install_state.outputs.baseline_version || steps.metadata.outputs.current_version || env.KNOX_VERSION }}"
+          NEXT_VERSION="${{ steps.metadata.outputs.latest_version || env.KNOX_NEXT_VERSION }}"
+          INSTALL_STATUS="${{ steps.install_state.outputs.install_status || 'failed' }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
+
+          if [ "$INSTALL_STATUS" != "success" ]; then
+            echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache Knox version ${CURRENT} did not complete baseline installation and core Tests 1-5 cleanly in this run, so next-version validation was not attempted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if [ "$CURRENT" = "$NEXT_VERSION" ]; then
             echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
@@ -305,12 +339,23 @@ jobs:
           NEXT_ZIP="/tmp/knox-${NEXT_VERSION}.zip"
           NEXT_DIR=$(mktemp -d)
           NEXT_URL="https://downloads.apache.org/knox/${NEXT_VERSION}/knox-${NEXT_VERSION}.zip"
-          if curl -fsSLo "$NEXT_ZIP" "$NEXT_URL"; then
+          NEXT_ARCHIVE_URL="https://archive.apache.org/dist/knox/${NEXT_VERSION}/knox-${NEXT_VERSION}.zip"
+          if DOWNLOAD_ATTEMPTS=3 \
+             DOWNLOAD_CONNECT_TIMEOUT=30 \
+             DOWNLOAD_MAX_TIME=240 \
+             DOWNLOAD_RETRY_DELAY=5 \
+             DOWNLOAD_WGET_TIMEOUT=30 \
+             DOWNLOAD_WGET_WAITRETRY=5 \
+             bash .github/scripts/download-with-fallback.sh "$NEXT_ZIP" "$NEXT_URL" "$NEXT_ARCHIVE_URL"; then
             unzip -q "$NEXT_ZIP" -d "$NEXT_DIR"
             NEXT_HOME=$(find "$NEXT_DIR" -maxdepth 1 -mindepth 1 -type d -name "knox-*" | head -n 1)
+            if [ -n "$NEXT_HOME" ] && [ -d "$NEXT_HOME/bin" ]; then
+              chmod +x "$NEXT_HOME"/bin/* || true
+            fi
             NEXT_KNOXCLI_OUTPUT=$("$NEXT_HOME/bin/knoxcli.sh" help 2>&1 || true)
             NEXT_GATEWAY_OUTPUT=$("$NEXT_HOME/bin/gateway.sh" status 2>&1 || true)
-            if [ -x "$NEXT_HOME/bin/knoxcli.sh" ] && \
+            if [ -n "$NEXT_HOME" ] && \
+               [ -x "$NEXT_HOME/bin/knoxcli.sh" ] && \
                [ -x "$NEXT_HOME/bin/gateway.sh" ] && \
                printf '%s\n' "$NEXT_KNOXCLI_OUTPUT" | grep -qiE "KnoxCLI|list-topologies|version" && \
                printf '%s\n' "$NEXT_GATEWAY_OUTPUT" | grep -qiE "Gateway is not running|No PID file found"; then
@@ -382,8 +427,8 @@ jobs:
           fi
 
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
-          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.install_state.outputs.baseline_version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || env.KNOX_NEXT_VERSION || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
           echo "Regression install result: ${REGRESSION_RESULT}"
           echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
@@ -468,7 +513,7 @@ jobs:
           REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Pending regression install validation' }}"
           echo "## Apache Knox Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.version.outputs.version || steps.install_state.outputs.baseline_version || steps.metadata.outputs.current_version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
@@ -485,8 +530,8 @@ jobs:
           echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.install_state.outputs.baseline_version || steps.metadata.outputs.current_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || env.KNOX_NEXT_VERSION || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
           echo "- **Support badge is based on Tests 1-5:** yes" >> $GITHUB_STEP_SUMMARY

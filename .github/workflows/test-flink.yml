@@ -76,12 +76,15 @@ on:
 jobs:
   test-flink:
     runs-on: ubuntu-24.04-arm
+    env:
+      FLINK_BASELINE_VERSION: "2.1.0"
+      FLINK_NEXT_VERSION: "2.1.1"
 
     outputs:
       contract_version: "2.0"
       package_slug: ${{ steps.metadata.outputs.package_slug }}
       package_name: 'Flink'
-      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      package_version: ${{ steps.version.outputs.version || steps.metadata.outputs.baseline_version || 'unknown' }}
       run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
       badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
       core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
@@ -93,8 +96,8 @@ jobs:
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
-      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
-      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.baseline_version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
@@ -111,15 +114,23 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=flink" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/flink" >> "$GITHUB_OUTPUT"
-          echo "baseline_version=2.1.0" >> "$GITHUB_OUTPUT"
+          echo "baseline_version=${FLINK_BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${FLINK_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
       - name: Install Flink
         id: install
         run: |
           set -euo pipefail
           BASELINE_VERSION="${{ steps.metadata.outputs.baseline_version }}"
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "default-jdk-headless"
-          curl -fsSL -o /tmp/flink.tgz \
-            "https://archive.apache.org/dist/flink/flink-${BASELINE_VERSION}/flink-${BASELINE_VERSION}-bin-scala_2.12.tgz"
+          DOWNLOAD_ATTEMPTS=3 \
+          DOWNLOAD_CONNECT_TIMEOUT=30 \
+          DOWNLOAD_MAX_TIME=240 \
+          DOWNLOAD_RETRY_DELAY=5 \
+          DOWNLOAD_WGET_TIMEOUT=30 \
+          DOWNLOAD_WGET_WAITRETRY=5 \
+            bash .github/scripts/download-with-fallback.sh /tmp/flink.tgz \
+              "https://downloads.apache.org/flink/flink-${BASELINE_VERSION}/flink-${BASELINE_VERSION}-bin-scala_2.12.tgz" \
+              "https://archive.apache.org/dist/flink/flink-${BASELINE_VERSION}/flink-${BASELINE_VERSION}-bin-scala_2.12.tgz"
           rm -rf /tmp/flink-install
           mkdir -p /tmp/flink-install
           tar -xzf /tmp/flink.tgz -C /tmp/flink-install --strip-components=1
@@ -235,25 +246,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST=$(CURRENT_VERSION="$CURRENT" python3 - <<'PY'
-          import os
-          import re
-          import urllib.request
-
-          current = os.environ.get("CURRENT_VERSION", "")
-          current_parts = tuple(int(x) for x in current.split(".")) if re.fullmatch(r"\d+\.\d+\.\d+", current) else ()
-          html = urllib.request.urlopen('https://archive.apache.org/dist/flink/').read().decode()
-          versions = []
-          for raw in re.findall(r'href="flink-([^/]+)/"', html):
-              if '-' in raw or 'preview' in raw:
-                  continue
-              if re.fullmatch(r"\d+\.\d+\.\d+", raw):
-                  versions.append(tuple(int(x) for x in raw.split(".")))
-          next_versions = sorted(set(v for v in versions if v > current_parts))
-          print(".".join(str(x) for x in next_versions[0]) if next_versions else '')
-          PY
-          )
+          CURRENT="${{ steps.version.outputs.version || steps.metadata.outputs.baseline_version || env.FLINK_BASELINE_VERSION || 'unknown' }}"
+          LATEST="${{ steps.metadata.outputs.latest_version || env.FLINK_NEXT_VERSION }}"
           if [ -z "$LATEST" ]; then
             echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
             echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
@@ -292,7 +286,15 @@ jobs:
           fi
           NEXT_DIR=$(mktemp -d)
           NEXT_TAR="$NEXT_DIR/flink-next.tgz"
-          curl -fsSL -o "$NEXT_TAR" "https://archive.apache.org/dist/flink/flink-${LATEST}/flink-${LATEST}-bin-scala_2.12.tgz"
+          DOWNLOAD_ATTEMPTS=3 \
+          DOWNLOAD_CONNECT_TIMEOUT=30 \
+          DOWNLOAD_MAX_TIME=240 \
+          DOWNLOAD_RETRY_DELAY=5 \
+          DOWNLOAD_WGET_TIMEOUT=30 \
+          DOWNLOAD_WGET_WAITRETRY=5 \
+            bash .github/scripts/download-with-fallback.sh "$NEXT_TAR" \
+              "https://downloads.apache.org/flink/flink-${LATEST}/flink-${LATEST}-bin-scala_2.12.tgz" \
+              "https://archive.apache.org/dist/flink/flink-${LATEST}/flink-${LATEST}-bin-scala_2.12.tgz"
           mkdir -p "$NEXT_DIR/install"
           tar -xzf "$NEXT_TAR" -C "$NEXT_DIR/install" --strip-components=1
           NEXT_BIN="$NEXT_DIR/install/bin/flink"
@@ -401,8 +403,8 @@ jobs:
           echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.baseline_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
