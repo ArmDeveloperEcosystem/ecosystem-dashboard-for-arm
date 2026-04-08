@@ -19,8 +19,14 @@ WGET_WAITRETRY="${DOWNLOAD_WGET_WAITRETRY:-5}"
 mkdir -p "$(dirname "$OUTPUT")"
 touch "$OUTPUT"
 
+URL_INDEX=0
 for URL in "$@"; do
   [ -n "$URL" ] || continue
+  URL_INDEX=$((URL_INDEX + 1))
+  if [ "$URL_INDEX" -gt 1 ]; then
+    rm -f "$OUTPUT"
+    touch "$OUTPUT"
+  fi
   for ATTEMPT in $(seq 1 "$ATTEMPTS"); do
     if [ -s "$OUTPUT" ]; then
       CONTINUE_ARGS=(-C -)

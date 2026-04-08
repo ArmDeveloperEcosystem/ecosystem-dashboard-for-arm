@@ -130,18 +130,16 @@ jobs:
           # 1-year rule, install the current stable 5.0 line from the official
           # Cassandra package repository.
           echo "deb https://debian.cassandra.apache.org 50x main" | sudo tee /etc/apt/sources.list.d/cassandra.sources.list >/dev/null
-          download_cassandra_keys() {
-            local dest="$1"
-            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 600 --progress-bar -o "$dest" "https://downloads.apache.org/cassandra/KEYS"; then
-              return 0
-            fi
-            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 600 --progress-bar -o "$dest" "https://archive.apache.org/dist/cassandra/KEYS"; then
-              return 0
-            fi
-            wget -4 --tries=5 --timeout=30 -O "$dest" "https://archive.apache.org/dist/cassandra/KEYS"
-          }
-
-          if ! download_cassandra_keys /tmp/cassandra.KEYS; then
+          if ! DOWNLOAD_ATTEMPTS=4 \
+               DOWNLOAD_CONNECT_TIMEOUT=20 \
+               DOWNLOAD_MAX_TIME=120 \
+               DOWNLOAD_RETRY_DELAY=5 \
+               DOWNLOAD_WGET_TIMEOUT=30 \
+               DOWNLOAD_WGET_WAITRETRY=5 \
+               bash .github/scripts/download-with-fallback.sh \
+                 /tmp/cassandra.KEYS \
+                 "https://downloads.apache.org/cassandra/KEYS" \
+                 "https://archive.apache.org/dist/cassandra/KEYS"; then
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
             echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
             exit 1
@@ -320,6 +318,7 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
           SKIPPED=0
@@ -391,13 +390,12 @@ jobs:
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
-          if [ $CORE_FAILED -eq 0 ]; then
+          if [ $CORE_FAILED -eq 0 ] && [ "${{ steps.test6.outputs.status || 'skipped' }}" != "failed" ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
-            exit 1
           fi
 
       - name: Create test summary
@@ -421,3 +419,10 @@ jobs:
           echo "5. Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "6. Regression applicability: package-manager installed (not applicable)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Finalize workflow status
+        if: always()
+        run: |
+          if [ "${{ steps.summary.outputs.failed || 0 }}" -ne 0 ]; then
+            exit 1
+          fi
