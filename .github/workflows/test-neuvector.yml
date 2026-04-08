@@ -121,14 +121,31 @@ jobs:
         id: install
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y jq curl
-          if ! command -v docker >/dev/null 2>&1; then
-            sudo apt-get install -y docker.io
-          fi
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "jq curl docker.io"
           sudo systemctl start docker || sudo service docker start || true
 
-          docker pull "${NEUVECTOR_IMAGE}"
+          pull_with_retry() {
+            local image="$1"
+            local log_file="$2"
+            local attempt
+            for attempt in 1 2 3 4; do
+              if sudo docker pull --platform linux/arm64 "$image" >"$log_file" 2>&1; then
+                return 0
+              fi
+              echo "Attempt ${attempt}/4 failed for ${image}"
+              tail -n 8 "$log_file" || true
+              if [ "$attempt" -lt 4 ]; then
+                sleep 10
+              fi
+            done
+            return 1
+          }
+
+          if ! pull_with_retry "${NEUVECTOR_IMAGE}" /tmp/neuvector-baseline-pull.log; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_image_pull_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get NeuVector version
@@ -144,11 +161,12 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          ARCHES=$(docker manifest inspect "${NEUVECTOR_IMAGE}" | jq -r '.manifests[].platform.architecture' 2>/tmp/neuvector-manifest.err | tr '\n' ' ')
-          if echo "$ARCHES" | grep -qw "arm64"; then
+          IMAGE_ARCH=$(docker image inspect "${NEUVECTOR_IMAGE}" --format '{{.Os}} {{.Architecture}}' 2>/tmp/neuvector-manifest.err || true)
+          if [ "$IMAGE_ARCH" = "linux arm64" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/neuvector-manifest.err || true
+            echo "Local image architecture: ${IMAGE_ARCH:-unavailable}"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -250,7 +268,17 @@ jobs:
             exit 1
           fi
 
-          if sudo docker pull "$NEXT_IMAGE"; then
+          PULL_OK=0
+          for _ in $(seq 1 4); do
+            if sudo docker pull --platform linux/arm64 "$NEXT_IMAGE" >/tmp/neuvector-next-pull.log 2>&1; then
+              PULL_OK=1
+              break
+            fi
+            tail -n 8 /tmp/neuvector-next-pull.log || true
+            sleep 10
+          done
+
+          if [ "$PULL_OK" -eq 1 ]; then
             PULLED_TAG=$(sudo docker image inspect "$NEXT_IMAGE" --format '{{index .RepoTags 0}}' 2>/dev/null | awk -F: '{print $NF}' | head -n 1)
             if [ -z "$PULLED_TAG" ]; then
               PULLED_TAG="$LATEST"
@@ -271,10 +299,11 @@ jobs:
               STATUS="passed"
             fi
           else
+            PULL_ERROR="$(tail -n 8 /tmp/neuvector-next-pull.log 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\\+/ /g' | sed 's/^ //;s/ $//')"
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned NeuVector (Originated by Rancher, now under SUSE) version $CURRENT passed smoke tests in this run, but the candidate image $NEXT_IMAGE could not be pulled successfully on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NeuVector (Originated by Rancher, now under SUSE) version $CURRENT passed smoke tests in this run, but the candidate image $NEXT_IMAGE could not be pulled successfully on Arm64 after retries. Last pull error: ${PULL_ERROR:-unavailable}." >> "$GITHUB_OUTPUT"
             echo "Next version image pull status: failed"
             echo "Next version installed on Arm64: not_installed"
             echo "Regression install result: Next version install failed on Arm64"
