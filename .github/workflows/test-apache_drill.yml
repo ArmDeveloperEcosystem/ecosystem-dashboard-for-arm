@@ -115,9 +115,24 @@ jobs:
         run: |
           set -euo pipefail
           DRILL_VERSION="1.21.2"
-          DRILL_URL="https://downloads.apache.org/drill/${DRILL_VERSION}/apache-drill-${DRILL_VERSION}.tar.gz"
-          curl -fsSLo apache-drill.tar.gz "$DRILL_URL"
-          tar -xzf apache-drill.tar.gz
+          DRILL_ARCHIVE="apache-drill-${DRILL_VERSION}.tar.gz"
+          HELPER="$GITHUB_WORKSPACE/.github/scripts/download-with-fallback.sh"
+          if ! DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=45 \
+            DOWNLOAD_MAX_TIME=900 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=90 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+            bash "$HELPER" "$DRILL_ARCHIVE" \
+              "https://dlcdn.apache.org/drill/${DRILL_VERSION}/${DRILL_ARCHIVE}" \
+              "https://downloads.apache.org/drill/${DRILL_VERSION}/${DRILL_ARCHIVE}" \
+              "https://archive.apache.org/dist/drill/${DRILL_VERSION}/${DRILL_ARCHIVE}" \
+              "http://archive.apache.org/dist/drill/${DRILL_VERSION}/${DRILL_ARCHIVE}"; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=download_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          tar -xzf "$DRILL_ARCHIVE"
           mv "apache-drill-${DRILL_VERSION}" drill
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "default-jre"
           echo "$PWD/drill/bin" >> "$GITHUB_PATH"
@@ -218,34 +233,21 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          NEXT_VERSION=$(CURRENT="$CURRENT" python3 - <<'PY'
-          import re, urllib.request
-          import os
-          current = os.environ['CURRENT']
-          html = urllib.request.urlopen('https://downloads.apache.org/drill/').read().decode()
-          versions = sorted(
-              set(re.findall(r'href="([0-9]+\.[0-9]+\.[0-9]+)/"', html)),
-              key=lambda s: [int(x) for x in s.split('.')]
-          )
-          current_key = [int(x) for x in current.split('.')]
-          candidates = [v for v in versions if [int(x) for x in v.split('.')] > current_key]
-          print(candidates[0] if candidates else '')
-          PY
-          )
+          NEXT_VERSION="1.22.0"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
 
-          if [ -z "$NEXT_VERSION" ]; then
-            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Apache Drill version ${CURRENT} passed smoke tests in this run, but the next regression candidate could not be resolved automatically." >> "$GITHUB_OUTPUT"
-            echo "Next version targeted for install validation: lookup_failed"
-            echo "Next version installed on Arm64: lookup_failed"
-            echo "Regression install result: Next version lookup failed on Arm64"
-            echo "Details: Current pinned Apache Drill version ${CURRENT} passed smoke tests in this run, but the next regression candidate could not be resolved automatically."
+          if [ "$CURRENT" = "$NEXT_VERSION" ]; then
+            echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "Next version targeted for install validation: $NEXT_VERSION"
+            echo "Next version installed on Arm64: ${CURRENT}"
+            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
+            echo "Details: Current pinned Apache Drill version ${CURRENT} passed smoke tests in this run and is already the latest stable Arm64 candidate for this workflow."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -257,8 +259,18 @@ jobs:
 
           NEXT_TAR="/tmp/apache-drill-regression.tar.gz"
           NEXT_DIR=$(mktemp -d)
-          NEXT_URL="https://downloads.apache.org/drill/${NEXT_VERSION}/apache-drill-${NEXT_VERSION}.tar.gz"
-          if curl -fsSLo "$NEXT_TAR" "$NEXT_URL"; then
+          HELPER="$GITHUB_WORKSPACE/.github/scripts/download-with-fallback.sh"
+          if DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=45 \
+            DOWNLOAD_MAX_TIME=900 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=90 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+            bash "$HELPER" "$NEXT_TAR" \
+              "https://dlcdn.apache.org/drill/${NEXT_VERSION}/apache-drill-${NEXT_VERSION}.tar.gz" \
+              "https://downloads.apache.org/drill/${NEXT_VERSION}/apache-drill-${NEXT_VERSION}.tar.gz" \
+              "https://archive.apache.org/dist/drill/${NEXT_VERSION}/apache-drill-${NEXT_VERSION}.tar.gz" \
+              "http://archive.apache.org/dist/drill/${NEXT_VERSION}/apache-drill-${NEXT_VERSION}.tar.gz"; then
             tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
             NEXT_HOME="$NEXT_DIR/apache-drill-${NEXT_VERSION}"
             if [ -x "$NEXT_HOME/bin/drill-conf" ] && [ -x "$NEXT_HOME/bin/sqlline" ]; then
