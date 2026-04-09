@@ -38,25 +38,18 @@ download_one() {
 }
 
 download_one "spark" "spark-3.5.3-bin-hadoop3.tgz" \
-  "https://dlcdn.apache.org/spark/spark-3.5.3/spark-3.5.3-bin-hadoop3.tgz" \
-  "https://downloads.apache.org/spark/spark-3.5.3/spark-3.5.3-bin-hadoop3.tgz" \
   "https://archive.apache.org/dist/spark/spark-3.5.3/spark-3.5.3-bin-hadoop3.tgz" \
   "http://archive.apache.org/dist/spark/spark-3.5.3/spark-3.5.3-bin-hadoop3.tgz"
 
 download_one "nifi" "nifi-2.7.2-bin.zip" \
-  "https://dlcdn.apache.org/nifi/2.7.2/nifi-2.7.2-bin.zip" \
-  "https://downloads.apache.org/nifi/2.7.2/nifi-2.7.2-bin.zip" \
   "https://archive.apache.org/dist/nifi/2.7.2/nifi-2.7.2-bin.zip" \
   "http://archive.apache.org/dist/nifi/2.7.2/nifi-2.7.2-bin.zip"
 
 download_one "pinot" "apache-pinot-1.2.0-bin.tar.gz" \
-  "https://downloads.apache.org/pinot/apache-pinot-1.2.0/apache-pinot-1.2.0-bin.tar.gz" \
   "https://archive.apache.org/dist/pinot/apache-pinot-1.2.0/apache-pinot-1.2.0-bin.tar.gz" \
   "http://archive.apache.org/dist/pinot/apache-pinot-1.2.0/apache-pinot-1.2.0-bin.tar.gz"
 
 download_one "druid" "apache-druid-31.0.0-bin.tar.gz" \
-  "https://dlcdn.apache.org/druid/31.0.0/apache-druid-31.0.0-bin.tar.gz" \
-  "https://downloads.apache.org/druid/31.0.0/apache-druid-31.0.0-bin.tar.gz" \
   "https://archive.apache.org/dist/druid/31.0.0/apache-druid-31.0.0-bin.tar.gz" \
   "http://archive.apache.org/dist/druid/31.0.0/apache-druid-31.0.0-bin.tar.gz"
 
@@ -79,7 +72,6 @@ download_one "storm" "apache-storm-2.8.2.tar.gz" \
   "http://archive.apache.org/dist/storm/apache-storm-2.8.2/apache-storm-2.8.2.tar.gz"
 
 download_one "dolphinscheduler" "apache-dolphinscheduler-3.2.1-bin.tar.gz" \
-  "https://downloads.apache.org/dolphinscheduler/3.2.1/apache-dolphinscheduler-3.2.1-bin.tar.gz" \
   "https://archive.apache.org/dist/dolphinscheduler/3.2.1/apache-dolphinscheduler-3.2.1-bin.tar.gz" \
   "http://archive.apache.org/dist/dolphinscheduler/3.2.1/apache-dolphinscheduler-3.2.1-bin.tar.gz"
 
