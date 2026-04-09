@@ -121,46 +121,81 @@ jobs:
 
       - name: Install Apache HttpComponents Client
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
           download_httpcomponents_tarball() {
             local version="$1"
             local output="$2"
-            local urls=(
-              "https://downloads.apache.org/httpcomponents/httpclient/binary/httpcomponents-client-${version}-bin.tar.gz"
-              "https://archive.apache.org/dist/httpcomponents/httpclient/binary/httpcomponents-client-${version}-bin.tar.gz"
-            )
-            local url
-            for url in "${urls[@]}"; do
-              if curl --ipv4 -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 30 --max-time 900 "$url" -o "$output"; then
-                return 0
-              fi
-              if wget -4 --tries=5 --waitretry=3 --retry-connrefused --timeout=30 -O "$output" "$url"; then
-                return 0
-              fi
-            done
-            return 1
+            shift 2
+            local urls=("$@")
+            DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=45 \
+            DOWNLOAD_MAX_TIME=480 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=90 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh "$output" "${urls[@]}"
           }
           WORKDIR=$(mktemp -d)
           TARBALL="$WORKDIR/httpcomponents-client-${CURRENT_VERSION}-bin.tar.gz"
-          download_httpcomponents_tarball "$CURRENT_VERSION" "$TARBALL"
-          tar -xzf "$TARBALL" -C "$WORKDIR"
+          if ! download_httpcomponents_tarball "$CURRENT_VERSION" "$TARBALL" \
+            "https://archive.apache.org/dist/httpcomponents/httpclient/binary/httpcomponents-client-${CURRENT_VERSION}-bin.tar.gz" \
+            "http://archive.apache.org/dist/httpcomponents/httpclient/binary/httpcomponents-client-${CURRENT_VERSION}-bin.tar.gz" \
+            "https://downloads.apache.org/httpcomponents/httpclient/binary/httpcomponents-client-${CURRENT_VERSION}-bin.tar.gz"; then
+            echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! tar -xzf "$TARBALL" -C "$WORKDIR"; then
+            echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           HC_HOME=$(find "$WORKDIR" -maxdepth 2 -type d -name "httpcomponents-client-${CURRENT_VERSION}" | head -n 1)
           if [ -z "$HC_HOME" ]; then
             HC_HOME=$(dirname "$(dirname "$(find "$WORKDIR" -name 'httpclient5-*.jar' ! -name '*tests*' | head -n 1)")")
           fi
           if [ -z "$HC_HOME" ] || [ ! -d "$HC_HOME/lib" ]; then
-            echo "Unable to locate extracted HttpComponents home"
-            exit 1
+            echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_layout_invalid" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           echo "HC_HOME=$HC_HOME" >> "$GITHUB_ENV"
           echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
-      - name: Get HttpComponents version
-        id: version
+      - name: Resolve HttpComponents install state
+        id: install_state
+        if: always()
         run: |
           set -euo pipefail
+          STATUS="${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}"
+          BLOCKER="${{ steps.install.outputs.install_blocker || '' }}"
+          ROOT="${HC_HOME:-}"
+          if [ -n "$ROOT" ] && [ -d "$ROOT/lib" ] && find "$ROOT/lib" -name 'httpclient5-*.jar' -print -quit | grep -q .; then
+            STATUS="success"
+            BLOCKER=""
+          fi
+          echo "HC_INSTALL_STATUS=$STATUS" >> "$GITHUB_ENV"
+          echo "HC_INSTALL_BLOCKER=$BLOCKER" >> "$GITHUB_ENV"
+          echo "install_status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "install_blocker=$BLOCKER" >> "$GITHUB_OUTPUT"
+          echo "hc_home=$ROOT" >> "$GITHUB_OUTPUT"
+
+      - name: Get HttpComponents version
+        id: version
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${HC_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "Detected Apache HttpComponents Client version: ${CURRENT_VERSION} (baseline install unavailable)"
+            exit 0
+          fi
           JAR=$(find "$HC_HOME/lib" -name 'httpclient5-[0-9]*.jar' | head -n 1)
           VERSION=$(basename "$JAR" | sed -E 's/^httpclient5-([0-9A-Za-z.\-]+)\.jar$/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -168,9 +203,15 @@ jobs:
 
       - name: Test 1 - Check client jars exist
         id: test1
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${HC_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if ls "$HC_HOME"/lib/httpclient5-*.jar "$HC_HOME"/lib/httpcore5-*.jar >/dev/null 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -182,9 +223,15 @@ jobs:
 
       - name: Test 2 - Compile Java client
         id: test2
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${HC_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           cat > TestHttpClient.java <<'EOF'
           import org.apache.hc.client5.http.classic.methods.HttpGet;
           import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
@@ -218,9 +265,15 @@ jobs:
 
       - name: Test 3 - Run loopback HTTP request
         id: test3
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${HC_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           TEST_DIR=$(mktemp -d)
           printf 'httpcomponents-ok\n' > "$TEST_DIR/index.html"
           python3 -m http.server 18181 --bind 127.0.0.1 --directory "$TEST_DIR" >/tmp/httpcomponents-server.log 2>&1 &
@@ -246,9 +299,15 @@ jobs:
 
       - name: Test 4 - Check expected client classes
         id: test4
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${HC_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           JAR=$(find "$HC_HOME/lib" -name 'httpclient5-[0-9]*.jar' | head -n 1)
           if jar tf "$JAR" | grep -q 'org/apache/hc/client5/http/impl/classic/HttpClients.class'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -261,9 +320,15 @@ jobs:
 
       - name: Test 5 - Check dependency jars and Arm64 runner
         id: test5
+        if: always()
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
+          if [ "${HC_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if ls "$HC_HOME"/lib/httpcore5-*.jar "$HC_HOME"/lib/httpcore5-h2-*.jar >/dev/null 2>&1 && [ "$(uname -m)" = "aarch64" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -275,6 +340,7 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -282,23 +348,29 @@ jobs:
           LATEST="${HTTPCOMPONENTS_NEXT_VERSION}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "Current version tested in Tests 1-5: $CURRENT"
+          if [ "${HC_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache HttpComponents Client version ${CURRENT} did not complete baseline installation and core Tests 1-5 cleanly in this run, so next-version validation was not attempted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           download_httpcomponents_tarball() {
             local version="$1"
             local output="$2"
-            local urls=(
-              "https://downloads.apache.org/httpcomponents/httpclient/binary/httpcomponents-client-${version}-bin.tar.gz"
-              "https://archive.apache.org/dist/httpcomponents/httpclient/binary/httpcomponents-client-${version}-bin.tar.gz"
-            )
-            local url
-            for url in "${urls[@]}"; do
-              if curl --ipv4 -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 30 --max-time 900 "$url" -o "$output"; then
-                return 0
-              fi
-              if wget -4 --tries=5 --waitretry=3 --retry-connrefused --timeout=30 -O "$output" "$url"; then
-                return 0
-              fi
-            done
-            return 1
+            shift 2
+            local urls=("$@")
+            DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=45 \
+            DOWNLOAD_MAX_TIME=480 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=90 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh "$output" "${urls[@]}"
           }
 
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
@@ -320,7 +392,11 @@ jobs:
 
           NEXT_DIR=$(mktemp -d)
           NEXT_TAR="$NEXT_DIR/httpcomponents-client-${LATEST}-bin.tar.gz"
-          if ! download_httpcomponents_tarball "$LATEST" "$NEXT_TAR"; then
+          if ! download_httpcomponents_tarball "$LATEST" "$NEXT_TAR" \
+            "https://dlcdn.apache.org/httpcomponents/httpclient/binary/httpcomponents-client-${LATEST}-bin.tar.gz" \
+            "https://downloads.apache.org/httpcomponents/httpclient/binary/httpcomponents-client-${LATEST}-bin.tar.gz" \
+            "https://archive.apache.org/dist/httpcomponents/httpclient/binary/httpcomponents-client-${LATEST}-bin.tar.gz" \
+            "http://archive.apache.org/dist/httpcomponents/httpclient/binary/httpcomponents-client-${LATEST}-bin.tar.gz"; then
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
@@ -389,56 +465,41 @@ jobs:
           echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
           echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
 
-      - name: Calculate test summary
+      - name: Emit package result
         if: always()
         id: summary
+        uses: ./.github/actions/emit-package-result
+        with:
+          package_name: "Apache HttpComponents Client"
+          version: ${{ steps.version.outputs.version }}
+          install_status: ${{ steps.install_state.outputs.install_status || steps.install.outputs.install_status || 'success' }}
+          test1_label: "Check client jars exist"
+          test2_label: "Compile Java client"
+          test3_label: "Run loopback HTTP request"
+          test4_label: "Check expected client classes"
+          test5_label: "Check dependency jars and Arm64 runner"
+          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
+          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
+          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
+          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
+          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
+          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_duration: ${{ steps.test1.outputs.duration || 0 }}
+          test2_duration: ${{ steps.test2.outputs.duration || 0 }}
+          test3_duration: ${{ steps.test3.outputs.duration || 0 }}
+          test4_duration: ${{ steps.test4.outputs.duration || 0 }}
+          test5_duration: ${{ steps.test5.outputs.duration || 0 }}
+          test6_duration: ${{ steps.test6.outputs.duration || 0 }}
+          regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+          regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
+          regression_details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+
+      - name: Finalize workflow status
+        if: always()
         run: |
-          set -euo pipefail
-          PASSED=0
-          FAILED=0
-          CORE_FAILED=0
-          TOTAL_DURATION=0
-
-          check_core_test() {
-            local status="$1"
-            local duration="$2"
-            if [ "$status" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            else
-              FAILED=$((FAILED + 1))
-              CORE_FAILED=$((CORE_FAILED + 1))
-            fi
-            TOTAL_DURATION=$((TOTAL_DURATION + duration))
-          }
-
-          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
-
-          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
-
-          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
-          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
-          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
-          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
-
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
-
-          if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
-            echo "overall_status=success" >> "$GITHUB_OUTPUT"
-            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
-          else
-            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
-            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
-          fi
-
-          if [ "$FAILED" -ne 0 ]; then
+          if [ "${{ steps.summary.outputs.should_fail }}" = "1" ]; then
             exit 1
           fi

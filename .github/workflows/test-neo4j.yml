@@ -199,6 +199,7 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           cleanup() {
             sudo docker rm -f neo4j-ci >/dev/null 2>&1 || true
@@ -206,18 +207,30 @@ jobs:
           trap cleanup EXIT
           sudo docker rm -f neo4j-ci >/dev/null 2>&1 || true
           sudo docker run -d --name neo4j-ci -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/testpassword "${NEO4J_IMAGE}" >/dev/null
+          CYPHER_READY=0
           for _ in $(seq 1 90); do
             if sudo docker exec neo4j-ci cypher-shell -u neo4j -p testpassword "RETURN 1;" >/tmp/neo4j-cypher.out 2>/tmp/neo4j-cypher.err; then
+              CYPHER_READY=1
               break
             fi
             sleep 2
           done
-          curl -fsS http://127.0.0.1:7474 >/tmp/neo4j-root.html || true
-          if grep -Fxq "1" /tmp/neo4j-cypher.out && grep -Fq "neo4j" /tmp/neo4j-root.html; then
+          HTTP_READY=0
+          if [ "$CYPHER_READY" -eq 1 ] && grep -Fxq "1" /tmp/neo4j-cypher.out; then
+            for _ in $(seq 1 30); do
+              if curl -fsSL http://127.0.0.1:7474/ >/tmp/neo4j-root.html 2>/tmp/neo4j-http.err && grep -Eqi "neo4j|browser" /tmp/neo4j-root.html; then
+                HTTP_READY=1
+                break
+              fi
+              sleep 2
+            done
+          fi
+          if [ "$CYPHER_READY" -eq 1 ] && [ "$HTTP_READY" -eq 1 ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             sudo docker logs neo4j-ci || true
             cat /tmp/neo4j-cypher.err || true
+            cat /tmp/neo4j-http.err || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
