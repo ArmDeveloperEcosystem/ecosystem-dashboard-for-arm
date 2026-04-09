@@ -81,6 +81,7 @@ jobs:
       BASELINE_CNI_VERSION: "v1.2.3"
       NEXT_PLUGIN_VERSION: "v1.7.1"
       NEXT_CNI_VERSION: "v1.3.0"
+      CNI_GO_VERSION: "1.24"
 
     outputs:
       contract_version: "2.0"
@@ -116,25 +117,47 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=cni" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/cni" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.CNI_GO_VERSION }}
+          check-latest: false
+
       - name: Install CNI
         id: install
         run: |
+          set -euo pipefail
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "curl tar git iproute2"
-          GO_VERSION=$(curl -fsSL https://go.dev/VERSION?m=text | head -n 1)
-          curl -fsSL -o go.tar.gz "https://go.dev/dl/${GO_VERSION}.linux-arm64.tar.gz"
-          rm -rf "$HOME/go-toolchain"
-          mkdir -p "$HOME/go-toolchain"
-          tar -xzf go.tar.gz -C "$HOME/go-toolchain"
+          HELPER="$GITHUB_WORKSPACE/.github/scripts/download-with-fallback.sh"
+          export DOWNLOAD_ATTEMPTS=2 DOWNLOAD_CONNECT_TIMEOUT=30 DOWNLOAD_MAX_TIME=300 WGET_TIMEOUT=60
+          PLUGIN_TGZ="$RUNNER_TEMP/cni-plugins-${BASELINE_PLUGIN_VERSION}.tgz"
+          bash "$HELPER" "$PLUGIN_TGZ" \
+            "https://github.com/containernetworking/plugins/releases/download/${BASELINE_PLUGIN_VERSION}/cni-plugins-linux-arm64-${BASELINE_PLUGIN_VERSION}.tgz"
 
-          echo "$HOME/go-toolchain/go/bin" >> "$GITHUB_PATH"
-          echo "go_version=$GO_VERSION" >> "$GITHUB_OUTPUT"
-
-          curl -fsSL -o cni-plugins.tgz "https://github.com/containernetworking/plugins/releases/download/${BASELINE_PLUGIN_VERSION}/cni-plugins-linux-arm64-${BASELINE_PLUGIN_VERSION}.tgz"
           mkdir -p cni-plugins
-          tar -xzf cni-plugins.tgz -C cni-plugins
+          tar -xzf "$PLUGIN_TGZ" -C cni-plugins
 
-          export PATH="$HOME/go-toolchain/go/bin:$PATH"
-          GOBIN="$HOME/go/bin" go install "github.com/containernetworking/cni/cnitool@${BASELINE_CNI_VERSION}"
+          install_cnitool_retry() {
+            local bin_dir="$1"
+            local module_spec="$2"
+            for attempt in 1 2 3; do
+              if GOBIN="$bin_dir" GOPROXY="https://proxy.golang.org,direct" go install "$module_spec"; then
+                return 0
+              fi
+              sleep $((5 * attempt))
+            done
+            return 1
+          }
+
+          mkdir -p "$HOME/go/bin"
+          if ! install_cnitool_retry "$HOME/go/bin" "github.com/containernetworking/cni/cnitool@${BASELINE_CNI_VERSION}"; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          GO_VERSION=$(go version | awk '{print $3}' | sed 's/^go//')
+          echo "go_version=$GO_VERSION" >> "$GITHUB_OUTPUT"
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
           if [ -x "cni-plugins/bridge" ] && [ -x "$HOME/go/bin/cnitool" ]; then
@@ -279,11 +302,34 @@ jobs:
           NEXT_DIR=$(mktemp -d)
           NEXT_PLUGIN_TGZ="/tmp/cni-plugins-regression.tgz"
           NEXT_PLUGIN_URL="https://github.com/containernetworking/plugins/releases/download/${LATEST_PLUGIN}/cni-plugins-linux-arm64-${LATEST_PLUGIN}.tgz"
-          if curl -fsSL "$NEXT_PLUGIN_URL" -o "$NEXT_PLUGIN_TGZ"; then
+          HELPER="$GITHUB_WORKSPACE/.github/scripts/download-with-fallback.sh"
+          export DOWNLOAD_ATTEMPTS=2 DOWNLOAD_CONNECT_TIMEOUT=30 DOWNLOAD_MAX_TIME=300 WGET_TIMEOUT=60
+          install_cnitool_retry() {
+            local bin_dir="$1"
+            local module_spec="$2"
+            for attempt in 1 2 3; do
+              if GOBIN="$bin_dir" GOPROXY="https://proxy.golang.org,direct" go install "$module_spec"; then
+                return 0
+              fi
+              sleep $((5 * attempt))
+            done
+            return 1
+          }
+
+          if bash "$HELPER" "$NEXT_PLUGIN_TGZ" "$NEXT_PLUGIN_URL"; then
             echo "Next version download status: passed"
             mkdir -p "${NEXT_DIR}/plugins" "${NEXT_DIR}/bin"
             tar -xzf "$NEXT_PLUGIN_TGZ" -C "${NEXT_DIR}/plugins"
-            GOBIN="${NEXT_DIR}/bin" go install "github.com/containernetworking/cni/cnitool@${LATEST_CNI}"
+            if ! install_cnitool_retry "${NEXT_DIR}/bin" "github.com/containernetworking/cni/cnitool@${LATEST_CNI}"; then
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned CNI baseline ${CURRENT} passed smoke tests in this run, but the regression target ${LATEST} could not be rebuilt on Arm64 after the plugin archive downloaded successfully." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
             NEXT_PLUGIN_VERSION=$("${NEXT_DIR}/plugins/bridge" -version 2>&1 | awk '{print $4}' | head -n 1 || true)
             NEXT_CNITOOL_VERSION=$(go version -m "${NEXT_DIR}/bin/cnitool" | awk '$1=="mod" {print $3; exit}' || true)
             NEXT_INSTALLED_VERSION="plugins ${NEXT_PLUGIN_VERSION} + cnitool ${NEXT_CNITOOL_VERSION}"
