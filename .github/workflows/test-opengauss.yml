@@ -83,7 +83,6 @@ jobs:
     env:
       OPENGAUSS_VERSION: "7.0.0-RC2.B014"
       OPENGAUSS_NEXT_VERSION: "7.0.0-RC2.B015"
-      OPENGAUSS_IMAGE_REPO: "opengauss/opengauss"
       OPENGAUSS_PASSWORD: "OpenGauss#2026!"
 
     outputs:
@@ -129,12 +128,40 @@ jobs:
           set -euo pipefail
           sudo systemctl start docker || true
           sudo docker version >/dev/null
-
-          IMAGE="${OPENGAUSS_IMAGE_REPO}:${OPENGAUSS_VERSION}"
+          SERIES="${OPENGAUSS_VERSION%%.B*}"
+          IMAGE_ARCHIVE="openGauss-Docker-${SERIES}-aarch64.tar"
+          IMAGE_URL="https://download.opengauss.org/archive_test/${SERIES}/openGauss${OPENGAUSS_VERSION}/openEuler22.03/arm/${IMAGE_ARCHIVE}"
+          ARCHIVE_PATH="/tmp/opengauss-baseline-${OPENGAUSS_VERSION}.tar"
+          IMAGE="opengauss-local:${OPENGAUSS_VERSION}"
           CONTAINER="opengauss-baseline-${GITHUB_RUN_ID}"
           sudo docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 
-          timeout 10m sudo docker pull "$IMAGE"
+          if ! DOWNLOAD_ATTEMPTS=2 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=1800 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=90 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+            bash "$GITHUB_WORKSPACE/.github/scripts/download-with-fallback.sh" "$ARCHIVE_PATH" "$IMAGE_URL"; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          LOAD_OUTPUT=$(timeout 20m sudo docker load -i "$ARCHIVE_PATH" 2>&1) || {
+            printf '%s\n' "$LOAD_OUTPUT" || true
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_load_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          }
+          printf '%s\n' "$LOAD_OUTPUT"
+          LOADED_IMAGE=$(printf '%s\n' "$LOAD_OUTPUT" | sed -n 's/^Loaded image: //p' | tail -n 1)
+          if [ -z "$LOADED_IMAGE" ]; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_image_unknown" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          sudo docker tag "$LOADED_IMAGE" "$IMAGE"
           sudo docker run -d --name "$CONTAINER" \
             --privileged=true \
             -e GS_PASSWORD="${OPENGAUSS_PASSWORD}" \
@@ -264,7 +291,7 @@ jobs:
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
           LATEST="${OPENGAUSS_NEXT_VERSION}"
-          NEXT_IMAGE="${OPENGAUSS_IMAGE_REPO}:${LATEST}"
+          NEXT_IMAGE="opengauss-local:${LATEST}"
           NEXT_CONTAINER="opengauss-next-${GITHUB_RUN_ID}"
 
           run_next_sql() {
@@ -328,17 +355,52 @@ jobs:
             exit 1
           fi
 
-          if ! timeout 10m sudo docker pull "$NEXT_IMAGE" >/tmp/opengauss-next-pull.txt 2>&1; then
-            cat /tmp/opengauss-next-pull.txt || true
+          NEXT_SERIES="${LATEST%%.B*}"
+          NEXT_ARCHIVE_NAME="openGauss-Docker-${NEXT_SERIES}-aarch64.tar"
+          NEXT_ARCHIVE_PATH="/tmp/opengauss-next-${LATEST}.tar"
+          NEXT_ARCHIVE_URL="https://download.opengauss.org/archive_test/${NEXT_SERIES}/openGauss${LATEST}/openEuler22.03/arm/${NEXT_ARCHIVE_NAME}"
+
+          if ! DOWNLOAD_ATTEMPTS=2 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=1800 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=90 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+            bash "$GITHUB_WORKSPACE/.github/scripts/download-with-fallback.sh" "$NEXT_ARCHIVE_PATH" "$NEXT_ARCHIVE_URL"; then
             echo "next_installed_version=not_validated" >> "$GITHUB_OUTPUT"
-            echo "decision=next_image_pull_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next official public Arm64 image pull failed" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned OpenGauss image tag ${CURRENT} completed the real Arm64 container validation path in this run, but candidate image tag ${LATEST} could not be pulled on Arm64 from ${OPENGAUSS_IMAGE_REPO}." >> "$GITHUB_OUTPUT"
+            echo "decision=next_image_download_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next official public Arm64 image download failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenGauss image tag ${CURRENT} completed the real Arm64 container validation path in this run, but candidate image tag ${LATEST} could not be downloaded from the official OpenGauss distribution archive." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
+          NEXT_LOAD_OUTPUT=$(timeout 20m sudo docker load -i "$NEXT_ARCHIVE_PATH" 2>&1) || {
+            printf '%s\n' "$NEXT_LOAD_OUTPUT" || true
+            echo "next_installed_version=not_validated" >> "$GITHUB_OUTPUT"
+            echo "decision=next_image_load_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next official public Arm64 image load failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenGauss image tag ${CURRENT} completed the real Arm64 container validation path in this run, but candidate image tag ${LATEST} could not be loaded into Docker on Arm64 from the downloaded official archive." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          }
+          printf '%s\n' "$NEXT_LOAD_OUTPUT"
+          LOADED_NEXT_IMAGE=$(printf '%s\n' "$NEXT_LOAD_OUTPUT" | sed -n 's/^Loaded image: //p' | tail -n 1)
+          if [ -z "$LOADED_NEXT_IMAGE" ]; then
+            echo "next_installed_version=not_validated" >> "$GITHUB_OUTPUT"
+            echo "decision=next_image_unknown" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next official public Arm64 image load output was incomplete" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenGauss image tag ${CURRENT} completed the real Arm64 container validation path in this run, but the downloaded candidate archive for ${LATEST} did not report a usable Docker image name after load." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          sudo docker tag "$LOADED_NEXT_IMAGE" "$NEXT_IMAGE"
 
           sudo docker run -d --name "$NEXT_CONTAINER" \
             --privileged=true \
