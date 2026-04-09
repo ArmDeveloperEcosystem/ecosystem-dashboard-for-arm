@@ -163,31 +163,55 @@ jobs:
              exit 0
           fi
       
+      - name: Resolve Flume install state
+        id: install_state
+        if: always()
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/flume"
+          STATUS="${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}"
+          BLOCKER="${{ steps.install.outputs.install_blocker || '' }}"
+          if [ -x "$ROOT/bin/flume-ng" ]; then
+            STATUS="success"
+            BLOCKER=""
+          fi
+          echo "FLUME_HOME=$ROOT" >> "$GITHUB_ENV"
+          echo "FLUME_INSTALL_STATUS=$STATUS" >> "$GITHUB_ENV"
+          echo "FLUME_INSTALL_BLOCKER=$BLOCKER" >> "$GITHUB_ENV"
+          echo "install_status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "install_blocker=$BLOCKER" >> "$GITHUB_OUTPUT"
+
       - name: Get Flume version
         id: version
         if: always()
         run: |
           set -euo pipefail
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+          if [ "${FLUME_INSTALL_STATUS:-failed}" != "success" ]; then
             echo "version=${{ steps.install.outputs.baseline_version || env.FLUME_BASELINE_VERSION }}" >> "$GITHUB_OUTPUT"
             echo "Detected Flume version: ${{ steps.install.outputs.baseline_version || env.FLUME_BASELINE_VERSION }}"
             exit 0
           fi
           # flume-ng version
-          export PATH=$PATH:$(pwd)/flume/bin
+          export PATH="${FLUME_HOME:-$PWD/flume}/bin:$PATH"
           VERSION=$(flume-ng version 2>&1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
           if [ -z "$VERSION" ]; then
             VERSION="unknown"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Flume version: $VERSION"
-      
+
       - name: Test 1 - Check flume-ng binary exists
         id: test1
-        if: ${{ steps.install.outputs.install_status == 'success' }}
+        if: always()
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${FLUME_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           
           if [ -x "flume/bin/flume-ng" ]; then
             echo "✓ flume-ng binary found and executable"
@@ -203,11 +227,17 @@ jobs:
       
       - name: Test 2 - Check flume version command
         id: test2
-        if: ${{ steps.install.outputs.install_status == 'success' }}
+        if: always()
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          export PATH=$PATH:$(pwd)/flume/bin
+          if [ "${FLUME_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          export PATH="${FLUME_HOME:-$PWD/flume}/bin:$PATH"
           
           if flume-ng version 2>&1 | grep -q "Flume"; then
             echo "✓ flume version command works"
@@ -223,11 +253,17 @@ jobs:
       
       - name: Test 3 - Check flume help output
         id: test3
-        if: ${{ steps.install.outputs.install_status == 'success' }}
+        if: always()
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          export PATH=$PATH:$(pwd)/flume/bin
+          if [ "${FLUME_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          export PATH="${FLUME_HOME:-$PWD/flume}/bin:$PATH"
           
           if flume-ng help 2>&1 | grep -qi "usage\|help"; then
             echo "✓ flume help command works"
@@ -243,10 +279,16 @@ jobs:
       
       - name: Test 4 - Architecture Verification
         id: test4
-        if: ${{ steps.install.outputs.install_status == 'success' }}
+        if: always()
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${FLUME_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           
           echo "Checking system architecture..."
           ARCH=$(uname -m)
@@ -264,10 +306,16 @@ jobs:
       
       - name: Test 5 - Functional Validation (Configuration)
         id: test5
-        if: ${{ steps.install.outputs.install_status == 'success' }}
+        if: always()
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          if [ "${FLUME_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # create a dummy config file
           cat > flume.conf <<EOF
           a1.sources = r1
@@ -307,7 +355,7 @@ jobs:
           CURRENT="$(echo "${{ steps.version.outputs.version || 'unknown' }}" | tr -d '[:space:]' | sed 's/^v//')"
           LATEST="${FLUME_NEXT_VERSION}"
 
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+          if [ "${{ steps.install_state.outputs.install_status || steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
             echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
             echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
@@ -439,105 +487,42 @@ jobs:
           echo "Regression install result: ${REGRESSION_RESULT}"
           echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
 
-      - name: Calculate test summary
+      - name: Emit package result
         if: always()
         id: summary
-        run: |
-          set -euo pipefail
-          PASSED=0
-          FAILED=0
-          SKIPPED=0
-          CORE_FAILED=0
-          TOTAL_DURATION=0
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
-          TEST6_DECISION="${{ steps.test6.outputs.decision || '' }}"
+        uses: ./.github/actions/emit-package-result
+        with:
+          package_name: "Flume"
+          version: ${{ steps.version.outputs.version }}
+          install_status: ${{ steps.install_state.outputs.install_status || steps.install.outputs.install_status || 'success' }}
+          test1_label: "Check flume-ng binary exists"
+          test2_label: "Check flume version command"
+          test3_label: "Check flume help output"
+          test4_label: "Architecture Verification"
+          test5_label: "Functional Validation (Configuration)"
+          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
+          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
+          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
+          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
+          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
+          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_duration: ${{ steps.test1.outputs.duration || '0' }}
+          test2_duration: ${{ steps.test2.outputs.duration || '0' }}
+          test3_duration: ${{ steps.test3.outputs.duration || '0' }}
+          test4_duration: ${{ steps.test4.outputs.duration || '0' }}
+          test5_duration: ${{ steps.test5.outputs.duration || '0' }}
+          test6_duration: ${{ steps.test6.outputs.duration || '0' }}
+          regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.install.outputs.baseline_version || env.FLUME_BASELINE_VERSION }}
+          regression_latest_version: ${{ steps.test6.outputs.latest_version || env.FLUME_NEXT_VERSION }}
+          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+          regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+          runner_label: "ubuntu-24.04 (arm64)"
 
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || \
-             [ "$TEST6_DECISION" = "baseline_failed" ]; then
-            echo "passed=0" >> "$GITHUB_OUTPUT"
-            echo "failed=1" >> "$GITHUB_OUTPUT"
-            echo "skipped=5" >> "$GITHUB_OUTPUT"
-            echo "core_failed=1" >> "$GITHUB_OUTPUT"
-            echo "duration=${{ steps.test6.outputs.duration || 0 }}" >> "$GITHUB_OUTPUT"
-            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
-            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          check_core() {
-            local status="$1"
-            local duration="$2"
-            if [ "$status" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$status" = "skipped" ] || [ -z "$status" ]; then
-              SKIPPED=$((SKIPPED + 1))
-            else
-              FAILED=$((FAILED + 1))
-              CORE_FAILED=$((CORE_FAILED + 1))
-            fi
-            TOTAL_DURATION=$((TOTAL_DURATION + duration))
-          }
-
-          check_core "${{ steps.test1.outputs.status || 'skipped' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_core "${{ steps.test2.outputs.status || 'skipped' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_core "${{ steps.test3.outputs.status || 'skipped' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_core "${{ steps.test4.outputs.status || 'skipped' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_core "${{ steps.test5.outputs.status || 'skipped' }}" "${{ steps.test5.outputs.duration || 0 }}"
-
-          if [ "$TEST6_STATUS" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "$TEST6_STATUS" == "skipped" ]; then
-            SKIPPED=$((SKIPPED + 1))
-          elif [ "$TEST6_STATUS" == "failed" ]; then
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
-
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
-          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $CORE_FAILED -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-          else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-          fi
-
-          if [ $CORE_FAILED -eq 0 ]; then
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
-          else
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
-          fi
-
-          if [ $CORE_FAILED -ne 0 ] || [ "$TEST6_STATUS" = "failed" ]; then
-            exit 1
-          fi
-      - name: Create test summary
+      - name: Finalize workflow status
         if: always()
         run: |
-          echo "## Flume Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped || 0 }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check flume binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check flume version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check flume help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.summary.outputs.should_fail || 'false' }}" = "true" ]; then
+            exit 1
+          fi
