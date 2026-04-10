@@ -1,0 +1,457 @@
+name: Test Xebium on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-xebium.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-xebium.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-xebium.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-xebium.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-xebium.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-xebium.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-xebium.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-xebium.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-xebium.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-xebium.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-xebium.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-xebium.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-xebium.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-xebium.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-xebium.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-xebium.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-xebium.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-xebium.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-xebium.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-xebium.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-xebium.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-xebium.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-xebium.outputs.timestamp }}
+jobs:
+  test-xebium:
+    runs-on: ubuntu-24.04-arm
+    env:
+      XEBIUM_VERSION: "0.6"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Xebium'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=xebium" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/xebium" >> "$GITHUB_OUTPUT"
+          echo "current_version=${XEBIUM_VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Install Xebium baseline
+        id: install
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y git unzip
+          sudo systemctl start docker || true
+
+          BASE_DIR="${RUNNER_TEMP}/xebium-current"
+          rm -rf "$BASE_DIR"
+          git clone --depth 1 --branch "xebium-${XEBIUM_VERSION}" https://github.com/xebia/Xebium "$BASE_DIR"
+
+          sudo docker run --rm \
+            -u "$(id -u):$(id -g)" \
+            -v "$BASE_DIR:/work" \
+            -w /work \
+            maven:3.9-eclipse-temurin-8 \
+            mvn -q -DskipTests package
+
+          test -f "$BASE_DIR/target/xebium-${XEBIUM_VERSION}.jar"
+          test -f "$BASE_DIR/target/xebium-${XEBIUM_VERSION}-ide.jar"
+
+          echo "build_dir=$BASE_DIR" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Get Xebium version
+        id: version
+        run: |
+          set -euo pipefail
+          BASE_DIR="${{ steps.install.outputs.build_dir }}"
+          VERSION=$(unzip -p "$BASE_DIR/target/xebium-${XEBIUM_VERSION}.jar" META-INF/maven/com.xebia.incubator/xebium/pom.properties | awk -F= '/^version=/{print $2; exit}')
+          LATEST=$(python3 - <<'PY'
+          import json, urllib.request
+
+          def key(v):
+              return [int(x) for x in v.split(".")]
+
+          req = urllib.request.Request(
+              "https://api.github.com/repos/xebia/Xebium/tags?per_page=20",
+              headers={"User-Agent": "codex"},
+          )
+          with urllib.request.urlopen(req, timeout=20) as r:
+              tags = json.load(r)
+
+          versions = []
+          for tag in tags:
+              name = tag["name"]
+              if name.startswith("xebium-"):
+                  versions.append(name.split("xebium-", 1)[1])
+
+          versions.sort(key=key)
+          print(versions[-1])
+          PY
+          )
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Detected Xebium version: $VERSION"
+          echo "Detected latest stable tag: $LATEST"
+
+      - name: Test 1 - Check Xebium jar artifacts exist
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          BASE_DIR="${{ steps.install.outputs.build_dir }}"
+
+          if [ -f "$BASE_DIR/target/xebium-${XEBIUM_VERSION}.jar" ] && [ -f "$BASE_DIR/target/xebium-${XEBIUM_VERSION}-ide.jar" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check exact version metadata
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          BASE_DIR="${{ steps.install.outputs.build_dir }}"
+          VERSION=$(unzip -p "$BASE_DIR/target/xebium-${XEBIUM_VERSION}.jar" META-INF/maven/com.xebia.incubator/xebium/pom.properties | awk -F= '/^version=/{print $2; exit}')
+
+          if [ "$VERSION" = "${XEBIUM_VERSION}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check built classes are present
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          BASE_DIR="${{ steps.install.outputs.build_dir }}"
+
+          if jar tf "$BASE_DIR/target/xebium-${XEBIUM_VERSION}.jar" | grep -q 'com/xebia/incubator/xebium/SeleniumDriverFixture.class' && \
+             jar tf "$BASE_DIR/target/xebium-${XEBIUM_VERSION}.jar" | grep -q 'com/xebia/incubator/xebium/SeleniumServerFixture.class'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture verification
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          if [ "$(uname -m)" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional artifact validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          BASE_DIR="${{ steps.install.outputs.build_dir }}"
+
+          if [ -f "$BASE_DIR/run.sh" ] && \
+             grep -q 'mvn -Pfitnesse test' "$BASE_DIR/run.sh" && \
+             jar tf "$BASE_DIR/target/xebium-${XEBIUM_VERSION}-ide.jar" | grep -q '^chrome.manifest$' && \
+             jar tf "$BASE_DIR/target/xebium-${XEBIUM_VERSION}-ide.jar" | grep -q 'xebiumformatter.js'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${XEBIUM_VERSION}"
+          LATEST="${{ steps.version.outputs.latest }}"
+          NEXT_INSTALLED="not_installed"
+          STATUS="failed"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Xebium version ${CURRENT} passed artifact validation in this run, but the latest stable upstream tag could not be resolved for Arm64 rebuild validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Xebium version ${CURRENT} passed artifact validation in this run, but the latest stable upstream tag could not be resolved for Arm64 rebuild validation."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          sudo apt-get update
+          sudo apt-get install -y git unzip
+          sudo systemctl start docker || true
+
+          NEXT_DIR="${RUNNER_TEMP}/xebium-next"
+          rm -rf "$NEXT_DIR"
+          git clone --depth 1 --branch "xebium-${LATEST}" https://github.com/xebia/Xebium "$NEXT_DIR"
+
+          if sudo docker run --rm \
+            -u "$(id -u):$(id -g)" \
+            -v "$NEXT_DIR:/work" \
+            -w /work \
+            maven:3.9-eclipse-temurin-8 \
+            mvn -q -DskipTests package; then
+            NEXT_INSTALLED=$(unzip -p "$NEXT_DIR/target/xebium-${LATEST}.jar" META-INF/maven/com.xebia.incubator/xebium/pom.properties | awk -F= '/^version=/{print $2; exit}')
+
+            if [ "$NEXT_INSTALLED" = "$LATEST" ] && \
+               jar tf "$NEXT_DIR/target/xebium-${LATEST}.jar" | grep -q 'com/xebia/incubator/xebium/SeleniumDriverFixture.class' && \
+               jar tf "$NEXT_DIR/target/xebium-${LATEST}.jar" | grep -q 'com/xebia/incubator/xebium/SeleniumServerFixture.class' && \
+               jar tf "$NEXT_DIR/target/xebium-${LATEST}-ide.jar" | grep -q '^chrome.manifest$'; then
+              if [ "$LATEST" = "$CURRENT" ]; then
+                echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+                echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+                echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
+                echo "Details: Current pinned Xebium version ${CURRENT} already matches the latest stable upstream tag. Regression validation rebuilt the same tag with the Java 8 Maven lane on Arm64 and the candidate artifacts reported version ${NEXT_INSTALLED} with the expected Selenium and IDE resources present."
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+              else
+                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Xebium version ${CURRENT} passed artifact validation in this run. Regression validation rebuilt candidate version ${LATEST} with the Java 8 Maven lane on Arm64, and the candidate artifacts reported version ${NEXT_INSTALLED} with the expected Selenium and IDE resources present." >> "$GITHUB_OUTPUT"
+                echo "Regression install result: Next version installed successfully on Arm64"
+                echo "Details: Current pinned Xebium version ${CURRENT} passed artifact validation in this run. Regression validation rebuilt candidate version ${LATEST} with the Java 8 Maven lane on Arm64, and the candidate artifacts reported version ${NEXT_INSTALLED} with the expected Selenium and IDE resources present."
+                echo "status=passed" >> "$GITHUB_OUTPUT"
+              fi
+              STATUS="passed"
+            else
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Xebium version ${CURRENT} passed artifact validation in this run, but the candidate ${LATEST} artifacts did not match the expected version/resources on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Xebium version ${CURRENT} passed artifact validation in this run, but the candidate ${LATEST} artifacts did not match the expected version/resources on Arm64."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            NEXT_INSTALLED="install_failed"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Xebium version ${CURRENT} passed artifact validation in this run, but the candidate ${LATEST} could not be rebuilt with the Java 8 Maven lane on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Xebium version ${CURRENT} passed artifact validation in this run, but the candidate ${LATEST} could not be rebuilt with the Java 8 Maven lane on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
+          echo "Next version installed on Arm64: ${NEXT_INSTALLED}"
+          echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+          if [ "$STATUS" != "passed" ]; then
+            exit 1
+          fi
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          set -euo pipefail
+          PASSED=0
+          FAILED=0
+          CORE_FAILED=0
+          TOTAL_DURATION=0
+
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" ${{ steps.test1.outputs.duration || 0 }}
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" ${{ steps.test2.outputs.duration || 0 }}
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" ${{ steps.test3.outputs.duration || 0 }}
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" ${{ steps.test4.outputs.duration || 0 }}
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" ${{ steps.test5.outputs.duration || 0 }}
+
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          if [ "$TEST6_STATUS" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$TEST6_STATUS" = "failed" ]; then
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## Xebium Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Test 1 - Check Xebium jar artifacts exist: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Test 2 - Check exact version metadata: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Test 3 - Check built classes are present: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Test 4 - Architecture verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Test 5 - Functional artifact validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,641 @@
+name: Test Solr on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-solr.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-solr.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-solr.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-solr.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-solr.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-solr.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-solr.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-solr.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-solr.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-solr.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-solr.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-solr.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-solr.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-solr.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-solr.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-solr.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-solr.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-solr.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy for this workflow
+        value: ${{ jobs.test-solr.outputs.regression_policy }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-solr.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-solr.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-solr.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-solr.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-solr.outputs.timestamp }}
+jobs:
+  test-solr:
+    runs-on: ubuntu-24.04-arm
+    env:
+      SOLR_VERSION: "9.10.1"
+      SOLR_HOME: /opt/solr-smoke
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Solr'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=solr" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/solr" >> "$GITHUB_OUTPUT"
+          echo "current_version=${SOLR_VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Install Solr
+        id: install
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo "Installing Solr..."
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "default-jre openjdk-21-jre-headless curl tar lsof"
+          # arm_recommended_minimum_version is 9.7.0 (2024-09-09). Applying the
+          # 1-year rule, pin the current latest stable Solr release within the
+          # last year.
+          PRIMARY_URL="https://dlcdn.apache.org/solr/solr/${SOLR_VERSION}/solr-${SOLR_VERSION}.tgz"
+          SECONDARY_URL="https://downloads.apache.org/solr/solr/${SOLR_VERSION}/solr-${SOLR_VERSION}.tgz"
+          FALLBACK_URL="https://archive.apache.org/dist/solr/solr/${SOLR_VERSION}/solr-${SOLR_VERSION}.tgz"
+          FALLBACK_URL_HTTP="http://archive.apache.org/dist/solr/solr/${SOLR_VERSION}/solr-${SOLR_VERSION}.tgz"
+          DOWNLOAD_ATTEMPTS=3 \
+          DOWNLOAD_CONNECT_TIMEOUT=30 \
+          DOWNLOAD_MAX_TIME=900 \
+          DOWNLOAD_RETRY_DELAY=5 \
+          DOWNLOAD_WGET_TIMEOUT=30 \
+          DOWNLOAD_WGET_WAITRETRY=5 \
+            bash .github/scripts/download-with-fallback.sh solr.tgz "$PRIMARY_URL" "$SECONDARY_URL" "$FALLBACK_URL" "$FALLBACK_URL_HTTP"
+          if ! tar -xzf solr.tgz; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sudo rm -rf "$SOLR_HOME"
+          sudo mv "solr-${SOLR_VERSION}" "$SOLR_HOME"
+          echo "SOLR_BIN=$SOLR_HOME/bin/solr" >> "$GITHUB_ENV"
+          sudo ln -sf "$SOLR_HOME/bin/solr" /usr/local/bin/solr
+
+          if [ -x "$SOLR_HOME/bin/solr" ]; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=binary_missing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+      - name: Get Solr version
+        id: version
+        run: |
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "version=${SOLR_VERSION}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          VERSION=$("${SOLR_BIN}" --version 2>&1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected Solr version: $VERSION"
+
+      - name: Test 1 - Check solr binary exists
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -x "${SOLR_BIN}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check version command
+        id: test2
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if "${SOLR_BIN}" --version 2>&1 | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check start help output
+        id: test3
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if "${SOLR_BIN}" start -help 2>&1 | grep -qiE 'usage|start|options'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          "${SOLR_BIN}" start --user-managed -p 8983 >/tmp/solr-start.log 2>&1
+          cleanup() {
+            "${SOLR_BIN}" stop -p 8983 >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          for _ in {1..30}; do
+            if curl -fsS "http://127.0.0.1:8983/solr/admin/info/system?wt=json" >/tmp/solr-info.json 2>/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+
+          if grep -q '"solr-spec-version"' /tmp/solr-info.json; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/solr-start.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        if: always()
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || env.SOLR_VERSION }}"
+          LATEST=""
+
+          emit_result() {
+            local status="$1"
+            local decision="$2"
+            local regression_result="$3"
+            local comparison="$4"
+            local next_installed="$5"
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${next_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=${decision}" >> "$GITHUB_OUTPUT"
+            echo "regression_result=${regression_result}" >> "$GITHUB_OUTPUT"
+            echo "comparison=${comparison}" >> "$GITHUB_OUTPUT"
+            echo "status=${status}" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${next_installed}"
+            echo "Regression install result: ${regression_result}"
+            echo "Details: ${comparison}"
+          }
+
+          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            emit_result "skipped" "baseline_failed" \
+              "Regression validation skipped because one or more baseline tests (1-5) failed." \
+              "Current pinned Solr version ${CURRENT} did not complete baseline smoke validation in this run, so next-version regression install validation was skipped." \
+              "not_installed"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          set +e
+          LATEST="$(
+            CURRENT_VERSION="$CURRENT" python3 - <<'PY'
+          import os
+          import re
+          import urllib.request
+
+          current = os.environ.get("CURRENT_VERSION", "")
+          current_parts = tuple(int(x) for x in current.split(".")) if re.fullmatch(r"\d+\.\d+\.\d+", current) else ()
+          html = urllib.request.urlopen(
+              "https://downloads.apache.org/solr/solr/",
+              timeout=20,
+          ).read().decode("utf-8", "ignore")
+          versions = sorted(
+              {
+                  tuple(map(int, match.split(".")))
+                  for match in re.findall(r'href="([0-9]+\.[0-9]+\.[0-9]+)/"', html)
+              }
+          )
+          next_versions = [version for version in versions if version > current_parts]
+          print(".".join(str(x) for x in next_versions[0]) if next_versions else "")
+          PY
+          )"
+          LOOKUP_RC=$?
+          set -e
+          if [ "$LOOKUP_RC" -ne 0 ]; then
+            LATEST=""
+          fi
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ -z "${LATEST}" ]; then
+            emit_result "failed" "next_lookup_failed" \
+              "Next version lookup failed on Arm64" \
+              "Current pinned Solr version ${CURRENT} passed smoke tests in this run, but the latest stable Apache Solr release could not be resolved from the official download index for Arm64 install validation." \
+              "not_installed"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "${CURRENT}" = "${LATEST}" ]; then
+            emit_result "failed" "metadata_review_required" \
+              "Tests 1-5 baseline must be older than the latest stable release" \
+              "Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." \
+              "${CURRENT}"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          JAVA_HOME_CANDIDATE=""
+          if [ -x /usr/lib/jvm/java-21-openjdk-arm64/bin/java ]; then
+            JAVA_HOME_CANDIDATE="/usr/lib/jvm/java-21-openjdk-arm64"
+          elif [ -x /usr/lib/jvm/java-21-openjdk-amd64/bin/java ]; then
+            JAVA_HOME_CANDIDATE="/usr/lib/jvm/java-21-openjdk-amd64"
+          fi
+
+          JAVA_BIN="java"
+          if [ -n "${JAVA_HOME_CANDIDATE}" ]; then
+            JAVA_BIN="${JAVA_HOME_CANDIDATE}/bin/java"
+          fi
+
+          JAVA_MAJOR="$(
+            "${JAVA_BIN}" -version 2>&1 | awk -F[\".] '/version/ {print ($2 == "1" ? $3 : $2); exit}' || true
+          )"
+          LATEST_MAJOR="$(printf '%s\n' "${LATEST}" | cut -d. -f1)"
+          if [ -n "${LATEST_MAJOR}" ] && [ "${LATEST_MAJOR}" -ge 10 ] && [ -n "${JAVA_MAJOR}" ] && [ "${JAVA_MAJOR}" -lt 21 ]; then
+            emit_result "failed" "next_install_blocked_java_runtime" \
+              "Next version install failed on Arm64" \
+              "Current pinned Solr version ${CURRENT} passed smoke tests in this run, but candidate ${LATEST} requires Java 21+ while the runner Java major version is ${JAVA_MAJOR}." \
+              "not_installed"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ -n "${LATEST_MAJOR}" ] && [ "${LATEST_MAJOR}" -ge 10 ] && [ -n "${JAVA_HOME_CANDIDATE}" ]; then
+            export JAVA_HOME="${JAVA_HOME_CANDIDATE}"
+            export PATH="${JAVA_HOME}/bin:${PATH}"
+          fi
+
+          NEXT_ROOT=$(mktemp -d)
+          NEXT_HOME="${NEXT_ROOT}/solr-${LATEST}"
+          INSTALL_OK=1
+          if ! DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=900 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=30 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+            bash .github/scripts/download-with-fallback.sh \
+              "${NEXT_ROOT}/solr.tgz" \
+              "https://dlcdn.apache.org/solr/solr/${LATEST}/solr-${LATEST}.tgz" \
+              "https://downloads.apache.org/solr/solr/${LATEST}/solr-${LATEST}.tgz" \
+              "https://archive.apache.org/dist/solr/solr/${LATEST}/solr-${LATEST}.tgz" \
+              "http://archive.apache.org/dist/solr/solr/${LATEST}/solr-${LATEST}.tgz"; then
+            INSTALL_OK=0
+          fi
+          if [ "$INSTALL_OK" -eq 1 ] && ! tar -xzf "${NEXT_ROOT}/solr.tgz" -C "${NEXT_ROOT}"; then
+            INSTALL_OK=0
+          fi
+          NEXT_BIN="${NEXT_HOME}/bin/solr"
+          if [ "$INSTALL_OK" -ne 1 ] || [ ! -x "${NEXT_BIN}" ]; then
+            rm -rf "${NEXT_ROOT}"
+            emit_result "failed" "next_install_failed" \
+              "Next version install failed on Arm64" \
+              "Current pinned Solr version ${CURRENT} passed smoke tests in this run, but the candidate Apache Solr release ${LATEST} could not be downloaded or extracted from the official Apache mirror on Arm64." \
+              "not_installed"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_REPORTED=""
+          NEXT_PORT=8984
+          cleanup() {
+            "${NEXT_BIN}" stop -p "${NEXT_PORT}" >/dev/null 2>&1 || true
+            rm -rf "${NEXT_ROOT}"
+          }
+          trap cleanup EXIT
+
+          START_OK=1
+          if ! "${NEXT_BIN}" start -p "${NEXT_PORT}" >/tmp/solr-next-start.log 2>&1; then
+            if ! "${NEXT_BIN}" start --user-managed -p "${NEXT_PORT}" >/tmp/solr-next-start.log 2>&1; then
+              START_OK=0
+            fi
+          fi
+          if [ "$START_OK" -ne 1 ]; then
+            cat /tmp/solr-next-start.log || true
+            emit_result "failed" "next_install_failed" \
+              "Next version install failed on Arm64" \
+              "Current pinned Solr version ${CURRENT} passed smoke tests in this run, but the candidate Apache Solr release ${LATEST} did not start successfully on Arm64." \
+              "${NEXT_REPORTED:-not_installed}"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          INFO_OK=0
+          for _ in {1..60}; do
+            if curl -fsS "http://127.0.0.1:${NEXT_PORT}/solr/admin/info/system?wt=json" >/tmp/solr-next-info.json 2>/dev/null; then
+              INFO_OK=1
+              break
+            fi
+            sleep 3
+          done
+
+          NEXT_REPORTED_RAW=""
+          if [ "$INFO_OK" -eq 1 ]; then
+            NEXT_REPORTED_RAW="$(jq -r '."lucene"."solr-impl-version" // .lucene["solr-impl-version"] // empty' /tmp/solr-next-info.json 2>/dev/null | head -n1 || true)"
+            NEXT_REPORTED="$(printf '%s\n' "${NEXT_REPORTED_RAW}" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+            if [ -z "${NEXT_REPORTED}" ]; then
+              NEXT_REPORTED="${NEXT_REPORTED_RAW}"
+            fi
+          fi
+
+          if [ "${NEXT_REPORTED}" = "${LATEST}" ] && [ "$INFO_OK" -eq 1 ] && grep -q '"solr-spec-version"' /tmp/solr-next-info.json; then
+            emit_result "passed" "next_install_validated" \
+              "Next version installed successfully on Arm64" \
+              "Current pinned Solr version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} from the official Apache Solr tarball on Arm64, the candidate binary reported ${NEXT_REPORTED_RAW:-$NEXT_REPORTED}, and the isolated admin system endpoint responded successfully." \
+              "${NEXT_REPORTED}"
+          else
+            cat /tmp/solr-next-start.log || true
+            emit_result "failed" "next_install_failed" \
+              "Next version install failed on Arm64" \
+              "Current pinned Solr version ${CURRENT} passed smoke tests in this run, but the candidate Apache Solr release ${LATEST} did not complete isolated Arm64 startup validation successfully." \
+              "${NEXT_REPORTED:-not_installed}"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+              *)
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                  REGRESSION_RESULT="Regression validation passed"
+                else
+                  REGRESSION_RESULT="Regression validation failed"
+                fi
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          set -euo pipefail
+          PASSED=0
+          FAILED=0
+          SKIPPED=0
+          CORE_FAILED=0
+          TOTAL_DURATION=0
+          INSTALL_STATUS="${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}"
+
+          if [ "$INSTALL_STATUS" != "success" ]; then
+            FAILED=1
+            SKIPPED=5
+            TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+            if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "failed" ]; then
+              FAILED=2
+              SKIPPED=4
+            fi
+            echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+            echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+            echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+            echo "core_failed=1" >> "$GITHUB_OUTPUT"
+            echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$status" = "skipped" ]; then
+              SKIPPED=$((SKIPPED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          if [ "$TEST6_STATUS" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$TEST6_STATUS" = "failed" ]; then
+            FAILED=$((FAILED + 1))
+          else
+            SKIPPED=$((SKIPPED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## Solr Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed || 0 }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed || 0 }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests.' }}" >> "$GITHUB_STEP_SUMMARY"

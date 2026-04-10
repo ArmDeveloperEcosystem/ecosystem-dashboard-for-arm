@@ -1,0 +1,413 @@
+name: Test Wave on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-wave.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-wave.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-wave.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-wave.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-wave.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-wave.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-wave.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-wave.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-wave.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-wave.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-wave.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-wave.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-wave.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-wave.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-wave.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-wave.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-wave.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-wave.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-wave.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-wave.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-wave.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-wave.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-wave.outputs.timestamp }}
+jobs:
+  test-wave:
+    runs-on: ubuntu-24.04-arm
+    env:
+      JAVA_VERSION: "21"
+      WAVE_VERSION: "1.16.0"
+      WAVE_NEXT_VERSION: "1.16.1"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Wave'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=wave" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/wave" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "${{ env.JAVA_VERSION }}"
+
+      - name: Install Wave baseline
+        id: install
+        run: |
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "curl tar"
+          SRC_DIR="${RUNNER_TEMP}/wave-${WAVE_VERSION}"
+          ARCHIVE="${RUNNER_TEMP}/wave-${WAVE_VERSION}.tar.gz"
+          curl -L --fail -s "https://github.com/seqeralabs/wave/archive/refs/tags/v${WAVE_VERSION}.tar.gz" -o "$ARCHIVE"
+          tar -xzf "$ARCHIVE" -C "${RUNNER_TEMP}"
+          mv "${RUNNER_TEMP}/wave-${WAVE_VERSION}" "$SRC_DIR" 2>/dev/null || true
+          if [ ! -d "$SRC_DIR" ]; then
+            SRC_DIR=$(find "${RUNNER_TEMP}" -maxdepth 1 -type d -name "wave-*" | head -n 1)
+          fi
+          if [ -z "$SRC_DIR" ] || [ ! -d "$SRC_DIR" ]; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          cd "$SRC_DIR"
+          chmod +x gradlew
+          ./gradlew --no-daemon buildInfo assemble test --tests io.seqera.wave.util.BuildInfoTest >/tmp/wave-build.log 2>&1 || {
+            cat /tmp/wave-build.log || true
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          }
+
+          BUILD_INFO=$(find build -path "*/META-INF/build-info.properties" | head -n 1)
+          APP_JAR=$(find build/libs -type f -name "*-all.jar" | head -n 1)
+          if [ -z "$APP_JAR" ]; then
+            APP_JAR=$(find build/libs -type f -name "*.jar" | head -n 1)
+          fi
+
+          if [ -n "$BUILD_INFO" ] && [ -f "$BUILD_INFO" ] && [ -n "$APP_JAR" ] && [ -f "$APP_JAR" ]; then
+            [[ "$BUILD_INFO" = /* ]] || BUILD_INFO="${SRC_DIR}/${BUILD_INFO}"
+            [[ "$APP_JAR" = /* ]] || APP_JAR="${SRC_DIR}/${APP_JAR}"
+            echo "src_dir=$SRC_DIR" >> "$GITHUB_OUTPUT"
+            echo "build_info=$BUILD_INFO" >> "$GITHUB_OUTPUT"
+            echo "app_jar=$APP_JAR" >> "$GITHUB_OUTPUT"
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            find build -maxdepth 3 -type f | sort || true
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Get Wave version
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(cat "${{ steps.install.outputs.src_dir }}/VERSION")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$WAVE_NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected Wave version: $VERSION"
+
+      - name: Test 1 - Check source tree and Gradle wrapper
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ -d "${{ steps.install.outputs.src_dir }}" ] && [ -x "${{ steps.install.outputs.src_dir }}/gradlew" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check exact version file
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          VERSION=$(cat "${{ steps.install.outputs.src_dir }}/VERSION")
+          if [ "$VERSION" = "${WAVE_VERSION}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check build info metadata
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          BUILD_INFO="${{ steps.install.outputs.build_info }}"
+          if grep -q '^name=wave$' "$BUILD_INFO" && grep -q "^version=${WAVE_VERSION}$" "$BUILD_INFO" && grep -q '^commitId=' "$BUILD_INFO"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            [ -f "$BUILD_INFO" ] && cat "$BUILD_INFO" || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ "$(uname -m)" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          SRC_DIR="${{ steps.install.outputs.src_dir }}"
+          APP_JAR="${{ steps.install.outputs.app_jar }}"
+          if [ -f "$APP_JAR" ] \
+            && jar tf "$APP_JAR" | grep -q 'io/seqera/wave/Application.class' \
+            && jar tf "$APP_JAR" | grep -q 'META-INF/build-info.properties' \
+            && (cd "$SRC_DIR" && ./gradlew --no-daemon help >/tmp/wave-help.log 2>&1) \
+            && grep -Eqi 'tasks|wave|build' /tmp/wave-help.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            [ -f /tmp/wave-help.log ] && cat /tmp/wave-help.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          NEXT_DIR="${RUNNER_TEMP}/wave-${WAVE_NEXT_VERSION}"
+          NEXT_ARCHIVE="${RUNNER_TEMP}/wave-${WAVE_NEXT_VERSION}.tar.gz"
+          curl -L --fail -s "https://github.com/seqeralabs/wave/archive/refs/tags/v${WAVE_NEXT_VERSION}.tar.gz" -o "$NEXT_ARCHIVE"
+          tar -xzf "$NEXT_ARCHIVE" -C "${RUNNER_TEMP}"
+          mv "${RUNNER_TEMP}/wave-${WAVE_NEXT_VERSION}" "$NEXT_DIR" 2>/dev/null || true
+          if [ ! -d "$NEXT_DIR" ]; then
+            NEXT_DIR=$(find "${RUNNER_TEMP}" -maxdepth 1 -type d -name "wave-*" | sort | tail -n 1)
+          fi
+
+          echo "current_version=${WAVE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${WAVE_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$NEXT_DIR" ] || [ ! -d "$NEXT_DIR" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Wave candidate source tree ${WAVE_NEXT_VERSION} could not be resolved from the public upstream tag archive." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          cd "$NEXT_DIR"
+          chmod +x gradlew
+          ./gradlew --no-daemon buildInfo assemble test --tests io.seqera.wave.util.BuildInfoTest >/tmp/wave-next-build.log 2>&1 || {
+            cat /tmp/wave-next-build.log || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Wave candidate ${WAVE_NEXT_VERSION} failed to complete the same Arm64 build-and-self-test path as the pinned baseline." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          }
+
+          BUILD_INFO=$(find build -path "*/META-INF/build-info.properties" | head -n 1)
+          APP_JAR=$(find build/libs -type f -name "*-all.jar" | head -n 1)
+          if [ -z "$APP_JAR" ]; then
+            APP_JAR=$(find build/libs -type f -name "*.jar" | head -n 1)
+          fi
+          NEXT_VERSION=$(cat VERSION)
+
+          if [ "$NEXT_VERSION" = "${WAVE_NEXT_VERSION}" ] \
+            && [ -n "$BUILD_INFO" ] && grep -q "^version=${WAVE_NEXT_VERSION}$" "$BUILD_INFO" \
+            && [ -n "$APP_JAR" ] && jar tf "$APP_JAR" | grep -q 'io/seqera/wave/Application.class'; then
+            echo "next_installed_version=${WAVE_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Wave version ${WAVE_VERSION} passed Arm64 source-build smoke tests in this run, and candidate version ${WAVE_NEXT_VERSION} completed the same build-info, assemble, and BuildInfo self-test path successfully." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            [ -n "$BUILD_INFO" ] && cat "$BUILD_INFO" || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Wave candidate ${WAVE_NEXT_VERSION} built partially on Arm64 but did not produce the expected versioned build metadata and application artifact." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          set -euo pipefail
+          PASSED=0
+          FAILED=0
+          CORE_FAILED=0
+          TOTAL_DURATION=0
+
+          check_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_core() {
+            local status="$1"
+            local duration="$2"
+            check_test "$status" "$duration"
+            if [ "$status" != "passed" ]; then
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          }
+
+          check_core "${{ steps.test1.outputs.status || 'failed' }}" ${{ steps.test1.outputs.duration || 0 }}
+          check_core "${{ steps.test2.outputs.status || 'failed' }}" ${{ steps.test2.outputs.duration || 0 }}
+          check_core "${{ steps.test3.outputs.status || 'failed' }}" ${{ steps.test3.outputs.duration || 0 }}
+          check_core "${{ steps.test4.outputs.status || 'failed' }}" ${{ steps.test4.outputs.duration || 0 }}
+          check_core "${{ steps.test5.outputs.status || 'failed' }}" ${{ steps.test5.outputs.duration || 0 }}
+          check_test "${{ steps.test6.outputs.status || 'failed' }}" ${{ steps.test6.outputs.duration || 0 }}
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## Wave Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Test 1 - Check source tree and Gradle wrapper: ${{ steps.test1.outputs.status || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Test 2 - Check exact version file: ${{ steps.test2.outputs.status || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Test 3 - Check build info metadata: ${{ steps.test3.outputs.status || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"

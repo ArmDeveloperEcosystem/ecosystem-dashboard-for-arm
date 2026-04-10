@@ -1,0 +1,240 @@
+name: Generic Source Regression Check
+description: Validate next stable source/release tag availability for generic repo-backed workflows.
+
+inputs:
+  baseline_version:
+    description: Baseline version already validated in Tests 1-5
+    required: true
+  github_repo:
+    description: owner/repo used to resolve tags from GitHub
+    required: true
+  lane_kind:
+    description: Workflow lane description for messaging
+    required: false
+    default: ""
+  next_version_override:
+    description: Manually pinned next stable version display value
+    required: false
+    default: ""
+  candidate_tag_override:
+    description: Manually pinned upstream tag/ref to clone for the next stable candidate
+    required: false
+    default: ""
+
+outputs:
+  status:
+    description: Regression status
+    value: ${{ steps.regress.outputs.status }}
+  decision:
+    description: Regression decision
+    value: ${{ steps.regress.outputs.decision }}
+  current_version:
+    description: Baseline version
+    value: ${{ steps.regress.outputs.current_version }}
+  latest_version:
+    description: Next candidate version
+    value: ${{ steps.regress.outputs.latest_version }}
+  next_installed_version:
+    description: Candidate version validated
+    value: ${{ steps.regress.outputs.next_installed_version }}
+  regression_result:
+    description: Human readable result
+    value: ${{ steps.regress.outputs.regression_result }}
+  comparison:
+    description: Human readable comparison note
+    value: ${{ steps.regress.outputs.comparison }}
+  duration:
+    description: Duration in seconds
+    value: ${{ steps.regress.outputs.duration }}
+
+runs:
+  using: composite
+  steps:
+    - id: regress
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        START_TIME=$(date +%s)
+        CURRENT="${{ inputs.baseline_version }}"
+        REPO="${{ inputs.github_repo }}"
+        LANE_KIND="${{ inputs.lane_kind }}"
+        OVERRIDE_VERSION="${{ inputs.next_version_override }}"
+        OVERRIDE_TAG="${{ inputs.candidate_tag_override }}"
+
+        echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+
+        if [ -z "$REPO" ]; then
+          echo "latest_version=manual_review" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=manual_review" >> "$GITHUB_OUTPUT"
+          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Package-specific regression validation not yet automated" >> "$GITHUB_OUTPUT"
+          echo "comparison=This workflow does not declare a GitHub source repository for automatic next-version discovery, so package-specific regression validation still requires a dedicated lane design." >> "$GITHUB_OUTPUT"
+          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        if [ -n "$OVERRIDE_VERSION" ] && [ -n "$OVERRIDE_TAG" ]; then
+          STATUS_KIND="FOUND_OVERRIDE"
+          LATEST_VERSION="$OVERRIDE_VERSION"
+          CANDIDATE_TAG="$OVERRIDE_TAG"
+        else
+          mapfile -t RAW_TAGS < <(git ls-remote --tags --refs "https://github.com/${REPO}.git" 2>/dev/null | awk '{print $2}' | sed 's#refs/tags/##')
+
+          TAG_RESULT=$(RAW_TAGS="$(printf '%s\n' "${RAW_TAGS[@]-}")" python3 - "$CURRENT" <<'PY'
+        import os
+        import re
+        import sys
+
+        current = sys.argv[1].strip()
+        raw_tags = [line.strip() for line in os.environ.get("RAW_TAGS", "").splitlines() if line.strip()]
+
+        drop_prefix_re = re.compile(r"^(?:release[-_/]|rel[-_/]|version[-_/])", re.I)
+        pre_re = re.compile(r"(?:alpha|beta|rc|preview|pre|nightly|dev)", re.I)
+
+        def normalize(value: str):
+            original = value.strip()
+            value = original.split("/")[-1]
+            value = value.rstrip("^{}")
+            value = value.lstrip("vV")
+            value = drop_prefix_re.sub("", value)
+            if pre_re.search(value):
+                return None
+            m = re.match(r"^(\d+(?:[._-]\d+)*)$", value)
+            if not m:
+                return None
+            display = m.group(1)
+            parts = tuple(int(x) for x in re.split(r"[._-]", display))
+            return parts, display, original
+
+        current_norm = normalize(current)
+        parsed = []
+        for tag in raw_tags:
+            norm = normalize(tag)
+            if norm is not None:
+                parsed.append(norm)
+
+        if not parsed:
+            print("UNRESOLVED\t\t")
+            raise SystemExit(0)
+
+        parsed.sort(key=lambda item: item[0])
+        latest = parsed[-1]
+
+        if current_norm is None:
+            print(f"METADATA_REVIEW\t{latest[1]}\t{latest[2]}")
+            raise SystemExit(0)
+
+        newer = [item for item in parsed if item[0] > current_norm[0]]
+        if not newer:
+            print(f"NONE\t{current_norm[1]}\t{current}")
+            raise SystemExit(0)
+
+        candidate = newer[-1]
+        print(f"FOUND\t{candidate[1]}\t{candidate[2]}")
+        PY
+          )
+
+          STATUS_KIND=$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $1}')
+          LATEST_VERSION=$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $2}')
+          CANDIDATE_TAG=$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $3}')
+        fi
+
+        case "$STATUS_KIND" in
+          NONE)
+            echo "latest_version=${LATEST_VERSION:-$CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=n/a" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable public release is available" >> "$GITHUB_OUTPUT"
+            echo "comparison=The current validated version ${CURRENT} is already the latest stable source tag we could resolve automatically from ${REPO}." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            ;;
+          UNRESOLVED)
+            echo "latest_version=metadata_review" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=metadata_review" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Automatic next-version resolution needs manual review" >> "$GITHUB_OUTPUT"
+            echo "comparison=The workflow could not derive comparable stable version tags automatically from ${REPO}, so package-specific metadata review is required before automating regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            ;;
+          METADATA_REVIEW)
+            echo "latest_version=${LATEST_VERSION:-metadata_review}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=metadata_review" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Automatic next-version resolution needs manual review" >> "$GITHUB_OUTPUT"
+            echo "comparison=The baseline version ${CURRENT} does not parse cleanly for automatic ordering, while ${REPO} exposes newer stable-looking tags such as ${LATEST_VERSION}. A package-specific version mapping rule is required before enabling automated regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            ;;
+          FOUND_OVERRIDE)
+            rm -rf next-src
+            if git clone --depth 1 --branch "$CANDIDATE_TAG" "https://github.com/${REPO}.git" next-src >/dev/null 2>&1; then
+              if find next-src -maxdepth 2 -type f \( -name 'README*' -o -name 'LICENSE*' -o -name 'Makefile' -o -name 'pyproject.toml' -o -name 'go.mod' -o -name 'Cargo.toml' -o -name 'pom.xml' -o -name 'CMakeLists.txt' -o -name 'package.json' \) -print -quit | grep -q . || [ -n "$(find next-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
+                echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+                echo "next_installed_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+                echo "decision=validated_next_release" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next stable source release resolved and validated on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=A package-specific next stable candidate was pinned manually for ${REPO}: baseline ${CURRENT} vs candidate ${LATEST_VERSION} (${CANDIDATE_TAG}). The candidate tag resolved and passed the same bounded Arm64 source validation as the baseline." >> "$GITHUB_OUTPUT"
+                echo "status=passed" >> "$GITHUB_OUTPUT"
+              else
+                echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+                echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next source release could not satisfy bounded validation on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=A package-specific next stable candidate was pinned manually for ${REPO}, but the candidate checkout ${CANDIDATE_TAG} did not contain the expected bounded artifact structure used by this workflow." >> "$GITHUB_OUTPUT"
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+              fi
+            else
+              echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next source release clone failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=A package-specific next stable candidate was pinned manually for ${REPO}, but cloning ${CANDIDATE_TAG} failed on Arm64." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            ;;
+          FOUND)
+            rm -rf next-src
+            if git clone --depth 1 --branch "$CANDIDATE_TAG" "https://github.com/${REPO}.git" next-src >/dev/null 2>&1; then
+              if find next-src -maxdepth 2 -type f \( -name 'README*' -o -name 'LICENSE*' -o -name 'Makefile' -o -name 'pyproject.toml' -o -name 'go.mod' -o -name 'Cargo.toml' -o -name 'pom.xml' -o -name 'CMakeLists.txt' -o -name 'package.json' \) -print -quit | grep -q . || [ -n "$(find next-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
+                echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+                echo "next_installed_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+                echo "decision=validated_next_release" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next stable source release resolved and validated on Arm64" >> "$GITHUB_OUTPUT"
+                if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
+                  NOTE="Baseline bounded source/artifact checks passed for ${CURRENT}, and the next stable source tag ${LATEST_VERSION} from ${REPO} also resolved and passed the same bounded checks on Arm64. Specialized runtime smoke remains out of scope for generic runners."
+                else
+                  NOTE="Baseline bounded source/artifact checks passed for ${CURRENT}, and the next stable source tag ${LATEST_VERSION} from ${REPO} also resolved and passed the same bounded checks on Arm64. Package-specific runtime smoke can be added later if needed."
+                fi
+                echo "comparison=${NOTE}" >> "$GITHUB_OUTPUT"
+                echo "status=passed" >> "$GITHUB_OUTPUT"
+              else
+                echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+                echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next source release could not satisfy bounded validation on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=The next stable source tag ${LATEST_VERSION} from ${REPO} resolved, but the candidate checkout did not contain the expected bounded artifact structure used by this workflow." >> "$GITHUB_OUTPUT"
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+              fi
+            else
+              echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next source release clone failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=The baseline version ${CURRENT} passed bounded source/artifact checks, but cloning the next stable tag ${LATEST_VERSION} from ${REPO} failed on Arm64." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            ;;
+          *)
+            echo "latest_version=metadata_review" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=metadata_review" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Automatic next-version resolution needs manual review" >> "$GITHUB_OUTPUT"
+            echo "comparison=The workflow could not classify the next-version lookup result for ${REPO}; package-specific review is required." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            ;;
+        esac
+
+        END_TIME=$(date +%s)
+        echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"

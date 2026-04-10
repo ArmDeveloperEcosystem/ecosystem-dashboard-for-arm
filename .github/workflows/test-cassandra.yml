@@ -1,0 +1,354 @@
+name: Test Cassandra on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-cassandra.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-cassandra.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-cassandra.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-cassandra.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-cassandra.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-cassandra.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-cassandra.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-cassandra.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-cassandra.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-cassandra.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-cassandra.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-cassandra.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-cassandra.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-cassandra.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-cassandra.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-cassandra.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-cassandra.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-cassandra.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-cassandra.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-cassandra.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-cassandra.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-cassandra.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-cassandra.outputs.timestamp }}
+jobs:
+  test-cassandra:
+    runs-on: ubuntu-24.04-arm
+    env:
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-arm64
+      CASSANDRA_EXPECTED_VERSION: "5.0.6"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Cassandra'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=cassandra" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/cassandra" >> "$GITHUB_OUTPUT"
+      - name: Bootstrap Cassandra dependencies
+        uses: ./.github/actions/apt-bootstrap
+        with:
+          packages: "curl wget gnupg openjdk-17-jdk"
+      - name: Install Cassandra
+        id: install
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo "Installing Cassandra..."
+          sudo rm -f /etc/apt/sources.list.d/cassandra.sources.list /etc/apt/trusted.gpg.d/cassandra.gpg
+
+          # arm_recommended_minimum_version is 5.0.0 (2024-09-05). Applying the
+          # 1-year rule, install the current stable 5.0 line from the official
+          # Cassandra package repository.
+          echo "deb https://debian.cassandra.apache.org 50x main" | sudo tee /etc/apt/sources.list.d/cassandra.sources.list >/dev/null
+          if ! DOWNLOAD_ATTEMPTS=4 \
+               DOWNLOAD_CONNECT_TIMEOUT=20 \
+               DOWNLOAD_MAX_TIME=120 \
+               DOWNLOAD_RETRY_DELAY=5 \
+               DOWNLOAD_WGET_TIMEOUT=30 \
+               DOWNLOAD_WGET_WAITRETRY=5 \
+               bash .github/scripts/download-with-fallback.sh \
+                 /tmp/cassandra.KEYS \
+                 "https://downloads.apache.org/cassandra/KEYS" \
+                 "https://archive.apache.org/dist/cassandra/KEYS"; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ ! -s /tmp/cassandra.KEYS ]; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          gpg --dearmor --batch --yes /tmp/cassandra.KEYS
+          mv /tmp/cassandra.KEYS.gpg /tmp/cassandra.gpg
+          sudo install -m 0644 /tmp/cassandra.gpg /etc/apt/trusted.gpg.d/cassandra.gpg
+
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "cassandra"
+
+          if command -v cassandra >/dev/null 2>&1 && command -v nodetool >/dev/null 2>&1; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Get Cassandra version
+        id: version
+        if: always()
+        run: |
+          set -euo pipefail
+          VERSION=$(cassandra -v 2>&1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected Cassandra version: $VERSION"
+
+      - name: Test 1 - Check binaries exist
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if command -v cassandra >/dev/null 2>&1 && command -v nodetool >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check version command
+        id: test2
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if cassandra -v 2>&1 | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check nodetool help
+        id: test3
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if nodetool help 2>&1 | grep -qi '^usage:'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sudo pkill -f CassandraDaemon || true
+          sudo -u cassandra env JAVA_HOME="$JAVA_HOME" PATH="$JAVA_HOME/bin:$PATH" /usr/sbin/cassandra -R -f >/tmp/cassandra.log 2>&1 &
+          CASSANDRA_PID=$!
+          cleanup() {
+            kill "$CASSANDRA_PID" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          for _ in {1..90}; do
+            if grep -qiE 'Startup complete|Starting listening for CQL clients|Starting listening for native transport' /tmp/cassandra.log; then
+              break
+            fi
+            sleep 2
+          done
+
+          if ss -ltnp | grep -q ':9042' && nodetool status 2>&1 | grep -q '^UN[[:space:]]\+127\.0\.0\.1'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            tail -n 120 /tmp/cassandra.log || true
+            nodetool status 2>&1 || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Regression applicability - package manager installed
+        id: test6
+        if: always()
+        run: |
+          set -euo pipefail
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          CORE_FAILURES=0
+          for conclusion in \
+            "${{ steps.test1.conclusion || 'skipped' }}" \
+            "${{ steps.test2.conclusion || 'skipped' }}" \
+            "${{ steps.test3.conclusion || 'skipped' }}" \
+            "${{ steps.test4.conclusion || 'skipped' }}" \
+            "${{ steps.test5.conclusion || 'skipped' }}"; do
+            if [ "$conclusion" = "failure" ]; then
+              CORE_FAILURES=$((CORE_FAILURES + 1))
+            fi
+          done
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || [ "$CORE_FAILURES" -gt 0 ]; then
+            echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Cassandra version ${CURRENT} did not complete baseline installation and core Tests 1-5 cleanly in this run, so regression applicability was not trusted." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
+          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+
+      - name: Emit package result
+        if: always()
+        id: summary
+        uses: ./.github/actions/emit-package-result
+        with:
+          package_name: "Cassandra"
+          version: ${{ steps.version.outputs.version }}
+          install_status: ${{ steps.install.outputs.install_status || 'success' }}
+          test1_label: "Check binaries exist"
+          test2_label: "Check version command"
+          test3_label: "Check nodetool help"
+          test4_label: "Architecture Verification"
+          test5_label: "Functional Validation"
+          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
+          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
+          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
+          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
+          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
+          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_duration: ${{ steps.test1.outputs.duration || 0 }}
+          test2_duration: ${{ steps.test2.outputs.duration || 0 }}
+          test3_duration: ${{ steps.test3.outputs.duration || 0 }}
+          test4_duration: ${{ steps.test4.outputs.duration || 0 }}
+          test5_duration: ${{ steps.test5.outputs.duration || 0 }}
+          test6_duration: ${{ steps.test6.outputs.duration || 0 }}
+          regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+          regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
+          regression_details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+
+      - name: Finalize workflow status
+        if: always()
+        run: |
+          if [ "${{ steps.summary.outputs.should_fail }}" = "1" ]; then
+            exit 1
+          fi

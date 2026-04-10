@@ -1,0 +1,305 @@
+name: Test Qt on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-qt.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-qt.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-qt.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-qt.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-qt.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-qt.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-qt.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-qt.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-qt.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-qt.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-qt.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-qt.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-qt.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-qt.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-qt.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-qt.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-qt.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-qt.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-qt.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-qt.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-qt.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-qt.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-qt.outputs.timestamp }}
+jobs:
+  test-qt:
+    runs-on: ubuntu-24.04-arm
+    env:
+      QT_PROJECT_DIR: /tmp/qt-smoke
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Qt'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=qt" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/qt" >> "$GITHUB_OUTPUT"
+      - name: Install Qt
+        id: install
+        run: |
+          set -euo pipefail
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y qt6-base-dev build-essential
+
+          rm -rf "$QT_PROJECT_DIR"
+          mkdir -p "$QT_PROJECT_DIR"
+          printf '%s\n' \
+            '#include <QCoreApplication>' \
+            '#include <QDebug>' \
+            'int main(int argc, char **argv) { QCoreApplication app(argc, argv); qDebug() << "qt-ok"; return 0; }' \
+            > "$QT_PROJECT_DIR/main.cpp"
+          printf '%s\n' \
+            'QT += core' \
+            'CONFIG += console c++17' \
+            'CONFIG -= app_bundle' \
+            'TEMPLATE = app' \
+            'SOURCES += main.cpp' \
+            > "$QT_PROJECT_DIR/qt-smoke.pro"
+
+          if command -v qmake6 >/dev/null 2>&1; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Get Qt version
+        id: version
+        run: |
+          VERSION=$(qmake6 -query QT_VERSION 2>/dev/null || echo "unknown")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected Qt version: $VERSION"
+
+      - name: Test 1 - Check qmake6 binary exists
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if command -v qmake6 >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check version output
+        id: test2
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          VERSION_OUTPUT=$(qmake6 -query QT_VERSION 2>&1)
+          echo "$VERSION_OUTPUT"
+          if printf '%s\n' "$VERSION_OUTPUT" | grep -Eq '^[0-9]+\.[0-9]+'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check help output
+        id: test3
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          HELP_OUTPUT=$(qmake6 -help 2>&1 || true)
+          if printf '%s\n' "$HELP_OUTPUT" | grep -qi "Usage"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          cd "$QT_PROJECT_DIR"
+          qmake6 qt-smoke.pro >/dev/null
+          make -j"$(nproc)" >/dev/null
+          APP_OUTPUT=$(./qt-smoke 2>&1)
+          echo "$APP_OUTPUT"
+          if printf '%s\n' "$APP_OUTPUT" | grep -q "qt-ok"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+
+      - name: Regression applicability - package manager installed
+        id: test6
+        run: |
+          set -euo pipefail
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
+          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
+          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+
+          for TEST_NUM in 1 2 3 4 5; do
+            TEST_STATUS="${{ steps.test1.outputs.status }}"
+            TEST_DURATION="${{ steps.test1.outputs.duration || 0 }}"
+            case "$TEST_NUM" in
+              1) TEST_STATUS="${{ steps.test1.outputs.status }}"; TEST_DURATION="${{ steps.test1.outputs.duration || 0 }}" ;;
+              2) TEST_STATUS="${{ steps.test2.outputs.status }}"; TEST_DURATION="${{ steps.test2.outputs.duration || 0 }}" ;;
+              3) TEST_STATUS="${{ steps.test3.outputs.status }}"; TEST_DURATION="${{ steps.test3.outputs.duration || 0 }}" ;;
+              4) TEST_STATUS="${{ steps.test4.outputs.status }}"; TEST_DURATION="${{ steps.test4.outputs.duration || 0 }}" ;;
+              5) TEST_STATUS="${{ steps.test5.outputs.status }}"; TEST_DURATION="${{ steps.test5.outputs.duration || 0 }}" ;;
+            esac
+            if [ "$TEST_STATUS" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + TEST_DURATION))
+          done
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "total_duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          if [ "$FAILED" -eq 0 ] && [ "$PASSED" -gt 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          {
+            echo "## Qt Test Results"
+            echo
+            echo "- **Version:** ${{ steps.version.outputs.version || 'unknown' }}"
+            echo "- **Status:** ${{ steps.summary.outputs.overall_status }}"
+            echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}"
+            echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}"
+            echo "- **Duration:** ${{ steps.summary.outputs.total_duration }}s"
+            echo "- **Runner:** ubuntu-24.04 (arm64)"
+            echo
+            echo "### Test Details"
+            echo "1. Test 1 - Check qmake6 binary exists: ${{ steps.test1.outputs.status || 'failed' }}"
+            echo "2. Test 2 - Check version output: ${{ steps.test2.outputs.status || 'failed' }}"
+            echo "3. Test 3 - Check help output: ${{ steps.test3.outputs.status || 'failed' }}"
+            echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'failed' }}"
+            echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'failed' }}"
+          } >> "$GITHUB_STEP_SUMMARY"

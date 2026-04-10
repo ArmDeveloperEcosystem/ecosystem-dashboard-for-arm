@@ -1,0 +1,260 @@
+name: Derive Package Source Expectations
+description: Derive package-aware source markers, docs markers, and identity checks from a baseline source tree.
+
+inputs:
+  package_slug:
+    description: Canonical package slug
+    required: true
+  source_dir:
+    description: Source checkout directory
+    required: false
+    default: baseline-src
+  content_root:
+    description: Repo content root
+    required: false
+    default: .
+
+outputs:
+  content_page:
+    description: Matching package markdown page
+    value: ${{ steps.derive.outputs.content_page }}
+  source_markers:
+    description: Package-aware source markers
+    value: ${{ steps.derive.outputs.source_markers }}
+  doc_markers:
+    description: Package-aware docs and entrypoint markers
+    value: ${{ steps.derive.outputs.doc_markers }}
+  identity_kind:
+    description: Identity check kind
+    value: ${{ steps.derive.outputs.identity_kind }}
+  identity_target:
+    description: Identity target path
+    value: ${{ steps.derive.outputs.identity_target }}
+  identity_expect:
+    description: Expected package identity
+    value: ${{ steps.derive.outputs.identity_expect }}
+  external_expect:
+    description: Regex for external identity content
+    value: ${{ steps.derive.outputs.external_expect }}
+  entrypoint_markers:
+    description: Package-aware entrypoint hints
+    value: ${{ steps.derive.outputs.entrypoint_markers }}
+
+runs:
+  using: composite
+  steps:
+    - name: Derive expectations
+      id: derive
+      shell: bash
+      env:
+        PACKAGE_SLUG: ${{ inputs.package_slug }}
+        SOURCE_DIR: ${{ inputs.source_dir }}
+        CONTENT_ROOT: ${{ inputs.content_root }}
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import json
+        import os
+        import re
+        from pathlib import Path
+
+        try:
+            import tomllib  # Python 3.11+
+        except ModuleNotFoundError:  # pragma: no cover
+            tomllib = None
+
+        slug = os.environ["PACKAGE_SLUG"]
+        source_dir = Path(os.environ["SOURCE_DIR"])
+        content_root = Path(os.environ["CONTENT_ROOT"])
+        github_output = Path(os.environ["GITHUB_OUTPUT"])
+
+        def first_existing(candidates):
+            for candidate in candidates:
+                if candidate.exists():
+                    return candidate
+            return None
+
+        def unique_preserve(items):
+            seen = set()
+            result = []
+            for item in items:
+                if not item:
+                    continue
+                if item not in seen:
+                    seen.add(item)
+                    result.append(item)
+            return result
+
+        def rel(path):
+            return str(path.relative_to(source_dir))
+
+        def find_first(names, max_depth=4):
+            for name in names:
+                for found in source_dir.rglob(name):
+                    if found.relative_to(source_dir).parts and len(found.relative_to(source_dir).parts) <= max_depth:
+                        return found
+            return None
+
+        def find_readme():
+            patterns = ["README.md", "README.rst", "README.txt", "README"]
+            return find_first(patterns, max_depth=3)
+
+        def find_hint_paths():
+            hint_names = [
+                "cmd",
+                "cli",
+                "bin",
+                "scripts",
+                "src",
+                "app",
+                "docs",
+                "examples",
+                "deploy",
+                "deployment",
+                "helm",
+                "charts",
+                "man",
+            ]
+            hints = []
+            for name in hint_names:
+                target = source_dir / name
+                if target.exists():
+                    hints.append(target)
+            return hints
+
+        content_page = first_existing(
+            [
+                content_root / "content/linux/opensource_packages" / f"{slug}.md",
+                content_root / "content/opensource_packages" / f"{slug}.md",
+            ]
+        )
+        content_page_value = str(content_page.relative_to(content_root)) if content_page else f"content/linux/opensource_packages/{slug}.md"
+
+        readme = find_readme()
+        manifest = find_first(
+            [
+                "package.json",
+                "pyproject.toml",
+                "setup.py",
+                "Cargo.toml",
+                "go.mod",
+                "pom.xml",
+                "build.gradle",
+                "CMakeLists.txt",
+                "Makefile",
+                "Dockerfile",
+                "Chart.yaml",
+                "docker-compose.yml",
+                "compose.yaml",
+            ],
+            max_depth=4,
+        )
+        hints = find_hint_paths()
+        hint = hints[0] if hints else None
+        second_hint = hints[1] if len(hints) > 1 else None
+
+        source_markers = unique_preserve(
+            [
+                rel(readme) if readme else "",
+                rel(manifest) if manifest else "",
+                rel(hint) if hint else "",
+            ]
+        )[:3]
+        if len(source_markers) < 2 and second_hint:
+            source_markers = unique_preserve(source_markers + [rel(second_hint)])[:3]
+        if len(source_markers) < 2 and readme:
+            source_markers = unique_preserve(source_markers + [readme.name])[:3]
+        if len(source_markers) < 2 and manifest:
+            source_markers = unique_preserve(source_markers + [manifest.name])[:3]
+
+        docs_candidate = first_existing(
+            [
+                source_dir / "docs",
+                source_dir / "examples",
+                source_dir / "example",
+                source_dir / "man",
+                source_dir / "deploy",
+                source_dir / "deployment",
+                source_dir / "helm",
+                source_dir / "charts",
+            ]
+        )
+
+        doc_markers = unique_preserve(
+            [
+                rel(readme) if readme else "",
+                rel(manifest) if manifest else "",
+                rel(docs_candidate) if docs_candidate else "",
+                rel(hint) if hint else "",
+            ]
+        )[:4]
+
+        entrypoint_markers = unique_preserve(
+            [
+                rel(hint) if hint else "",
+                rel(second_hint) if second_hint else "",
+                rel(manifest) if manifest else "",
+            ]
+        )[:3]
+
+        slug_words = [word for word in re.split(r"[-_]+", slug) if word]
+        slug_phrase = " ".join(slug_words)
+        slug_regex = r"[\\s_-]*".join(re.escape(word) for word in slug_words) if slug_words else re.escape(slug)
+
+        identity_kind = "grep_file"
+        identity_target = rel(readme) if readme else (rel(manifest) if manifest else "")
+        identity_expect = slug_phrase or slug
+
+        if manifest and manifest.name == "package.json":
+            import json as jsonlib
+
+            data = jsonlib.loads(manifest.read_text(encoding="utf-8"))
+            pkg_name = data.get("name") or slug
+            identity_kind = "package_json_name"
+            identity_target = rel(manifest)
+            identity_expect = pkg_name
+        elif manifest and manifest.name == "pyproject.toml" and tomllib:
+            data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+            pkg_name = (data.get("project") or {}).get("name") or ((data.get("tool") or {}).get("poetry") or {}).get("name") or slug
+            identity_kind = "toml_name"
+            identity_target = rel(manifest)
+            identity_expect = pkg_name
+        elif manifest and manifest.name == "Cargo.toml" and tomllib:
+            data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+            pkg_name = (data.get("package") or {}).get("name") or slug
+            identity_kind = "cargo_package"
+            identity_target = rel(manifest)
+            identity_expect = pkg_name
+        elif manifest and manifest.name == "go.mod":
+            module = manifest.read_text(encoding="utf-8").splitlines()[0].replace("module", "", 1).strip()
+            identity_kind = "go_module"
+            identity_target = rel(manifest)
+            identity_expect = module or slug
+        elif manifest and manifest.name == "Chart.yaml":
+            name = ""
+            for line in manifest.read_text(encoding="utf-8").splitlines():
+                if line.startswith("name:"):
+                    name = line.split(":", 1)[1].strip()
+                    break
+            identity_kind = "chart_name"
+            identity_target = rel(manifest)
+            identity_expect = name or slug
+        elif manifest and manifest.name in {"CMakeLists.txt", "Makefile", "Dockerfile", "pom.xml", "build.gradle"}:
+            identity_kind = "grep_file"
+            identity_target = rel(manifest)
+            identity_expect = slug_phrase or slug
+
+        external_expect = identity_expect if identity_expect else (slug_phrase or slug)
+        if identity_kind == "grep_file":
+            external_expect = slug_regex or re.escape(slug)
+
+        with github_output.open("a", encoding="utf-8") as fh:
+            fh.write(f"content_page={content_page_value}\n")
+            fh.write(f"source_markers={'|'.join(source_markers)}\n")
+            fh.write(f"doc_markers={'|'.join(doc_markers)}\n")
+            fh.write(f"identity_kind={identity_kind}\n")
+            fh.write(f"identity_target={identity_target}\n")
+            fh.write(f"identity_expect={identity_expect}\n")
+            fh.write(f"external_expect={external_expect}\n")
+            fh.write(f"entrypoint_markers={'|'.join(entrypoint_markers)}\n")
+        PY

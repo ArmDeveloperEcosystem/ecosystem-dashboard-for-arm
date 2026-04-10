@@ -1,0 +1,506 @@
+name: Test CNI on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-cni.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-cni.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-cni.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-cni.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-cni.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-cni.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-cni.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-cni.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-cni.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-cni.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-cni.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-cni.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-cni.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-cni.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-cni.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-cni.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-cni.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-cni.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-cni.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-cni.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-cni.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-cni.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-cni.outputs.timestamp }}
+jobs:
+  test-cni:
+    runs-on: ubuntu-24.04-arm
+    env:
+      BASELINE_PLUGIN_VERSION: "v1.6.2"
+      BASELINE_CNI_VERSION: "v1.2.3"
+      NEXT_PLUGIN_VERSION: "v1.7.1"
+      NEXT_CNI_VERSION: "v1.3.0"
+      CNI_GO_VERSION: "1.24"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'CNI'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=cni" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/cni" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.CNI_GO_VERSION }}
+          check-latest: false
+
+      - name: Install CNI
+        id: install
+        run: |
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "curl tar git iproute2"
+          HELPER="$GITHUB_WORKSPACE/.github/scripts/download-with-fallback.sh"
+          export DOWNLOAD_ATTEMPTS=2 DOWNLOAD_CONNECT_TIMEOUT=30 DOWNLOAD_MAX_TIME=300 WGET_TIMEOUT=60
+          PLUGIN_TGZ="$RUNNER_TEMP/cni-plugins-${BASELINE_PLUGIN_VERSION}.tgz"
+          bash "$HELPER" "$PLUGIN_TGZ" \
+            "https://github.com/containernetworking/plugins/releases/download/${BASELINE_PLUGIN_VERSION}/cni-plugins-linux-arm64-${BASELINE_PLUGIN_VERSION}.tgz"
+
+          mkdir -p cni-plugins
+          tar -xzf "$PLUGIN_TGZ" -C cni-plugins
+
+          install_cnitool_retry() {
+            local bin_dir="$1"
+            local module_spec="$2"
+            for attempt in 1 2 3; do
+              if GOBIN="$bin_dir" GOPROXY="https://proxy.golang.org,direct" go install "$module_spec"; then
+                return 0
+              fi
+              sleep $((5 * attempt))
+            done
+            return 1
+          }
+
+          mkdir -p "$HOME/go/bin"
+          if ! install_cnitool_retry "$HOME/go/bin" "github.com/containernetworking/cni/cnitool@${BASELINE_CNI_VERSION}"; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          GO_VERSION=$(go version | awk '{print $3}' | sed 's/^go//')
+          echo "go_version=$GO_VERSION" >> "$GITHUB_OUTPUT"
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+          if [ -x "cni-plugins/bridge" ] && [ -x "$HOME/go/bin/cnitool" ]; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Get CNI versions
+        id: version
+        run: |
+          VERSION=$(./cni-plugins/bridge -version 2>&1 | awk 'NR==1 {print $4}' | tr -d '\r\n' || echo "unknown")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest_plugin=${NEXT_PLUGIN_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest_cni=${NEXT_CNI_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Test 1 - Binary Existence
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ -x "cni-plugins/bridge" ] && [ -x "cni-plugins/host-local" ] && command -v cnitool >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Version Check
+        id: test2
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          BRIDGE_VERSION_OUTPUT=$(./cni-plugins/bridge -version 2>&1)
+          if grep -q "^CNI bridge plugin ${{ env.BASELINE_PLUGIN_VERSION }}" <<< "$BRIDGE_VERSION_OUTPUT"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$BRIDGE_VERSION_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Help Or Configuration Validation
+        id: test3
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          CNITOOL_OUTPUT=$(cnitool 2>&1 || true)
+          if grep -q '^cnitool:' <<< "$CNITOOL_OUTPUT"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$CNITOOL_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+
+          mkdir -p netdir
+          cat > netdir/10-mynet.conf <<'EOF'
+          {
+            "cniVersion": "1.0.0",
+            "name": "mynet",
+            "type": "bridge",
+            "bridge": "cni0",
+            "isGateway": true,
+            "ipMasq": true,
+            "ipam": {
+              "type": "host-local",
+              "subnet": "10.22.0.0/16"
+            }
+          }
+          EOF
+
+          sudo ip netns delete cni-smoke 2>/dev/null || true
+          sudo ip netns add cni-smoke
+          trap 'sudo --preserve-env=NETCONFPATH,CNI_PATH "$HOME/go/bin/cnitool" del mynet /run/netns/cni-smoke >/dev/null 2>&1 || true; sudo ip netns delete cni-smoke >/dev/null 2>&1 || true' EXIT
+
+          export NETCONFPATH="$PWD/netdir"
+          export CNI_PATH="$PWD/cni-plugins"
+          sudo --preserve-env=NETCONFPATH,CNI_PATH "$HOME/go/bin/cnitool" add mynet /run/netns/cni-smoke > cni-add.txt 2>&1
+          sudo ip netns exec cni-smoke ip addr show > cni-addr.txt
+
+          if grep -q '10\.22\.0\.2/16' cni-addr.txt; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat cni-add.txt || true
+            cat cni-addr.txt || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          sudo --preserve-env=NETCONFPATH,CNI_PATH "$HOME/go/bin/cnitool" del mynet /run/netns/cni-smoke > cni-del.txt 2>&1 || true
+          sudo ip netns delete cni-smoke >/dev/null 2>&1 || true
+          trap - EXIT
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          export PATH="$HOME/go-toolchain/go/bin:$PATH"
+          CURRENT="plugins ${BASELINE_PLUGIN_VERSION} + cnitool ${BASELINE_CNI_VERSION}"
+          LATEST_PLUGIN="${{ steps.version.outputs.latest_plugin }}"
+          LATEST_CNI="${{ steps.version.outputs.latest_cni }}"
+          LATEST="plugins ${LATEST_PLUGIN} + cnitool ${LATEST_CNI}"
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          NEXT_DIR=$(mktemp -d)
+          NEXT_PLUGIN_TGZ="/tmp/cni-plugins-regression.tgz"
+          NEXT_PLUGIN_URL="https://github.com/containernetworking/plugins/releases/download/${LATEST_PLUGIN}/cni-plugins-linux-arm64-${LATEST_PLUGIN}.tgz"
+          HELPER="$GITHUB_WORKSPACE/.github/scripts/download-with-fallback.sh"
+          export DOWNLOAD_ATTEMPTS=2 DOWNLOAD_CONNECT_TIMEOUT=30 DOWNLOAD_MAX_TIME=300 WGET_TIMEOUT=60
+          install_cnitool_retry() {
+            local bin_dir="$1"
+            local module_spec="$2"
+            for attempt in 1 2 3; do
+              if GOBIN="$bin_dir" GOPROXY="https://proxy.golang.org,direct" go install "$module_spec"; then
+                return 0
+              fi
+              sleep $((5 * attempt))
+            done
+            return 1
+          }
+
+          if bash "$HELPER" "$NEXT_PLUGIN_TGZ" "$NEXT_PLUGIN_URL"; then
+            echo "Next version download status: passed"
+            mkdir -p "${NEXT_DIR}/plugins" "${NEXT_DIR}/bin"
+            tar -xzf "$NEXT_PLUGIN_TGZ" -C "${NEXT_DIR}/plugins"
+            if ! install_cnitool_retry "${NEXT_DIR}/bin" "github.com/containernetworking/cni/cnitool@${LATEST_CNI}"; then
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned CNI baseline ${CURRENT} passed smoke tests in this run, but the regression target ${LATEST} could not be rebuilt on Arm64 after the plugin archive downloaded successfully." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            NEXT_PLUGIN_VERSION=$("${NEXT_DIR}/plugins/bridge" -version 2>&1 | awk '{print $4}' | head -n 1 || true)
+            NEXT_CNITOOL_VERSION=$(go version -m "${NEXT_DIR}/bin/cnitool" | awk '$1=="mod" {print $3; exit}' || true)
+            NEXT_INSTALLED_VERSION="plugins ${NEXT_PLUGIN_VERSION} + cnitool ${NEXT_CNITOOL_VERSION}"
+            if [ "$NEXT_PLUGIN_VERSION" = "$LATEST_PLUGIN" ] && [ "$NEXT_CNITOOL_VERSION" = "$LATEST_CNI" ]; then
+              echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+              if [ "$LATEST_PLUGIN" = "$BASELINE_PLUGIN_VERSION" ] && [ "$LATEST_CNI" = "$BASELINE_CNI_VERSION" ]; then
+                echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+                echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+                echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                exit 1
+              else
+                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned CNI baseline ${CURRENT} passed smoke tests in this run. Regression validation installed ${LATEST} on Arm64, and the plugin plus cnitool probes both matched the requested upgrade target." >> "$GITHUB_OUTPUT"
+                echo "Regression install result: Next version installed successfully on Arm64"
+                echo "status=passed" >> "$GITHUB_OUTPUT"
+              fi
+              echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
+            else
+              echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed but reported a version mismatch on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned CNI baseline ${CURRENT} passed smoke tests in this run, but the regression target ${LATEST} installed on Arm64 and reported ${NEXT_INSTALLED_VERSION}, which does not match the requested upgrade versions." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
+              echo "Regression install result: Next version installed but reported a version mismatch on Arm64"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned CNI baseline ${CURRENT} passed smoke tests in this run, but the regression target ${LATEST} could not be downloaded and rebuilt on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version download status: failed"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+              *)
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                  REGRESSION_RESULT="Regression validation passed"
+                else
+                  REGRESSION_RESULT="Regression validation failed"
+                fi
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          set -euo pipefail
+          PASSED=0
+          FAILED=0
+          CORE_FAILED=0
+          TOTAL_DURATION=0
+
+          check_test() {
+            local status=$1
+            local duration=$2
+            local core=$3
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              if [ "$core" = "yes" ]; then
+                CORE_FAILED=$((CORE_FAILED + 1))
+              fi
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + $duration))
+          }
+
+          check_test "${{ steps.test1.outputs.status }}" "${{ steps.test1.outputs.duration || 0 }}" yes
+          check_test "${{ steps.test2.outputs.status }}" "${{ steps.test2.outputs.duration || 0 }}" yes
+          check_test "${{ steps.test3.outputs.status }}" "${{ steps.test3.outputs.duration || 0 }}" yes
+          check_test "${{ steps.test4.outputs.status }}" "${{ steps.test4.outputs.duration || 0 }}" yes
+          check_test "${{ steps.test5.outputs.status }}" "${{ steps.test5.outputs.duration || 0 }}" yes
+          check_test "${{ steps.test6.outputs.status }}" "${{ steps.test6.outputs.duration || 0 }}" no
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
+
+          if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ] || [ "$TEST6_STATUS" = "failed" ]; then
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || 'manual_review_needed' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
+
+          echo "## CNI Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Pinned plugin version:** ${{ env.BASELINE_PLUGIN_VERSION }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Pinned cnitool version:** ${{ env.BASELINE_CNI_VERSION }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Latest plugin checked:** ${{ steps.version.outputs.latest_plugin }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Latest cnitool checked:** ${{ steps.version.outputs.latest_cni }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Go toolchain used:** ${{ steps.install.outputs.go_version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Test 6 - Regression Validation:** ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'not_yet_checked' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}" >> "$GITHUB_STEP_SUMMARY"

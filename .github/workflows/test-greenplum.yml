@@ -1,0 +1,416 @@
+name: Test GreenplumPython on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-greenplum.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-greenplum.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-greenplum.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-greenplum.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-greenplum.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-greenplum.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-greenplum.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-greenplum.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-greenplum.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-greenplum.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-greenplum.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-greenplum.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-greenplum.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-greenplum.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-greenplum.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-greenplum.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-greenplum.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-greenplum.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-greenplum.outputs.regression_policy }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-greenplum.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-greenplum.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-greenplum.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-greenplum.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-greenplum.outputs.timestamp }}
+jobs:
+  test-greenplum:
+    runs-on: ubuntu-24.04-arm
+    env:
+      GREENPLUMPYTHON_BASELINE_TAG: "1.0.0-beta"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'GreenplumPython'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=greenplum" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/greenplum" >> "$GITHUB_OUTPUT"
+      - name: Install GreenplumPython source tag
+        id: install
+        run: |
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "git"
+          BASELINE_TAG="${GREENPLUMPYTHON_BASELINE_TAG}"
+          git clone --depth 1 --branch "${BASELINE_TAG}" https://github.com/greenplum-db/GreenplumPython-archive.git greenplumpython-src
+
+          echo "baseline_tag=${BASELINE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Get GreenplumPython version
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(git -C greenplumpython-src describe --tags --exact-match 2>/dev/null || printf "%s" "${GREENPLUMPYTHON_BASELINE_TAG}")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected GreenplumPython version: ${VERSION}"
+
+      - name: Test 1 - Check exact source tag checkout
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          TAG=$(git -C greenplumpython-src describe --tags --exact-match 2>/dev/null || true)
+          if [ "${TAG}" = "${GREENPLUMPYTHON_BASELINE_TAG}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check source tree structure
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          if [ -f greenplumpython-src/setup.py ] \
+            && [ -f greenplumpython-src/setup.cfg ] \
+            && [ -f greenplumpython-src/versioneer.py ] \
+            && [ -d greenplumpython-src/greenplumpython ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Compile GreenplumPython package tree
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          if python -m compileall -q greenplumpython-src/greenplumpython; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture verification
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          ARCH=$(uname -m)
+          if [ "${ARCH}" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Check package metadata and README
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          if grep -Eq 'name *= *"greenplum-python"' greenplumpython-src/setup.py \
+            && grep -qi 'GreenplumPython' greenplumpython-src/README.md; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || steps.install.outputs.baseline_tag || env.GREENPLUMPYTHON_BASELINE_TAG }}"
+          export CURRENT
+          NEXT="$(
+            python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          current = os.environ.get("CURRENT", "").lstrip("vV")
+          tags = json.load(
+              urllib.request.urlopen(
+                  "https://api.github.com/repos/greenplum-db/GreenplumPython-archive/tags?per_page=100",
+                  timeout=20,
+              )
+          )
+
+          stable_versions = sorted(
+              {
+                  tuple(int(x) for x in tag["name"].lstrip("vV").split("."))
+                  for tag in tags
+                  if re.fullmatch(r"\d+\.\d+\.\d+", (tag.get("name") or "").lstrip("vV"))
+              }
+          )
+          if not stable_versions:
+              print("")
+              raise SystemExit(0)
+
+          next_version = ""
+          if re.fullmatch(r"\d+\.\d+\.\d+", current):
+              c = tuple(int(x) for x in current.split("."))
+              next_version = next(("{}.{}.{}".format(*v) for v in stable_versions if v > c), "")
+          else:
+              m = re.fullmatch(r"(\d+\.\d+\.\d+)-[0-9A-Za-z._-]+", current)
+              if m:
+                  base = tuple(int(x) for x in m.group(1).split("."))
+                  if base in stable_versions:
+                      next_version = "{}.{}.{}".format(*base)
+                  else:
+                      next_version = next(("{}.{}.{}".format(*v) for v in stable_versions if v > base), "")
+
+          print(next_version)
+          PY
+          )"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${NEXT:-$CURRENT}" >> "$GITHUB_OUTPUT"
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${NEXT:-none}"
+
+          if [ -z "${NEXT}" ]; then
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable GreenplumPython release is available for Arm64 validation" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned GreenplumPython version ${CURRENT} already matches the newest stable upstream release stream, so there is no newer stable source tag to validate in Test 6." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${CURRENT}"
+            echo "Regression install result: No newer stable GreenplumPython release is available for Arm64 validation"
+            echo "Details: Current pinned GreenplumPython version ${CURRENT} already matches the newest stable upstream release stream, so there is no newer stable source tag to validate in Test 6."
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          rm -rf /tmp/greenplumpython-next
+          git clone --depth 1 --branch "${NEXT}" https://github.com/greenplum-db/GreenplumPython-archive.git /tmp/greenplumpython-next
+          if python -m compileall -q /tmp/greenplumpython-next/greenplumpython \
+            && grep -Eq 'name *= *"greenplum-python"' /tmp/greenplumpython-next/setup.py \
+            && grep -qi 'GreenplumPython' /tmp/greenplumpython-next/README.md; then
+            echo "next_installed_version=${NEXT}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned GreenplumPython version ${CURRENT} passed Tests 1-5, and the next newer stable source tag ${NEXT} passed equivalent source-tree and compile checks on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT}"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned GreenplumPython version ${CURRENT} passed Tests 1-5, and the next newer stable source tag ${NEXT} passed equivalent source-tree and compile checks on Arm64."
+          else
+            echo "next_installed_version=${NEXT}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned GreenplumPython version ${CURRENT} passed Tests 1-5, but the next newer stable source tag ${NEXT} did not pass equivalent source-tree checks on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned GreenplumPython version ${CURRENT} passed Tests 1-5, but the next newer stable source tag ${NEXT} did not pass equivalent source-tree checks on Arm64."
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+
+          check_test() {
+            local status=$1
+            local duration=$2
+            if [ "${status}" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_test "${{ steps.test1.outputs.status }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_test "${{ steps.test2.outputs.status }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_test "${{ steps.test3.outputs.status }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_test "${{ steps.test4.outputs.status }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_test "${{ steps.test5.outputs.status }}" "${{ steps.test5.outputs.duration || 0 }}"
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
+          if [ "${{ steps.test6.outputs.status || 'review' }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "${{ steps.test6.outputs.status || 'review' }}" = "failed" ]; then
+            FAILED=$((FAILED + 1))
+          fi
+
+          echo "passed=${PASSED}" >> "$GITHUB_OUTPUT"
+          echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+          echo "duration=${TOTAL_DURATION}" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ steps.test1.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test2.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test3.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test4.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## GreenplumPython Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Pinned baseline tag:** ${{ steps.install.outputs.baseline_tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Baseline version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Exact source tag checkout: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Source tree structure: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Package tree compilation: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Architecture verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Package metadata and README: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Regression validation: ${{ steps.test6.outputs.status || 'review' }}" >> "$GITHUB_STEP_SUMMARY"

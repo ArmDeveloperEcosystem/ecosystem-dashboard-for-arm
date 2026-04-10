@@ -1,0 +1,472 @@
+name: Test SonarQube Server on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-sonarqube.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-sonarqube.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-sonarqube.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-sonarqube.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-sonarqube.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-sonarqube.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-sonarqube.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-sonarqube.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-sonarqube.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-sonarqube.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-sonarqube.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-sonarqube.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-sonarqube.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-sonarqube.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-sonarqube.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-sonarqube.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-sonarqube.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-sonarqube.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-sonarqube.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-sonarqube.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-sonarqube.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-sonarqube.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-sonarqube.outputs.timestamp }}
+jobs:
+  test-sonarqube:
+    runs-on: ubuntu-24.04-arm
+    env:
+      SONARQUBE_VERSION: "9.9.0"
+      SONARQUBE_IMAGE: "sonarqube:9.9.0-community"
+      SONARQUBE_NEXT_VERSION: "9.9.1"
+      SONARQUBE_NEXT_IMAGE: "sonarqube:9.9.1-community"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'SonarQube Server'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=sonarqube" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/sonarqube" >> "$GITHUB_OUTPUT"
+          echo "current_version=${SONARQUBE_VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Install SonarQube image
+        id: install
+        run: |
+          set -euo pipefail
+          docker pull "${SONARQUBE_IMAGE}"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Get SonarQube version
+        id: version
+        run: |
+          set -euo pipefail
+          IMAGE_BUILD=$(docker run --rm "${SONARQUBE_IMAGE}" bash -lc "find /opt/sonarqube/lib -maxdepth 1 -name 'sonar-application-*.jar' -printf '%f\n' | head -1" | sed -n 's/^sonar-application-\(.*\)\.jar$/\1/p')
+          echo "version=${SONARQUBE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build=${IMAGE_BUILD}" >> "$GITHUB_OUTPUT"
+          echo "latest=${SONARQUBE_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Test 1 - Image Existence
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+
+          if docker image inspect "${SONARQUBE_IMAGE}" >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Version Check
+        id: test2
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+
+          if printf '%s\n' "${{ steps.version.outputs.build }}" | grep -q "^${SONARQUBE_VERSION}\\."; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Help Output or Configuration
+        id: test3
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+
+          docker run --rm "${SONARQUBE_IMAGE}" bash -lc "grep -E '^#?sonar\\.web\\.port=' /opt/sonarqube/conf/sonar.properties" >/tmp/sonarqube-config.txt 2>&1
+
+          if grep -q 'sonar.web.port=9000' /tmp/sonarqube-config.txt; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/sonarqube-config.txt || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          ARCH=$(uname -m)
+
+          if [ "$ARCH" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CONTAINER_NAME="sonarqube-arm64-smoke"
+
+          cleanup() {
+            docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          docker run -d --name "${CONTAINER_NAME}" -p 9000:9000 -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true "${SONARQUBE_IMAGE}" >/tmp/sonarqube.cid
+
+          STATUS=""
+          for _ in $(seq 1 80); do
+            if curl -fsS http://127.0.0.1:9000/api/system/status >/tmp/sonarqube-status.json 2>/dev/null; then
+              STATUS=$(python3 - <<'PY'
+          import json
+          with open('/tmp/sonarqube-status.json') as fh:
+              data = json.load(fh)
+          print(data.get('status', ''))
+          PY
+          )
+              break
+            fi
+            sleep 5
+          done
+
+          if [ "$STATUS" = "UP" ] || [ "$STATUS" = "STARTING" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            docker logs --tail 50 "${CONTAINER_NAME}" || true
+            cat /tmp/sonarqube-status.json || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+          CURRENT_IMAGE="${SONARQUBE_IMAGE}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ] || [ "$LATEST" = "not_yet_checked" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned SonarQube Server version $CURRENT passed smoke tests in this run, but the next stable version could not be resolved for Arm64 install validation." >> "$GITHUB_OUTPUT"
+            echo "Next version image pull status: failed"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_IMAGE="${SONARQUBE_NEXT_IMAGE}"
+          CONTAINER_NAME="sonarqube-arm64-regression"
+          NEXT_PORT=9001
+
+          cleanup() {
+            docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          if docker pull "$NEXT_IMAGE"; then
+            ARCH=$(docker image inspect "$NEXT_IMAGE" --format '{{.Architecture}}' 2>/dev/null || true)
+            PULLED_TAG=$(docker image inspect "$NEXT_IMAGE" --format '{{index .RepoTags 0}}' 2>/dev/null | awk -F: '{print $NF}' | head -n 1)
+            NEXT_BUILD=$(docker run --rm "$NEXT_IMAGE" bash -lc "find /opt/sonarqube/lib -maxdepth 1 -name 'sonar-application-*.jar' -printf '%f\n' | head -1" | sed -n 's/^sonar-application-\(.*\)\.jar$/\1/p' || true)
+            if [ -z "$PULLED_TAG" ]; then
+              PULLED_TAG="$LATEST"
+            fi
+
+            docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+            docker run -d --name "${CONTAINER_NAME}" -p ${NEXT_PORT}:9000 -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true "$NEXT_IMAGE" >/tmp/sonarqube-next.cid
+
+            STATUS=""
+            for _ in $(seq 1 80); do
+              if curl -fsS "http://127.0.0.1:${NEXT_PORT}/api/system/status" >/tmp/sonarqube-next-status.json 2>/dev/null; then
+                STATUS=$(python3 - <<'PY'
+          import json
+          with open('/tmp/sonarqube-next-status.json') as fh:
+              data = json.load(fh)
+          print(data.get('status', ''))
+          PY
+          )
+                break
+              fi
+              sleep 5
+            done
+
+            if [ "$ARCH" = "arm64" ] && [ -n "$NEXT_BUILD" ] && { [ "$STATUS" = "UP" ] || [ "$STATUS" = "STARTING" ]; }; then
+              echo "next_installed_version=$NEXT_BUILD" >> "$GITHUB_OUTPUT"
+              echo "Next version image pull status: passed"
+              echo "Next version installed on Arm64: $NEXT_BUILD"
+              if [ "$CURRENT" = "$LATEST" ]; then
+                echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+                echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+                echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+              else
+                echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned SonarQube Server version $CURRENT passed smoke tests in this run. Regression validation pulled candidate image $NEXT_IMAGE on Arm64 successfully, confirmed embedded build $NEXT_BUILD, and reached the isolated system-status API successfully." >> "$GITHUB_OUTPUT"
+                echo "Regression install result: Next version installed successfully on Arm64"
+                echo "status=passed" >> "$GITHUB_OUTPUT"
+              fi
+            else
+              docker logs --tail 50 "${CONTAINER_NAME}" || true
+              cat /tmp/sonarqube-next-status.json || true
+              echo "next_installed_version=${NEXT_BUILD:-not_installed}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned SonarQube Server version $CURRENT passed smoke tests in this run, but the candidate image $NEXT_IMAGE did not complete isolated Arm64 startup validation successfully." >> "$GITHUB_OUTPUT"
+              echo "Next version image pull status: failed"
+              echo "Next version installed on Arm64: ${NEXT_BUILD:-not_installed}"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned SonarQube Server version $CURRENT passed smoke tests in this run, but the candidate image $NEXT_IMAGE could not be pulled successfully on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version image pull status: failed"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+              *)
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                  REGRESSION_RESULT="Regression validation passed"
+                else
+                  REGRESSION_RESULT="Regression validation failed"
+                fi
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          set -euo pipefail
+          PASSED=0
+          FAILED=0
+          CORE_FAILED=0
+          TOTAL_DURATION=0
+
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          {
+            echo "## SonarQube Test Summary"
+            echo ""
+            echo "- Version: ${{ steps.version.outputs.version }}"
+            echo "- Passed: ${{ steps.summary.outputs.passed || 0 }}"
+            echo "- Failed: ${{ steps.summary.outputs.failed || 0 }}"
+            echo "- Overall Status: ${{ steps.summary.outputs.overall_status }}"
+            echo ""
+            echo "### Regression Validation (Next Version Install)"
+            echo "- Current (Pinned): ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+            echo "- Next (Latest Stable): ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+            echo "- Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+            echo "- **Regression install result:** ${REGRESSION_RESULT}"
+            echo "- Comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+          } >> "$GITHUB_STEP_SUMMARY"

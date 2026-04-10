@@ -1,0 +1,421 @@
+name: Test Open CAS on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-opencas.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-opencas.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-opencas.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-opencas.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-opencas.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-opencas.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-opencas.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-opencas.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-opencas.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-opencas.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-opencas.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-opencas.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-opencas.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-opencas.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-opencas.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-opencas.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-opencas.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-opencas.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-opencas.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-opencas.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-opencas.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-opencas.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-opencas.outputs.timestamp }}
+jobs:
+  test-opencas:
+    runs-on: ubuntu-24.04-arm
+    env:
+      OPENCAS_VERSION: "24.9"
+      OPENCAS_NEXT_VERSION: "25.03"
+      OPENCAS_REPO: "https://github.com/Open-CAS/open-cas-linux.git"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Open CAS'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=opencas" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/opencas" >> "$GITHUB_OUTPUT"
+
+      - name: Install Open CAS baseline
+        id: install
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          WORKDIR="$(mktemp -d)"
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential curl file git python3-yaml rsync util-linux"
+          SRC_DIR="${WORKDIR}/open-cas-linux"
+          git clone --depth 1 --branch "v${OPENCAS_VERSION}" --recurse-submodules "${OPENCAS_REPO}" "${SRC_DIR}"
+
+          cd "$SRC_DIR"
+          (
+            cd tools
+            ./cas_version_gen.sh build
+          )
+          if ! make -C casadm >/tmp/opencas-casadm-baseline.log 2>&1; then
+            cat /tmp/opencas-casadm-baseline.log || true
+            exit 1
+          fi
+          if ! sudo make -C casadm install >/tmp/opencas-casadm-install-baseline.log 2>&1; then
+            cat /tmp/opencas-casadm-install-baseline.log || true
+            exit 1
+          fi
+          STAGE_DIR="${WORKDIR}/opencas-stage"
+          rm -rf "${STAGE_DIR}"
+          mkdir -p "${STAGE_DIR}"
+          if ! (
+            cd utils
+            make manpage
+            make install_files DESTDIR="${STAGE_DIR}"
+          ) >/tmp/opencas-utils-install-baseline.log 2>&1; then
+            cat /tmp/opencas-utils-install-baseline.log || true
+            exit 1
+          fi
+          sudo rsync -aK "${STAGE_DIR}/" /
+
+          echo "source_dir=$SRC_DIR" >> "$GITHUB_OUTPUT"
+          echo "baseline_version=${OPENCAS_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Get Open CAS version
+        id: version
+        run: |
+          set -euo pipefail
+          OUTPUT="$(sudo /sbin/casadm --version 2>&1 || true)"
+          VERSION="$(printf '%s\n' "$OUTPUT" | grep -oE '[0-9]{2}\.[0-9]{2}(\.[0-9]+\.[0-9]+)?' | head -n1 || true)"
+          if [ -z "$VERSION" ] && [ -f /var/lib/opencas/cas_version ]; then
+            VERSION="$(cat /var/lib/opencas/cas_version || true)"
+          fi
+          if [ -z "$VERSION" ]; then
+            VERSION="${OPENCAS_VERSION}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected Open CAS version: ${VERSION}"
+
+      - name: Test 1 - Check Open CAS binaries exist
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ -x /sbin/casadm ] && [ -x /sbin/casctl ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            ls -l /sbin/casadm /sbin/casctl 2>/dev/null || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check version command
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          OUTPUT="$(sudo /sbin/casadm --version 2>&1 || true)"
+          if printf '%s\n' "$OUTPUT" | grep -Eq '24\.09|24\.9'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$OUTPUT" || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check help output
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          ADM_HELP="$(sudo /sbin/casadm --help 2>&1 || true)"
+          CTL_HELP="$(sudo /sbin/casctl --help 2>&1 || true)"
+          if printf '%s\n' "$ADM_HELP" | grep -Eqi 'casadm|version|usage|help' && \
+             printf '%s\n' "$CTL_HELP" | grep -Eqi 'casctl|usage|help'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$ADM_HELP" || true
+            printf '%s\n' "$CTL_HELP" || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "$(uname -m)" = "aarch64" ] && file /sbin/casadm | grep -Eqi 'ARM aarch64|aarch64'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            file /sbin/casadm || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ -f /etc/opencas/opencas.conf ] && \
+             [ -f /var/lib/opencas/cas_version ] && \
+             sudo /sbin/casctl --help >/tmp/opencas-casctl-help.txt 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            ls -l /etc/opencas /var/lib/opencas 2>/dev/null || true
+            cat /tmp/opencas-casctl-help.txt || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || steps.install.outputs.baseline_version }}"
+          LATEST="${OPENCAS_NEXT_VERSION}"
+          WORKDIR="$(mktemp -d)"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+
+          NEXT_DIR="${WORKDIR}/open-cas-linux-next"
+          git clone --depth 1 --branch "v${LATEST}" --recurse-submodules "${OPENCAS_REPO}" "${NEXT_DIR}"
+
+          cd "$NEXT_DIR"
+          (
+            cd tools
+            ./cas_version_gen.sh build
+          )
+          if ! make -C casadm >/tmp/opencas-casadm-next.log 2>&1; then
+            cat /tmp/opencas-casadm-next.log || true
+            exit 1
+          fi
+          if ! sudo make -C casadm install >/tmp/opencas-casadm-install-next.log 2>&1; then
+            cat /tmp/opencas-casadm-install-next.log || true
+            exit 1
+          fi
+          NEXT_STAGE_DIR="${WORKDIR}/opencas-stage-next"
+          rm -rf "${NEXT_STAGE_DIR}"
+          mkdir -p "${NEXT_STAGE_DIR}"
+          if ! (
+            cd utils
+            make manpage
+            make install_files DESTDIR="${NEXT_STAGE_DIR}"
+          ) >/tmp/opencas-utils-install-next.log 2>&1; then
+            cat /tmp/opencas-utils-install-next.log || true
+            exit 1
+          fi
+          sudo rsync -aK "${NEXT_STAGE_DIR}/" /
+
+          NEXT_OUTPUT="$(sudo /sbin/casadm --version 2>&1 || true)"
+          NEXT_VERSION="$(printf '%s\n' "$NEXT_OUTPUT" | grep -oE '[0-9]{2}\.[0-9]+(\.[0-9]+\.[0-9]+)?' | head -n1 || true)"
+          if [ -z "$NEXT_VERSION" ]; then
+            NEXT_VERSION="${LATEST}"
+          fi
+
+          if printf '%s\n' "$NEXT_OUTPUT" | grep -Eq '25\.03' && \
+             sudo /sbin/casctl --help >/tmp/opencas-next-help.txt 2>&1 && \
+             file /sbin/casadm | grep -Eqi 'ARM aarch64|aarch64'; then
+            echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Open CAS CLI ${CURRENT} passed smoke tests in this run. Regression validation built and installed candidate ${LATEST}, and the Arm64 casadm/casctl utilities reported the expected next-version metadata." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$NEXT_OUTPUT" || true
+            cat /tmp/opencas-next-help.txt || true
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Open CAS CLI ${CURRENT} passed smoke tests in this run, but candidate ${LATEST} did not complete the expected Arm64 CLI install validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression validation result unavailable' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+          CORE_FAILED=0
+          REGRESSION_FAILED=0
+
+          check_test() {
+            local status="$1"
+            local duration="$2"
+            local kind="$3"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              if [ "$kind" = "core" ]; then
+                CORE_FAILED=1
+              else
+                REGRESSION_FAILED=1
+              fi
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}" "regression"
+
+          echo "passed=${PASSED}" >> "$GITHUB_OUTPUT"
+          echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+          echo "duration=${TOTAL_DURATION}" >> "$GITHUB_OUTPUT"
+
+          if [ "${CORE_FAILED}" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "${CORE_FAILED}" -eq 0 ] && [ "${REGRESSION_FAILED}" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          {
+            echo "## Open CAS Test Results"
+            echo "- **Version:** ${{ steps.version.outputs.version }}"
+            echo "- **Status:** ${{ steps.summary.outputs.overall_status }}"
+            echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}"
+            echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}"
+            echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s"
+            echo "- **Runner:** ubuntu-24.04 (arm64)"
+            echo
+            echo "### Test Details"
+            echo "1. Test 1 - Check Open CAS binaries exist: ${{ steps.test1.outputs.status || 'failed' }}"
+            echo "2. Test 2 - Check version command: ${{ steps.test2.outputs.status || 'failed' }}"
+            echo "3. Test 3 - Check help output: ${{ steps.test3.outputs.status || 'failed' }}"
+            echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'failed' }}"
+            echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'failed' }}"
+            echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'failed' }}"
+            echo
+            echo "### Regression Validation"
+            echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+            echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+            echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+            echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression validation result unavailable' }}"
+            echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+          } >> "$GITHUB_STEP_SUMMARY"

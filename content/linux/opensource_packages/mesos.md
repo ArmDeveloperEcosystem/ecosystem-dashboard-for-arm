@@ -3,7 +3,7 @@ name: Mesos
 category: Miscellaneous
 description: Mesos is a distributed system kernel that handles resource management and abstraction, enabling scalable, flexible operations and container orchestration in large data centers and cloud infrastructures.
 download_url: https://mesos.apache.org/downloads/ 
-works_on_arm: true
+works_on_arm: false
 supported_minimum_version:
     version_number: 1.4.0
     release_date: 2017/09/18
