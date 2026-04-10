@@ -1,0 +1,437 @@
+name: Test AdoptOpenJDK on Arm64
+
+on:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-adoptopenjdk.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-adoptopenjdk.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-adoptopenjdk.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-adoptopenjdk.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-adoptopenjdk.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-adoptopenjdk.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-adoptopenjdk.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-adoptopenjdk.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-adoptopenjdk.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-adoptopenjdk.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-adoptopenjdk.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-adoptopenjdk.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-adoptopenjdk.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-adoptopenjdk.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-adoptopenjdk.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-adoptopenjdk.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-adoptopenjdk.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-adoptopenjdk.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-adoptopenjdk.outputs.regression_policy }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-adoptopenjdk.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-adoptopenjdk.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-adoptopenjdk.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-adoptopenjdk.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-adoptopenjdk.outputs.timestamp }}
+jobs:
+  test-adoptopenjdk:
+    runs-on: ubuntu-24.04-arm
+    env:
+      ADOPTIUM_NEXT_MAJOR: "22"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'AdoptOpenJDK'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set test metadata
+      id: metadata
+      run: |
+        echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+        echo "package_slug=adoptopenjdk" >> "$GITHUB_OUTPUT"
+        echo "dashboard_link=/opensource_packages/adoptopenjdk" >> "$GITHUB_OUTPUT"
+    - name: Install Eclipse Temurin JDK 21
+      id: install
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '21'
+
+    # ============================================================
+    # Get Java version
+    # ============================================================
+    - name: Get AdoptOpenJDK version
+      id: version
+      run: |
+        RAW=$(java -version 2>&1 || true)
+        echo "Raw 'java -version' output:"
+        echo "$RAW"
+
+        # Extract major version (e.g., 21)
+        VERSION=$(echo "$RAW" | grep -oE '\"[0-9]+' | head -1 | tr -d '"' || true)
+
+        if [ -z "$VERSION" ]; then
+          VERSION="21"
+        fi
+
+        echo "Detected AdoptOpenJDK/Temurin version: $VERSION"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+    # ============================================================
+    # Tests (5 meaningful smoke tests)
+    # ============================================================
+
+    - name: Test 1 - Check java binary exists
+      id: test1
+      continue-on-error: true
+      run: |
+        START_TIME=$(date +%s)
+
+        if command -v java &> /dev/null; then
+          echo "✓ java binary found"
+          which java || true
+          echo "status=passed" >> $GITHUB_OUTPUT
+        else
+          echo "✗ java binary not found"
+          echo "status=failed" >> $GITHUB_OUTPUT
+          exit 1
+            fi
+
+        END_TIME=$(date +%s)
+        echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+    - name: Test 2 - Check javac binary exists
+      id: test2
+      continue-on-error: true
+      run: |
+        START_TIME=$(date +%s)
+
+        if command -v javac &> /dev/null; then
+          echo "✓ javac compiler binary found"
+          which javac || true
+          echo "status=passed" >> $GITHUB_OUTPUT
+        else
+          echo "✗ javac compiler binary not found"
+          echo "status=failed" >> $GITHUB_OUTPUT
+          exit 1
+            fi
+
+        END_TIME=$(date +%s)
+        echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+    - name: Test 3 - Check java -version output includes 21
+      id: test3
+      continue-on-error: true
+      run: |
+        START_TIME=$(date +%s)
+
+        OUTPUT=$(java -version 2>&1 || true)
+        echo "$OUTPUT"
+
+        if echo "$OUTPUT" | grep -q "21"; then
+          echo "✓ java -version reports a 21.x JDK"
+          echo "status=passed" >> $GITHUB_OUTPUT
+        else
+          echo "✗ java -version does not clearly report a 21.x JDK"
+          echo "status=failed" >> $GITHUB_OUTPUT
+          exit 1
+            fi
+
+        END_TIME=$(date +%s)
+        echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+    - name: Test 4 - Compile and run HelloWorld
+      id: test4
+      continue-on-error: true
+      run: |
+        START_TIME=$(date +%s)
+
+        cat << 'EOF' > Hello.java
+        public class Hello {
+            public static void main(String[] args) {
+                System.out.println("Hello Arm");
+            }
+        }
+        EOF
+
+        if ! javac Hello.java; then
+          echo "✗ Failed to compile Hello.java with javac"
+          echo "status=failed" >> $GITHUB_OUTPUT
+          exit 1
+            fi
+
+        OUTPUT=$(java Hello 2>&1 || true)
+        echo "Program output: $OUTPUT"
+
+        if [ "$OUTPUT" = "Hello Arm" ]; then
+          echo "✓ HelloWorld compiled and ran successfully"
+          echo "status=passed" >> $GITHUB_OUTPUT
+        else
+          echo "✗ HelloWorld output unexpected"
+          echo "status=failed" >> $GITHUB_OUTPUT
+          exit 1
+            fi
+
+        END_TIME=$(date +%s)
+        echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+    - name: Test 5 - Architecture Verification
+      id: test5
+      continue-on-error: true
+      run: |
+        START_TIME=$(date +%s)
+        # Functional Validation
+
+        ARCH=$(uname -m)
+        if [ "$ARCH" = "aarch64" ]; then
+          echo "✓ System architecture is ARM64 ($ARCH)"
+          echo "status=passed" >> $GITHUB_OUTPUT
+        else
+          echo "✗ System architecture is NOT ARM64 ($ARCH)"
+          echo "status=failed" >> $GITHUB_OUTPUT
+          exit 1
+            fi
+
+        END_TIME=$(date +%s)
+        echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+    - name: Test 6 - Regression Validation
+      id: test6
+      if: always()
+      run: |
+        set -euo pipefail
+        START_TIME=$(date +%s)
+        CURRENT_VERSION="${{ steps.version.outputs.version || '21' }}"
+        NEXT_VERSION="${ADOPTIUM_NEXT_MAJOR}"
+        NEXT_JDK_DIR="$(mktemp -d)/jdk-next"
+
+        echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+        echo "latest_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+        echo "=== Regression Validation (Next Version Install) ==="
+        echo "Current version tested in Tests 1-5: ${CURRENT_VERSION}"
+        echo "Next version targeted for install validation: ${NEXT_VERSION}"
+
+        if ! curl -fsSL "https://api.adoptium.net/v3/binary/latest/${NEXT_VERSION}/ga/linux/aarch64/jdk/hotspot/normal/eclipse" -o /tmp/adoptopenjdk-next.tar.gz; then
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Could not resolve/download Adoptium JDK ${NEXT_VERSION} for Linux ARM64 from the official Adoptium API." >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+
+        mkdir -p "$NEXT_JDK_DIR"
+        tar -xzf /tmp/adoptopenjdk-next.tar.gz -C "$NEXT_JDK_DIR" --strip-components=1
+        NEXT_JAVA="${NEXT_JDK_DIR}/bin/java"
+        NEXT_JAVAC="${NEXT_JDK_DIR}/bin/javac"
+
+        if [ ! -x "$NEXT_JAVA" ] || [ ! -x "$NEXT_JAVAC" ]; then
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Adoptium JDK ${NEXT_VERSION} archive downloaded but java/javac binaries were not usable after extraction on Arm64." >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+
+        NEXT_INSTALLED_VERSION="$("$NEXT_JAVA" -version 2>&1 | grep -oE '\"[0-9]+' | head -1 | tr -d '\"' || true)"
+        cat << 'EOF' > /tmp/HelloNext.java
+        public class HelloNext {
+            public static void main(String[] args) {
+                System.out.println("Hello Arm Next");
+            }
+        }
+        EOF
+
+        if "$NEXT_JAVAC" /tmp/HelloNext.java 2>/tmp/adoptopenjdk-next-javac.log && \
+           NEXT_OUTPUT="$("$NEXT_JAVA" -cp /tmp HelloNext 2>/tmp/adoptopenjdk-next-java.log || true)" && \
+           [ "$NEXT_OUTPUT" = "Hello Arm Next" ] && \
+           [ "$NEXT_INSTALLED_VERSION" = "$NEXT_VERSION" ]; then
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Baseline JDK ${CURRENT_VERSION} passed Tests 1-5. Regression validation installed Adoptium JDK ${NEXT_VERSION} on Arm64 and verified compile/run using the candidate JDK binaries." >> "$GITHUB_OUTPUT"
+        else
+          cat /tmp/adoptopenjdk-next-javac.log || true
+          cat /tmp/adoptopenjdk-next-java.log || true
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=${NEXT_INSTALLED_VERSION:-install_failed}" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Adoptium JDK ${NEXT_VERSION} was downloaded on Arm64 but compile/run validation did not complete successfully with the candidate JDK." >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+
+        END_TIME=$(date +%s)
+        echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+    # ============================================================
+    # UPDATE THIS: Calculate summary based on your number of tests
+    # Add/remove test result checks to match your tests above
+    # ============================================================
+    - name: Calculate test summary
+      if: always()
+      id: summary
+      run: |
+        PASSED=0
+        FAILED=0
+        TOTAL_DURATION=0
+
+        # Check java binary exists
+        if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+          PASSED=$((PASSED + 1))
+        else
+          FAILED=$((FAILED + 1))
+        fi
+        TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+
+        # Check javac binary exists
+        if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+          PASSED=$((PASSED + 1))
+        else
+          FAILED=$((FAILED + 1))
+        fi
+        TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+
+        # Check java -version output includes 21
+        if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+          PASSED=$((PASSED + 1))
+        else
+          FAILED=$((FAILED + 1))
+        fi
+        TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
+
+        # Compile and run HelloWorld
+        if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+          PASSED=$((PASSED + 1))
+        else
+          FAILED=$((FAILED + 1))
+        fi
+        TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
+
+        # Architecture Verification
+        if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+          PASSED=$((PASSED + 1))
+        else
+          FAILED=$((FAILED + 1))
+        fi
+        TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
+
+        echo "passed=$PASSED" >> $GITHUB_OUTPUT
+        echo "failed=$FAILED" >> $GITHUB_OUTPUT
+        echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+
+        if [ $FAILED -eq 0 ]; then
+          echo "overall_status=success" >> $GITHUB_OUTPUT
+          echo "badge_status=passing" >> $GITHUB_OUTPUT
+        else
+          echo "overall_status=failure" >> $GITHUB_OUTPUT
+          echo "badge_status=failing" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+    # ============================================================
+    # UPDATE THIS: Generate JSON with your package metadata and test details
+    # ============================================================
+    - name: Create test summary
+      if: always()
+      run: |
+        echo "## Adoptopenjdk Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
+        echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Test Details" >> $GITHUB_STEP_SUMMARY
+        echo "1. Check java binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+        echo "2. Check javac binary exists: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+        echo "3. Check java -version output includes 21: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+        echo "4. Compile and run HelloWorld: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+        echo "5. Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+        echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY

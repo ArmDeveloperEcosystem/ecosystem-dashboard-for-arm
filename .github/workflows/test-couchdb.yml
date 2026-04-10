@@ -1,0 +1,546 @@
+name: Test Apache CouchDB on Arm64
+
+on:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-couchdb.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-couchdb.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-couchdb.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-couchdb.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-couchdb.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-couchdb.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-couchdb.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-couchdb.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-couchdb.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-couchdb.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-couchdb.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-couchdb.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-couchdb.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-couchdb.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-couchdb.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-couchdb.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-couchdb.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-couchdb.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-couchdb.outputs.regression_policy }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-couchdb.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-couchdb.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-couchdb.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-couchdb.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-couchdb.outputs.timestamp }}
+jobs:
+  test-couchdb:
+    runs-on: ubuntu-24.04-arm
+    env:
+      BASELINE_VERSION: "3.3.3"
+      NEXT_STABLE_VERSION: "3.4.1"
+    
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Apache CouchDB'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=couchdb" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/couchdb" >> "$GITHUB_OUTPUT"
+      - name: Install Apache CouchDB
+        id: install
+        run: |
+          echo "Installing Apache CouchDB via Docker..."
+          docker rm -f couchdb 2>/dev/null || true
+          docker run -d --name couchdb \
+            -p 5984:5984 \
+            -e COUCHDB_USER=admin \
+            -e COUCHDB_PASSWORD=password \
+            apache/couchdb:${BASELINE_VERSION}
+            
+          # Wait for startup
+          sleep 10
+          
+          echo "install_status=success" >> $GITHUB_OUTPUT
+      
+      - name: Get CouchDB version
+        id: version
+        run: |
+          # ensure jq is available (usually already installed, but this is safe)
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq
+          fi
+
+          RAW=$(curl -s http://admin:password@127.0.0.1:5984/)
+          echo "Root response: $RAW"
+
+          VERSION=$(echo "$RAW" | jq -r '.version')
+          VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g')
+
+          # Fallback if something weird happens
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            VERSION="3.3.3"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected CouchDB version: $VERSION"
+      
+      - name: Test 1 - Check container running
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          
+          if docker ps | grep -q "couchdb"; then
+            echo "✓ couchdb container running"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ couchdb container not running"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+            fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+      
+      - name: Test 2 - Check Root Endpoint
+        id: test2
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          
+          if curl -s http://admin:password@127.0.0.1:5984/ | grep -q "couchdb"; then
+            echo "✓ root endpoint works"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ root endpoint failed"
+            docker logs couchdb
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+            fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 3 - Create Database
+        id: test3
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          
+          if curl -s -X PUT http://admin:password@127.0.0.1:5984/testdb | grep -q "ok"; then
+             echo "✓ database creation works"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ database creation failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+            fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 4 - Create Document
+        id: test4
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          
+          if curl -s -X POST -H "Content-Type: application/json" \
+            http://admin:password@127.0.0.1:5984/testdb \
+            -d '{"foo": "bar"}' | grep -q "ok"; then
+             echo "✓ document creation works"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ document creation failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+            fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 5 - Read Document
+        id: test5
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          # Functional Validation
+          
+          # Get all docs
+          if curl -s http://admin:password@127.0.0.1:5984/testdb/_all_docs | grep -q "total_rows"; then
+             echo "✓ document read works"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ document read failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+            fi
+          
+          # Architecture Verification
+          ARCH=$(uname -m)
+          if [ "$ARCH" != "aarch64" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || env.BASELINE_VERSION }}"
+          LATEST="${NEXT_STABLE_VERSION}"
+          NEXT_NAME="couchdb-regression"
+          NEXT_PORT="15984"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            echo "next_installed_version=not_validated" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation skipped because one or more baseline tests (1-5) failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Apache CouchDB validation did not pass in this run, so next-version install validation was not executed." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          MANIFEST_JSON=""
+          for _ in $(seq 1 3); do
+            MANIFEST_JSON="$(docker manifest inspect "apache/couchdb:${LATEST}" 2>/tmp/couchdb-next-manifest.log || true)"
+            if [ -n "$MANIFEST_JSON" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$MANIFEST_JSON" ]; then
+            MANIFEST_ERROR="$(tail -n 5 /tmp/couchdb-next-manifest.log 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\\+/ /g' | sed 's/^ //;s/ $//')"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache CouchDB version $CURRENT passed smoke tests in this run, but metadata for candidate image apache/couchdb:${LATEST} could not be resolved. Last manifest error: ${MANIFEST_ERROR:-unavailable}." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if ! printf '%s' "$MANIFEST_JSON" | jq -e '.manifests[]?.platform | select(.os=="linux" and .architecture=="arm64")' >/dev/null; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_blocked_non_arm64_release_assets" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache CouchDB version $CURRENT passed smoke tests in this run, but candidate image apache/couchdb:${LATEST} does not publish a Linux arm64 manifest." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          docker rm -f "$NEXT_NAME" 2>/dev/null || true
+          PULL_OK=0
+          for _ in $(seq 1 3); do
+            if docker pull --platform linux/arm64 "apache/couchdb:${LATEST}" >/tmp/couchdb-next-pull.log 2>&1; then
+              PULL_OK=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$PULL_OK" -eq 1 ]; then
+            echo "Next version download status: passed"
+          else
+            PULL_ERROR="$(tail -n 8 /tmp/couchdb-next-pull.log 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\\+/ /g' | sed 's/^ //;s/ $//')"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache CouchDB version $CURRENT passed smoke tests in this run, but the candidate image apache/couchdb:${LATEST} could not be pulled on Arm64 after retries. Last pull error: ${PULL_ERROR:-unavailable}." >> "$GITHUB_OUTPUT"
+            echo "Next version download status: failed"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          docker run -d --name "$NEXT_NAME" \
+            -p ${NEXT_PORT}:5984 \
+            -e COUCHDB_USER=admin \
+            -e COUCHDB_PASSWORD=password \
+            "apache/couchdb:${LATEST}" >/dev/null
+
+          cleanup() {
+            docker rm -f "$NEXT_NAME" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          NEXT_INSTALLED_VERSION=""
+          for _ in $(seq 1 30); do
+            RAW=$(curl -s "http://admin:password@127.0.0.1:${NEXT_PORT}/" || true)
+            NEXT_INSTALLED_VERSION=$(printf '%s' "$RAW" | jq -r '.version // empty' | tr -d '\\r')
+            if [ -n "$NEXT_INSTALLED_VERSION" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
+          if [ -z "$NEXT_INSTALLED_VERSION" ] || [ "$NEXT_INSTALLED_VERSION" != "$LATEST" ]; then
+            docker logs "$NEXT_NAME" || true
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed but reported a version mismatch on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache CouchDB version $CURRENT passed smoke tests in this run, but the candidate image apache/couchdb:${LATEST} reported version ${NEXT_INSTALLED_VERSION:-unknown} on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
+            echo "Regression install result: Next version installed but reported a version mismatch on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          else
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Apache CouchDB version $CURRENT passed smoke tests in this run. Regression validation pulled apache/couchdb:${LATEST} on Arm64, and the candidate root endpoint reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed|next_install_blocked_non_arm64_release_assets)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+              *)
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                  REGRESSION_RESULT="Regression validation passed"
+                else
+                  REGRESSION_RESULT="Regression validation failed"
+                fi
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          set -euo pipefail
+          PASSED=0
+          FAILED=0
+          SKIPPED=0
+          CORE_FAILED=0
+          TOTAL_DURATION=0
+
+          check_core_test() {
+            local status=$1
+            local duration=$2
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          if [ "$TEST6_STATUS" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$TEST6_STATUS" = "failed" ]; then
+            FAILED=$((FAILED + 1))
+          else
+            SKIPPED=$((SKIPPED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
+          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
+
+          if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
+            echo "overall_status=success" >> $GITHUB_OUTPUT
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
+            echo "overall_status=failure" >> $GITHUB_OUTPUT
+            echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ "$CORE_FAILED" -ne 0 ]; then
+            exit 1
+          fi
+      - name: Create test summary
+        if: always()
+        run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || 'manual_review_needed' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              *)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+            esac
+          fi
+          echo "## Apache CouchDB Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pinned version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check container running: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check Root Endpoint: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Create Database: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "4. Create Document: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Read Document: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY

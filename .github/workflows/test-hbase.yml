@@ -1,0 +1,646 @@
+name: Test HBase on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-hbase.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-hbase.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-hbase.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-hbase.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-hbase.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-hbase.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-hbase.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-hbase.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-hbase.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-hbase.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-hbase.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-hbase.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-hbase.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-hbase.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-hbase.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-hbase.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-hbase.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-hbase.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy for this workflow
+        value: ${{ jobs.test-hbase.outputs.regression_policy }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-hbase.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-hbase.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-hbase.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-hbase.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-hbase.outputs.timestamp }}
+jobs:
+  test-hbase:
+    runs-on: ubuntu-24.04-arm
+
+    env:
+      BASELINE_VERSION: "2.5.11"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'HBase'
+      package_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || env.BASELINE_VERSION }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || steps.version.outputs.version || env.BASELINE_VERSION }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=hbase" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/hbase" >> "$GITHUB_OUTPUT"
+          echo "current_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Install HBase baseline
+        id: install
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-17-jdk tar curl"
+          VERSION="${{ steps.metadata.outputs.current_version }}"
+
+          download_hbase_tarball() {
+            local version="$1"
+            local output="$2"
+            local primary_url="https://dlcdn.apache.org/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
+            local secondary_url="https://downloads.apache.org/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
+            local archive_url="https://archive.apache.org/dist/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
+            local archive_url_http="http://archive.apache.org/dist/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
+            local urls=()
+            if [ "$version" = "${{ env.BASELINE_VERSION }}" ]; then
+              urls=("$archive_url" "$archive_url_http")
+            else
+              urls=("$primary_url" "$secondary_url" "$archive_url" "$archive_url_http")
+            fi
+            DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=20 \
+            DOWNLOAD_MAX_TIME=450 \
+            DOWNLOAD_RETRY_DELAY=3 \
+            DOWNLOAD_WGET_TIMEOUT=60 \
+              bash .github/scripts/download-with-fallback.sh "$output" "${urls[@]}"
+          }
+
+          rm -rf hbase hbase.tar.gz /tmp/hbase-archive-contents.txt
+          EXTRACTED_DIR=""
+          if ! download_hbase_tarball "$VERSION" hbase.tar.gz; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! tar -tzf hbase.tar.gz > /tmp/hbase-archive-contents.txt; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_archive_invalid" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          EXTRACTED_DIR=$(awk -F/ 'NF>1 {print $1; exit}' /tmp/hbase-archive-contents.txt)
+
+          if ! tar -xzf hbase.tar.gz; then
+            rm -rf "${EXTRACTED_DIR:-}"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "${EXTRACTED_DIR:-}" ] || [ ! -d "$EXTRACTED_DIR" ]; then
+            echo "Unable to locate extracted HBase directory from archive"
+            head -n 20 /tmp/hbase-archive-contents.txt || true
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_extract_layout_invalid" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mv "$EXTRACTED_DIR" hbase
+
+          JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")
+          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+          echo "HBASE_HOME=$PWD/hbase" >> "$GITHUB_ENV"
+          echo "$PWD/hbase/bin" >> "$GITHUB_PATH"
+          sed -i '/^export JAVA_HOME=/d' hbase/conf/hbase-env.sh
+          echo "export JAVA_HOME=$JAVA_HOME" >> hbase/conf/hbase-env.sh
+
+          if [ -x "hbase/bin/hbase" ] \
+            && { [ -f "hbase/lib/hbase-server-${VERSION}.jar" ] || [ -f "hbase/lib/hbase-server-${VERSION}-hadoop3.jar" ]; } \
+            && { [ -f "hbase/lib/hbase-common-${VERSION}.jar" ] || [ -f "hbase/lib/hbase-common-${VERSION}-hadoop3.jar" ]; }; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            ls -1 hbase/lib | grep '^hbase-.*\.jar$' | head -n 30 || true
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_layout_missing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+      - name: Resolve HBase install state
+        id: install_state
+        if: always()
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/hbase"
+          EXPECTED="${{ steps.metadata.outputs.current_version }}"
+          STATUS="${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}"
+          BLOCKER="${{ steps.install.outputs.install_blocker || '' }}"
+          if [ -x "$ROOT/bin/hbase" ] \
+            && { [ -f "$ROOT/lib/hbase-server-${EXPECTED}.jar" ] || [ -f "$ROOT/lib/hbase-server-${EXPECTED}-hadoop3.jar" ]; } \
+            && { [ -f "$ROOT/lib/hbase-common-${EXPECTED}.jar" ] || [ -f "$ROOT/lib/hbase-common-${EXPECTED}-hadoop3.jar" ]; }; then
+            STATUS="success"
+            BLOCKER=""
+          fi
+          echo "HBASE_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "HBASE_INSTALL_STATUS=$STATUS" >> "$GITHUB_ENV"
+          echo "HBASE_INSTALL_BLOCKER=$BLOCKER" >> "$GITHUB_ENV"
+          echo "install_status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "install_blocker=$BLOCKER" >> "$GITHUB_OUTPUT"
+
+      - name: Get HBase version
+        id: version
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${HBASE_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "version=${{ steps.metadata.outputs.current_version }}" >> "$GITHUB_OUTPUT"
+            echo "Detected HBase version: ${{ steps.metadata.outputs.current_version }} (baseline install unavailable)"
+            exit 0
+          fi
+          REPORTED="$(
+            python3 - <<'PY'
+          import pathlib
+          import re
+          import sys
+          import zipfile
+
+          libs = pathlib.Path("hbase/lib")
+          for jar in sorted(libs.glob("hbase-common-*.jar")):
+              with zipfile.ZipFile(jar) as zf:
+                  for name in zf.namelist():
+                      if name.endswith("pom.properties"):
+                          data = zf.read(name).decode("utf-8", "ignore")
+                          match = re.search(r"^version=(.+)$", data, re.M)
+                          if match:
+                              print(match.group(1))
+                              raise SystemExit(0)
+          raise SystemExit(1)
+          PY
+          )" || true
+          if [ -z "$REPORTED" ]; then
+            REPORTED="${{ steps.metadata.outputs.current_version }}"
+          fi
+          echo "version=$REPORTED" >> "$GITHUB_OUTPUT"
+          echo "Detected HBase version: $REPORTED"
+
+      - name: Test 1 - Check hbase script exists
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          if [ "${HBASE_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -x "hbase/bin/hbase" ] && [ -x "hbase/bin/start-hbase.sh" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check exact version output
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${HBASE_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          EXPECTED="${{ steps.metadata.outputs.current_version }}"
+          REPORTED="$(
+            python3 - <<'PY'
+          import pathlib
+          import re
+          import sys
+          import zipfile
+
+          libs = pathlib.Path("hbase/lib")
+          for jar in sorted(libs.glob("hbase-common-*.jar")):
+              with zipfile.ZipFile(jar) as zf:
+                  for name in zf.namelist():
+                      if name.endswith("pom.properties"):
+                          data = zf.read(name).decode("utf-8", "ignore")
+                          match = re.search(r"^version=(.+)$", data, re.M)
+                          if match:
+                              print(match.group(1))
+                              raise SystemExit(0)
+          raise SystemExit(1)
+          PY
+          )" || true
+
+          if [ "$REPORTED" = "$EXPECTED" ] || [ "$REPORTED" = "${EXPECTED}-hadoop3" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "Expected HBase version: $EXPECTED"
+            echo "Reported HBase version: ${REPORTED:-unknown}"
+            ls -1 hbase/lib | grep '^hbase-.*\.jar$' | head -n 20 || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check configuration files
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          if [ "${HBASE_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -f "hbase/conf/hbase-site.xml" ] && [ -f "hbase/conf/hbase-env.sh" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Check exact server jar
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${HBASE_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          EXPECTED="${{ steps.metadata.outputs.current_version }}"
+
+          if { [ -f "hbase/lib/hbase-server-${EXPECTED}.jar" ] || [ -f "hbase/lib/hbase-server-${EXPECTED}-hadoop3.jar" ]; } \
+            && { [ -f "hbase/lib/hbase-common-${EXPECTED}.jar" ] || [ -f "hbase/lib/hbase-common-${EXPECTED}-hadoop3.jar" ]; }; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            ls -1 hbase/lib | grep '^hbase-.*\\.jar$' | head -n 20 || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Start HBase master briefly
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${HBASE_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          timeout 20s hbase/bin/hbase master start > hbase.log 2>&1 || true
+
+          if grep -Eq 'HMaster|Master startup|STARTING service HMaster' hbase.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat hbase.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        if: always()
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || steps.metadata.outputs.current_version || env.BASELINE_VERSION }}"
+          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation skipped because one or more baseline tests (1-5) failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline tests failed, so next-version validation is not trustworthy for this run." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          export CURRENT
+          NEXT="$(
+            python3 - <<'PY'
+          import os
+          import re
+          import urllib.request
+
+          current = os.environ.get("CURRENT", "")
+          if not re.fullmatch(r"\d+\.\d+\.\d+", current):
+              print("")
+              raise SystemExit(0)
+
+          cparts = tuple(int(x) for x in current.split("."))
+          html = urllib.request.urlopen("https://archive.apache.org/dist/hbase/", timeout=20).read().decode("utf-8", "ignore")
+          versions = sorted(
+              set(re.findall(r'href="(\d+\.\d+\.\d+)/"', html)),
+              key=lambda s: tuple(int(x) for x in s.split(".")),
+          )
+          next_version = ""
+          for v in versions:
+              parts = tuple(int(x) for x in v.split("."))
+              if parts > cparts:
+                  next_version = v
+                  break
+          print(next_version)
+          PY
+          )"
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${NEXT:-$CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: ${NEXT:-none}"
+
+          if [ -z "$NEXT" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned HBase baseline ${CURRENT} is already at the newest stable release visible in the public Apache HBase version stream, so there is no newer Arm64 candidate to validate in Test 6." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: No newer stable release available for Test 6"
+            echo "Details: Current pinned HBase version ${CURRENT} passed baseline startup smoke on Arm64, and no newer stable version was found in the public Apache HBase stream."
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          download_hbase_tarball() {
+            local version="$1"
+            local output="$2"
+            local primary_url="https://dlcdn.apache.org/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
+            local secondary_url="https://downloads.apache.org/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
+            local archive_url="https://archive.apache.org/dist/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
+            local archive_url_http="http://archive.apache.org/dist/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
+            local urls=()
+            if [ "$version" = "${{ env.BASELINE_VERSION }}" ]; then
+              urls=("$archive_url" "$archive_url_http")
+            else
+              urls=("$primary_url" "$secondary_url" "$archive_url" "$archive_url_http")
+            fi
+            DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=450 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=60 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh "$output" "${urls[@]}"
+          }
+
+          NEXT_DIR=$(mktemp -d)
+          NEXT_TAR="$NEXT_DIR/hbase-next.tar.gz"
+          if ! download_hbase_tarball "$NEXT" "$NEXT_TAR"; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64, but the next newer candidate HBase ${NEXT} archive could not be downloaded for regression install validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
+          NEXT_HOME="$NEXT_DIR/hbase-${NEXT}-hadoop3-bin"
+          sed -i '/^export JAVA_HOME=/d' "$NEXT_HOME/conf/hbase-env.sh"
+          echo "export JAVA_HOME=$JAVA_HOME" >> "$NEXT_HOME/conf/hbase-env.sh"
+          NEXT_REPORTED="$(
+            python3 - <<PY
+          import pathlib
+          import re
+          import sys
+          import zipfile
+
+          libs = pathlib.Path(${NEXT_HOME@Q}) / "lib"
+          for jar in sorted(libs.glob("hbase-common-*.jar")):
+              with zipfile.ZipFile(jar) as zf:
+                  for name in zf.namelist():
+                      if name.endswith("pom.properties"):
+                          data = zf.read(name).decode("utf-8", "ignore")
+                          match = re.search(r"^version=(.+)$", data, re.M)
+                          if match:
+                              print(match.group(1))
+                              raise SystemExit(0)
+          raise SystemExit(1)
+          PY
+          )" || true
+
+          if [ "$NEXT_REPORTED" = "$NEXT" ] \
+            && { [ -f "$NEXT_HOME/lib/hbase-server-${NEXT}.jar" ] || [ -f "$NEXT_HOME/lib/hbase-server-${NEXT}-hadoop3.jar" ]; } \
+            && { [ -f "$NEXT_HOME/lib/hbase-common-${NEXT}.jar" ] || [ -f "$NEXT_HOME/lib/hbase-common-${NEXT}-hadoop3.jar" ]; } \
+            && [ -f "$NEXT_HOME/conf/hbase-site.xml" ]; then
+            echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64. Regression validation downloaded the next newer official HBase ${NEXT} hadoop3 binary distribution, and the candidate reported version ${NEXT_REPORTED} while exposing the expected server JAR and configuration files." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_REPORTED"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64. Regression validation downloaded the next newer official HBase ${NEXT} hadoop3 binary distribution, and the candidate reported version ${NEXT_REPORTED} while exposing the expected server JAR and configuration files."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            ls -1 "$NEXT_HOME/lib" | grep '^hbase-.*\.jar$' | head -n 30 || true
+            echo "next_installed_version=${NEXT_REPORTED:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64, but the official next candidate release ${NEXT} did not expose the expected versioned binary layout on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_REPORTED:-unknown}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64, but the official next candidate release ${NEXT} did not expose the expected versioned binary layout on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || '' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              no_newer_stable_available)
+                REGRESSION_RESULT="No newer stable release available for Test 6"
+                ;;
+              baseline_failed)
+                REGRESSION_RESULT="Regression validation skipped because one or more baseline tests (1-5) failed."
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              *)
+                REGRESSION_RESULT="Regression validation status unavailable"
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+
+      - name: Emit package result
+        if: always()
+        id: summary
+        uses: ./.github/actions/emit-package-result
+        with:
+          package_name: "HBase"
+          version: ${{ steps.version.outputs.version }}
+          install_status: ${{ steps.install_state.outputs.install_status || steps.install.outputs.install_status || 'success' }}
+          test1_label: "Check hbase script exists"
+          test2_label: "Check exact version output"
+          test3_label: "Check configuration files"
+          test4_label: "Check exact server jar"
+          test5_label: "Start HBase master briefly"
+          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
+          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
+          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
+          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
+          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
+          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_duration: ${{ steps.test1.outputs.duration || 0 }}
+          test2_duration: ${{ steps.test2.outputs.duration || 0 }}
+          test3_duration: ${{ steps.test3.outputs.duration || 0 }}
+          test4_duration: ${{ steps.test4.outputs.duration || 0 }}
+          test5_duration: ${{ steps.test5.outputs.duration || 0 }}
+          test6_duration: ${{ steps.test6.outputs.duration || 0 }}
+          regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+          regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
+          regression_details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+
+      - name: Finalize workflow status
+        if: always()
+        run: |
+          if [ "${{ steps.summary.outputs.should_fail }}" = "1" ]; then
+            exit 1
+          fi

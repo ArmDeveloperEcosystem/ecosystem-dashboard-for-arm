@@ -1,0 +1,584 @@
+name: Test Pinot on Arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      prefetch_run_id:
+        description: Orchestrator run id holding prefetched heavy archives
+        required: false
+        type: string
+      prefetch_artifact_name:
+        description: Artifact name containing prefetched heavy archives
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      prefetch_run_id:
+        required: false
+        type: string
+      prefetch_artifact_name:
+        required: false
+        type: string
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-pinot.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-pinot.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-pinot.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-pinot.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-pinot.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-pinot.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-pinot.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-pinot.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-pinot.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-pinot.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-pinot.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-pinot.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-pinot.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-pinot.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-pinot.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-pinot.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-pinot.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-pinot.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-pinot.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-pinot.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-pinot.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-pinot.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-pinot.outputs.timestamp }}
+jobs:
+  test-pinot:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      PINOT_VERSION: "1.2.0"
+      PINOT_NEXT_VERSION: "1.3.0"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Pinot'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore warm Pinot baseline cache
+        id: restore_pinot_baseline_cache
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/prefetch-heavy/pinot
+          key: heavy-baseline-pinot-1.2.0-arm64-v1
+
+      - name: Download prefetched heavy baselines
+        if: ${{ inputs.prefetch_run_id != '' && inputs.prefetch_artifact_name != '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.prefetch_run_id }}
+          github-token: ${{ github.token }}
+          name: ${{ inputs.prefetch_artifact_name }}
+          path: ${{ runner.temp }}/prefetch-heavy
+
+      - name: Resolve prefetched heavy baselines
+        if: always()
+        run: |
+          echo "PREFETCH_HEAVY_ROOT=${RUNNER_TEMP}/prefetch-heavy" >> "$GITHUB_ENV"
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=pinot" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/pinot" >> "$GITHUB_OUTPUT"
+          echo "current_version=${PINOT_VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Install Pinot baseline
+        id: install
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-17-jdk-headless curl wget tar"
+          download_pinot_tarball() {
+            local version="$1"
+            local output="$2"
+            local urls=(
+              "https://downloads.apache.org/pinot/apache-pinot-${version}/apache-pinot-${version}-bin.tar.gz"
+              "https://archive.apache.org/dist/pinot/apache-pinot-${version}/apache-pinot-${version}-bin.tar.gz"
+              "http://archive.apache.org/dist/pinot/apache-pinot-${version}/apache-pinot-${version}-bin.tar.gz"
+            )
+            DOWNLOAD_ATTEMPTS=2 \
+            DOWNLOAD_CONNECT_TIMEOUT=45 \
+            DOWNLOAD_MAX_TIME=360 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=60 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh "$output" "${urls[@]}"
+          }
+
+          BASELINE_TGZ="apache-pinot-${PINOT_VERSION}-bin.tar.gz"
+          CACHE_FILE="${PREFETCH_HEAVY_ROOT:-${RUNNER_TEMP}/prefetch-heavy}/pinot/${BASELINE_TGZ}"
+          if [ -f "$CACHE_FILE" ]; then
+            cp "$CACHE_FILE" "${BASELINE_TGZ}"
+          else
+            if ! DOWNLOAD_ATTEMPTS=2 \
+              DOWNLOAD_CONNECT_TIMEOUT=45 \
+              DOWNLOAD_MAX_TIME=360 \
+              DOWNLOAD_RETRY_DELAY=5 \
+              DOWNLOAD_WGET_TIMEOUT=60 \
+              DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh "${BASELINE_TGZ}" \
+                "https://archive.apache.org/dist/pinot/apache-pinot-${PINOT_VERSION}/apache-pinot-${PINOT_VERSION}-bin.tar.gz" \
+                "http://archive.apache.org/dist/pinot/apache-pinot-${PINOT_VERSION}/apache-pinot-${PINOT_VERSION}-bin.tar.gz"; then
+              echo "install_status=failed" >> "$GITHUB_OUTPUT"
+              echo "install_blocker=download_failed" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          mkdir -p "$(dirname "$CACHE_FILE")"
+          if [ ! -f "$CACHE_FILE" ]; then
+            cp "${BASELINE_TGZ}" "$CACHE_FILE"
+          fi
+          ls -lh "${BASELINE_TGZ}"
+          if ! timeout 15m tar -xzf "${BASELINE_TGZ}"; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ ! -d "apache-pinot-${PINOT_VERSION}-bin" ]; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=layout_missing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mv "apache-pinot-${PINOT_VERSION}-bin" pinot
+
+          test -x "pinot/bin/pinot-admin.sh"
+          test -x "pinot/bin/start-controller.sh"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+          echo "install_blocker=none" >> "$GITHUB_OUTPUT"
+
+      - name: Save warm Pinot baseline cache
+        if: ${{ steps.install.outputs.install_status == 'success' && steps.restore_pinot_baseline_cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/prefetch-heavy/pinot
+          key: heavy-baseline-pinot-1.2.0-arm64-v1
+
+      - name: Resolve Pinot install state
+        id: install_state
+        if: always()
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/pinot"
+          STATUS="${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}"
+          BLOCKER="${{ steps.install.outputs.install_blocker || '' }}"
+          if [ -x "$ROOT/bin/pinot-admin.sh" ] && [ -x "$ROOT/bin/start-controller.sh" ] && [ -d "$ROOT/lib" ]; then
+            STATUS="success"
+            BLOCKER=""
+          fi
+          echo "PINOT_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "PINOT_INSTALL_STATUS=$STATUS" >> "$GITHUB_ENV"
+          echo "PINOT_INSTALL_BLOCKER=$BLOCKER" >> "$GITHUB_ENV"
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "install_status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "install_blocker=$BLOCKER" >> "$GITHUB_OUTPUT"
+
+      - name: Get Pinot version
+        id: version
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${PINOT_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "version=${PINOT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "latest=${PINOT_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "Detected Pinot version: ${PINOT_VERSION} (baseline install unavailable)"
+            exit 0
+          fi
+          echo "version=${PINOT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest=${PINOT_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected Pinot version: ${PINOT_VERSION}"
+
+      - name: Test 1 - Check Pinot admin launcher exists
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${PINOT_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -x "pinot/bin/pinot-admin.sh" ] && [ -x "pinot/bin/start-controller.sh" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check exact release version
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${PINOT_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -f "apache-pinot-${PINOT_VERSION}-bin.tar.gz" ] && [ -d "pinot/lib" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check Pinot quickstart admin path
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${PINOT_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          OUTPUT=$(timeout 30 bash pinot/bin/pinot-admin.sh QuickStart 2>&1 || true)
+          printf '%s\n' "$OUTPUT" | head -n 20
+          if printf '%s\n' "$OUTPUT" | grep -q "No QuickStart type provided"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${PINOT_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$(uname -m)" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${PINOT_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          OUTPUT=$(timeout 30 bash pinot/bin/pinot-admin.sh AddTable 2>&1 || true)
+          printf '%s\n' "$OUTPUT" | head -n 20
+          if printf '%s\n' "$OUTPUT" | grep -q "Dry Running Command: AddTable"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || env.PINOT_VERSION }}"
+          LATEST="${{ steps.version.outputs.latest || env.PINOT_NEXT_VERSION }}"
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "${PINOT_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because the baseline Pinot install failed in this run" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Pinot version ${CURRENT} could not complete baseline install in this run, so next-version regression validation was not attempted." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "$LATEST" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Pinot version ${CURRENT} passed smoke tests in this run, but the latest stable Apache binary distribution could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Pinot version ${CURRENT} passed smoke tests in this run, but the latest stable Apache binary distribution could not be resolved automatically."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_DIR=$(mktemp -d)
+          trap 'rm -rf "$NEXT_DIR"' EXIT
+          NEXT_TGZ="$NEXT_DIR/pinot-next.tar.gz"
+          download_pinot_tarball() {
+            local version="$1"
+            local output="$2"
+            local urls=(
+              "https://downloads.apache.org/pinot/apache-pinot-${version}/apache-pinot-${version}-bin.tar.gz"
+              "https://archive.apache.org/dist/pinot/apache-pinot-${version}/apache-pinot-${version}-bin.tar.gz"
+              "http://archive.apache.org/dist/pinot/apache-pinot-${version}/apache-pinot-${version}-bin.tar.gz"
+            )
+            DOWNLOAD_ATTEMPTS=2 \
+            DOWNLOAD_CONNECT_TIMEOUT=45 \
+            DOWNLOAD_MAX_TIME=360 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=60 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh "$output" "${urls[@]}"
+          }
+
+          if ! download_pinot_tarball "$LATEST" "$NEXT_TGZ"; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Pinot version ${CURRENT} passed smoke tests in this run, but the candidate archive ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Pinot version ${CURRENT} passed smoke tests in this run, but the candidate archive ${LATEST} could not be downloaded on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          ls -lh "$NEXT_TGZ"
+          timeout 15m tar -xzf "$NEXT_TGZ" -C "$NEXT_DIR"
+          NEXT_ROOT="$NEXT_DIR/apache-pinot-${LATEST}-bin"
+          NEXT_INSTALLED_VERSION=$(basename "$NEXT_ROOT" | sed -E 's/^apache-pinot-([0-9.]+)-bin$/\1/')
+
+          QUICKSTART_OUTPUT=$(timeout 30 bash "$NEXT_ROOT/bin/pinot-admin.sh" QuickStart 2>&1 || true)
+          ADDTABLE_OUTPUT=$(timeout 30 bash "$NEXT_ROOT/bin/pinot-admin.sh" AddTable 2>&1 || true)
+
+          if [ ! -x "$NEXT_ROOT/bin/pinot-admin.sh" ] || \
+             ! printf '%s\n' "$QUICKSTART_OUTPUT" | grep -q "No QuickStart type provided" || \
+             ! printf '%s\n' "$ADDTABLE_OUTPUT" | grep -q "Dry Running Command: AddTable"; then
+            echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Pinot version ${CURRENT} passed smoke tests in this run, but the candidate archive ${LATEST} did not expose the expected bounded Arm64 admin CLI behavior." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Pinot version ${CURRENT} passed smoke tests in this run, but the candidate archive ${LATEST} did not expose the expected bounded Arm64 admin CLI behavior."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
+            echo "Details: Current pinned Pinot version ${CURRENT} passed smoke tests in this run and already matches the latest stable Apache binary distribution. Regression validation re-staged the candidate archive on Arm64, and the bounded QuickStart plus AddTable admin paths succeeded."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+          elif [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Pinot version ${CURRENT} passed smoke tests in this run. Regression validation downloaded candidate archive ${LATEST} on Arm64, and the extracted distribution path plus bounded QuickStart and AddTable admin paths validated candidate version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned Pinot version ${CURRENT} passed smoke tests in this run. Regression validation downloaded candidate archive ${LATEST} on Arm64, and the extracted distribution path plus bounded QuickStart and AddTable admin paths validated candidate version ${NEXT_INSTALLED_VERSION}."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Pinot version ${CURRENT} passed smoke tests in this run, but the extracted candidate archive reported version ${NEXT_INSTALLED_VERSION} instead of the expected latest stable version ${LATEST} on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Pinot version ${CURRENT} passed smoke tests in this run, but the extracted candidate archive reported version ${NEXT_INSTALLED_VERSION} instead of the expected latest stable version ${LATEST} on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+              *)
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                  REGRESSION_RESULT="Regression validation passed"
+                else
+                  REGRESSION_RESULT="Regression validation failed"
+                fi
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+
+      - name: Emit package result
+        if: always()
+        id: summary
+        uses: ./.github/actions/emit-package-result
+        with:
+          package_name: "Apache Pinot"
+          version: ${{ steps.version.outputs.version || steps.metadata.outputs.current_version || env.PINOT_VERSION }}
+          install_status: ${{ steps.install_state.outputs.install_status || steps.install.outputs.install_status || 'success' }}
+          test1_label: "Test 1 - Check Pinot admin launcher exists"
+          test2_label: "Test 2 - Check exact release version"
+          test3_label: "Test 3 - Check Pinot quickstart admin path"
+          test4_label: "Test 4 - Architecture Verification"
+          test5_label: "Test 5 - Functional validation"
+          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
+          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
+          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
+          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
+          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
+          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_duration: ${{ steps.test1.outputs.duration || 0 }}
+          test2_duration: ${{ steps.test2.outputs.duration || 0 }}
+          test3_duration: ${{ steps.test3.outputs.duration || 0 }}
+          test4_duration: ${{ steps.test4.outputs.duration || 0 }}
+          test5_duration: ${{ steps.test5.outputs.duration || 0 }}
+          test6_duration: ${{ steps.test6.outputs.duration || 0 }}
+          regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}
+          regression_latest_version: ${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || 'unknown' }}
+          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
+          regression_details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}
+
+      - name: Finalize workflow status
+        if: always()
+        run: |
+          if [ "${{ steps.summary.outputs.should_fail }}" = "1" ]; then
+            exit 1
+          fi

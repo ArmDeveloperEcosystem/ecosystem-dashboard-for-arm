@@ -1,0 +1,674 @@
+name: Test Spark on Arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      prefetch_run_id:
+        description: Orchestrator run id holding prefetched heavy archives
+        required: false
+        type: string
+      prefetch_artifact_name:
+        description: Artifact name containing prefetched heavy archives
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      prefetch_run_id:
+        required: false
+        type: string
+      prefetch_artifact_name:
+        required: false
+        type: string
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-spark.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-spark.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-spark.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-spark.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-spark.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-spark.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-spark.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-spark.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-spark.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-spark.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-spark.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-spark.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-spark.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-spark.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-spark.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-spark.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-spark.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-spark.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy for this workflow
+        value: ${{ jobs.test-spark.outputs.regression_policy }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-spark.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-spark.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-spark.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-spark.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-spark.outputs.timestamp }}
+jobs:
+  test-spark:
+    runs-on: ubuntu-24.04-arm
+    env:
+      BASELINE_VERSION: "3.5.3"
+      HADOOP_VERSION: "3"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Spark'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore warm Spark baseline cache
+        id: restore_spark_baseline_cache
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/prefetch-heavy/spark
+          key: heavy-baseline-spark-3.5.3-hadoop3-arm64-v1
+
+      - name: Download prefetched heavy baselines
+        if: ${{ inputs.prefetch_run_id != '' && inputs.prefetch_artifact_name != '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.prefetch_run_id }}
+          github-token: ${{ github.token }}
+          name: ${{ inputs.prefetch_artifact_name }}
+          path: ${{ runner.temp }}/prefetch-heavy
+
+      - name: Resolve prefetched heavy baselines
+        if: always()
+        run: |
+          echo "PREFETCH_HEAVY_ROOT=${RUNNER_TEMP}/prefetch-heavy" >> "$GITHUB_ENV"
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=spark" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/spark" >> "$GITHUB_OUTPUT"
+          echo "current_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Install Apache Spark
+        id: install
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-17-jdk python3 python3-pip wget curl"
+          JAVA_BIN=$(readlink -f "$(which java)")
+          echo "JAVA_HOME=$(dirname "$(dirname "$JAVA_BIN")")" >> "$GITHUB_ENV"
+
+          cd /tmp
+          ARCHIVE="spark-${BASELINE_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz"
+          CACHE_FILE="${PREFETCH_HEAVY_ROOT:-${RUNNER_TEMP}/prefetch-heavy}/spark/${ARCHIVE}"
+          HELPER="$GITHUB_WORKSPACE/.github/scripts/download-with-fallback.sh"
+          if [ -f "$CACHE_FILE" ]; then
+            cp "$CACHE_FILE" "/tmp/${ARCHIVE}"
+          else
+            if ! DOWNLOAD_ATTEMPTS=3 \
+              DOWNLOAD_CONNECT_TIMEOUT=45 \
+              DOWNLOAD_MAX_TIME=1200 \
+              DOWNLOAD_RETRY_DELAY=5 \
+              DOWNLOAD_WGET_TIMEOUT=90 \
+              DOWNLOAD_WGET_WAITRETRY=5 \
+              bash "$HELPER" "/tmp/${ARCHIVE}" \
+                "https://archive.apache.org/dist/spark/spark-${BASELINE_VERSION}/${ARCHIVE}" \
+                "http://archive.apache.org/dist/spark/spark-${BASELINE_VERSION}/${ARCHIVE}"; then
+              echo "install_status=failed" >> "$GITHUB_OUTPUT"
+              echo "install_blocker=download_failed" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          mkdir -p "$(dirname "$CACHE_FILE")"
+          if [ ! -f "$CACHE_FILE" ]; then
+            cp "/tmp/${ARCHIVE}" "$CACHE_FILE"
+          fi
+
+          sudo rm -rf "/opt/spark-${BASELINE_VERSION}-bin-hadoop${HADOOP_VERSION}"
+          sudo rm -f /opt/spark
+          if ! sudo tar -xzf "$ARCHIVE" -C /opt/; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sudo ln -s "/opt/spark-${BASELINE_VERSION}-bin-hadoop${HADOOP_VERSION}" /opt/spark
+
+          echo "SPARK_HOME=/opt/spark" >> "$GITHUB_ENV"
+          echo "/opt/spark/bin" >> "$GITHUB_PATH"
+
+          if [ -x /opt/spark/bin/spark-submit ] && [ -x /opt/spark/bin/pyspark ]; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=binary_missing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+      - name: Save warm Spark baseline cache
+        if: ${{ steps.install.outputs.install_status == 'success' && steps.restore_spark_baseline_cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/prefetch-heavy/spark
+          key: heavy-baseline-spark-3.5.3-hadoop3-arm64-v1
+
+      - name: Resolve Spark install state
+        id: install_state
+        if: always()
+        run: |
+          set -euo pipefail
+          ROOT="/opt/spark"
+          STATUS="${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}"
+          BLOCKER="${{ steps.install.outputs.install_blocker || '' }}"
+          if [ -x "$ROOT/bin/spark-submit" ] && [ -x "$ROOT/bin/spark-shell" ] && [ -x "$ROOT/bin/pyspark" ]; then
+            STATUS="success"
+            BLOCKER=""
+          fi
+          echo "SPARK_HOME=$ROOT" >> "$GITHUB_ENV"
+          echo "SPARK_INSTALL_STATUS=$STATUS" >> "$GITHUB_ENV"
+          echo "SPARK_INSTALL_BLOCKER=$BLOCKER" >> "$GITHUB_ENV"
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "install_status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "install_blocker=$BLOCKER" >> "$GITHUB_OUTPUT"
+
+      - name: Detect Spark version
+        id: version
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${SPARK_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "latest=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -f /opt/spark/RELEASE ]; then
+            VERSION=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' /opt/spark/RELEASE | head -n 1)
+          else
+            VERSION="${BASELINE_VERSION}"
+          fi
+
+          LATEST="$(
+            CURRENT_VERSION="$VERSION" python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          current = os.environ.get("CURRENT_VERSION", "").strip()
+          try:
+              current_tuple = tuple(int(part) for part in current.split("."))
+          except Exception:
+              print(current or "unknown")
+              raise SystemExit(0)
+
+          try:
+              data = json.load(urllib.request.urlopen("https://api.github.com/repos/apache/spark/tags?per_page=100", timeout=20))
+          except Exception:
+              print(current)
+              raise SystemExit(0)
+          stable = []
+          for result in data:
+              name = (result.get("name") or "").lstrip("v")
+              lowered = name.lower()
+              if any(marker in lowered for marker in ("preview", "rc")):
+                  continue
+              parts = name.split(".")
+              if all(part.isdigit() for part in parts):
+                  stable.append((tuple(int(part) for part in parts), name))
+
+          if not stable:
+              print(current or "unknown")
+              raise SystemExit(0)
+
+          stable.sort(key=lambda item: item[0])
+          next_newer = next((name for version_tuple, name in stable if version_tuple > current_tuple), "")
+          print(next_newer if next_newer else current)
+          PY
+          )"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+
+      - name: Test 1 - Binary Existence
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ "${SPARK_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if command -v spark-submit >/dev/null 2>&1 && \
+             command -v spark-shell >/dev/null 2>&1 && \
+             command -v pyspark >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Version Check
+        id: test2
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ "${SPARK_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          VERSION_OUTPUT=$(/opt/spark/bin/spark-submit --version 2>&1 || true)
+          if grep -q "${{ steps.version.outputs.version }}" <<< "$VERSION_OUTPUT"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$VERSION_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Help Or Configuration Validation
+        id: test3
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ "${SPARK_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if /opt/spark/bin/spark-submit --help >/dev/null 2>&1 && \
+             /opt/spark/bin/pyspark --help >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ "${SPARK_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ "${SPARK_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          cat > /tmp/pyspark_test.py <<'EOF'
+          from pyspark.sql import SparkSession
+
+          spark = SparkSession.builder \
+              .appName("ARM64 PySpark Test") \
+              .master("local[1]") \
+              .getOrCreate()
+
+          data = [("ARM64", 1), ("PySpark", 2), ("Test", 3)]
+          df = spark.createDataFrame(data, ["name", "value"])
+
+          print("PySpark DataFrame created successfully:")
+          df.show()
+          count = df.count()
+          print(f"Row count: {count}")
+
+          spark.stop()
+          raise SystemExit(0 if count == 3 else 1)
+          EOF
+
+          if /opt/spark/bin/run-example SparkPi 10 > /tmp/sparkpi.txt 2>&1 && \
+             grep -q "Pi is roughly" /tmp/sparkpi.txt && \
+             /opt/spark/bin/spark-submit /tmp/pyspark_test.py > /tmp/pyspark.txt 2>&1 && \
+             grep -q "PySpark DataFrame created successfully" /tmp/pyspark.txt && \
+             grep -q "Row count: 3" /tmp/pyspark.txt; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/sparkpi.txt || true
+            cat /tmp/pyspark.txt || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version }}"
+          LATEST="${{ steps.version.outputs.latest }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "${SPARK_INSTALL_STATUS:-failed}" != "success" ] || \
+             [ "${{ steps.test1.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'skipped' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'skipped' }}" != "passed" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed in this run" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Spark version ${CURRENT} did not complete baseline installation or core smoke validation cleanly in this run, so next-version validation was skipped on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Spark version ${CURRENT} passed smoke tests in this run, but the next newer stable Spark release could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "$LATEST" = "$CURRENT" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Spark version ${CURRENT} already matches the newest stable upstream Spark release visible to this workflow, so there is no newer stable candidate for Arm64 Test 6." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_TGZ="/tmp/spark-regression-${LATEST}.tgz"
+          NEXT_DIR=$(mktemp -d)
+          NEXT_ARCHIVE="spark-${LATEST}-bin-hadoop${HADOOP_VERSION}.tgz"
+          HELPER="$GITHUB_WORKSPACE/.github/scripts/download-with-fallback.sh"
+
+          if DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=45 \
+            DOWNLOAD_MAX_TIME=1200 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=90 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+            bash "$HELPER" "$NEXT_TGZ" \
+              "https://dlcdn.apache.org/spark/spark-${LATEST}/${NEXT_ARCHIVE}" \
+              "https://downloads.apache.org/spark/spark-${LATEST}/${NEXT_ARCHIVE}" \
+              "https://archive.apache.org/dist/spark/spark-${LATEST}/${NEXT_ARCHIVE}" \
+              "http://archive.apache.org/dist/spark/spark-${LATEST}/${NEXT_ARCHIVE}"; then
+            echo "Next version download status: passed"
+            tar -xzf "$NEXT_TGZ" -C "$NEXT_DIR"
+            NEXT_ROOT="$NEXT_DIR/spark-${LATEST}-bin-hadoop${HADOOP_VERSION}"
+            NEXT_BIN="$NEXT_ROOT/bin/spark-submit"
+            if [ -x "$NEXT_BIN" ] && [ -x "$NEXT_ROOT/bin/pyspark" ] && [ -x "$NEXT_ROOT/bin/run-example" ]; then
+              if [ -f "$NEXT_ROOT/RELEASE" ]; then
+                NEXT_INSTALLED_VERSION=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' "$NEXT_ROOT/RELEASE" | head -n 1 || true)
+              else
+                NEXT_INSTALLED_VERSION=$("$NEXT_BIN" --version 2>&1 | grep -Eo 'version [0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}' | head -n 1 || true)
+              fi
+          cat > /tmp/pyspark_regression_test.py <<'PYSPARK_EOF'
+          from pyspark.sql import SparkSession
+          
+          spark = SparkSession.builder \
+              .appName("ARM64 PySpark Regression Test") \
+              .master("local[1]") \
+              .getOrCreate()
+          
+          data = [("candidate", 1), ("arm64", 2), ("spark", 3)]
+          df = spark.createDataFrame(data, ["name", "value"])
+          
+          print("PySpark candidate DataFrame created successfully:")
+          df.show()
+          count = df.count()
+          print(f"Candidate row count: {count}")
+          
+          spark.stop()
+          raise SystemExit(0 if count == 3 else 1)
+          PYSPARK_EOF
+
+              export SPARK_HOME="$NEXT_ROOT"
+              if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ] && \
+                 "$NEXT_BIN" --help >/tmp/spark-regression-help.txt 2>&1 && \
+                 "$NEXT_ROOT/bin/pyspark" --help >/tmp/pyspark-regression-help.txt 2>&1 && \
+                 "$NEXT_ROOT/bin/run-example" SparkPi 10 >/tmp/sparkpi-regression.txt 2>&1 && \
+                 grep -q "Pi is roughly" /tmp/sparkpi-regression.txt && \
+                 "$NEXT_BIN" /tmp/pyspark_regression_test.py >/tmp/pyspark-regression.txt 2>&1 && \
+                 grep -q "PySpark candidate DataFrame created successfully" /tmp/pyspark-regression.txt && \
+                 grep -q "Candidate row count: 3" /tmp/pyspark-regression.txt; then
+                echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+                if [ "$LATEST" = "$CURRENT" ]; then
+                  echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+                  echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+                  echo "comparison=Current pinned Spark version ${CURRENT} already matches the newest stable upstream Spark release visible to this workflow, so there is no newer stable candidate for Arm64 Test 6." >> "$GITHUB_OUTPUT"
+                  echo "Regression install result: No newer stable release available for Test 6"
+                  echo "status=skipped" >> "$GITHUB_OUTPUT"
+                else
+                  echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+                  echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+                  echo "comparison=Current pinned Spark version ${CURRENT} passed smoke tests in this run. Regression validation installed candidate version ${LATEST} on Arm64, the extracted Spark distribution reported version ${NEXT_INSTALLED_VERSION}, and the isolated candidate runtime completed both SparkPi and PySpark DataFrame smoke successfully." >> "$GITHUB_OUTPUT"
+                  echo "Regression install result: Next version installed successfully on Arm64"
+                  echo "status=passed" >> "$GITHUB_OUTPUT"
+                fi
+                echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+              else
+                cat /tmp/spark-regression-help.txt || true
+                cat /tmp/pyspark-regression-help.txt || true
+                cat /tmp/sparkpi-regression.txt || true
+                cat /tmp/pyspark-regression.txt || true
+                echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
+                echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Spark version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not complete the isolated version, help, SparkPi, and PySpark runtime validation successfully on Arm64. The extracted candidate reported version ${NEXT_INSTALLED_VERSION:-unknown}." >> "$GITHUB_OUTPUT"
+                echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
+                echo "Regression install result: Next version install failed on Arm64"
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+            else
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Spark version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not extract a usable Spark distribution on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Spark version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded from the official Apache distribution paths." >> "$GITHUB_OUTPUT"
+            echo "Next version download status: failed"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              no_newer_stable_available)
+                REGRESSION_RESULT="No newer stable release available for Test 6"
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+              *)
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                  REGRESSION_RESULT="Regression validation passed"
+                else
+                  REGRESSION_RESULT="Regression validation failed"
+                fi
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+
+      - name: Emit package result
+        if: always()
+        id: summary
+        uses: ./.github/actions/emit-package-result
+        with:
+          package_name: "Apache Spark"
+          version: ${{ steps.version.outputs.version || steps.metadata.outputs.current_version || env.BASELINE_VERSION }}
+          install_status: ${{ steps.install_state.outputs.install_status || steps.install.outputs.install_status || 'success' }}
+          test1_label: "Test 1 - Binary Existence"
+          test2_label: "Test 2 - Version Check"
+          test3_label: "Test 3 - Help Or Configuration Validation"
+          test4_label: "Test 4 - Architecture Verification"
+          test5_label: "Test 5 - Functional Validation"
+          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
+          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
+          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
+          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
+          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
+          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_duration: ${{ steps.test1.outputs.duration || 0 }}
+          test2_duration: ${{ steps.test2.outputs.duration || 0 }}
+          test3_duration: ${{ steps.test3.outputs.duration || 0 }}
+          test4_duration: ${{ steps.test4.outputs.duration || 0 }}
+          test5_duration: ${{ steps.test5.outputs.duration || 0 }}
+          test6_duration: ${{ steps.test6.outputs.duration || 0 }}
+          regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}
+          regression_latest_version: ${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || 'unknown' }}
+          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
+          regression_details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Pinned current version passed smoke tests. Upgrade-candidate validation is still pending.' }}
+
+      - name: Finalize workflow status
+        if: always()
+        run: |
+          if [ "${{ steps.summary.outputs.should_fail }}" = "1" ]; then
+            exit 1
+          fi

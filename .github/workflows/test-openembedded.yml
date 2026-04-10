@@ -1,0 +1,485 @@
+name: Test OpenEmbedded (Yocto) on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-openembedded.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-openembedded.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-openembedded.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-openembedded.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-openembedded.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-openembedded.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-openembedded.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-openembedded.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-openembedded.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-openembedded.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-openembedded.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-openembedded.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-openembedded.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-openembedded.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-openembedded.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-openembedded.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-openembedded.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-openembedded.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-openembedded.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-openembedded.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-openembedded.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-openembedded.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-openembedded.outputs.timestamp }}
+jobs:
+  test-openembedded:
+    runs-on: ubuntu-24.04-arm
+    env:
+      OE_BASE_TAG: "yocto-4.0.33"
+      OE_BASE_VERSION: "4.0.33"
+      OE_NEXT_SERIES: "5.0"
+      OE_WORKDIR: "/tmp/openembedded-smoke"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'OpenEmbedded (Yocto)'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=openembedded" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/openembedded" >> "$GITHUB_OUTPUT"
+          echo "current_version=${OE_BASE_VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Install OpenEmbedded (Yocto)
+        id: install
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            git \
+            python3 \
+            gawk \
+            diffstat \
+            unzip \
+            texinfo \
+            build-essential \
+            chrpath \
+            socat \
+            cpio \
+            file \
+            xz-utils \
+            zstd
+
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null || true
+
+          rm -rf "${OE_WORKDIR}"
+          mkdir -p "${OE_WORKDIR}"
+          cd "${OE_WORKDIR}"
+
+          git clone --depth 1 --branch "${OE_BASE_TAG}" https://github.com/openembedded/openembedded-core.git oe
+          git clone --depth 1 --branch "${OE_BASE_TAG}" https://github.com/openembedded/bitbake.git bitbake
+
+          cd oe
+          set +u
+          source oe-init-build-env build >/dev/null
+          set -u
+
+          test -f "${OE_WORKDIR}/oe/oe-init-build-env"
+          test -x "${OE_WORKDIR}/bitbake/bin/bitbake"
+
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+          echo "oe_dir=${OE_WORKDIR}/oe" >> "$GITHUB_OUTPUT"
+          echo "bitbake_dir=${OE_WORKDIR}/bitbake" >> "$GITHUB_OUTPUT"
+
+      - name: Get OpenEmbedded (Yocto) version
+        id: version
+        run: |
+          set -euo pipefail
+          LATEST_TAG=$(
+            python3 - <<'PY'
+          import json
+          import urllib.request
+
+          tags = json.load(
+              urllib.request.urlopen(
+                  "https://api.github.com/repos/openembedded/openembedded-core/tags?per_page=100",
+                  timeout=30,
+              )
+          )
+          versions = []
+          for tag in tags:
+              name = tag["name"]
+              if not name.startswith("yocto-5.0."):
+                  continue
+              suffix = name.replace("yocto-", "", 1)
+              version = tuple(int(part) for part in suffix.split("."))
+              versions.append((version, name))
+          versions.sort()
+          print(versions[-1][1] if versions else "")
+          PY
+          )
+          LATEST_VERSION="${LATEST_TAG#yocto-}"
+
+          echo "version=${OE_BASE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Detected OpenEmbedded baseline tag: ${OE_BASE_TAG}"
+          echo "Detected latest candidate tag: ${LATEST_TAG:-unknown}"
+
+      - name: Test 1 - Check oe-init-build-env and sibling bitbake
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ -f "${{ steps.install.outputs.oe_dir }}/oe-init-build-env" ] && [ -x "${{ steps.install.outputs.bitbake_dir }}/bin/bitbake" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check BitBake version on baseline
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null || true
+          cd "${{ steps.install.outputs.oe_dir }}"
+          set +u
+          source oe-init-build-env build >/dev/null
+          set -u
+          BITBAKE_VERSION=$(bitbake --version | head -n 1 || true)
+          if echo "$BITBAKE_VERSION" | grep -q "BitBake Build Tool Core version"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$BITBAKE_VERSION"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check layer registration on baseline
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null || true
+          cd "${{ steps.install.outputs.oe_dir }}"
+          set +u
+          source oe-init-build-env build >/dev/null
+          set -u
+          bitbake-layers show-layers > /tmp/openembedded-layers.txt 2>&1
+          if grep -Eq "meta|core" /tmp/openembedded-layers.txt; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/openembedded-layers.txt || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "$(uname -m)" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null || true
+          cd "${{ steps.install.outputs.oe_dir }}"
+          set +u
+          source oe-init-build-env build >/dev/null
+          set -u
+          if timeout 180 bitbake -p >/tmp/openembedded-parse.log 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            tail -n 60 /tmp/openembedded-parse.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+          LATEST_TAG="${{ steps.version.outputs.latest_tag || '' }}"
+          REGRESSION_ROOT="/tmp/openembedded-regression"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ] || [ -z "$LATEST_TAG" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenEmbedded (Yocto) version ${CURRENT} passed smoke tests in this run, but the latest Arm-recommended stable candidate could not be resolved for Arm64 install validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned OpenEmbedded (Yocto) version ${CURRENT} passed smoke tests in this run, but the latest Arm-recommended stable candidate could not be resolved for Arm64 install validation."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${CURRENT}"
+            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
+            echo "Details: Current pinned OpenEmbedded (Yocto) version ${CURRENT} passed smoke tests in this run and already matches the latest Arm-recommended stable candidate on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null || true
+          rm -rf "${REGRESSION_ROOT}"
+          mkdir -p "${REGRESSION_ROOT}"
+          cd "${REGRESSION_ROOT}"
+          git clone --depth 1 --branch "${LATEST_TAG}" https://github.com/openembedded/openembedded-core.git oe >/dev/null 2>&1
+          git clone --depth 1 --branch "${LATEST_TAG}" https://github.com/openembedded/bitbake.git bitbake >/dev/null 2>&1
+
+          cd oe
+          set +u
+          source oe-init-build-env build >/dev/null
+          set -u
+          bitbake --version > /tmp/openembedded-next-version.txt 2>&1
+          bitbake-layers show-layers > /tmp/openembedded-next-layers.txt 2>&1
+
+          if timeout 180 bitbake -p >/tmp/openembedded-next-parse.log 2>&1 && grep -Eq "core|meta" /tmp/openembedded-next-layers.txt; then
+            echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenEmbedded (Yocto) version ${CURRENT} passed smoke tests in this run. Regression validation cloned sibling openembedded-core and bitbake checkouts for candidate tag ${LATEST_TAG}, sourced oe-init-build-env successfully on Arm64, and completed a real BitBake parse for version ${LATEST}." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${LATEST}"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned OpenEmbedded (Yocto) version ${CURRENT} passed smoke tests in this run. Regression validation cloned sibling openembedded-core and bitbake checkouts for candidate tag ${LATEST_TAG}, sourced oe-init-build-env successfully on Arm64, and completed a real BitBake parse for version ${LATEST}."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            tail -n 60 /tmp/openembedded-next-parse.log || true
+            cat /tmp/openembedded-next-layers.txt || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenEmbedded (Yocto) version ${CURRENT} passed smoke tests in this run, but the candidate tag ${LATEST_TAG} could not complete a usable Arm64 environment init plus BitBake parse flow." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned OpenEmbedded (Yocto) version ${CURRENT} passed smoke tests in this run, but the candidate tag ${LATEST_TAG} could not complete a usable Arm64 environment init plus BitBake parse flow."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          set -euo pipefail
+          PASSED=0
+          FAILED=0
+          CORE_FAILED=0
+          TOTAL_DURATION=0
+
+          check_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_core() {
+            local status="$1"
+            local duration="$2"
+            check_test "$status" "$duration"
+            if [ "$status" != "passed" ]; then
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          }
+
+          check_core "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_test "${{ steps.test6.outputs.status || 'skipped' }}" "${{ steps.test6.outputs.duration || 0 }}"
+
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          if [ "$FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          {
+            echo "## OpenEmbedded (Yocto) Test Results"
+            echo ""
+            echo "- **Version:** ${{ steps.version.outputs.version || 'unknown' }}"
+            echo "- **Status:** ${{ steps.summary.outputs.overall_status || 'failure' }}"
+            echo "- **Tests Passed:** ${{ steps.summary.outputs.passed || 0 }}"
+            echo "- **Tests Failed:** ${{ steps.summary.outputs.failed || 0 }}"
+            echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s"
+            echo "- **Runner:** ubuntu-24.04 (arm64)"
+            echo ""
+            echo "### Test Details"
+            echo "1. Test 1 - Check oe-init-build-env and sibling bitbake: ${{ steps.test1.outputs.status || 'skipped' }}"
+            echo "2. Test 2 - Check BitBake version on baseline: ${{ steps.test2.outputs.status || 'skipped' }}"
+            echo "3. Test 3 - Check layer registration on baseline: ${{ steps.test3.outputs.status || 'skipped' }}"
+            echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}"
+            echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}"
+            echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}"
+            echo ""
+            echo "### Regression Validation (Next Version Install)"
+            echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+            echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+            echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+            echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+            echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+          } >> "$GITHUB_STEP_SUMMARY"

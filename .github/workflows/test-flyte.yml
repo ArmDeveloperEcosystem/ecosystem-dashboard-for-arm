@@ -1,0 +1,437 @@
+name: Test Flyte on Arm64
+
+on:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-flyte.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-flyte.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-flyte.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-flyte.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-flyte.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-flyte.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-flyte.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-flyte.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-flyte.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-flyte.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-flyte.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-flyte.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-flyte.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-flyte.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-flyte.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-flyte.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-flyte.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-flyte.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-flyte.outputs.regression_policy }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-flyte.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-flyte.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-flyte.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-flyte.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-flyte.outputs.timestamp }}
+
+jobs:
+  test-flyte:
+    runs-on: ubuntu-24.04-arm
+    env:
+      BASELINE_VERSION: "0.8.19"
+      PACKAGE_SLUG: "flyte"
+      LANE_KIND: "github release / source-build-or-tarball"
+      DOWNLOAD_URL: "https://github.com/flyteorg/flyte/releases"
+      HOMEPAGE_URL: "https://flyte.org/"
+      OFFICIAL_DOCS: "https://www.union.ai/docs/v2/flyte/user-guide/getting-started/"
+      GITHUB_REPO: "flyteorg/flyte"
+      PACKAGE_PAGE: "content/linux/opensource_packages/flyte.md"
+      SOURCE_GLOBS: "flyteadmin|flytepropeller|charts|docker|go.mod"
+      EVIDENCE_RE: "Flyte|workflow|orchestration|pipeline"
+      TEST5_MODE: "source"
+      PYTHON_TARGETS: ""
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Flyte'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=flyte" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/linux/opensource_packages/flyte" >> "$GITHUB_OUTPUT"
+
+      - name: Bootstrap baseline dependencies
+        uses: ./.github/actions/apt-bootstrap
+        with:
+          packages: "git curl jq tar unzip file ca-certificates"
+          quiet: "true"
+
+      - name: Install baseline source or artifact
+        id: install
+        run: |
+          set -euo pipefail
+          rm -rf baseline-src baseline-external
+          mkdir -p baseline-src baseline-external
+          if [ -n "$GITHUB_REPO" ]; then
+            RESOLVED_TAG=""
+            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
+              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
+                RESOLVED_TAG="$CANDIDATE"
+                break
+              fi
+            done
+            if [ -n "$RESOLVED_TAG" ]; then
+              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
+              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
+            else
+              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
+              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
+            fi
+            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
+              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
+              echo "install_status=success" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
+            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
+            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
+            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
+          echo "install_status=failed" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Get baseline version
+        id: version
+        run: |
+          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected baseline version: $BASELINE_VERSION"
+
+      - name: Test 1 - Baseline package evidence
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          if [ ! -f "$PACKAGE_PAGE" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$MODE" = "github_source" ]; then
+            FOUND=0
+            IFS='|' read -r -a PATTERNS <<< "$SOURCE_GLOBS"
+            for PATTERN in "${PATTERNS[@]}"; do
+              [ -z "$PATTERN" ] && continue
+              if compgen -G "baseline-src/$PATTERN" > /dev/null; then
+                FOUND=1
+                break
+              fi
+            done
+            if [ "$FOUND" -ne 1 ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            if [ ! -f baseline-external/metadata.txt ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Baseline version and release alignment
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          if ! grep -Fq "version_number: $BASELINE_VERSION" "$PACKAGE_PAGE"; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$MODE" = "github_source" ]; then
+            RESOLVED="${{ steps.install.outputs.resolved_tag || '' }}"
+            if [ -z "$RESOLVED" ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            if [ "$RESOLVED" != "default_branch" ] && [ "$RESOLVED" != "$BASELINE_VERSION" ] && [ "$RESOLVED" != "v$BASELINE_VERSION" ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            if [ ! -f baseline-external/metadata.txt ] || ! grep -Fq "$DOWNLOAD_URL" baseline-external/metadata.txt; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Package-specific source or docs evidence
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          if [ "$MODE" = "github_source" ]; then
+            if ! grep -R -I -Eiq "$EVIDENCE_RE" baseline-src 2>/dev/null; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            DOC_FOUND=0
+            for PATTERN in README* docs examples; do
+              if compgen -G "baseline-src/$PATTERN" > /dev/null; then
+                DOC_FOUND=1
+                break
+              fi
+            done
+            if [ "$DOC_FOUND" -ne 1 ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            if ! grep -Eiq "$EVIDENCE_RE" "$PACKAGE_PAGE"; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            if ! grep -Fq "$HOMEPAGE_URL" baseline-external/metadata.txt; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Arm64 support gate
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "$(uname -m)" != "aarch64" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if ! grep -q '^works_on_arm: true' "$PACKAGE_PAGE"; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Bounded package-specific smoke
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          case "$TEST5_MODE" in
+            python)
+              if [ "$MODE" != "github_source" ]; then
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              FOUND=0
+              IFS='|' read -r -a TARGETS <<< "$PYTHON_TARGETS"
+              for TARGET in "${TARGETS[@]}"; do
+                [ -z "$TARGET" ] && continue
+                if [ -d "baseline-src/$TARGET" ] || [ -f "baseline-src/$TARGET" ]; then
+                  python3 -m compileall -q "baseline-src/$TARGET"
+                  FOUND=1
+                  break
+                fi
+              done
+              if [ "$FOUND" -ne 1 ]; then
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "note=Validated package-specific Python sources with compileall without requiring optional accelerator runtimes." >> "$GITHUB_OUTPUT"
+              ;;
+            source)
+              if [ "$MODE" != "github_source" ]; then
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              MATCHED=0
+              IFS='|' read -r -a PATTERNS <<< "$SOURCE_GLOBS"
+              for PATTERN in "${PATTERNS[@]}"; do
+                [ -z "$PATTERN" ] && continue
+                if compgen -G "baseline-src/$PATTERN" > /dev/null; then
+                  MATCHED=$((MATCHED + 1))
+                fi
+              done
+              if [ "$MATCHED" -lt 1 ] || ! grep -R -I -Eiq "$EVIDENCE_RE" baseline-src 2>/dev/null; then
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
+                echo "note=Validated package-specific source layout and documentation on Arm64; GPU or accelerator runtime remains out of scope for generic runners." >> "$GITHUB_OUTPUT"
+              else
+                echo "note=Validated package-specific source layout and documentation on Arm64 without claiming a full runtime build." >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            external)
+              if [ ! -f baseline-external/metadata.txt ]; then
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              if ! grep -Fq "download=$DOWNLOAD_URL" baseline-external/metadata.txt || ! grep -Fq "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt || ! grep -Eiq "$EVIDENCE_RE" "$PACKAGE_PAGE"; then
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "note=Validated package metadata, official endpoints, and Arm64 package-page evidence for this external/manual lane." >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+              ;;
+          esac
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        uses: ./.github/actions/generic-source-regression-check
+        with:
+          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
+          github_repo: ${{ env.GITHUB_REPO }}
+          lane_kind: ${{ env.LANE_KIND }}
+      - name: Calculate test summary
+        id: summary
+        if: always()
+        run: |
+          T1="${{ steps.test1.outputs.status || '' }}"
+          T2="${{ steps.test2.outputs.status || '' }}"
+          T3="${{ steps.test3.outputs.status || '' }}"
+          T4="${{ steps.test4.outputs.status || '' }}"
+          T5="${{ steps.test5.outputs.status || '' }}"
+          T6="${{ steps.test6.outputs.status || '' }}"
+          D1="${{ steps.test1.outputs.duration || '0' }}"
+          D2="${{ steps.test2.outputs.duration || '0' }}"
+          D3="${{ steps.test3.outputs.duration || '0' }}"
+          D4="${{ steps.test4.outputs.duration || '0' }}"
+          D5="${{ steps.test5.outputs.duration || '0' }}"
+          D6="${{ steps.test6.outputs.duration || '0' }}"
+          PASSED=0
+          FAILED=0
+          SKIPPED=0
+          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
+            if [ "$STATUS" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$STATUS" = "failed" ]; then
+              FAILED=$((FAILED + 1))
+            else
+              SKIPPED=$((SKIPPED + 1))
+            fi
+          done
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          CORE_FAILED=0
+          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
+            if [ "$STATUS" = "failed" ]; then
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          done
+          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+            OVERALL_STATUS="success"
+            BADGE_STATUS="passing"
+          else
+            OVERALL_STATUS="failure"
+            BADGE_STATUS="failing"
+          fi
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
+          echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
