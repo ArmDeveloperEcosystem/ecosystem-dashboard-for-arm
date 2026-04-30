@@ -2,7 +2,7 @@
 name: Claude Code
 category: AI/ML Tools
 description: Claude Code is an AI coding agent from Anthropic that is designed to perform software tasks such as writing code and fixing bugs.
-download_url: https://releases.llvm.org/
+download_url: https://claude.com/download
 works_on_arm: true
 supported_minimum_version:
   version_number: 2.1.0
