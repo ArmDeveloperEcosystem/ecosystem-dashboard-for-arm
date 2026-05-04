@@ -79,7 +79,7 @@ on:
 jobs:
   test-rmblast:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
+    timeout-minutes: 150
     env:
       RMBLAST_VERSION: "2.14.1"
       RMBLAST_PREFIX: "/tmp/rmblast-smoke"
@@ -123,7 +123,7 @@ jobs:
         id: install
         run: |
           set -euo pipefail
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential autoconf automake libtool pkg-config curl ca-certificates patch file zlib1g-dev libbz2-dev liblzma-dev"
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential autoconf automake libtool pkg-config curl ca-certificates patch file zlib1g-dev libbz2-dev liblzma-dev libsqlite3-dev"
           BUILD_ROOT=$(mktemp -d)
           BASELINE_URL="https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/${RMBLAST_VERSION}/ncbi-blast-${RMBLAST_VERSION}+-src.tar.gz"
           PATCH_URL="https://www.repeatmasker.org/rmblast/isb-${RMBLAST_VERSION}+-rmblast.patch.gz"
@@ -320,14 +320,44 @@ jobs:
 
             cd "$SRC_DIR/c++"
             timeout 10m ./configure --with-mt --without-debug --without-krb5 --without-openssl --with-projects=scripts/projects/rmblastn/project.lst --prefix="$NEXT_PREFIX" 2>&1 | tee /tmp/rmblast-configure-next.log
+            timeout --signal=TERM --kill-after=60s 75m make -j2 2>&1 | tee /tmp/rmblast-make-next.log
+            timeout 10m make install 2>&1 | tee /tmp/rmblast-install-next.log
 
-            echo "next_installed_version=source_preflight_only" >> "$GITHUB_OUTPUT"
-            echo "decision=bounded_runtime_deferred" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version source and RMBlast patch preflight passed; full rebuild deferred" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned RMBlast release ${CURRENT} passed a full Arm64 source build plus makeblastdb/rmblastn self-hit smoke in Tests 1-5. Test 6 downloaded the next public RMBlast patch ${NEXT}, selected NCBI BLAST source ${SOURCE_VERSION}, applied the patch on the Arm64 runner, and completed the RMBlast configure step. A second full next-version compile is intentionally deferred because the source rebuild exceeds the bounded smoke-test runtime budget." >> "$GITHUB_OUTPUT"
-            echo "Regression install result: Next version source and RMBlast patch preflight passed; full rebuild deferred"
-            echo "Next version installed on Arm64: source_preflight_only"
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            test -x "$NEXT_PREFIX/bin/rmblastn"
+            test -x "$NEXT_PREFIX/bin/makeblastdb"
+            file "$NEXT_PREFIX/bin/rmblastn" | grep -Eq 'aarch64|ARM aarch64'
+            NEXT_VERSION_OUTPUT="$("$NEXT_PREFIX/bin/rmblastn" -version 2>&1)"
+            echo "$NEXT_VERSION_OUTPUT"
+            echo "$NEXT_VERSION_OUTPUT" | grep -Fq "${NEXT}"
+
+            WORK_DIR=$(mktemp -d)
+            cat > "$WORK_DIR/db.fa" <<'EOF'
+          >db1
+          ACGTACGTACGTACGTACGTACGTACGT
+          EOF
+            cat > "$WORK_DIR/query.fa" <<'EOF'
+          >query1
+          ACGTACGTACGTACGTACGTACGTACGT
+          EOF
+
+            "$NEXT_PREFIX/bin/makeblastdb" -in "$WORK_DIR/db.fa" -dbtype nucl -out "$WORK_DIR/db" >/tmp/rmblast-makeblastdb-next.out 2>&1
+            "$NEXT_PREFIX/bin/rmblastn" \
+              -query "$WORK_DIR/query.fa" \
+              -db "$WORK_DIR/db" \
+              -task megablast \
+              -dust no \
+              -soft_masking false \
+              -outfmt '6 qseqid sseqid length' > "$WORK_DIR/result.tsv" 2>/tmp/rmblast-run-next.out
+
+            grep -q $'^query1\tdb1\t' "$WORK_DIR/result.tsv"
+
+            echo "next_installed_version=${NEXT}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version built and passed runtime smoke on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned RMBlast release ${CURRENT} passed a full Arm64 source build plus makeblastdb/rmblastn self-hit smoke in Tests 1-5. Test 6 downloaded the next public RMBlast patch ${NEXT}, selected NCBI BLAST source ${SOURCE_VERSION}, applied the patch on the Arm64 runner, built and installed the candidate, verified the candidate rmblastn binary is AArch64, and reran the makeblastdb/rmblastn self-hit runtime smoke successfully." >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Next version built and passed runtime smoke on Arm64"
+            echo "Next version installed on Arm64: ${NEXT}"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
