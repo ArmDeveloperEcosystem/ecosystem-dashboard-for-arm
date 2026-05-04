@@ -80,15 +80,17 @@ jobs:
   test-freecad:
     runs-on: ubuntu-24.04-arm
     env:
-      BASELINE_VERSION: "0.21.0"
+      BASELINE_VERSION: "1.1.1"
       PACKAGE_SLUG: "freecad"
-      LANE_KIND: "apt package / CPU runtime"
+      LANE_KIND: "official Arm64 AppImage / CPU headless runtime"
       DOWNLOAD_URL: "https://github.com/FreeCAD/FreeCAD/releases"
       HOMEPAGE_URL: "https://www.freecad.org/index.php"
       OFFICIAL_DOCS: "https://wiki.freecad.org/Getting_started#Installing"
       GITHUB_REPO: "FreeCAD/FreeCAD"
       PACKAGE_PAGE: "content/linux/opensource_packages/freecad.md"
-      APT_PACKAGES: "freecad"
+      APPIMAGE_NAME: "FreeCAD_1.1.1-Linux-aarch64-py311.AppImage"
+      APPIMAGE_URL: "https://github.com/FreeCAD/FreeCAD/releases/download/1.1.1/FreeCAD_1.1.1-Linux-aarch64-py311.AppImage"
+      APPIMAGE_SHA256_URL: "https://github.com/FreeCAD/FreeCAD/releases/download/1.1.1/FreeCAD_1.1.1-Linux-aarch64-py311.AppImage-SHA256.txt"
       COMMAND_CANDIDATES: "FreeCADCmd freecadcmd"
 
     outputs:
@@ -110,7 +112,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
-      regression_policy: "package_manager_installed"
+      regression_policy: "official_binary_current_latest"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -131,51 +133,65 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "curl ca-certificates"
+          packages: "curl ca-certificates file"
           quiet: "true"
 
-      - name: Use Ubuntu archive FreeCAD package
+      - name: Use official FreeCAD Arm64 AppImage
         run: |
           set -euo pipefail
-          echo "Using the Ubuntu Arm64 archive package for a deterministic headless FreeCADCmd smoke test."
+          echo "Using the official stable Linux aarch64 AppImage for a deterministic headless FreeCADCmd smoke test."
 
-      - name: Install FreeCAD runtime package
-        uses: ./.github/actions/apt-bootstrap
-        with:
-          packages: "${{ env.APT_PACKAGES }}"
-          quiet: "true"
-
-      - name: Locate installed FreeCAD command
+      - name: Download and extract FreeCAD AppImage
         id: install
         run: |
           set -euo pipefail
-          COMMAND_PATH=""
-          for CANDIDATE in $COMMAND_CANDIDATES; do
-            if command -v "$CANDIDATE" >/dev/null 2>&1; then
-              COMMAND_PATH=$(command -v "$CANDIDATE")
-              break
-            fi
-          done
-          if [ -z "$COMMAND_PATH" ]; then
-            COMMAND_PATH=$(find /usr -type f \( -name FreeCADCmd -o -name freecadcmd \) -perm -111 2>/dev/null | head -1 || true)
-          fi
-          if [ -z "$COMMAND_PATH" ]; then
-            echo "install_mode=package_manager" >> "$GITHUB_OUTPUT"
+          WORKDIR="$RUNNER_TEMP/freecad-appimage"
+          rm -rf "$WORKDIR"
+          mkdir -p "$WORKDIR"
+
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 \
+            "$APPIMAGE_URL" -o "$WORKDIR/$APPIMAGE_NAME"
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 120 \
+            "$APPIMAGE_SHA256_URL" -o "$WORKDIR/$APPIMAGE_NAME.sha256"
+          (cd "$WORKDIR" && sha256sum -c "$APPIMAGE_NAME.sha256")
+
+          chmod +x "$WORKDIR/$APPIMAGE_NAME"
+          if ! file "$WORKDIR/$APPIMAGE_NAME" | grep -Eq 'aarch64|ARM aarch64'; then
+            file "$WORKDIR/$APPIMAGE_NAME"
+            echo "install_mode=official_appimage" >> "$GITHUB_OUTPUT"
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
+          (
+            cd "$WORKDIR"
+            "./$APPIMAGE_NAME" --appimage-extract >/tmp/freecad-appimage-extract.log 2>&1
+          )
+
+          APPDIR="$WORKDIR/squashfs-root"
+          COMMAND_PATH=""
+          COMMAND_PATH=$(find "$APPDIR" -type f \( -name FreeCADCmd -o -name freecadcmd \) -perm -111 2>/dev/null | head -1 || true)
+          if [ -z "$COMMAND_PATH" ]; then
+            find "$APPDIR" -maxdepth 4 -type f | sort | grep -Ei 'freecad|AppRun' || true
+            cat /tmp/freecad-appimage-extract.log || true
+            echo "install_mode=official_appimage" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "appimage_path=$WORKDIR/$APPIMAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "appdir=$APPDIR" >> "$GITHUB_OUTPUT"
           echo "command_path=$COMMAND_PATH" >> "$GITHUB_OUTPUT"
-          echo "install_mode=package_manager" >> "$GITHUB_OUTPUT"
+          echo "install_mode=official_appimage" >> "$GITHUB_OUTPUT"
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get baseline version
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(dpkg-query -W -f='${Version}\n' freecad 2>/dev/null | head -1 || true)
-          if [ -z "$VERSION" ]; then
-            VERSION=$("${{ steps.install.outputs.command_path }}" --version 2>&1 | grep -Eo '[0-9]+([.][0-9]+)+' | head -1 || true)
-          fi
+          export APPDIR="${{ steps.install.outputs.appdir }}"
+          export PATH="$APPDIR/usr/bin:$PATH"
+          export LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/usr/lib/aarch64-linux-gnu:$APPDIR/usr/lib/freecad/lib:${LD_LIBRARY_PATH:-}"
+          VERSION=$("${{ steps.install.outputs.command_path }}" --version 2>&1 | grep -Eo '[0-9]+([.][0-9]+)+' | head -1 || true)
           [ -n "$VERSION" ] || VERSION="unknown"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected FreeCAD version: $VERSION"
@@ -190,7 +206,8 @@ jobs:
           test "${{ steps.install.outputs.install_status || 'failed' }}" = "success"
           test -n "$COMMAND_PATH"
           test -x "$COMMAND_PATH"
-          dpkg-query -W freecad >/dev/null
+          test -d "${{ steps.install.outputs.appdir }}"
+          test -s "${{ steps.install.outputs.appimage_path }}"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -203,7 +220,11 @@ jobs:
           START_TIME=$(date +%s)
           VERSION="${{ steps.version.outputs.version || 'unknown' }}"
           test "$VERSION" != "unknown"
-          dpkg-query -W -f='${Version}\n' freecad | grep -F "$VERSION"
+          export APPDIR="${{ steps.install.outputs.appdir }}"
+          export PATH="$APPDIR/usr/bin:$PATH"
+          export LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/usr/lib/aarch64-linux-gnu:$APPDIR/usr/lib/freecad/lib:${LD_LIBRARY_PATH:-}"
+          file "${{ steps.install.outputs.appimage_path }}" | grep -Eq 'aarch64|ARM aarch64'
+          "${{ steps.install.outputs.command_path }}" --version 2>&1 | grep -F "$VERSION"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -215,6 +236,9 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           COMMAND_PATH="${{ steps.install.outputs.command_path }}"
+          export APPDIR="${{ steps.install.outputs.appdir }}"
+          export PATH="$APPDIR/usr/bin:$PATH"
+          export LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/usr/lib/aarch64-linux-gnu:$APPDIR/usr/lib/freecad/lib:${LD_LIBRARY_PATH:-}"
           cat > /tmp/freecad-import-smoke.py <<'PY'
           import FreeCAD
           import Part
@@ -242,6 +266,7 @@ jobs:
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          file "${{ steps.install.outputs.appimage_path }}" | grep -Eq 'aarch64|ARM aarch64'
           if ! grep -q '^works_on_arm: true' "$PACKAGE_PAGE"; then
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
@@ -257,6 +282,9 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           COMMAND_PATH="${{ steps.install.outputs.command_path }}"
+          export APPDIR="${{ steps.install.outputs.appdir }}"
+          export PATH="$APPDIR/usr/bin:$PATH"
+          export LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/usr/lib/aarch64-linux-gnu:$APPDIR/usr/lib/freecad/lib:${LD_LIBRARY_PATH:-}"
           cat > /tmp/freecad-export-smoke.py <<'PY'
           import os
           import FreeCAD
@@ -284,11 +312,11 @@ jobs:
           set -euo pipefail
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested FreeCAD runtime is installed via apt in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
+          echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+          echo "regression_result=No newer stable FreeCAD Arm64 AppImage is available beyond the version validated in Tests 1-5" >> "$GITHUB_OUTPUT"
+          echo "comparison=Tests 1-5 download and run the official stable Linux aarch64 AppImage. The current stable release is the latest stable Arm64 AppImage, so there is no newer stable candidate for Test 6." >> "$GITHUB_OUTPUT"
           echo "status=skipped" >> "$GITHUB_OUTPUT"
           echo "duration=0" >> "$GITHUB_OUTPUT"
       - name: Calculate test summary
