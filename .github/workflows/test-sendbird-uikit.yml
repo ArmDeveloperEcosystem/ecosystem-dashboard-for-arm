@@ -76,6 +76,8 @@ on:
 jobs:
   test-sendbird-uikit:
     runs-on: ubuntu-24.04-arm
+    env:
+      SENDBIRD_UIKIT_VERSION: "3.0.0"
 
     outputs:
       contract_version: "2.0"
@@ -124,7 +126,7 @@ jobs:
           mkdir -p /tmp/sendbird-uikit-smoke
           cd /tmp/sendbird-uikit-smoke
           npm init -y >/dev/null 2>&1
-          npm install --no-fund --no-audit react react-dom @sendbird/uikit-react
+          npm install --no-fund --no-audit react@18 react-dom@18 "@sendbird/uikit-react@${SENDBIRD_UIKIT_VERSION}"
           if [ -f node_modules/@sendbird/uikit-react/package.json ]; then
             echo "package_dir=/tmp/sendbird-uikit-smoke" >> "$GITHUB_OUTPUT"
             echo "install_status=success" >> "$GITHUB_OUTPUT"
@@ -159,9 +161,11 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if node -p "require('/tmp/sendbird-uikit-smoke/node_modules/@sendbird/uikit-react/package.json').version" | grep -Eq '^[0-9]'; then
+          VERSION=$(node -p "require('/tmp/sendbird-uikit-smoke/node_modules/@sendbird/uikit-react/package.json').version")
+          if [ "$VERSION" = "$SENDBIRD_UIKIT_VERSION" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            echo "Expected $SENDBIRD_UIKIT_VERSION but got $VERSION"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -205,11 +209,18 @@ jobs:
           START_TIME=$(date +%s)
           cd /tmp/sendbird-uikit-smoke
           node - <<'EOF' | tee /tmp/sendbird-uikit-functional.log
+          const React = require("react");
+          const { renderToString } = require("react-dom/server");
           const ui = require("@sendbird/uikit-react");
-          console.log(typeof ui.SendBirdProvider);
-          console.log(typeof ui.App);
+          const Provider = ui.SendBirdProvider || ui.SendbirdProvider;
+          if (typeof Provider !== "function") process.exit(1);
+          const html = renderToString(
+            React.createElement(Provider, { appId: "app", userId: "user" }, React.createElement("div", null, "arm64"))
+          );
+          if (!html.includes("arm64")) process.exit(1);
+          console.log("sendbird-render-ok");
           EOF
-          if grep -Fxq "function" /tmp/sendbird-uikit-functional.log; then
+          if grep -Fxq "sendbird-render-ok" /tmp/sendbird-uikit-functional.log; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -219,19 +230,69 @@ jobs:
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
 
-      - name: Regression applicability - package manager installed
+      - name: Test 6 - Regression Validation
         id: test6
         run: |
           set -euo pipefail
+          START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
-          echo "duration=0" >> "$GITHUB_OUTPUT"
+          npm view @sendbird/uikit-react versions --json > /tmp/sendbird-uikit-versions.json
+          NEXT=$(CURRENT="$CURRENT" node <<'NODE'
+          const fs = require('fs');
+          const current = process.env.CURRENT;
+          const versions = JSON.parse(fs.readFileSync('/tmp/sendbird-uikit-versions.json', 'utf8'))
+            .filter((v) => /^\d+\.\d+\.\d+$/.test(v))
+            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+          process.stdout.write(versions.find((v) => v.localeCompare(current, undefined, { numeric: true }) > 0) || '');
+          NODE
+          )
+          if [ -z "$NEXT" ]; then
+            echo "latest_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable Sendbird UIKit version is available from npm" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Sendbird UIKit $CURRENT rendered a provider subtree; npm did not report a newer stable candidate for Test 6." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "latest_version=$NEXT" >> "$GITHUB_OUTPUT"
+          NEXT_DIR=$(mktemp -d)
+          cd "$NEXT_DIR"
+          npm init -y >/dev/null 2>&1
+          npm install --no-fund --no-audit react@18 react-dom@18 "@sendbird/uikit-react@${NEXT}"
+          INSTALLED=$(node -p "require('@sendbird/uikit-react/package.json').version")
+          node <<'EOF' > /tmp/sendbird-uikit-next-functional.log
+          const React = require("react");
+          const { renderToString } = require("react-dom/server");
+          const ui = require("@sendbird/uikit-react");
+          const Provider = ui.SendBirdProvider || ui.SendbirdProvider;
+          if (typeof Provider !== "function") process.exit(1);
+          const html = renderToString(
+            React.createElement(Provider, { appId: "app", userId: "user" }, React.createElement("div", null, "arm64"))
+          );
+          if (!html.includes("arm64")) process.exit(1);
+          console.log("sendbird-next-ok");
+          EOF
+          if [ "$INSTALLED" = "$NEXT" ] && grep -Fxq "sendbird-next-ok" /tmp/sendbird-uikit-next-functional.log; then
+            echo "next_installed_version=$INSTALLED" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed and rendered successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Sendbird UIKit $CURRENT rendered a provider subtree. Test 6 installed candidate $INSTALLED and repeated the bounded React render on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/sendbird-uikit-next-functional.log || true
+            echo "next_installed_version=${INSTALLED:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version render smoke failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Sendbird UIKit $CURRENT passed, but candidate $NEXT did not complete the same React render smoke on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         if: always()
@@ -255,6 +316,13 @@ jobs:
           check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
           check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
           check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          if [ "$TEST6_STATUS" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$TEST6_STATUS" = "failed" ]; then
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
@@ -266,4 +334,3 @@ jobs:
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-

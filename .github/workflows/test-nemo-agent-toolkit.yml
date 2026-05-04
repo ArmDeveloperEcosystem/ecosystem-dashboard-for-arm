@@ -81,8 +81,10 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       BASELINE_VERSION: "1.1.0"
+      NEXT_VERSION: "1.4.3"
       PACKAGE_SLUG: "nemo-agent-toolkit"
-      LANE_KIND: "gpu/specialized/manual-review"
+      LANE_KIND: "python-cpu-runtime"
+      PYPI_PACKAGE: "aiqtoolkit"
       DOWNLOAD_URL: "https://github.com/NVIDIA/NeMo-Agent-Toolkit/releases"
       HOMEPAGE_URL: "https://docs.nvidia.com/nemo/agent-toolkit/latest/index.html"
       OFFICIAL_DOCS: "https://docs.nvidia.com/nemo/agent-toolkit/latest/get-started/installation.html"
@@ -94,7 +96,7 @@ jobs:
       TEST3_COMMAND: >-
         test -f docs/README.md && test -f docker/build_container.sh && grep -Fq 'aiq run --config_file' README.md
       TEST5_COMMAND: >-
-        sh -n ci/scripts/checks.sh && sh -n docker/build_container.sh && python3 -m py_compile ci/release/update_toml_dep.py ci/scripts/copyright.py
+        python3 -c "import tomllib; data=tomllib.load(open('pyproject.toml','rb')); assert data['project']['name'] == 'aiqtoolkit'" && sh -n ci/scripts/checks.sh && sh -n docker/build_container.sh && python3 -m py_compile ci/release/update_toml_dep.py ci/scripts/copyright.py
 
     outputs:
       contract_version: "2.0"
@@ -136,7 +138,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates python3-venv python3-pip"
           extra_packages: "${{ env.EXTRA_APT_PACKAGES }}"
           quiet: "true"
 
@@ -163,10 +165,10 @@ jobs:
             done
             IFS="$OLD_IFS"
             if [ -n "$RESOLVED_TAG" ]; then
-              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
+              git -c filter.lfs.required=false -c filter.lfs.smudge= -c filter.lfs.process= clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
               echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
             else
-              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
+              git -c filter.lfs.required=false -c filter.lfs.smudge= -c filter.lfs.process= clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
               echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
             fi
             if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
@@ -276,22 +278,60 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-          fi
-          eval "$TEST5_COMMAND"
+          rm -rf baseline-venv
+          python3 -m venv baseline-venv
+          . baseline-venv/bin/activate
+          python -m pip install -q --upgrade pip
+          python -m pip install -q --no-cache-dir "${PYPI_PACKAGE}==${BASELINE_VERSION}"
+          python - <<'PY'
+          import importlib.metadata as md
+          import os
+          import platform
+          import aiq
+
+          expected = os.environ["BASELINE_VERSION"]
+          installed = md.version("aiqtoolkit")
+          assert platform.machine() == "aarch64"
+          assert installed == expected, f"expected {expected}, got {installed}"
+          assert aiq is not None
+          print(f"validated aiqtoolkit {installed} on {platform.machine()}")
+          PY
           echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Installed aiqtoolkit ${BASELINE_VERSION} in a Python virtual environment on the Arm64 runner and imported the runtime package." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
         id: test6
-        uses: ./.github/actions/generic-source-regression-check
-        with:
-          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
-          github_repo: ${{ env.GITHUB_REPO }}
-          lane_kind: ${{ env.LANE_KIND }}
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          rm -rf next-venv
+          python3 -m venv next-venv
+          . next-venv/bin/activate
+          python -m pip install -q --upgrade pip
+          python -m pip install -q --no-cache-dir "${PYPI_PACKAGE}==${NEXT_VERSION}"
+          INSTALLED_VERSION="$(python - <<'PY'
+          import importlib.metadata as md
+          import platform
+          import aiq
+
+          installed = md.version("aiqtoolkit")
+          assert platform.machine() == "aarch64"
+          assert aiq is not None
+          print(installed)
+          PY
+          )"
+          END_TIME=$(date +%s)
+          {
+            echo "current_version=${BASELINE_VERSION}"
+            echo "latest_version=${NEXT_VERSION}"
+            echo "next_installed_version=${INSTALLED_VERSION}"
+            echo "decision=next_install_validated"
+            echo "regression_result=NeMo Agent Toolkit next stable Python package installed and imported successfully on Arm64"
+            echo "comparison=Baseline ${BASELINE_VERSION} and next stable ${NEXT_VERSION} were both validated through aiqtoolkit package installation/import on the Ubuntu Arm64 runner."
+            echo "status=passed"
+            echo "duration=$((END_TIME - START_TIME))"
+          } >> "$GITHUB_OUTPUT"
       - name: Calculate test summary
         id: summary
         if: always()

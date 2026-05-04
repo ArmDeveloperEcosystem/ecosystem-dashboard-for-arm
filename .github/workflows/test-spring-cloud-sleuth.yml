@@ -1,37 +1,7 @@
-# Package Test Template
-#
-# This is a TEMPLATE file stored in the tests/ directory - it will not run as a workflow.
-# To use it:
-# 1. Copy this file to .github/workflows/test-<your-package>.yml
-# 2. Replace all Spring Cloud Sleuth placeholders with your package name (e.g., "Redis")
-# 3. Replace all spring-cloud-sleuth placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the appropriate trigger(s) in the 'on:' section
-#
-# See .github/workflows/test-nginx.yml and test-envoy.yml for real examples. Template
-#
-# This is a TEMPLATE file - it will not run automatically.
-# To use it:
-# 1. Copy this file to test-<your-package>.yml
-# 2. Replace all Spring Cloud Sleuth placeholders with your package name (e.g., "Redis")
-# 3. Replace all spring-cloud-sleuth placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the 'push:' trigger section below (remove the workflow_dispatch if desired)
-#
-# See test-nginx.yml and test-envoy.yml for real examples.
-
 name: Test Spring Cloud Sleuth on Arm64
 
-# This is a TEMPLATE - it has no triggers and will not run.
-# When you copy this file, uncomment the appropriate triggers below:
 on:
-  # workflow_dispatch:  # Uncomment for manual testing
+  workflow_dispatch:
   workflow_call:
     outputs:
       contract_version:
@@ -106,6 +76,9 @@ on:
 jobs:
   test-spring-cloud-sleuth:
     runs-on: ubuntu-24.04-arm
+    env:
+      SLEUTH_VERSION: "3.1.5"
+      SLEUTH_NEXT_VERSION: "3.1.11"
     
     outputs:
       contract_version: "2.0"
@@ -144,151 +117,253 @@ jobs:
       - name: Install Prerequisites (Java and Maven)
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Java and Maven..."
-          sudo apt-get update
-          if sudo apt-get install -y openjdk-11-jdk-headless maven; then
-            echo "install_status=success" >> $GITHUB_OUTPUT
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-17-jdk-headless maven"
+          if mvn -version >/dev/null 2>&1; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
-            echo "install_status=failed" >> $GITHUB_OUTPUT
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
       
       - name: Get Spring Cloud Sleuth version
         id: version
         run: |
-          # Use a stable version for verification
-          VERSION="3.1.5"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          VERSION="${SLEUTH_VERSION}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Target version: $VERSION"
       
       - name: Test 1 - Create Maven Project
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          mkdir -p spring-test
-          cat <<EOF > spring-test/pom.xml
-          <project xmlns="http://maven.apache.org/POM/4.0.0">
+          mkdir -p /tmp/sleuth-smoke/src/main/java/smoke /tmp/sleuth-smoke/src/test/java/smoke
+          cat >/tmp/sleuth-smoke/pom.xml <<EOF
+          <project xmlns="http://maven.apache.org/POM/4.0.0"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
             <modelVersion>4.0.0</modelVersion>
-            <groupId>com.example</groupId>
-            <artifactId>spring-test</artifactId>
-            <version>1.0</version>
+            <groupId>smoke</groupId>
+            <artifactId>sleuth-smoke</artifactId>
+            <version>1.0.0</version>
+            <properties>
+              <java.version>17</java.version>
+              <spring-boot.version>2.7.18</spring-boot.version>
+              <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+            </properties>
+            <dependencyManagement>
+              <dependencies>
+                <dependency>
+                  <groupId>org.springframework.boot</groupId>
+                  <artifactId>spring-boot-dependencies</artifactId>
+                  <version>\${spring-boot.version}</version>
+                  <type>pom</type>
+                  <scope>import</scope>
+                </dependency>
+              </dependencies>
+            </dependencyManagement>
             <dependencies>
+              <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-web</artifactId>
+              </dependency>
               <dependency>
                 <groupId>org.springframework.cloud</groupId>
                 <artifactId>spring-cloud-starter-sleuth</artifactId>
-                <version>${{ steps.version.outputs.version }}</version>
+                <version>${SLEUTH_VERSION}</version>
+              </dependency>
+              <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-test</artifactId>
+                <scope>test</scope>
               </dependency>
             </dependencies>
+            <build>
+              <plugins>
+                <plugin>
+                  <groupId>org.apache.maven.plugins</groupId>
+                  <artifactId>maven-compiler-plugin</artifactId>
+                  <version>3.12.1</version>
+                  <configuration>
+                    <release>17</release>
+                  </configuration>
+                </plugin>
+              </plugins>
+            </build>
           </project>
           EOF
-          
-          if [ -f "spring-test/pom.xml" ]; then
-            echo "✓ Maven project created"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          
+          cat >/tmp/sleuth-smoke/src/main/java/smoke/SleuthSmokeApplication.java <<'EOF'
+          package smoke;
+
+          import org.springframework.boot.SpringApplication;
+          import org.springframework.boot.autoconfigure.SpringBootApplication;
+          import org.springframework.web.bind.annotation.GetMapping;
+          import org.springframework.web.bind.annotation.RestController;
+
+          @SpringBootApplication
+          @RestController
+          public class SleuthSmokeApplication {
+            public static void main(String[] args) {
+              SpringApplication.run(SleuthSmokeApplication.class, args);
+            }
+
+            @GetMapping("/smoke")
+            String smoke() {
+              return "sleuth-ok";
+            }
+          }
+          EOF
+          cat >/tmp/sleuth-smoke/src/test/java/smoke/SleuthSmokeTest.java <<'EOF'
+          package smoke;
+
+          import org.junit.jupiter.api.Test;
+          import org.springframework.beans.factory.annotation.Autowired;
+          import org.springframework.boot.test.context.SpringBootTest;
+          import org.springframework.boot.test.web.client.TestRestTemplate;
+          import org.springframework.boot.web.server.LocalServerPort;
+          import org.springframework.cloud.sleuth.Span;
+          import org.springframework.cloud.sleuth.Tracer;
+
+          import static org.assertj.core.api.Assertions.assertThat;
+
+          @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+          class SleuthSmokeTest {
+            @LocalServerPort
+            int port;
+
+            @Autowired
+            Tracer tracer;
+
+            @Autowired
+            TestRestTemplate restTemplate;
+
+            @Test
+            void createsSpanAndServesLocalRoute() {
+              Span span = tracer.nextSpan().name("arm64-smoke").start();
+              try (Tracer.SpanInScope scope = tracer.withSpan(span)) {
+                assertThat(tracer.currentSpan()).isNotNull();
+                assertThat(restTemplate.getForObject("http://127.0.0.1:" + port + "/smoke", String.class))
+                  .isEqualTo("sleuth-ok");
+              } finally {
+                span.end();
+              }
+            }
+          }
+          EOF
+          test -f /tmp/sleuth-smoke/pom.xml
+          test -f /tmp/sleuth-smoke/src/test/java/smoke/SleuthSmokeTest.java
+          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
       - name: Test 2 - Resolve Dependencies
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          cd spring-test
-          if mvn dependency:resolve; then
-            echo "✓ Dependencies resolved successfully"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          cd /tmp/sleuth-smoke
+          if mvn -B -q dependency:resolve -DincludeArtifactIds=spring-cloud-starter-sleuth; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ Dependency resolution failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
-      - name: Test 3 - Verify Library Presence
+      - name: Test 3 - Compile Spring tiny app and unit test
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          cd spring-test
-          if mvn dependency:list | grep -q "spring-cloud-starter-sleuth"; then
-            echo "✓ spring-cloud-starter-sleuth found in dependency list"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          cd /tmp/sleuth-smoke
+          if mvn -B -q test-compile; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ Library not found in classpath"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      # Add more tests as needed (test4, test5, etc.)
-      # Examples:
-      # - Run a simple command
-      # - Check configuration files
-      # - Start/stop a service
-      # - Test basic functionality
-      
-      # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
-      # ============================================================
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
       - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          echo "Checking system architecture..."
           ARCH=$(uname -m)
           if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Functional Validation (Architecture Only)
+      - name: Test 5 - Functional Validation - Spring app unit test
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # We've already verified Maven resolution, which is the "functional" check for a library
-          echo "✓ Library verification performed via Maven Tests 1-3"
-          echo "status=passed" >> $GITHUB_OUTPUT
-
+          cd /tmp/sleuth-smoke
+          if mvn -B -q test; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Regression applicability - package manager installed
+      - name: Test 6 - Regression Validation
         id: test6
         run: |
           set -euo pipefail
+          START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST="${SLEUTH_NEXT_VERSION}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
-          echo "duration=0" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Workflow metadata review required" >> "$GITHUB_OUTPUT"
+            echo "comparison=Configured Spring Cloud Sleuth baseline ${CURRENT} matches the Test 6 candidate ${LATEST}; repin baseline older than the candidate to validate an upgrade." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          NEXT_PROJECT=$(mktemp -d)
+          cp -R /tmp/sleuth-smoke/. "$NEXT_PROJECT/"
+          SLEUTH_VERSION="${SLEUTH_VERSION}" LATEST="${LATEST}" perl -0pi -e 'BEGIN { $from = "<version>$ENV{SLEUTH_VERSION}</version>"; $to = "<version>$ENV{LATEST}</version>"; } s/\Q$from\E/$to/ or die "starter version not replaced\n";' "$NEXT_PROJECT/pom.xml"
+          if (cd "$NEXT_PROJECT" && mvn -B -q test); then
+            echo "next_installed_version=$LATEST" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed and ran successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current Spring Cloud Sleuth ${CURRENT} completed a tiny Spring route and tracer unit test. Test 6 installed starter ${LATEST} in a copied smoke project and ran the same Maven unit test on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install/runtime failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current Spring Cloud Sleuth ${CURRENT} passed baseline smoke tests, but starter ${LATEST} did not complete the same Maven unit test on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         if: always()
@@ -314,7 +389,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Verify Library Presence
+          # Compile Spring tiny app and unit test
           if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -365,8 +440,15 @@ jobs:
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
           echo "1. Create Maven Project: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "2. Resolve Dependencies: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Verify Library Presence: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Compile Spring tiny app and unit test: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
 
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "5. Test 5 - Functional Validation - Spring app unit test: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Regression Validation" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY

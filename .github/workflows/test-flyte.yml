@@ -312,6 +312,42 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
+          if [ "$PACKAGE_SLUG" = "flyte" ] && [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+            go list ./... >/tmp/flyte-go-packages.txt
+            GOOS=linux GOARCH=arm64 go test -run '^$' ./... >/tmp/flyte-compile-smoke.txt
+            CHART="$(find . -path '*/Chart.yaml' -print -quit 2>/dev/null || true)"
+            if [ -n "$CHART" ]; then
+              if ! command -v helm >/dev/null 2>&1; then
+                HELM_VERSION="v3.15.4"
+                curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-arm64.tar.gz" -o /tmp/helm.tgz
+                tar -xzf /tmp/helm.tgz -C /tmp
+                export PATH="/tmp/linux-arm64:$PATH"
+              fi
+              helm dependency build "$(dirname "$CHART")" >/tmp/flyte-helm-deps.txt 2>&1 || true
+              helm template flyte-smoke "$(dirname "$CHART")" >/tmp/flyte-rendered.yaml
+              grep -Eq '^kind: (Deployment|Service|ConfigMap|CustomResourceDefinition|ServiceAccount)' /tmp/flyte-rendered.yaml
+            else
+              find . -type f \( -name '*.yaml' -o -name '*.yml' \) -print0 | xargs -0 grep -Eiq 'flyte|flyteadmin|flytepropeller|CustomResourceDefinition'
+            fi
+            python3 -m venv /tmp/flytekit-smoke
+            . /tmp/flytekit-smoke/bin/activate
+            python -m pip install --upgrade pip
+            python -m pip install flytekit
+            python -c "from flytekit import task, workflow; exec('@task\\ndef add_one(value: int) -> int:\\n    return value + 1\\n\\n@workflow\\ndef wf(value: int) -> int:\\n    return add_one(value=value)\\n'); assert wf(value=41) == 42"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Compiled Flyte Go packages for linux/arm64, rendered or validated Flyte Kubernetes manifests, and executed a tiny local flytekit workflow. Kubernetes control-plane deployment remains out of scope." >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$TEST5_MODE" = "source" ] || [ "$TEST5_MODE" = "external" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=Unsupported Flyte preflight mode: the scoped Arm preflight requires a GitHub source checkout so Go compile, manifest render, and local flytekit workflow checks can run." >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           case "$TEST5_MODE" in
             python)
               if [ "$MODE" != "github_source" ]; then
@@ -386,6 +422,25 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            cd next-src
+            go list ./... >/tmp/flyte-next-go-packages.txt
+            GOOS=linux GOARCH=arm64 go test -run '^$' ./... >/tmp/flyte-next-compile-smoke.txt
+            CHART="$(find . -path '*/Chart.yaml' -print -quit 2>/dev/null || true)"
+            if [ -n "$CHART" ]; then
+              if ! command -v helm >/dev/null 2>&1; then
+                HELM_VERSION="v3.15.4"
+                curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-arm64.tar.gz" -o /tmp/helm.tgz
+                tar -xzf /tmp/helm.tgz -C /tmp
+                export PATH="/tmp/linux-arm64:$PATH"
+              fi
+              helm dependency build "$(dirname "$CHART")" >/tmp/flyte-next-helm-deps.txt 2>&1 || true
+              helm template flyte-next-smoke "$(dirname "$CHART")" >/tmp/flyte-next-rendered.yaml
+              grep -Eq '^kind: (Deployment|Service|ConfigMap|CustomResourceDefinition|ServiceAccount)' /tmp/flyte-next-rendered.yaml
+            else
+              find . -type f \( -name '*.yaml' -o -name '*.yml' \) -print0 | xargs -0 grep -Eiq 'flyte|flyteadmin|flytepropeller|CustomResourceDefinition'
+            fi
+          limited_cpu_description: "Test 6 reran the scoped Flyte Arm preflight against the next stable source tag: Go package discovery, linux/arm64 compile smoke, and chart/manifest validation. A live Flyte control plane and Kubernetes execution backend remain out of scope."
       - name: Calculate test summary
         id: summary
         if: always()

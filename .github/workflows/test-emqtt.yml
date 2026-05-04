@@ -113,7 +113,8 @@ jobs:
       contents: read
       actions: read
     env:
-      EMQTT_BENCH_BASELINE_VERSION: "0.4.8"
+      EMQTT_VERSION: "1.4.4"
+      EMQTT_REPO: "https://github.com/emqx/emqtt"
     
     outputs:
       contract_version: "2.0"
@@ -156,79 +157,59 @@ jobs:
           otp-version: '25.3'
           rebar3-version: '3.20'
 
-      - name: Install emqtt-bench
+      - name: Install EMQTT client from source
         id: install
         run: |
           set -euo pipefail
-          echo "Installing emqtt-bench from source..."
-          
-          # Install dependencies
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "git make cmake build-essential"
-          # Clone baseline tag used for Tests 1-5.
-          git clone --depth 1 --branch "${EMQTT_BENCH_BASELINE_VERSION}" https://github.com/emqx/emqtt-bench.git
-          cd emqtt-bench
-          
-          # Build
-          # Use rebar3 provided by setup-beam (v3.20)
-          # 'rebar3 escriptize' fetches deps, compiles, and builds the standalone binary
-          rebar3 escriptize
-          
-          # The binary is usually produced in _build/default/bin/emqtt_bench or similar
-          # The 'make' command often produces an executable script 'emqtt_bench' in the root or local bin
-          
-          if [ -f "emqtt_bench" ]; then
-             echo "Binary found in root"
-             chmod +x emqtt_bench
-             sudo cp emqtt_bench /usr/local/bin/
-          elif [ -f "_build/default/bin/emqtt_bench" ]; then
-             echo "Binary found in build dir"
-             sudo cp _build/default/bin/emqtt_bench /usr/local/bin/
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "git curl make build-essential ca-certificates"
+
+          BUILD_ROOT="${RUNNER_TEMP}/emqtt-${EMQTT_VERSION}"
+          rm -rf "$BUILD_ROOT"
+          git clone --depth 1 --branch "${EMQTT_VERSION}" "${EMQTT_REPO}.git" "$BUILD_ROOT"
+          cd "$BUILD_ROOT"
+
+          make escript
+
+          if [ -x "_build/escript/bin/emqtt_cli" ]; then
+             sudo cp _build/escript/bin/emqtt_cli /usr/local/bin/emqtt_cli
           else
-             echo "Check for binary..."
-             find . -name emqtt_bench -type f
-             # Emergency fallback: try to find it
-             BIN=$(find . -name emqtt_bench -type f | head -n 1)
+             find . -name emqtt_cli -type f
+             BIN=$(find . -name emqtt_cli -type f | head -n 1)
              if [ -n "$BIN" ]; then
-                sudo cp "$BIN" /usr/local/bin/
+                sudo cp "$BIN" /usr/local/bin/emqtt_cli
              else
-                echo "Build failed to produce emqtt_bench binary"
+                echo "Build failed to produce emqtt_cli binary"
                 exit 1
              fi
           fi
-          
-          # Verify installation
-          if command -v emqtt_bench &> /dev/null; then
-            echo "emqtt-bench installed successfully"
-            echo "install_status=success" >> $GITHUB_OUTPUT
+
+          sudo chmod +x /usr/local/bin/emqtt_cli
+          if command -v emqtt_cli >/dev/null 2>&1; then
+            echo "source_dir=$BUILD_ROOT" >> "$GITHUB_OUTPUT"
+            echo "binary_path=/usr/local/bin/emqtt_cli" >> "$GITHUB_OUTPUT"
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
-             # If command -v fails, check /usr/local/bin explicit
-             if [ -f "/usr/local/bin/emqtt_bench" ]; then
-                echo "emqtt-bench installed manually"
-                echo "install_status=success" >> $GITHUB_OUTPUT
-             else
-                echo "emqtt-bench installation failed"
-                exit 1
-             fi
+            echo "emqtt_cli installation failed"
+            exit 1
           fi
       
       # ============================================================
       # CUSTOMIZE THIS: Get the package version
       # ============================================================
-      - name: Get emqtt-bench version
+      - name: Get EMQTT version
         id: version
         run: |
           set -euo pipefail
-          # Adjust this command based on how your package reports version
-          # emqtt_bench might not have a --version flag, or it might print it in help
-          RAW_VERSION=$(emqtt_bench --version 2>&1 | head -1 || true)
-          RAW_VERSION=$(echo "$RAW_VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g')
-          VERSION=$(echo "$RAW_VERSION" | grep -Eo '[0-9]+(\.[0-9]+)+' | head -1 || true)
-          # If it doesn't support --version, we might just use the installed version string
-          if [ -z "$VERSION" ]; then
-             VERSION="${EMQTT_BENCH_BASELINE_VERSION}"
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected emqtt-bench version: $VERSION"
+          VERSION="$(git -C "${{ steps.install.outputs.source_dir }}" describe --tags --exact-match | sed 's/^v//')"
+          NEXT="$(git ls-remote --tags --refs "${EMQTT_REPO}.git" \
+            | awk -F/ '{print $3}' \
+            | sed 's/^v//' \
+            | grep -E '^[0-9]+(\.[0-9]+){2}$' \
+            | sort -V \
+            | awk -v current="$VERSION" '$0 == current { found=1; next } found { print; exit }' || true)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=${NEXT:-$VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected EMQTT version: $VERSION"
       
       # ============================================================
       # ADD YOUR TESTS BELOW
@@ -239,131 +220,129 @@ jobs:
       # 4. Exit 1 on failure
       # ============================================================
       
-      - name: Test 1 - Check emqtt_bench binary exists
+      - name: Test 1 - Check emqtt_cli binary exists
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
           STATUS="failed"
-          if command -v emqtt_bench &> /dev/null; then
-            echo "✓ emqtt_bench binary found"
+          if command -v emqtt_cli >/dev/null 2>&1; then
+            echo "emqtt_cli binary found"
             STATUS="passed"
           else
-            echo "✗ emqtt_bench binary not found"
+            echo "emqtt_cli binary not found"
             STATUS="failed"
           fi
           
           END_TIME=$(date +%s)
-          echo "status=$STATUS" >> $GITHUB_OUTPUT
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-          if [ "$STATUS" == "failed" ]; then exit 1; fi
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = "failed" ]; then exit 1; fi
 
       
-      - name: Test 2 - Check emqtt_bench help output
+      - name: Test 2 - Check EMQTT root help output
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
           STATUS="failed"
-          if emqtt_bench --help 2>&1 | grep -qi "usage\|help\|options"; then
-            echo "✓ emqtt_bench help command works"
+          if emqtt_cli 2>&1 | grep -Eqi "Usage: emqtt pub|sub"; then
+            echo "emqtt_cli root command prints expected usage"
             STATUS="passed"
           else
-            echo "✗ emqtt_bench help command failed"
+            emqtt_cli 2>&1 || true
             STATUS="failed"
           fi
           
           END_TIME=$(date +%s)
-          echo "status=$STATUS" >> $GITHUB_OUTPUT
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-          if [ "$STATUS" == "failed" ]; then exit 1; fi
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = "failed" ]; then exit 1; fi
 
       
-      - name: Test 3 - Check emqtt_bench subcommands (pub)
+      - name: Test 3 - Check EMQTT publish help
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
           STATUS="failed"
-          # Check if 'pub' subcommand is recognized (even if it fails to connect)
-          if emqtt_bench pub --help 2>&1 | grep -qi "usage\|help"; then
-             echo "✓ emqtt_bench pub help works"
+          if emqtt_cli pub --help 2>&1 | grep -Eqi "Usage: emqtt pub|--payload|--topic"; then
+             echo "emqtt_cli pub help works"
              STATUS="passed"
           else
-             echo "✗ emqtt_bench pub help failed"
+             emqtt_cli pub --help 2>&1 || true
              STATUS="failed"
           fi
           
           END_TIME=$(date +%s)
-          echo "status=$STATUS" >> $GITHUB_OUTPUT
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-          if [ "$STATUS" == "failed" ]; then exit 1; fi
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = "failed" ]; then exit 1; fi
 
       
-      - name: Test 4 - Check emqtt_bench subcommands (sub)
+      - name: Test 4 - Check EMQTT subscribe help
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
           STATUS="failed"
-          # Check if 'sub' subcommand is recognized
-          if emqtt_bench sub --help 2>&1 | grep -qi "usage\|help"; then
-             echo "✓ emqtt_bench sub help works"
+          if emqtt_cli sub --help 2>&1 | grep -Eqi "Usage: emqtt sub|--topic|--qos"; then
+             echo "emqtt_cli sub help works"
              STATUS="passed"
           else
-             echo "✗ emqtt_bench sub help failed"
+             emqtt_cli sub --help 2>&1 || true
              STATUS="failed"
           fi
           
           END_TIME=$(date +%s)
-          echo "status=$STATUS" >> $GITHUB_OUTPUT
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-          if [ "$STATUS" == "failed" ]; then exit 1; fi
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = "failed" ]; then exit 1; fi
 
       
-      - name: Test 5 - Dry run connection (expect failure but correct error)
+      - name: Test 5 - Publish command handles missing broker
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Functional Validation
           
           STATUS="failed"
-          # Try to connect to localhost (which likely has no broker)
-          # We expect a connection refused error, not a segmentation fault or command not found
-          OUTPUT=$(emqtt_bench pub -h localhost -p 1883 -c 1 -I 10 2>&1 || true)
+          OUTPUT=$(timeout 20 emqtt_cli pub -h 127.0.0.1 -p 1883 -t arm64/smoke --payload hello 2>&1 || true)
           
-          if echo "$OUTPUT" | grep -qi "econnrefused\|nxdomain\|error"; then
-             echo "✓ emqtt_bench attempted connection and failed gracefully"
+          if echo "$OUTPUT" | grep -Eqi "failed to sent CONNECT|econnrefused|nxdomain|refused|timeout"; then
+             echo "emqtt_cli attempted MQTT publish path and failed gracefully without a broker"
              STATUS="passed"
           else
-             echo "✗ emqtt_bench failed with unexpected output: $OUTPUT"
-             # It might just hang or timeout, so we accept that too if we implemented a timeout
-             # For now, if it runs and returns non-zero, it's likely fine as long as binary works
-             STATUS="passed"
+             echo "Unexpected emqtt_cli output: $OUTPUT"
+             STATUS="failed"
           fi
           
-          # Architecture Verification
           ARCH=$(uname -m)
           if [ "$ARCH" != "aarch64" ]; then
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
           END_TIME=$(date +%s)
-          echo "status=$STATUS" >> $GITHUB_OUTPUT
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = "failed" ]; then exit 1; fi
 
       - name: Test 6 - Regression Validation
         id: test6
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT_VERSION="${{ steps.version.outputs.version || env.EMQTT_BENCH_BASELINE_VERSION || 'unknown' }}"
+          CURRENT_VERSION="${{ steps.version.outputs.version || env.EMQTT_VERSION || 'unknown' }}"
 
           export CURRENT_VERSION
           NEXT_LOOKUP="$(
@@ -381,7 +360,7 @@ jobs:
           current_tuple = tuple(int(x) for x in match.groups())
           try:
               out = subprocess.check_output(
-                  ['git', 'ls-remote', '--tags', 'https://github.com/emqx/emqtt-bench.git'],
+                  ['git', 'ls-remote', '--tags', 'https://github.com/emqx/emqtt.git'],
                   text=True,
               )
           except Exception:
@@ -411,19 +390,19 @@ jobs:
           if [ "${NEXT_LOOKUP}" = "__lookup_failed__" ]; then
             DECISION="next_lookup_failed"
             REGRESSION_RESULT="Next version lookup failed on Arm64"
-            DETAILS="Baseline emqtt-bench version from Tests 1-5 could not be parsed or upstream tags could not be queried, so Test 6 could not resolve a deterministic next newer candidate."
-            echo "status=failed" >> $GITHUB_OUTPUT
-            echo "decision=${DECISION}" >> $GITHUB_OUTPUT
-            echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-            echo "latest_version=lookup_failed" >> $GITHUB_OUTPUT
-            echo "next_installed_version=lookup_failed" >> $GITHUB_OUTPUT
-            echo "regression_result=${REGRESSION_RESULT}" >> $GITHUB_OUTPUT
-            echo "comparison=${DETAILS}" >> $GITHUB_OUTPUT
-            echo "next_version=lookup_failed" >> $GITHUB_OUTPUT
-            echo "result=${DECISION}" >> $GITHUB_OUTPUT
-            echo "details=${DETAILS}" >> $GITHUB_OUTPUT
+            DETAILS="Baseline EMQTT version from Tests 1-5 could not be parsed or upstream tags could not be queried, so Test 6 could not resolve a deterministic next newer candidate."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "decision=${DECISION}" >> "$GITHUB_OUTPUT"
+            echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=${REGRESSION_RESULT}" >> "$GITHUB_OUTPUT"
+            echo "comparison=${DETAILS}" >> "$GITHUB_OUTPUT"
+            echo "next_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "result=${DECISION}" >> "$GITHUB_OUTPUT"
+            echo "details=${DETAILS}" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
@@ -431,68 +410,71 @@ jobs:
 
           if [ -z "${NEXT_VERSION}" ]; then
             DECISION="no_newer_stable_available"
-            REGRESSION_RESULT="No newer stable emqtt-bench release is available for Test 6"
-            DETAILS="Current baseline emqtt-bench ${CURRENT_VERSION} already matches the newest stable semver tag available for Arm64 build validation."
-            echo "status=skipped" >> $GITHUB_OUTPUT
-            echo "decision=${DECISION}" >> $GITHUB_OUTPUT
-            echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-            echo "latest_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-            echo "next_installed_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-            echo "regression_result=${REGRESSION_RESULT}" >> $GITHUB_OUTPUT
-            echo "comparison=${DETAILS}" >> $GITHUB_OUTPUT
-            echo "next_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-            echo "result=${DECISION}" >> $GITHUB_OUTPUT
-            echo "details=${DETAILS}" >> $GITHUB_OUTPUT
+            REGRESSION_RESULT="No newer stable EMQTT release is available for Test 6"
+            DETAILS="Current baseline EMQTT ${CURRENT_VERSION} already matches the newest stable semver tag available for Arm64 build validation."
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "decision=${DECISION}" >> "$GITHUB_OUTPUT"
+            echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "regression_result=${REGRESSION_RESULT}" >> "$GITHUB_OUTPUT"
+            echo "comparison=${DETAILS}" >> "$GITHUB_OUTPUT"
+            echo "next_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "result=${DECISION}" >> "$GITHUB_OUTPUT"
+            echo "details=${DETAILS}" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "Running next-version validation for emqtt-bench ${NEXT_VERSION}"
+          echo "Running next-version validation for EMQTT ${NEXT_VERSION}"
           WORKDIR="$(mktemp -d)"
-          git clone --depth 1 --branch "${NEXT_VERSION}" https://github.com/emqx/emqtt-bench.git "${WORKDIR}/emqtt-bench-next"
+          git clone --depth 1 --branch "${NEXT_VERSION}" "${EMQTT_REPO}.git" "${WORKDIR}/emqtt-next"
           (
-            cd "${WORKDIR}/emqtt-bench-next"
-            rebar3 escriptize
+            cd "${WORKDIR}/emqtt-next"
+            make escript
           )
 
           NEXT_BIN=""
-          if [ -f "${WORKDIR}/emqtt-bench-next/emqtt_bench" ]; then
-            NEXT_BIN="${WORKDIR}/emqtt-bench-next/emqtt_bench"
-          elif [ -f "${WORKDIR}/emqtt-bench-next/_build/default/bin/emqtt_bench" ]; then
-            NEXT_BIN="${WORKDIR}/emqtt-bench-next/_build/default/bin/emqtt_bench"
+          if [ -f "${WORKDIR}/emqtt-next/_build/escript/bin/emqtt_cli" ]; then
+            NEXT_BIN="${WORKDIR}/emqtt-next/_build/escript/bin/emqtt_cli"
+          elif [ -f "${WORKDIR}/emqtt-next/emqtt_cli" ]; then
+            NEXT_BIN="${WORKDIR}/emqtt-next/emqtt_cli"
           fi
 
-          if [ -n "${NEXT_BIN}" ] && "${NEXT_BIN}" --help >/dev/null 2>&1; then
+          if [ -n "${NEXT_BIN}" ] && \
+             "${NEXT_BIN}" pub --help >/tmp/emqtt-next-pub-help.log 2>&1 && \
+             grep -Eqi "Usage: emqtt pub|--payload|--topic" /tmp/emqtt-next-pub-help.log; then
             DECISION="next_install_validated"
             REGRESSION_RESULT="Next version installed successfully on Arm64"
-            DETAILS="Baseline emqtt-bench ${CURRENT_VERSION} passed Tests 1-5. Regression validation built and executed candidate ${NEXT_VERSION} on Arm64."
-            echo "status=passed" >> $GITHUB_OUTPUT
-            echo "decision=${DECISION}" >> $GITHUB_OUTPUT
-            echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-            echo "latest_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
-            echo "next_installed_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
-            echo "regression_result=${REGRESSION_RESULT}" >> $GITHUB_OUTPUT
-            echo "comparison=${DETAILS}" >> $GITHUB_OUTPUT
-            echo "next_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
-            echo "result=${DECISION}" >> $GITHUB_OUTPUT
-            echo "details=${DETAILS}" >> $GITHUB_OUTPUT
+            DETAILS="Baseline EMQTT ${CURRENT_VERSION} passed Tests 1-5. Regression validation built candidate ${NEXT_VERSION} and executed the EMQTT publish help path on Arm64."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "decision=${DECISION}" >> "$GITHUB_OUTPUT"
+            echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "regression_result=${REGRESSION_RESULT}" >> "$GITHUB_OUTPUT"
+            echo "comparison=${DETAILS}" >> "$GITHUB_OUTPUT"
+            echo "next_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "result=${DECISION}" >> "$GITHUB_OUTPUT"
+            echo "details=${DETAILS}" >> "$GITHUB_OUTPUT"
           else
             DECISION="next_install_failed"
             REGRESSION_RESULT="Next version install failed on Arm64"
-            DETAILS="Baseline emqtt-bench ${CURRENT_VERSION} passed Tests 1-5, but candidate ${NEXT_VERSION} failed to produce a runnable emqtt_bench binary on Arm64."
-            echo "status=failed" >> $GITHUB_OUTPUT
-            echo "decision=${DECISION}" >> $GITHUB_OUTPUT
-            echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-            echo "latest_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
-            echo "next_installed_version=install_failed" >> $GITHUB_OUTPUT
-            echo "regression_result=${REGRESSION_RESULT}" >> $GITHUB_OUTPUT
-            echo "comparison=${DETAILS}" >> $GITHUB_OUTPUT
-            echo "next_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
-            echo "result=${DECISION}" >> $GITHUB_OUTPUT
-            echo "details=${DETAILS}" >> $GITHUB_OUTPUT
+            DETAILS="Baseline EMQTT ${CURRENT_VERSION} passed Tests 1-5, but candidate ${NEXT_VERSION} failed to produce a runnable emqtt_cli binary or publish help output on Arm64."
+            cat /tmp/emqtt-next-pub-help.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "decision=${DECISION}" >> "$GITHUB_OUTPUT"
+            echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=${REGRESSION_RESULT}" >> "$GITHUB_OUTPUT"
+            echo "comparison=${DETAILS}" >> "$GITHUB_OUTPUT"
+            echo "next_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "result=${DECISION}" >> "$GITHUB_OUTPUT"
+            echo "details=${DETAILS}" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
@@ -503,7 +485,7 @@ jobs:
           echo "Details: ${DETAILS}"
 
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
           last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
           if [ "$last_status" = "failed" ]; then
             exit 1
@@ -522,75 +504,57 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
 
-          # Check emqtt_bench binary exists
-          STATUS_1="${{ steps.test1.outputs.status || 'skipped' }}"
-          DURATION_1="${{ steps.test1.outputs.duration || 0 }}"
+          check_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$status" = "failed" ]; then
+              FAILED=$((FAILED + 1))
+            else
+              SKIPPED=$((SKIPPED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
 
-          if [ "$STATUS_1" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "$STATUS_1" != "skipped" ]; then
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + DURATION_1))
+          check_test "${{ steps.test1.outputs.status || 'skipped' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_test "${{ steps.test2.outputs.status || 'skipped' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_test "${{ steps.test3.outputs.status || 'skipped' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_test "${{ steps.test4.outputs.status || 'skipped' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_test "${{ steps.test5.outputs.status || 'skipped' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_test "${{ steps.test6.outputs.status || 'skipped' }}" "${{ steps.test6.outputs.duration || 0 }}"
 
-          # Check emqtt_bench help output
-          STATUS_2="${{ steps.test2.outputs.status || 'skipped' }}"
-          DURATION_2="${{ steps.test2.outputs.duration || 0 }}"
+          CORE_FAILED=0
+          for status in \
+            "${{ steps.test1.outputs.status || 'skipped' }}" \
+            "${{ steps.test2.outputs.status || 'skipped' }}" \
+            "${{ steps.test3.outputs.status || 'skipped' }}" \
+            "${{ steps.test4.outputs.status || 'skipped' }}" \
+            "${{ steps.test5.outputs.status || 'skipped' }}"; do
+            if [ "$status" != "passed" ]; then
+              CORE_FAILED=1
+              break
+            fi
+          done
 
-          if [ "$STATUS_2" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "$STATUS_2" != "skipped" ]; then
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + DURATION_2))
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
-          # Check emqtt_bench subcommands (pub)
-          STATUS_3="${{ steps.test3.outputs.status || 'skipped' }}"
-          DURATION_3="${{ steps.test3.outputs.duration || 0 }}"
-
-          if [ "$STATUS_3" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "$STATUS_3" != "skipped" ]; then
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + DURATION_3))
-
-          # Check emqtt_bench subcommands (sub)
-          STATUS_4="${{ steps.test4.outputs.status || 'skipped' }}"
-          DURATION_4="${{ steps.test4.outputs.duration || 0 }}"
-
-          if [ "$STATUS_4" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "$STATUS_4" != "skipped" ]; then
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + DURATION_4))
-
-          # Dry run connection (expect failure but correct error)
-          STATUS_5="${{ steps.test5.outputs.status || 'skipped' }}"
-          DURATION_5="${{ steps.test5.outputs.duration || 0 }}"
-
-          if [ "$STATUS_5" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "$STATUS_5" != "skipped" ]; then
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + DURATION_5))
-
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ "$CORE_FAILED" -eq 0 ] && [ "${{ steps.test6.outputs.status || 'skipped' }}" != "failed" ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
             exit 1
           fi
       - name: Create test summary
@@ -606,11 +570,11 @@ jobs:
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check emqtt binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check emqtt version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check emqtt help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Check emqtt_bench subcommands (sub): ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Dry run connection: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check emqtt_cli binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check EMQTT root help output: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Check EMQTT publish help: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "4. Check EMQTT subscribe help: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Publish command handles missing broker: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "   - Result: ${{ steps.test6.outputs.regression_result || steps.test6.outputs.result || 'n/a' }}" >> $GITHUB_STEP_SUMMARY
           echo "   - Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.details || 'n/a' }}" >> $GITHUB_STEP_SUMMARY

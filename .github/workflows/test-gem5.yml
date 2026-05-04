@@ -133,7 +133,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates build-essential scons python3-dev m4 zlib1g-dev libprotobuf-dev protobuf-compiler"
           quiet: "true"
 
       - name: Install baseline source or artifact
@@ -312,70 +312,25 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
-          case "$TEST5_MODE" in
-            python)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              FOUND=0
-              IFS='|' read -r -a TARGETS <<< "$PYTHON_TARGETS"
-              for TARGET in "${TARGETS[@]}"; do
-                [ -z "$TARGET" ] && continue
-                if [ -d "baseline-src/$TARGET" ] || [ -f "baseline-src/$TARGET" ]; then
-                  python3 -m compileall -q "baseline-src/$TARGET"
-                  FOUND=1
-                  break
-                fi
-              done
-              if [ "$FOUND" -ne 1 ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package-specific Python sources with compileall without requiring optional accelerator runtimes." >> "$GITHUB_OUTPUT"
-              ;;
-            source)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              MATCHED=0
-              IFS='|' read -r -a PATTERNS <<< "$SOURCE_GLOBS"
-              for PATTERN in "${PATTERNS[@]}"; do
-                [ -z "$PATTERN" ] && continue
-                if compgen -G "baseline-src/$PATTERN" > /dev/null; then
-                  MATCHED=$((MATCHED + 1))
-                fi
-              done
-              if [ "$MATCHED" -lt 1 ] || ! grep -R -I -Eiq "$EVIDENCE_RE" baseline-src 2>/dev/null; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
-                echo "note=Validated package-specific source layout and documentation on Arm64; GPU or accelerator runtime remains out of scope for generic runners." >> "$GITHUB_OUTPUT"
-              else
-                echo "note=Validated package-specific source layout and documentation on Arm64 without claiming a full runtime build." >> "$GITHUB_OUTPUT"
-              fi
-              ;;
-            external)
-              if [ ! -f baseline-external/metadata.txt ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              if ! grep -Fq "download=$DOWNLOAD_URL" baseline-external/metadata.txt || ! grep -Fq "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt || ! grep -Eiq "$EVIDENCE_RE" "$PACKAGE_PAGE"; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package metadata, official endpoints, and Arm64 package-page evidence for this external/manual lane." >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-              ;;
-          esac
+          if [ "$MODE" != "github_source" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=gem5 build smoke requires the checked-out source tree." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          cd baseline-src
+          scons build/NULL/gem5.opt -j2 --without-tcmalloc >/tmp/gem5-build.log 2>&1
+          if build/NULL/gem5.opt --version >/tmp/gem5-version.log 2>&1 && \
+             grep -Eiq 'gem5|version' /tmp/gem5-version.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Built the bounded NULL gem5 binary and executed its version command on the Arm64 runner. Full ISA simulation remains heavier than this smoke lane." >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/gem5-build.log || true
+            cat /tmp/gem5-version.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=gem5 bounded source build or binary execution failed on Arm64." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -386,6 +341,12 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential scons python3-dev m4 zlib1g-dev libprotobuf-dev protobuf-compiler"
+            cd next-src
+            scons build/NULL/gem5.opt -j2 --without-tcmalloc >/tmp/gem5-next-build.log 2>&1
+            build/NULL/gem5.opt --version | grep -Eiq 'gem5|version'
+          limited_cpu_description: "Built the next gem5 source candidate as a bounded NULL binary and executed its version command on the Arm64 runner. Full ISA simulation remains scoped out of this smoke lane."
       - name: Calculate test summary
         id: summary
         if: always()

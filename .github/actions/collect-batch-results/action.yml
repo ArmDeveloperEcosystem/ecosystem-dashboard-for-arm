@@ -258,17 +258,20 @@ runs:
         def extract_test_details(job, regression_details):
             details = []
             if isinstance(job, dict):
+                job_url = str(job.get("html_url") or "").strip()
                 for step in job.get("steps") or []:
                     name = str(step.get("name") or "").strip()
                     if not is_test_detail_step(name):
                         continue
-                    details.append(
-                        {
-                            "name": name,
-                            "status": normalize_detail_status(step.get("conclusion")),
-                            "duration_seconds": step_duration_seconds(step),
-                        }
-                    )
+                    detail = {
+                        "name": name,
+                        "status": normalize_detail_status(step.get("conclusion")),
+                        "duration_seconds": step_duration_seconds(step),
+                    }
+                    step_number = as_int(step.get("number"), 0)
+                    if job_url and step_number > 0:
+                        detail["url"] = f"{job_url}#step:{step_number}:1"
+                    details.append(detail)
 
             if regression_details:
                 regression_entry = dict(regression_details[0])
@@ -372,11 +375,25 @@ runs:
                 return "skipped"
             return "skipped"
 
-        def normalize_run_status(raw_status, tests_passed, tests_failed, tests_skipped, core_failed):
+        def is_safe_regression_skip(decision):
+            return str(decision or "").strip() in {
+                "not_applicable_package_manager",
+                "no_newer_stable_available",
+                "current_is_latest_stable",
+                "pinned_is_latest",
+                "already_current",
+                "already_at_latest",
+                "at_latest",
+                "current_is_latest",
+            }
+
+        def normalize_run_status(raw_status, tests_passed, tests_failed, tests_skipped, core_failed, regression_decision):
             status = str(raw_status or "").strip().lower()
             if tests_failed > 0:
                 return "failure"
             if core_failed > 0:
+                return "failure"
+            if tests_skipped > 0 and not is_safe_regression_skip(regression_decision):
                 return "failure"
             if tests_passed > 0:
                 return "success"
@@ -395,6 +412,8 @@ runs:
                 return "Next bundle validated successfully on Arm64"
             if decision == "next_image_validated":
                 return "Next image validated successfully on Arm64"
+            if decision == "limited_cpu_smoke_validated":
+                return "Limited CPU-side proof passed on Arm64"
             if decision == "next_install_failed":
                 return "Next version install failed on Arm64"
             if decision in {
@@ -412,6 +431,8 @@ runs:
                 return "Tests 1-5 baseline must be older than the latest stable release"
             if decision == "not_configured":
                 return "Regression validation not configured for this workflow"
+            if decision == "runtime_validation_not_automated":
+                return "Package-specific runtime validation is not automated"
             if status == "passed":
                 return "Regression validation passed"
             if status == "failed":
@@ -601,6 +622,10 @@ runs:
                     use_detail_counts = True
                 elif tests_passed != detail_counts["passed"]:
                     use_detail_counts = True
+                elif tests_skipped != detail_counts["skipped"]:
+                    use_detail_counts = True
+                elif emitted_total != detail_total:
+                    use_detail_counts = True
                 elif core_failed != detail_counts["core_failed"]:
                     use_detail_counts = True
 
@@ -629,6 +654,7 @@ runs:
                         "next_install_validated",
                         "next_bundle_validated",
                         "next_image_validated",
+                        "limited_cpu_smoke_validated",
                     }
                     if regression_decision not in {
                         "baseline_failed",
@@ -675,7 +701,15 @@ runs:
                 tests_skipped = detail_counts["skipped"]
                 core_failed = detail_counts["core_failed"]
 
-            run_status = normalize_run_status(raw_run_status, tests_passed, tests_failed, tests_skipped, core_failed)
+            regression_decision_for_status = regression_decision_for_counts or str(outputs.get("regression_decision") or "").strip()
+            run_status = normalize_run_status(
+                raw_run_status,
+                tests_passed,
+                tests_failed,
+                tests_skipped,
+                core_failed,
+                regression_decision_for_status,
+            )
             badge_status = "passing" if run_status == "success" else "failing"
 
             result_payload = {

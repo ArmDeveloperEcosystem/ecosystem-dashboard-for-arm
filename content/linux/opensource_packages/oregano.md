@@ -18,10 +18,10 @@ optional_info:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
+        version_number: 0.84.13
+        release_date: 2017/08/24
         reference_content:
-        rationale:
+        rationale: Used for current Arm smoke validation because the historical Ubuntu Trusty arm64 package is no longer available on current Ubuntu Arm runners.
  
 optional_hidden_info:
     release_notes__supported_minimum:

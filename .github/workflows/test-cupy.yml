@@ -126,6 +126,7 @@ jobs:
       - name: Set test metadata
         id: metadata
         run: |
+          # shellcheck disable=SC2129
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=cupy" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/linux/opensource_packages/cupy" >> "$GITHUB_OUTPUT"
@@ -139,7 +140,11 @@ jobs:
       - name: Install baseline source or artifact
         id: install
         run: |
+          # shellcheck disable=SC2129
           set -euo pipefail
+          write_output() {
+            printf '%s\n' "$@" >> "$GITHUB_OUTPUT"
+          }
           rm -rf baseline-src baseline-external
           mkdir -p baseline-src baseline-external
           if [ -n "$GITHUB_REPO" ]; then
@@ -152,26 +157,22 @@ jobs:
             done
             if [ -n "$RESOLVED_TAG" ]; then
               git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
+              write_output "resolved_tag=$RESOLVED_TAG"
             else
               git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
+              write_output "resolved_tag=default_branch"
             fi
             if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
+              write_output "install_mode=github_source" "install_status=success"
               exit 0
             fi
           fi
           if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
             printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
+            write_output "resolved_tag=external_artifact" "install_mode=external_artifact" "install_status=success"
             exit 0
           fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
+          write_output "install_mode=unresolved" "install_status=failed"
           exit 1
 
       - name: Get baseline version
@@ -312,70 +313,75 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
-          case "$TEST5_MODE" in
-            python)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              FOUND=0
-              IFS='|' read -r -a TARGETS <<< "$PYTHON_TARGETS"
-              for TARGET in "${TARGETS[@]}"; do
-                [ -z "$TARGET" ] && continue
-                if [ -d "baseline-src/$TARGET" ] || [ -f "baseline-src/$TARGET" ]; then
-                  python3 -m compileall -q "baseline-src/$TARGET"
-                  FOUND=1
-                  break
-                fi
-              done
-              if [ "$FOUND" -ne 1 ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package-specific Python sources with compileall without requiring optional accelerator runtimes." >> "$GITHUB_OUTPUT"
-              ;;
-            source)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              MATCHED=0
-              IFS='|' read -r -a PATTERNS <<< "$SOURCE_GLOBS"
-              for PATTERN in "${PATTERNS[@]}"; do
-                [ -z "$PATTERN" ] && continue
-                if compgen -G "baseline-src/$PATTERN" > /dev/null; then
-                  MATCHED=$((MATCHED + 1))
-                fi
-              done
-              if [ "$MATCHED" -lt 1 ] || ! grep -R -I -Eiq "$EVIDENCE_RE" baseline-src 2>/dev/null; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
-                echo "note=Validated package-specific source layout and documentation on Arm64; GPU or accelerator runtime remains out of scope for generic runners." >> "$GITHUB_OUTPUT"
-              else
-                echo "note=Validated package-specific source layout and documentation on Arm64 without claiming a full runtime build." >> "$GITHUB_OUTPUT"
-              fi
-              ;;
-            external)
-              if [ ! -f baseline-external/metadata.txt ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              if ! grep -Fq "download=$DOWNLOAD_URL" baseline-external/metadata.txt || ! grep -Fq "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt || ! grep -Eiq "$EVIDENCE_RE" "$PACKAGE_PAGE"; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package metadata, official endpoints, and Arm64 package-page evidence for this external/manual lane." >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-              ;;
-          esac
+          if [ "$MODE" != "github_source" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=CuPy Arm preflight requires the package source checkout; metadata-only evidence is not treated as a smoke pass." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          [ "$(uname -m)" = "aarch64" ]
+          python3 - "baseline-src" "$BASELINE_VERSION" <<'PY'
+          import ast
+          import compileall
+          import importlib.util
+          import platform
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          expected = sys.argv[2].lstrip("v")
+          if platform.machine().lower() not in {"aarch64", "arm64"}:
+              raise SystemExit(f"CuPy Arm preflight requires Arm64, got {platform.machine()}")
+          required = [
+              "cupy/__init__.py",
+              "cupy/_version.py",
+              "cupy/_environment.py",
+              "cupy/cuda/runtime.py",
+              "cupy_backends/cuda/api/__init__.py",
+              "cupy_setup_build.py",
+              "setup.py",
+          ]
+          for rel in required:
+              if not (root / rel).exists():
+                  raise SystemExit(f"missing CuPy source surface: {rel}")
+          for rel in ("cupy", "cupy_backends", "cupyx"):
+              if not compileall.compile_dir(str(root / rel), quiet=1):
+                  raise SystemExit(f"compileall failed for {rel}")
+          for rel in ("cupy/__init__.py", "cupy/cuda/runtime.py", "cupy/_environment.py"):
+              ast.parse((root / rel).read_text(encoding="utf-8"), filename=rel)
+
+          version_spec = importlib.util.spec_from_file_location("cupy_source_version", root / "cupy/_version.py")
+          version_mod = importlib.util.module_from_spec(version_spec)
+          version_spec.loader.exec_module(version_mod)
+          actual = getattr(version_mod, "__version__", "")
+          if actual != expected:
+              raise SystemExit(f"CuPy source version {actual} != expected {expected}")
+
+          env_spec = importlib.util.spec_from_file_location("cupy_source_environment", root / "cupy/_environment.py")
+          env_mod = importlib.util.module_from_spec(env_spec)
+          env_spec.loader.exec_module(env_mod)
+          cuda_path = env_mod.get_cuda_path()
+          nvcc_path = env_mod.get_nvcc_path()
+
+          sys.path.insert(0, str(root))
+          try:
+              import cupy  # type: ignore
+          except ImportError as exc:
+              message = str(exc)
+              allowed = (
+                  "CuPy is not correctly installed",
+                  "No module named 'numpy'",
+                  "No module named 'cupy._core'",
+                  "cannot import name '_core'",
+              )
+              if not any(token in message for token in allowed):
+                  raise
+          else:
+              if getattr(cupy, "__version__", "") != expected:
+                  raise SystemExit("imported CuPy version did not match source version")
+          print(f"cupy-preflight-ok: version={actual} cuda_path={cuda_path} nvcc_path={nvcc_path}")
+          PY
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=CuPy Arm preflight passed: compiled cupy/cupy_backends/cupyx Python sources, loaded source version and CUDA environment config, and performed a guarded import boundary check on Arm64 without claiming CUDA runtime execution." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -386,10 +392,76 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            set -euo pipefail
+            [ "$(uname -m)" = "aarch64" ]
+            python3 - "next-src" "${LATEST_VERSION:-}" <<'PY'
+            import ast
+            import compileall
+            import importlib.util
+            import platform
+            import sys
+            from pathlib import Path
+
+            root = Path(sys.argv[1]).resolve()
+            expected = sys.argv[2].lstrip("v")
+            if platform.machine().lower() not in {"aarch64", "arm64"}:
+                raise SystemExit(f"CuPy Arm preflight requires Arm64, got {platform.machine()}")
+            required = [
+                "cupy/__init__.py",
+                "cupy/_version.py",
+                "cupy/_environment.py",
+                "cupy/cuda/runtime.py",
+                "cupy_backends/cuda/api/__init__.py",
+                "cupy_setup_build.py",
+                "setup.py",
+            ]
+            for rel in required:
+                if not (root / rel).exists():
+                    raise SystemExit(f"missing CuPy source surface: {rel}")
+            for rel in ("cupy", "cupy_backends", "cupyx"):
+                if not compileall.compile_dir(str(root / rel), quiet=1):
+                    raise SystemExit(f"compileall failed for {rel}")
+            for rel in ("cupy/__init__.py", "cupy/cuda/runtime.py", "cupy/_environment.py"):
+                ast.parse((root / rel).read_text(encoding="utf-8"), filename=rel)
+
+            version_spec = importlib.util.spec_from_file_location("cupy_next_source_version", root / "cupy/_version.py")
+            version_mod = importlib.util.module_from_spec(version_spec)
+            version_spec.loader.exec_module(version_mod)
+            actual = getattr(version_mod, "__version__", "")
+            if expected and actual != expected:
+                raise SystemExit(f"CuPy source version {actual} != expected {expected}")
+
+            env_spec = importlib.util.spec_from_file_location("cupy_next_source_environment", root / "cupy/_environment.py")
+            env_mod = importlib.util.module_from_spec(env_spec)
+            env_spec.loader.exec_module(env_mod)
+            cuda_path = env_mod.get_cuda_path()
+            nvcc_path = env_mod.get_nvcc_path()
+
+            sys.path.insert(0, str(root))
+            try:
+                import cupy  # type: ignore
+            except ImportError as exc:
+                message = str(exc)
+                allowed = (
+                    "CuPy is not correctly installed",
+                    "No module named 'numpy'",
+                    "No module named 'cupy._core'",
+                    "cannot import name '_core'",
+                )
+                if not any(token in message for token in allowed):
+                    raise
+            else:
+                if expected and getattr(cupy, "__version__", "") != expected:
+                    raise SystemExit("imported CuPy version did not match source version")
+            print(f"cupy-next-preflight-ok: version={actual} cuda_path={cuda_path} nvcc_path={nvcc_path}")
+            PY
+          limited_cpu_description: "Test 6 limited_cpu_smoke_validated: reran the CuPy bounded Arm source preflight against the next stable candidate, compiling cupy/cupy_backends/cupyx sources, loading source version and CUDA environment config, and checking the guarded import boundary. This is CPU-side package preflight evidence only; no CUDA driver, CUDA runtime, or GPU array execution is claimed."
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
+          # shellcheck disable=SC2129
           T1="${{ steps.test1.outputs.status || '' }}"
           T2="${{ steps.test2.outputs.status || '' }}"
           T3="${{ steps.test3.outputs.status || '' }}"
@@ -428,10 +500,12 @@ jobs:
             OVERALL_STATUS="failure"
             BADGE_STATUS="failing"
           fi
-          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
-          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
-          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
-          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
-          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
-          echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
-          echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          {
+            echo "passed=$PASSED"
+            echo "failed=$FAILED"
+            echo "skipped=$SKIPPED"
+            echo "duration=$DURATION"
+            echo "core_failed=$CORE_FAILED"
+            echo "overall_status=$OVERALL_STATUS"
+            echo "badge_status=$BADGE_STATUS"
+          } >> "$GITHUB_OUTPUT"

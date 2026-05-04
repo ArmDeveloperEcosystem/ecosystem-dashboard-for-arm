@@ -82,20 +82,12 @@ jobs:
     env:
       BASELINE_VERSION: "7.5.233-2"
       PACKAGE_SLUG: "magic"
-      LANE_KIND: "github release / source-build-or-tarball"
+      APT_PACKAGES: "magic"
+      PRIMARY_DEB: "magic"
+      PRIMARY_COMMAND: "magic"
       DOWNLOAD_URL: "https://github.com/RTimothyEdwards/magic/tags"
       HOMEPAGE_URL: "http://opencircuitdesign.com/magic/"
       OFFICIAL_DOCS: "http://opencircuitdesign.com/magic/"
-      GITHUB_REPO: "RTimothyEdwards/magic"
-      EXTRA_TAG_CANDIDATES: "7.5.233|v7.5.233"
-      TEST1_COMMAND: >-
-        test -f README.md && test -f configure && test -f INSTALL && test -d doc && test -d magic
-      TEST2_COMMAND: >-
-        (test -f configure.ac || test -f configure) && grep -Eqi "magic|layout" README.md
-      TEST3_COMMAND: >-
-        test -d doc && test -f README.Tcl && grep -Fq 'MAGIC' README.md
-      TEST5_COMMAND: >-
-        ./configure --help >/dev/null
 
     outputs:
       contract_version: "2.0"
@@ -110,13 +102,13 @@ jobs:
       tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
       duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
       regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
-      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_applicable_package_manager' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
-      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Package-manager runtime smoke; source regression is not applicable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
-      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
-      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
-      regression_policy: "applicable"
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'not_applicable' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_applicable' }}
+      regression_policy: ${{ steps.test6.outputs.policy || 'not_applicable_package_manager' }}
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -134,165 +126,108 @@ jobs:
           echo "package_slug=magic" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/linux/opensource_packages/magic" >> "$GITHUB_OUTPUT"
 
-      - name: Bootstrap baseline dependencies
-        uses: ./.github/actions/apt-bootstrap
-        with:
-          packages: "git curl jq tar unzip file ca-certificates"
-          extra_packages: "${{ env.EXTRA_APT_PACKAGES }}"
-          quiet: "true"
-
-      - name: Install baseline source or artifact
+      - name: Install package from Ubuntu apt
         id: install
         run: |
           set -euo pipefail
-          rm -rf baseline-src baseline-external
-          mkdir -p baseline-src baseline-external
-          if [ -n "$GITHUB_REPO" ]; then
-            RESOLVED_TAG=""
-            CANDIDATE_TAGS="$BASELINE_VERSION|v$BASELINE_VERSION"
-            if [ -n "${EXTRA_TAG_CANDIDATES:-}" ]; then
-              CANDIDATE_TAGS="${CANDIDATE_TAGS}|${EXTRA_TAG_CANDIDATES}"
-            fi
-            OLD_IFS="$IFS"
-            IFS='|'
-            for CANDIDATE in $CANDIDATE_TAGS; do
-              [ -n "$CANDIDATE" ] || continue
-              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
-                RESOLVED_TAG="$CANDIDATE"
-                break
-              fi
-            done
-            IFS="$OLD_IFS"
-            if [ -n "$RESOLVED_TAG" ]; then
-              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
-            else
-              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
-            fi
-            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            {
-              echo "download=$DOWNLOAD_URL"
-              echo "homepage=$HOMEPAGE_URL"
-              echo "docs=$OFFICIAL_DOCS"
-            } > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
-      - name: Get baseline version
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_PACKAGES
+          command -v "$PRIMARY_COMMAND"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+
+      - name: Get installed package version
         id: version
         run: |
-          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected baseline version: $BASELINE_VERSION"
+          set -euo pipefail
+          VERSION="$(dpkg-query -W -f='${Version}' "$PRIMARY_DEB")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected apt package version: $VERSION"
 
-      - name: Test 1 - Check package-specific baseline markers
+      - name: Test 1 - Package-manager install evidence
         id: test1
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          RESOLVED_TAG="${{ steps.install.outputs.resolved_tag || '' }}"
-          INSTALL_STATUS="${{ steps.install.outputs.install_status || 'failed' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
-          if [ "$INSTALL_STATUS" != "success" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-          fi
-          eval "$TEST1_COMMAND"
-          if [ "$MODE" = "github_source" ] && [ "$RESOLVED_TAG" = "default_branch" ]; then
-            echo "note=Upstream source smoke used the default branch because no exact source tag matched the published baseline version." >> "$GITHUB_OUTPUT"
-          fi
+          dpkg-query -W -f='${Package} ${Architecture} ${Version}\n' $APT_PACKAGES
+          command -v "$PRIMARY_COMMAND"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-      - name: Test 2 - Check package-specific version and release evidence
+
+      - name: Test 2 - Installed Arm64 package metadata
         id: test2
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          RESOLVED_TAG="${{ steps.install.outputs.resolved_tag || '' }}"
           DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-          fi
-          if [ -n "${TEST2_COMMAND:-}" ]; then
-            eval "$TEST2_COMMAND"
-          else
-            export DOC_PATH BASELINE_VERSION DOWNLOAD_URL
-            python3 -c "from pathlib import Path; import os; text=Path(os.environ['DOC_PATH']).read_text(); version=os.environ['BASELINE_VERSION']; download=os.environ['DOWNLOAD_URL']; assert f'version_number: {version}' in text; assert f'download_url: {download}' in text"
-          fi
+          test "$(dpkg-query -W -f='${Architecture}' "$PRIMARY_DEB")" = "arm64"
+          grep -Fq "works_on_arm: true" "$DOC_PATH"
+          grep -Fq "download_url: $DOWNLOAD_URL" "$DOC_PATH"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-      - name: Test 3 - Check package-specific docs and entrypoints
+
+      - name: Test 3 - CLI version starts on Arm
         id: test3
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-          fi
-          eval "$TEST3_COMMAND"
+          magic --version || magic -v || magic version
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-      - name: Test 4 - Architecture Verification
+
+      - name: Test 4 - Arm64 runner gate
         id: test4
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
           test "$(uname -m)" = "aarch64"
-          grep -Fq "works_on_arm: true" "$DOC_PATH"
-          if [ -n "${TEST4_COMMAND:-}" ]; then
-            eval "$TEST4_COMMAND"
-          fi
+          test "$(dpkg --print-architecture)" = "arm64"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-      - name: Test 5 - Run bounded package-specific smoke
+
+      - name: Test 5 - Headless runtime smoke
         id: test5
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-          fi
-          eval "$TEST5_COMMAND"
+          cat > smoke.tcl <<'MAGIC'
+          box 0 0 10 10
+          paint metal1
+          save smoke
+          writeall force
+          quit -noprompt
+          MAGIC
+          magic -dnull -noconsole smoke.tcl
+          test -s smoke.mag
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-      - name: Test 6 - Regression Validation
+
+      - name: Test 6 - Regression validation applicability
         id: test6
-        uses: ./.github/actions/generic-source-regression-check
-        with:
-          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
-          github_repo: ${{ env.GITHUB_REPO }}
-          lane_kind: ${{ env.LANE_KIND }}
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT_VERSION="${{ steps.version.outputs.version || env.BASELINE_VERSION }}"
+          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Source/artifact regression is not applicable to this apt package-manager runtime smoke." >> "$GITHUB_OUTPUT"
+          echo "comparison=Installed $PRIMARY_DEB from Ubuntu apt on Arm64 and ran CPU-side runtime smokes; no separate next source artifact is selected." >> "$GITHUB_OUTPUT"
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "policy=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Calculate test summary
         id: summary
         if: always()
@@ -328,7 +263,7 @@ jobs:
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$FAILED" -eq 0 ] && [ "$PASSED" -gt 0 ]; then
             OVERALL_STATUS="success"
             BADGE_STATUS="passing"
           else

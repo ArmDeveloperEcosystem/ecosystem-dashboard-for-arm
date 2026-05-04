@@ -20,6 +20,14 @@ inputs:
     description: Manually pinned upstream tag/ref to clone for the next stable candidate
     required: false
     default: ""
+  limited_cpu_probe:
+    description: Optional bounded Arm64 CPU/source/import/help proof script to run after the candidate source resolves.
+    required: false
+    default: ""
+  limited_cpu_description:
+    description: Human-readable caveat for the bounded CPU proof.
+    required: false
+    default: "A bounded CPU-side proof completed on the Arm64 runner. This is not a full specialized runtime validation."
 
 outputs:
   status:
@@ -43,6 +51,9 @@ outputs:
   comparison:
     description: Human readable comparison note
     value: ${{ steps.regress.outputs.comparison }}
+  note:
+    description: Alias for comparison, retained for workflows that still use note fallback expressions
+    value: ${{ steps.regress.outputs.comparison }}
   duration:
     description: Duration in seconds
     value: ${{ steps.regress.outputs.duration }}
@@ -52,6 +63,9 @@ runs:
   steps:
     - id: regress
       shell: bash
+      env:
+        INPUT_LIMITED_CPU_PROBE: ${{ inputs.limited_cpu_probe }}
+        INPUT_LIMITED_CPU_DESCRIPTION: ${{ inputs.limited_cpu_description }}
       run: |
         set -euo pipefail
 
@@ -61,16 +75,61 @@ runs:
         LANE_KIND="${{ inputs.lane_kind }}"
         OVERRIDE_VERSION="${{ inputs.next_version_override }}"
         OVERRIDE_TAG="${{ inputs.candidate_tag_override }}"
+        LIMITED_CPU_PROBE="${INPUT_LIMITED_CPU_PROBE:-}"
+        LIMITED_CPU_DESCRIPTION="${INPUT_LIMITED_CPU_DESCRIPTION:-A bounded CPU-side proof completed on the Arm64 runner. This is not a full specialized runtime validation.}"
 
         echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
 
-        if [ -z "$REPO" ]; then
-          echo "latest_version=manual_review" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=manual_review" >> "$GITHUB_OUTPUT"
-          echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Package-specific regression validation not yet automated" >> "$GITHUB_OUTPUT"
-          echo "comparison=This workflow does not declare a GitHub source repository for automatic next-version discovery, so package-specific regression validation still requires a dedicated lane design." >> "$GITHUB_OUTPUT"
+        emit_runtime_not_automated() {
+          local latest_version="${1:-runtime_review}"
+          local candidate_version="${2:-not_installed}"
+          local result="${3:-Package-specific runtime validation is not automated}"
+          local details="${4:-This generic source workflow can resolve source metadata, but it does not install and execute the package on Arm64. A package-specific runtime lane is required before this can be treated as a fully validated smoke test.}"
+          echo "latest_version=${latest_version}" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=${candidate_version}" >> "$GITHUB_OUTPUT"
+          echo "decision=runtime_validation_not_automated" >> "$GITHUB_OUTPUT"
+          echo "regression_result=${result}" >> "$GITHUB_OUTPUT"
+          echo "comparison=${details}" >> "$GITHUB_OUTPUT"
           echo "status=skipped" >> "$GITHUB_OUTPUT"
+        }
+
+        run_limited_cpu_probe() {
+          local latest_version="${1:-unknown}"
+          local candidate_version="${2:-unknown}"
+          if [ -z "$LIMITED_CPU_PROBE" ]; then
+            return 1
+          fi
+
+          export CURRENT_VERSION="$CURRENT"
+          export LATEST_VERSION="$latest_version"
+          export CANDIDATE_TAG="$candidate_version"
+          export GITHUB_REPO="$REPO"
+          export LANE_KIND="$LANE_KIND"
+
+          if bash -euo pipefail -c "$LIMITED_CPU_PROBE"; then
+            echo "latest_version=${latest_version}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${latest_version}" >> "$GITHUB_OUTPUT"
+            echo "decision=limited_cpu_smoke_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Arm preflight proof passed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=${LIMITED_CPU_DESCRIPTION}" >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest_version=${latest_version}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=limited_cpu_probe_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=limited_cpu_smoke_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Arm preflight proof failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=${LIMITED_CPU_DESCRIPTION}" >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+          fi
+          return 0
+        }
+
+        if [ -z "$REPO" ]; then
+          emit_runtime_not_automated \
+            "manual_review" \
+            "manual_review" \
+            "Package-specific runtime validation is not automated" \
+            "This workflow does not declare a GitHub source repository and does not install and execute the package on Arm64. A dedicated package runtime lane is required before this can be treated as a fully validated smoke test."
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
           exit 0
@@ -144,39 +203,45 @@ runs:
 
         case "$STATUS_KIND" in
           NONE)
-            echo "latest_version=${LATEST_VERSION:-$CURRENT}" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=n/a" >> "$GITHUB_OUTPUT"
-            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-            echo "regression_result=No newer stable public release is available" >> "$GITHUB_OUTPUT"
-            echo "comparison=The current validated version ${CURRENT} is already the latest stable source tag we could resolve automatically from ${REPO}." >> "$GITHUB_OUTPUT"
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            if [ -n "$LIMITED_CPU_PROBE" ]; then
+              echo "latest_version=${LATEST_VERSION:-$CURRENT}" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=n/a" >> "$GITHUB_OUTPUT"
+              echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+              echo "regression_result=No newer stable public release is available" >> "$GITHUB_OUTPUT"
+              echo "comparison=The current version ${CURRENT} is already the latest stable source tag we could resolve from ${REPO}. Tests 1-5 remain the bounded Arm64 proof for this package; no newer candidate exists for Test 6. ${LIMITED_CPU_DESCRIPTION}" >> "$GITHUB_OUTPUT"
+              echo "status=skipped" >> "$GITHUB_OUTPUT"
+            else
+              emit_runtime_not_automated \
+                "${LATEST_VERSION:-$CURRENT}" \
+                "n/a" \
+                "No newer stable source tag is available, but runtime validation is not automated" \
+                "The current version ${CURRENT} is already the latest stable source tag we could resolve from ${REPO}. However, this generic workflow only validates source/artifact evidence; it does not install and execute the package on Arm64."
+            fi
             ;;
           UNRESOLVED)
-            echo "latest_version=metadata_review" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=metadata_review" >> "$GITHUB_OUTPUT"
-            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Automatic next-version resolution needs manual review" >> "$GITHUB_OUTPUT"
-            echo "comparison=The workflow could not derive comparable stable version tags automatically from ${REPO}, so package-specific metadata review is required before automating regression validation." >> "$GITHUB_OUTPUT"
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            emit_runtime_not_automated \
+              "metadata_review" \
+              "metadata_review" \
+              "Automatic next-version resolution needs manual review and runtime validation is not automated" \
+              "The workflow could not derive comparable stable version tags automatically from ${REPO}. It also does not install and execute the package on Arm64, so a package-specific runtime lane is required."
             ;;
           METADATA_REVIEW)
-            echo "latest_version=${LATEST_VERSION:-metadata_review}" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=metadata_review" >> "$GITHUB_OUTPUT"
-            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Automatic next-version resolution needs manual review" >> "$GITHUB_OUTPUT"
-            echo "comparison=The baseline version ${CURRENT} does not parse cleanly for automatic ordering, while ${REPO} exposes newer stable-looking tags such as ${LATEST_VERSION}. A package-specific version mapping rule is required before enabling automated regression validation." >> "$GITHUB_OUTPUT"
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            emit_runtime_not_automated \
+              "${LATEST_VERSION:-metadata_review}" \
+              "metadata_review" \
+              "Automatic next-version resolution needs manual review and runtime validation is not automated" \
+              "The baseline version ${CURRENT} does not parse cleanly for automatic ordering, while ${REPO} exposes newer stable-looking tags such as ${LATEST_VERSION}. This workflow also does not install and execute the package on Arm64."
             ;;
           FOUND_OVERRIDE)
             rm -rf next-src
             if git clone --depth 1 --branch "$CANDIDATE_TAG" "https://github.com/${REPO}.git" next-src >/dev/null 2>&1; then
               if find next-src -maxdepth 2 -type f \( -name 'README*' -o -name 'LICENSE*' -o -name 'Makefile' -o -name 'pyproject.toml' -o -name 'go.mod' -o -name 'Cargo.toml' -o -name 'pom.xml' -o -name 'CMakeLists.txt' -o -name 'package.json' \) -print -quit | grep -q . || [ -n "$(find next-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-                echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
-                echo "next_installed_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
-                echo "decision=validated_next_release" >> "$GITHUB_OUTPUT"
-                echo "regression_result=Next stable source release resolved and validated on Arm64" >> "$GITHUB_OUTPUT"
-                echo "comparison=A package-specific next stable candidate was pinned manually for ${REPO}: baseline ${CURRENT} vs candidate ${LATEST_VERSION} (${CANDIDATE_TAG}). The candidate tag resolved and passed the same bounded Arm64 source validation as the baseline." >> "$GITHUB_OUTPUT"
-                echo "status=passed" >> "$GITHUB_OUTPUT"
+                run_limited_cpu_probe "${LATEST_VERSION}" "${CANDIDATE_TAG}" || \
+                  emit_runtime_not_automated \
+                    "${LATEST_VERSION}" \
+                    "${LATEST_VERSION}" \
+                    "Next stable source tag resolved, but runtime validation is not automated" \
+                    "A package-specific next stable candidate was pinned manually for ${REPO}: baseline ${CURRENT} vs candidate ${LATEST_VERSION} (${CANDIDATE_TAG}). The candidate source resolved, but this generic workflow still does not install and execute the package on Arm64."
               else
                 echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
                 echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
@@ -198,17 +263,17 @@ runs:
             rm -rf next-src
             if git clone --depth 1 --branch "$CANDIDATE_TAG" "https://github.com/${REPO}.git" next-src >/dev/null 2>&1; then
               if find next-src -maxdepth 2 -type f \( -name 'README*' -o -name 'LICENSE*' -o -name 'Makefile' -o -name 'pyproject.toml' -o -name 'go.mod' -o -name 'Cargo.toml' -o -name 'pom.xml' -o -name 'CMakeLists.txt' -o -name 'package.json' \) -print -quit | grep -q . || [ -n "$(find next-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-                echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
-                echo "next_installed_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
-                echo "decision=validated_next_release" >> "$GITHUB_OUTPUT"
-                echo "regression_result=Next stable source release resolved and validated on Arm64" >> "$GITHUB_OUTPUT"
                 if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
-                  NOTE="Baseline bounded source/artifact checks passed for ${CURRENT}, and the next stable source tag ${LATEST_VERSION} from ${REPO} also resolved and passed the same bounded checks on Arm64. Specialized runtime smoke remains out of scope for generic runners."
+                  NOTE="Baseline source/artifact checks passed for ${CURRENT}, and the next stable source tag ${LATEST_VERSION} from ${REPO} also resolved. Specialized runtime smoke still requires the package-specific GPU/accelerator environment."
                 else
-                  NOTE="Baseline bounded source/artifact checks passed for ${CURRENT}, and the next stable source tag ${LATEST_VERSION} from ${REPO} also resolved and passed the same bounded checks on Arm64. Package-specific runtime smoke can be added later if needed."
+                  NOTE="Baseline source/artifact checks passed for ${CURRENT}, and the next stable source tag ${LATEST_VERSION} from ${REPO} also resolved. This generic workflow still does not install and execute the package on Arm64."
                 fi
-                echo "comparison=${NOTE}" >> "$GITHUB_OUTPUT"
-                echo "status=passed" >> "$GITHUB_OUTPUT"
+                run_limited_cpu_probe "${LATEST_VERSION}" "${CANDIDATE_TAG}" || \
+                  emit_runtime_not_automated \
+                    "${LATEST_VERSION}" \
+                    "${LATEST_VERSION}" \
+                    "Next stable source tag resolved, but runtime validation is not automated" \
+                    "$NOTE"
               else
                 echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
                 echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"

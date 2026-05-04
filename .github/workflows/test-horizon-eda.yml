@@ -87,12 +87,52 @@ jobs:
       HOMEPAGE_URL: "https://horizon-eda.org/"
       OFFICIAL_DOCS: "https://horizon-eda.readthedocs.io/en/latest/installation.html#linux"
       GITHUB_REPO: "horizon-eda/horizon"
+      EXTRA_TAG_CANDIDATES: "v1.0.0"
       TEST1_COMMAND: >-
-        test -f baseline-external/metadata.txt && curl -fsL "$DOWNLOAD_URL" | grep -Fqi "org.horizon_eda.HorizonEDA"
+        test -f README.md && test -f Makefile && grep -Fq 'Horizon EDA' README.md && test "$RESOLVED_TAG" = "v1.0.0"
       TEST3_COMMAND: >-
         curl -fsL "$OFFICIAL_DOCS" | grep -Eqi 'linux|flatpak|installation'
-      TEST5_COMMAND: >-
-        curl -fsL "$HOMEPAGE_URL" | grep -Eqi 'schematic|pcb|eda'
+      TEST5_COMMAND: |
+        test "$(uname -m)" = "aarch64"
+        cat > /tmp/horizon-stm32.xml <<'XML'
+        <Mcu xmlns="http://mcd.rou.st.com/modules.php?name=mcu">
+          <Pin Name="PA0" Position="1" Type="I/O">
+            <Signal Name="GPIO"/>
+            <Signal Name="USART2_CTS"/>
+          </Pin>
+          <Pin Name="VDD" Position="2" Type="Power"/>
+          <Pin Name="NRST" Position="3" Type="Reset"/>
+        </Mcu>
+        XML
+        python3 scripts/stm32_to_json.py /tmp/horizon-stm32.xml > /tmp/horizon-stm32.json
+        python3 - <<'PY'
+        import json
+        from pathlib import Path
+
+        data = json.loads(Path("/tmp/horizon-stm32.json").read_text())
+        assert data["1"] == {"pin": "PA0", "direction": "bidirectional", "alt": ["USART2_CTS"]}
+        assert data["2"]["direction"] == "power_input"
+        assert data["3"]["direction"] == "input"
+        PY
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends horizon-eda xvfb xauth dbus-x11 >/dev/null
+        HORIZON_IMP="$(command -v horizon-imp)"
+        HORIZON_EDA="$(command -v horizon-eda)"
+        file "$HORIZON_IMP" "$HORIZON_EDA" | tee /tmp/horizon-file.txt
+        grep -Eiq 'aarch64|ARM aarch64' /tmp/horizon-file.txt
+        xvfb-run -a "$HORIZON_IMP" --help > /tmp/horizon-imp-help.txt 2>&1
+        grep -Eiq 'interactive manipulator|schematic|symbol|package|board' /tmp/horizon-imp-help.txt
+        export HOME="$RUNNER_TEMP/horizon-eda-home"
+        mkdir -p "$HOME"
+        set +e
+        timeout --kill-after=5s 15s xvfb-run -a "$HORIZON_EDA" > /tmp/horizon-eda-launch.log 2>&1
+        LAUNCH_RC=$?
+        set -e
+        if [ "$LAUNCH_RC" -ne 124 ]; then
+          cat /tmp/horizon-eda-launch.log
+          exit 1
+        fi
+        echo "note=Ran Horizon STM32 pin-conversion tooling, verified Arm64 horizon-imp help, and held the Horizon EDA GTK GUI under Xvfb. No full PCB editing workflow is claimed." >> "$GITHUB_OUTPUT"
 
     outputs:
       contract_version: "2.0"
@@ -127,9 +167,11 @@ jobs:
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          echo "package_slug=horizon-eda" >> "$GITHUB_OUTPUT"
-          echo "dashboard_link=/linux/opensource_packages/horizon-eda" >> "$GITHUB_OUTPUT"
+          {
+            echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "package_slug=horizon-eda"
+            echo "dashboard_link=/linux/opensource_packages/horizon-eda"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
@@ -162,14 +204,17 @@ jobs:
             IFS="$OLD_IFS"
             if [ -n "$RESOLVED_TAG" ]; then
               git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
+              RESOLVED_OUTPUT="$RESOLVED_TAG"
             else
               git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
+              RESOLVED_OUTPUT="default_branch"
             fi
+            echo "resolved_tag=$RESOLVED_OUTPUT" >> "$GITHUB_OUTPUT"
             if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
+              {
+                echo "install_mode=github_source"
+                echo "install_status=success"
+              } >> "$GITHUB_OUTPUT"
               exit 0
             fi
           fi
@@ -179,13 +224,17 @@ jobs:
               echo "homepage=$HOMEPAGE_URL"
               echo "docs=$OFFICIAL_DOCS"
             } > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
+            {
+              echo "resolved_tag=external_artifact"
+              echo "install_mode=external_artifact"
+              echo "install_status=success"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
+          {
+            echo "install_mode=unresolved"
+            echo "install_status=failed"
+          } >> "$GITHUB_OUTPUT"
           exit 1
       - name: Get baseline version
         id: version
@@ -202,7 +251,6 @@ jobs:
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           RESOLVED_TAG="${{ steps.install.outputs.resolved_tag || '' }}"
           INSTALL_STATUS="${{ steps.install.outputs.install_status || 'failed' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
           if [ "$INSTALL_STATUS" != "success" ]; then
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
@@ -236,7 +284,6 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
           fi
@@ -266,7 +313,6 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
           fi
@@ -281,6 +327,38 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            test "$(uname -m)" = "aarch64"
+            cd next-src
+            cat > /tmp/horizon-next-stm32.xml <<'XML'
+            <Mcu xmlns="http://mcd.rou.st.com/modules.php?name=mcu">
+              <Pin Name="PB7" Position="11" Type="I/O">
+                <Signal Name="GPIO"/>
+                <Signal Name="I2C1_SDA"/>
+                <Signal Name="USART1_RX"/>
+              </Pin>
+              <Pin Name="VDDA" Position="12" Type="Power"/>
+            </Mcu>
+            XML
+            python3 scripts/stm32_to_json.py /tmp/horizon-next-stm32.xml > /tmp/horizon-next-stm32.json
+            python3 - <<'PY'
+            import json
+            from pathlib import Path
+
+            data = json.loads(Path("/tmp/horizon-next-stm32.json").read_text())
+            assert data["11"] == {"pin": "PB7", "direction": "bidirectional", "alt": ["I2C1_SDA", "USART1_RX"]}
+            assert data["12"]["direction"] == "power_input"
+            PY
+            HELP_BUILD_DIR="$(mktemp -d)"
+            python3 scripts/make_help.py src/help_texts.txt "$HELP_BUILD_DIR/help_texts.hpp" "$HELP_BUILD_DIR/help_texts.cpp"
+            grep -Fq 'class HelpTexts' "$HELP_BUILD_DIR/help_texts.hpp"
+            grep -Eiq 'schematic|board|package|padstack' "$HELP_BUILD_DIR/help_texts.cpp"
+            if ! command -v g++ >/dev/null 2>&1; then
+              sudo apt-get update -qq
+              sudo apt-get install -y --no-install-recommends g++ >/dev/null
+            fi
+            g++ -std=c++17 -I"$HELP_BUILD_DIR" -fsyntax-only "$HELP_BUILD_DIR/help_texts.cpp"
+          limited_cpu_description: "Ran the next Horizon EDA candidate's STM32 pin-conversion tooling and generated plus syntax-compiled its help catalog C++ on Arm64. Full GUI project editing remains outside this bounded preflight."
           next_version_override: "2.7.2"
           candidate_tag_override: "v2.7.2"
 
@@ -326,10 +404,12 @@ jobs:
             OVERALL_STATUS="failure"
             BADGE_STATUS="failing"
           fi
-          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
-          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
-          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
-          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
-          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
-          echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
-          echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          {
+            echo "passed=$PASSED"
+            echo "failed=$FAILED"
+            echo "skipped=$SKIPPED"
+            echo "duration=$DURATION"
+            echo "core_failed=$CORE_FAILED"
+            echo "overall_status=$OVERALL_STATUS"
+            echo "badge_status=$BADGE_STATUS"
+          } >> "$GITHUB_OUTPUT"

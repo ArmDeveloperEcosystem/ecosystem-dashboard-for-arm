@@ -114,168 +114,186 @@ jobs:
       - name: Install gRPC
         id: install
         run: |
+          set -euo pipefail
           echo "Installing gRPC..."
-          
-          # Install using apt-get
           sudo apt-get update
-          if sudo apt-get install -y libgrpc-dev libgrpc++-dev protobuf-compiler-grpc protobuf-compiler cmake g++ libabsl-dev; then
+          if sudo apt-get install -y libgrpc-dev libgrpc++-dev protobuf-compiler-grpc protobuf-compiler cmake g++ libabsl-dev pkg-config; then
              echo "gRPC installed successfully"
-             echo "install_status=success" >> $GITHUB_OUTPUT
+             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
              echo "gRPC installation failed"
-             echo "install_status=failed" >> $GITHUB_OUTPUT
+             echo "install_status=failed" >> "$GITHUB_OUTPUT"
              exit 1
           fi
 
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
       - name: Get gRPC version
         id: version
         run: |
-          # Get version from dpkg
+          set -euo pipefail
           VERSION=$(dpkg -s libgrpc-dev | grep Version | awk '{print $2}' || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected gRPC version: $VERSION"
-
-      # ============================================================
-      # ADD YOUR TESTS BELOW
-      # Each test should:
-      # 1. Have a unique id (test1, test2, etc.)
-      # 2. Track start/end time for duration
-      # 3. Set status=passed or status=failed
-      # 4. Exit 1 on failure
-      # ============================================================
 
       - name: Test 1 - Check header file exists
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
           if [ -f "/usr/include/grpc/grpc.h" ]; then
             echo "✓ grpc.h found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "✗ grpc.h not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 2 - Check C++ header file exists
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
           if [ -f "/usr/include/grpcpp/grpcpp.h" ]; then
             echo "✓ grpcpp.h found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "✗ grpcpp.h not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 3 - Check plugin binary exists
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if [ -f "/usr/bin/grpc_cpp_plugin" ]; then
+          if command -v grpc_cpp_plugin >/dev/null 2>&1; then
             echo "✓ grpc_cpp_plugin found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "✗ grpc_cpp_plugin not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 4 - Compile simple C++ program
+      - name: Test 4 - Generate and compile gRPC loopback sample
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # Create a simple C++ program using gRPC
-          cat > test_grpc.cpp << EOF
-          #include <grpcpp/grpcpp.h>
-          #include <iostream>
-          
-          int main() {
-              std::cout << "gRPC version: " << grpc::Version() << std::endl;
-              return 0;
+          mkdir -p /tmp/grpc-loopback
+          cd /tmp/grpc-loopback
+          cat > helloworld.proto <<'EOF'
+          syntax = "proto3";
+          package smoke;
+          service Greeter {
+            rpc SayHello (HelloRequest) returns (HelloReply) {}
+          }
+          message HelloRequest {
+            string name = 1;
+          }
+          message HelloReply {
+            string message = 1;
           }
           EOF
-          
-          # Compile it
-          # Linking gRPC can be complex, need multiple libraries
-          # Using pkg-config is best
-          
-          if g++ -o test_grpc test_grpc.cpp $(pkg-config --cflags --libs grpc++ grpc); then
-             echo "✓ Compilation passed"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ Compilation failed"
-             # Try manual linking if pkg-config fails or is incomplete
-             if g++ -o test_grpc test_grpc.cpp -lgrpc++ -lgrpc -lgpr -lprotobuf -lpthread; then
-                echo "✓ Manual linking passed"
-                echo "status=passed" >> $GITHUB_OUTPUT
-            else
-                echo "✗ Manual linking failed"
-                echo "status=failed" >> $GITHUB_OUTPUT
-                exit 1
-            fi
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          protoc --cpp_out=. helloworld.proto
+          protoc --grpc_out=. --plugin=protoc-gen-grpc="$(command -v grpc_cpp_plugin)" helloworld.proto
+          cat > grpc_loopback.cpp <<'EOF'
+          #include <grpcpp/grpcpp.h>
+          #include "helloworld.grpc.pb.h"
 
-      - name: Test 5 - Run compiled program
+          #include <chrono>
+          #include <iostream>
+          #include <memory>
+          #include <string>
+          #include <thread>
+
+          class GreeterService final : public smoke::Greeter::Service {
+            grpc::Status SayHello(grpc::ServerContext* context,
+                                  const smoke::HelloRequest* request,
+                                  smoke::HelloReply* reply) override {
+              (void)context;
+              reply->set_message("hello " + request->name());
+              return grpc::Status::OK;
+            }
+          };
+
+          int main() {
+            GreeterService service;
+            grpc::ServerBuilder builder;
+            builder.AddListeningPort("127.0.0.1:50051", grpc::InsecureServerCredentials());
+            builder.RegisterService(&service);
+            std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
+            if (!server) {
+              std::cerr << "server failed to start" << std::endl;
+              return 1;
+            }
+            std::thread shutdown_thread([&server]() {
+              std::this_thread::sleep_for(std::chrono::seconds(5));
+              server->Shutdown();
+            });
+
+            auto channel = grpc::CreateChannel("127.0.0.1:50051", grpc::InsecureChannelCredentials());
+            auto stub = smoke::Greeter::NewStub(channel);
+            smoke::HelloRequest request;
+            request.set_name("arm64");
+            smoke::HelloReply reply;
+            grpc::ClientContext context;
+            grpc::Status status = stub->SayHello(&context, request, &reply);
+            server->Shutdown();
+            shutdown_thread.join();
+            if (!status.ok() || reply.message() != "hello arm64") {
+              std::cerr << "unexpected response: " << reply.message() << std::endl;
+              return 1;
+            }
+            std::cout << reply.message() << std::endl;
+            return 0;
+          }
+          EOF
+          CXXFLAGS="$(pkg-config --cflags grpc++ protobuf)"
+          LDLIBS="$(pkg-config --libs grpc++ protobuf)"
+          if g++ -std=c++17 ${CXXFLAGS} -pthread helloworld.pb.cc helloworld.grpc.pb.cc grpc_loopback.cpp ${LDLIBS} -o grpc_loopback; then
+            echo "✓ gRPC sample generated and compiled"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "✗ gRPC sample compile failed"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Run gRPC loopback request
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Functional Validation
-          
-          # Run the program
-          if ./test_grpc | grep -q "gRPC version"; then
-             echo "✓ Execution passed"
-             ./test_grpc
-             echo "status=passed" >> $GITHUB_OUTPUT
+          if /tmp/grpc-loopback/grpc_loopback | tee /tmp/grpc-loopback.out | grep -qx "hello arm64"; then
+            echo "✓ gRPC loopback request passed"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-             echo "✗ Execution failed"
-             ./test_grpc
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
-          # Cleanup
-          rm test_grpc.cpp test_grpc
-          
-          # Architecture Verification
-          ARCH=$(uname -m)
-          if [ "$ARCH" != "aarch64" ]; then
-            echo "status=failed" >> $GITHUB_OUTPUT
+            cat /tmp/grpc-loopback.out || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
+          ARCH=$(uname -m)
+          if [ "$ARCH" != "aarch64" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-            # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Regression applicability - package manager installed
         id: test6
@@ -323,7 +341,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Compile simple C++ program
+          # Generate and compile gRPC loopback sample
           if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -331,7 +349,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
-          # Run compiled program
+          # Run gRPC loopback request
           if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -367,6 +385,5 @@ jobs:
           echo "1. Test 1 - Check header file exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "2. Test 2 - Check C++ header file exists: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "3. Test 3 - Check plugin binary exists: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Compile simple C++ program: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Run compiled program: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "4. Test 4 - Generate and compile gRPC loopback sample: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Test 5 - Run gRPC loopback request: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY

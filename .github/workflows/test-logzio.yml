@@ -144,24 +144,17 @@ jobs:
       - name: Install Logzio-agent-manifest
         id: install
         run: |
-          echo "Installing Logzio-agent-manifest..."
-          
-          # Install pip
+          set -euo pipefail
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "python3-pip python3-venv"
-          # Create venv
-          python3 -m venv venv
-          source venv/bin/activate
-          
-          # Install logzio-python-handler
-          if pip install logzio-python-handler; then
-            echo "Logzio-agent-manifest installed successfully"
-            echo "install_status=success" >> $GITHUB_OUTPUT
-            echo "$PWD/venv/bin" >> $GITHUB_PATH
-          else
-            echo "Logzio-agent-manifest installation failed"
-            echo "install_status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
+          VENV_DIR="$GITHUB_WORKSPACE/.venv-logzio"
+          python3 -m venv "$VENV_DIR"
+          "$VENV_DIR/bin/python" -m pip install --upgrade pip
+          "$VENV_DIR/bin/pip" install logzio-python-handler
+
+          echo "venv_dir=$VENV_DIR" >> "$GITHUB_OUTPUT"
+          echo "python_path=$VENV_DIR/bin/python" >> "$GITHUB_OUTPUT"
+          echo "pip_path=$VENV_DIR/bin/pip" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
       
       # ============================================================
       # CUSTOMIZE THIS: Get the package version
@@ -169,8 +162,9 @@ jobs:
       - name: Get Logzio-agent-manifest version
         id: version
         run: |
-          VERSION=$(pip show logzio-python-handler | grep Version | awk '{print $2}' | tr -d '[:cntrl:]' || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          VERSION=$("${{ steps.install.outputs.python_path }}" -c "from importlib.metadata import version; print(version('logzio-python-handler'))")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Logzio-agent-manifest version: $VERSION"
       
       # ============================================================
@@ -182,60 +176,97 @@ jobs:
       # 4. Exit 1 on failure
       # ============================================================
       
-      - name: Test 1 - Check logzio python module
+      - name: Test 1 - Import Logzio handler module
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
-          if python3 -c "import logzio; print('Logzio imported successfully')" &> /dev/null; then
+          if "${{ steps.install.outputs.python_path }}" - <<'PY'
+          import logzio
+          from logzio.handler import LogzioHandler
+          assert callable(LogzioHandler)
+          PY
+          then
             echo "✓ logzio python module found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "✗ logzio python module not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
-      - name: Test 2 - Check logzio version
+      - name: Test 2 - Format a LogRecord payload
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
-          if pip show logzio-python-handler | grep -q "Version"; then
-            echo "✓ logzio version found"
-            pip show logzio-python-handler | grep "Version"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if "${{ steps.install.outputs.python_path }}" - <<'PY'
+          import logging
+          from logzio.handler import LogzioHandler
+
+          handler = LogzioHandler(token="test-token", logzio_type="arm-smoke", logs_drain_timeout=0, backup_logs=False)
+          record = logging.LogRecord("arm-smoke", logging.INFO, __file__, 12, "hello %s", ("world",), None)
+          payload = handler.format_message(record)
+          assert payload["logger"] == "arm-smoke"
+          assert payload["type"] == "arm-smoke"
+          assert payload["message"] == "hello world"
+          PY
+          then
+            echo "✓ logzio formatted a log payload"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ logzio version check failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "✗ logzio payload formatting failed"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
-      - name: Test 3 - Check logzio help output
+      - name: Test 3 - Emit through handler without network
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
-          if python3 -c "import logzio; help(logzio)" > /dev/null 2>&1; then
-            echo "✓ logzio help command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if "${{ steps.install.outputs.python_path }}" - <<'PY'
+          import logging
+          from logzio.handler import LogzioHandler
+
+          class MemorySender:
+              def __init__(self):
+                  self.events = []
+              def append(self, payload):
+                  self.events.append(payload)
+              def flush(self):
+                  pass
+
+          handler = LogzioHandler(token="test-token", logs_drain_timeout=0, backup_logs=False)
+          handler.logzio_sender = MemorySender()
+          record = logging.LogRecord("arm-smoke", logging.WARNING, __file__, 34, "warning %s", ("event",), None)
+          handler.emit(record)
+          assert handler.logzio_sender.events[0]["message"] == "warning event"
+          assert handler.logzio_sender.events[0]["log_level"] == "WARNING"
+          PY
+          then
+            echo "✓ logzio handler emitted an in-memory event"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ logzio help command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "✗ logzio handler emit failed"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
+          fi
           
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
       # Add more tests as needed (test4, test5, etc.)
       # Examples:
@@ -249,42 +280,70 @@ jobs:
       # Add/remove test result checks to match your tests above
       # ============================================================
       
-      - name: Test 4 - Architecture Verification
+      - name: Test 4 - Preserve structured extra fields
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
-          echo "Checking system architecture..."
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          if "${{ steps.install.outputs.python_path }}" - <<'PY'
+          import logging
+          from logzio.handler import LogzioHandler
+
+          handler = LogzioHandler(token="test-token", logs_drain_timeout=0, backup_logs=False)
+          record = logging.LogRecord("arm-smoke", logging.INFO, __file__, 56, "metric", (), None)
+          record.customer_id = "arm"
+          record.measurements = {"latency_ms": 7}
+          payload = handler.format_message(record)
+          assert payload["customer_id"] == "arm"
+          assert payload["measurements"] == {"latency_ms": 7}
+          PY
+          then
+            echo "✓ logzio preserved structured extra fields"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "✗ logzio extra field handling failed"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Functional Validation
+      - name: Test 5 - Flush handler sender
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Basic functional check: create a simple script using logzio
-          if python3 -c "from logzio.handler import LogzioHandler" > /dev/null 2>&1; then
-            echo "✓ Basic functional check passed (LogzioHandler importable)"
-            echo "status=passed" >> $GITHUB_OUTPUT
+
+          if "${{ steps.install.outputs.python_path }}" - <<'PY'
+          from logzio.handler import LogzioHandler
+
+          class MemorySender:
+              def __init__(self):
+                  self.flushed = False
+              def flush(self):
+                  self.flushed = True
+
+          handler = LogzioHandler(token="test-token", logs_drain_timeout=0, backup_logs=False)
+          sender = MemorySender()
+          handler.logzio_sender = sender
+          handler.flush()
+          assert sender.flushed
+          PY
+          then
+            echo "✓ logzio handler flush called sender"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ Basic functional check failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "✗ logzio handler flush failed"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
           END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Regression applicability - package manager installed
         id: test6
@@ -308,7 +367,7 @@ jobs:
           FAILED=0
           TOTAL_DURATION=0
 
-          # Check logzio python module
+          # Import Logzio handler module
           if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -316,7 +375,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Check logzio metadata
+          # Format a LogRecord payload
           if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -324,7 +383,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Check Import Test
+          # Emit through handler without network
           if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -332,7 +391,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Architecture Verification
+          # Preserve structured extra fields
           if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -340,7 +399,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
-          # Functional Validation
+          # Flush handler sender
           if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -373,10 +432,8 @@ jobs:
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check logzio python module: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check logzio metadata: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check Import Test: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
-          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "1. Import Logzio handler module: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "2. Format a LogRecord payload: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Emit through handler without network: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "4. Preserve structured extra fields: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Flush handler sender: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY

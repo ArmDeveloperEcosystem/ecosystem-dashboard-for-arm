@@ -222,32 +222,57 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 5 - Check Users List
+      - name: Test 5 - Start Webserver and Check Health
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Functional Validation
-          
+
           export AIRFLOW_HOME=~/airflow
-          
-          if airflow users list | grep -q "admin"; then
-             echo "✓ airflow users list passed"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ airflow users list failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
+
+          cleanup() {
+            if [ -f /tmp/airflow-webserver.pid ]; then
+              kill "$(cat /tmp/airflow-webserver.pid)" >/dev/null 2>&1 || true
             fi
-          
+          }
+          trap cleanup EXIT
+
+          airflow webserver --port 18080 --daemon --pid /tmp/airflow-webserver.pid >/tmp/airflow-webserver-start.log 2>&1
+
+          HEALTH=""
+          for _ in $(seq 1 30); do
+            HEALTH=$(curl -fsS http://127.0.0.1:18080/health 2>/tmp/airflow-health.err || true)
+            if printf '%s\n' "$HEALTH" | grep -Eqi '"metadatabase"[[:space:]]*:[[:space:]]*.*"healthy"|"status"[[:space:]]*:[[:space:]]*"healthy"'; then
+              break
+            fi
+            sleep 2
+          done
+
+          printf '%s\n' "$HEALTH" | tee /tmp/airflow-health.log
+          if printf '%s\n' "$HEALTH" | grep -Eqi '"metadatabase"[[:space:]]*:[[:space:]]*.*"healthy"|"status"[[:space:]]*:[[:space:]]*"healthy"'; then
+             echo "✓ airflow webserver health endpoint passed"
+             echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+             echo "✗ airflow webserver health endpoint failed"
+             cat /tmp/airflow-webserver-start.log || true
+             cat /tmp/airflow-health.err || true
+             echo "status=failed" >> "$GITHUB_OUTPUT"
+             exit 1
+          fi
+
+          cleanup
+          trap - EXIT
+
           # Architecture Verification
           ARCH=$(uname -m)
           if [ "$ARCH" != "aarch64" ]; then
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
           END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Regression applicability - package manager installed
         id: test6
@@ -340,5 +365,4 @@ jobs:
           echo "2. Initialize Database: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "3. Check Config List: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Create User: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Check Users List: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "5. Start Webserver and Check Health: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY

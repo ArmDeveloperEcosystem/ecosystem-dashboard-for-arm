@@ -146,7 +146,7 @@ jobs:
         run: |
           echo "Installing Hiredis development library..."
           
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "libhiredis-dev gcc"
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "libhiredis-dev redis-server gcc"
           # Verify installation (header file)
           if [ -f "/usr/include/hiredis/hiredis.h" ]; then
             echo "Hiredis headers installed successfully"
@@ -217,17 +217,56 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 3 - Compile Hiredis test program
+      - name: Test 3 - Compile Hiredis Redis client smoke program
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           
-          cat > test_hiredis.c << EOF
+          cat > test_hiredis.c << 'EOF'
           #include <hiredis/hiredis.h>
+          #include <stdlib.h>
+          #include <string.h>
           #include <stdio.h>
-          int main() {
-              printf("Hiredis header included successfully\n");
+          int main(int argc, char **argv) {
+              int port = argc > 1 ? atoi(argv[1]) : 6379;
+              redisContext *context = redisConnect("127.0.0.1", port);
+              if (context == NULL || context->err) {
+                  if (context) {
+                      fprintf(stderr, "connection error: %s\n", context->errstr);
+                      redisFree(context);
+                  }
+                  return 1;
+              }
+
+              redisReply *reply = redisCommand(context, "PING");
+              if (!reply || reply->type != REDIS_REPLY_STATUS || strcmp(reply->str, "PONG") != 0) {
+                  fprintf(stderr, "PING failed\n");
+                  if (reply) freeReplyObject(reply);
+                  redisFree(context);
+                  return 1;
+              }
+              freeReplyObject(reply);
+
+              reply = redisCommand(context, "SET arm64-smoke hiredis-ok");
+              if (!reply || reply->type != REDIS_REPLY_STATUS || strcmp(reply->str, "OK") != 0) {
+                  fprintf(stderr, "SET failed\n");
+                  if (reply) freeReplyObject(reply);
+                  redisFree(context);
+                  return 1;
+              }
+              freeReplyObject(reply);
+
+              reply = redisCommand(context, "GET arm64-smoke");
+              if (!reply || reply->type != REDIS_REPLY_STRING || strcmp(reply->str, "hiredis-ok") != 0) {
+                  fprintf(stderr, "GET failed\n");
+                  if (reply) freeReplyObject(reply);
+                  redisFree(context);
+                  return 1;
+              }
+              freeReplyObject(reply);
+              redisFree(context);
+              printf("hiredis redis roundtrip passed\n");
               return 0;
           }
           EOF
@@ -278,21 +317,33 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 5 - Run Hiredis test program
+      - name: Test 5 - Run Hiredis Redis roundtrip
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if ./test_hiredis; then
-            echo "✓ Hiredis test program executed successfully"
+          REDIS_PORT=6380
+          redis-server --daemonize yes --port "$REDIS_PORT" --save "" --appendonly no
+          for _ in $(seq 1 20); do
+            if redis-cli -p "$REDIS_PORT" PING | grep -q PONG; then
+              break
+            fi
+            sleep 1
+          done
+
+          if ./test_hiredis "$REDIS_PORT"; then
+            echo "✓ Hiredis completed Redis PING/SET/GET roundtrip"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ Hiredis test program execution failed"
+            echo "✗ Hiredis Redis roundtrip failed"
             echo "status=failed" >> $GITHUB_OUTPUT
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            redis-cli -p "$REDIS_PORT" SHUTDOWN NOSAVE || true
             exit 1
           fi
+          redis-cli -p "$REDIS_PORT" SHUTDOWN NOSAVE || true
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -376,8 +427,7 @@ jobs:
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
           echo "1. Check hiredis binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "2. Check hiredis version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check hiredis help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Compile Hiredis Redis client smoke program: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
 
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "5. Hiredis Redis PING/SET/GET roundtrip: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY

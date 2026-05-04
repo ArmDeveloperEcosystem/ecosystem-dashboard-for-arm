@@ -553,69 +553,98 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          IDENTITY_KIND="${{ steps.expectations.outputs.identity_kind }}"
-          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
-          IDENTITY_EXPECT="${{ steps.expectations.outputs.identity_expect }}"
-          EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            case "$IDENTITY_KIND" in
-              go_module)
-                grep -Fx "module $IDENTITY_EXPECT" "$IDENTITY_TARGET" >/dev/null
-                RESULT="Verified go module identity in $IDENTITY_TARGET"
-                ;;
-              toml_name)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); name=(data.get('project') or {}).get('name') or ((data.get('tool') or {}).get('poetry') or {}).get('name'); assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified TOML package identity in $IDENTITY_TARGET"
-                ;;
-              package_json_name)
-                python3 -c "import json,sys; data=json.load(open(sys.argv[1], encoding='utf-8')); assert data.get('name') == sys.argv[2], (data.get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified package.json identity in $IDENTITY_TARGET"
-                ;;
-              cargo_package)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); assert (data.get('package') or {}).get('name') == sys.argv[2], ((data.get('package') or {}).get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified Cargo package identity in $IDENTITY_TARGET"
-                ;;
-              chart_name)
-                python3 -c "from pathlib import Path; import sys; lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(); matches=[line.split(':', 1)[1].strip() for line in lines if line.startswith('name:')]; name=matches[0] if matches else ''; assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified chart identity in $IDENTITY_TARGET"
-                ;;
-              grep_file)
-                grep -Eiq "$IDENTITY_EXPECT" "$IDENTITY_TARGET"
-                RESULT="Verified package-specific content in $IDENTITY_TARGET"
-                ;;
-              *)
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                echo "note=No bounded identity check was configured for this package." >> "$GITHUB_OUTPUT"
-                exit 1
-                ;;
-            esac
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=$RESULT" >> "$GITHUB_OUTPUT"
+          WORKDIR=$(mktemp -d)
+          OLLAMA_PID=""
+          trap 'kill "$OLLAMA_PID" >/dev/null 2>&1 || true; docker rm -f ollama-smoke >/dev/null 2>&1 || true; rm -rf "$WORKDIR"' EXIT
+          ASSET_URL="https://github.com/ollama/ollama/releases/download/v${BASELINE_VERSION}/ollama-linux-arm64.tgz"
+          if curl -fsLI "$ASSET_URL" >/dev/null; then
+            curl -fsSL "$ASSET_URL" -o "$WORKDIR/ollama.tgz"
+            tar -xzf "$WORKDIR/ollama.tgz" -C "$WORKDIR"
+            OLLAMA_BIN=$(find "$WORKDIR" -type f -name ollama -perm -111 | head -n 1)
+            [ -n "$OLLAMA_BIN" ]
+            file "$OLLAMA_BIN" | grep -Eiq 'aarch64|arm64'
+            "$OLLAMA_BIN" --version
+            OLLAMA_HOST=127.0.0.1:11434 "$OLLAMA_BIN" serve >"$WORKDIR/ollama.log" 2>&1 &
+            OLLAMA_PID=$!
+            LIST_CMD=(env OLLAMA_HOST=127.0.0.1:11434 "$OLLAMA_BIN" list)
           else
-            TEMP_PAGE=$(mktemp)
-            trap 'rm -f "$TEMP_PAGE"' EXIT
-            if curl -fsSL "$OFFICIAL_DOCS" -o "$TEMP_PAGE" || curl -fsSL "$HOMEPAGE_URL" -o "$TEMP_PAGE" || curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_PAGE"; then
-              grep -Eiq "$EXTERNAL_EXPECT" "$TEMP_PAGE"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Verified external package identity from published docs or homepage content using /$EXTERNAL_EXPECT/." >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Could not fetch published docs or homepage content for bounded external validation." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
+            IMAGE="ollama/ollama:${BASELINE_VERSION}"
+            docker manifest inspect "$IMAGE" > /tmp/ollama-manifest.json
+            jq -e 'if has("manifests") then any(.manifests[]; .platform.architecture == "arm64") else .architecture == "arm64" end' /tmp/ollama-manifest.json >/dev/null
+            docker pull --platform linux/arm64 "$IMAGE"
+            docker run -d --platform linux/arm64 --name ollama-smoke -p 127.0.0.1:11434:11434 "$IMAGE" >/dev/null
+            LIST_CMD=(docker exec ollama-smoke ollama list)
           fi
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:11434/api/version >/tmp/ollama-version.json; then
+              break
+            fi
+            sleep 1
+          done
+          test -s /tmp/ollama-version.json
+          curl -fsS http://127.0.0.1:11434/api/tags >/tmp/ollama-tags.json
+          "${LIST_CMD[@]}" >/tmp/ollama-list.txt
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Downloaded the official Ollama Linux Arm64 binary, verified its architecture, started the local server, and probed /api/version, /api/tags, and ollama list. No LLM generation is claimed without model weights." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 6 - Regression Validation
         id: test6
-        uses: ./.github/actions/generic-source-regression-check
-        with:
-          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
-          github_repo: ${{ env.GITHUB_REPO }}
-          lane_kind: ${{ env.LANE_KIND }}
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || env.BASELINE_VERSION }}"
+          NEXT_VERSION=$(python3 -c 'import re, subprocess; current="'"$CURRENT"'"; tags=subprocess.check_output(["git","ls-remote","--tags","--refs","https://github.com/ollama/ollama.git"], text=True); vals=[]; cur=tuple(int(x) for x in current.split(".")); [vals.append((tuple(int(x) for x in m.group(1).split(".")), m.group(1))) for line in tags.splitlines() for m in [re.search(r"refs/tags/v?([0-9]+(?:\.[0-9]+)+)$", line)] if m]; newer=[v for v in vals if v[0] > cur]; newer.sort(); print(newer[-1][1] if newer else "")')
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          if [ -z "$NEXT_VERSION" ]; then
+            echo "latest_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=n/a" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable public release is available" >> "$GITHUB_OUTPUT"
+            echo "comparison=The current Ollama version $CURRENT is already the latest stable tag we could resolve. Tests 1-5 remain the bounded Arm64 server preflight; no newer candidate exists for Test 6." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+          else
+            WORKDIR=$(mktemp -d)
+            OLLAMA_PID=""
+            trap 'kill "$OLLAMA_PID" >/dev/null 2>&1 || true; docker rm -f ollama-next-smoke >/dev/null 2>&1 || true; rm -rf "$WORKDIR"' EXIT
+            ASSET_URL="https://github.com/ollama/ollama/releases/download/v${NEXT_VERSION}/ollama-linux-arm64.tgz"
+            if curl -fsLI "$ASSET_URL" >/dev/null; then
+              curl -fsSL "$ASSET_URL" -o "$WORKDIR/ollama.tgz"
+              tar -xzf "$WORKDIR/ollama.tgz" -C "$WORKDIR"
+              OLLAMA_BIN=$(find "$WORKDIR" -type f -name ollama -perm -111 | head -n 1)
+              [ -n "$OLLAMA_BIN" ]
+              file "$OLLAMA_BIN" | grep -Eiq 'aarch64|arm64'
+              "$OLLAMA_BIN" --version
+              OLLAMA_HOST=127.0.0.1:11434 "$OLLAMA_BIN" serve >"$WORKDIR/ollama.log" 2>&1 &
+              OLLAMA_PID=$!
+              LIST_CMD=(env OLLAMA_HOST=127.0.0.1:11434 "$OLLAMA_BIN" list)
+            else
+              IMAGE="ollama/ollama:${NEXT_VERSION}"
+              docker manifest inspect "$IMAGE" > /tmp/ollama-next-manifest.json
+              jq -e 'if has("manifests") then any(.manifests[]; .platform.architecture == "arm64") else .architecture == "arm64" end' /tmp/ollama-next-manifest.json >/dev/null
+              docker pull --platform linux/arm64 "$IMAGE"
+              docker run -d --platform linux/arm64 --name ollama-next-smoke -p 127.0.0.1:11434:11434 "$IMAGE" >/dev/null
+              LIST_CMD=(docker exec ollama-next-smoke ollama list)
+            fi
+            for _ in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:11434/api/version >/tmp/ollama-next-version.json; then
+                break
+              fi
+              sleep 1
+            done
+            test -s /tmp/ollama-next-version.json
+            curl -fsS http://127.0.0.1:11434/api/tags >/tmp/ollama-next-tags.json
+            "${LIST_CMD[@]}" >/tmp/ollama-next-list.txt
+            echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "decision=limited_cpu_smoke_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Arm preflight proof passed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=The newer stable Ollama $NEXT_VERSION Linux Arm64 binary was downloaded, architecture-checked, started as a local server, and probed through /api/version, /api/tags, and ollama list. No LLM generation is claimed without model weights." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         id: summary

@@ -151,10 +151,8 @@ jobs:
         id: install
         run: |
           set -euo pipefail
-          echo "Checking Caffe source integrity (Binary not available)..."
-          # Caffe binaries are not easily available for ARM64 via apt in ubuntu-24.04
-          # and building from source is too heavy for a smoke test.
-          # We verify the source code structure to ensure package availability.
+          echo "Installing Caffe source and bounded CPU-only build dependencies..."
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential git libboost-random-dev libboost-thread-dev libgflags-dev libgoogle-glog-dev"
           
           git clone --depth 1 --branch "${CAFFE_BASELINE_VERSION}" https://github.com/BVLC/caffe.git
           
@@ -267,13 +265,38 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # For source check, we validate the repo structure as "functional"
-          if [ -d "caffe" ]; then
-            echo "✓ Source validation passed"
+
+          cat > caffe_cpu_smoke.cpp <<'EOF'
+          #include <caffe/common.hpp>
+          #include <caffe/util/rng.hpp>
+          #include <iostream>
+
+          int main(int argc, char** argv) {
+              caffe::GlobalInit(&argc, &argv);
+              caffe::Caffe::set_mode(caffe::Caffe::CPU);
+              caffe::Caffe::set_random_seed(1701);
+              caffe::rng_t* rng = caffe::caffe_rng();
+              if (caffe::Caffe::mode() != caffe::Caffe::CPU || rng == nullptr) {
+                  return 1;
+              }
+              std::cout << "caffe-cpu-ok " << ((*rng)() > 0) << std::endl;
+              return 0;
+          }
+          EOF
+
+          g++ -std=c++14 -DCPU_ONLY \
+            -Icaffe/include -Icaffe/src \
+            caffe/src/caffe/common.cpp caffe_cpu_smoke.cpp \
+            -lglog -lgflags -lboost_thread -lboost_system -lpthread \
+            -o caffe_cpu_smoke
+
+          if ./caffe_cpu_smoke 2>&1 | grep -q '^caffe-cpu-ok 1$'; then
+            echo "✓ Caffe CPU common API compiled and ran successfully"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ Source validation failed"
+            echo "✗ Caffe CPU common API runtime probe failed"
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           fi

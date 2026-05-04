@@ -117,6 +117,7 @@ jobs:
         id: install
         run: |
           set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "git python3-yaml"
           git clone --depth 1 --branch "${BASELINE_VERSION}" https://github.com/buildkite/elastic-ci-stack-for-aws.git
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
@@ -160,12 +161,39 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Check for CloudFormation templates
+      - name: Test 3 - Parse CloudFormation templates
         id: test3
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if find elastic-ci-stack-for-aws -maxdepth 2 -type f \( -name "*.yml" -o -name "*.yaml" \) | grep -q .; then
+          if python3 - <<'PY'
+          import pathlib
+          import sys
+          import yaml
+
+          class CfnLoader(yaml.SafeLoader):
+              pass
+
+          def unknown(loader, tag_suffix, node):
+              if isinstance(node, yaml.MappingNode):
+                  return loader.construct_mapping(node)
+              if isinstance(node, yaml.SequenceNode):
+                  return loader.construct_sequence(node)
+              return loader.construct_scalar(node)
+
+          CfnLoader.add_multi_constructor("!", unknown)
+
+          paths = sorted(pathlib.Path("elastic-ci-stack-for-aws/templates").glob("*.yml"))
+          if not paths:
+              sys.exit("no CloudFormation templates found")
+          for path in paths:
+              with path.open() as handle:
+                  parsed = yaml.load(handle, Loader=CfnLoader)
+              if not isinstance(parsed, dict):
+                  sys.exit(f"{path} did not parse to a mapping")
+          print(f"parsed {len(paths)} CloudFormation templates")
+          PY
+          then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -192,16 +220,18 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Check Arm64 references
+      - name: Test 5 - Validate Arm64 Stack Support
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if grep -R -Eiq "arm64|aarch64|graviton|m8g|m7g|c7g|r7g" elastic-ci-stack-for-aws; then
+          if grep -R -Eiq "linuxarm64|arm64|aarch64|graviton|m8g|m7g|c7g|r7g" elastic-ci-stack-for-aws/Makefile elastic-ci-stack-for-aws/templates elastic-ci-stack-for-aws/packer; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            # Generic templates are still valid for Arm; this stays green if the stack structure is intact.
-            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "No explicit Arm64/Graviton support references were found in stack templates or image build assets."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -222,12 +252,9 @@ jobs:
           git clone --depth 1 --branch "${NEXT_VERSION}" https://github.com/buildkite/elastic-ci-stack-for-aws.git "$NEXT_DIR/repo"
 
           if [ -f "$NEXT_DIR/repo/packer/linux/buildkite-ami.pkr.hcl" ] && \
-             find "$NEXT_DIR/repo" -maxdepth 2 -type f \( -name "*.yml" -o -name "*.yaml" \) | grep -q .; then
-            if grep -R -Eiq "arm64|aarch64|graviton|m8g|m7g|c7g|r7g" "$NEXT_DIR/repo"; then
-              COMPARISON="Buildkite Elastic CI Stack baseline ${CURRENT} passed repository and template validation, and candidate ${LATEST} also contains the expected Packer plus CloudFormation templates with explicit Arm or Graviton references."
-            else
-              COMPARISON="Buildkite Elastic CI Stack baseline ${CURRENT} passed repository and template validation, and candidate ${LATEST} also contains the expected Packer plus CloudFormation templates. The templates remain generic, but the newer tag is structurally valid on Arm."
-            fi
+             find "$NEXT_DIR/repo/templates" -maxdepth 1 -type f -name "*.yml" | grep -q . && \
+             grep -R -Eiq "linuxarm64|arm64|aarch64|graviton|m8g|m7g|c7g|r7g" "$NEXT_DIR/repo/Makefile" "$NEXT_DIR/repo/templates" "$NEXT_DIR/repo/packer"; then
+            COMPARISON="Buildkite Elastic CI Stack baseline ${CURRENT} passed local template parsing and explicit Arm64 stack validation, and candidate ${LATEST} preserves the Packer, CloudFormation, and Arm64/Graviton support references."
             echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"

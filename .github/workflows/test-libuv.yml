@@ -144,10 +144,11 @@ jobs:
       - name: Install Libuv
         id: install
         run: |
+          set -euo pipefail
           echo "Installing Libuv..."
           
           # Example for apt packages:
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "libuv1-dev"
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "libuv1-dev build-essential pkg-config"
           # Verify installation (check for a header file as it's a library)
           if [ -f "/usr/include/uv.h" ]; then
             echo "Libuv installed successfully"
@@ -164,6 +165,7 @@ jobs:
       - name: Get Libuv version
         id: version
         run: |
+          set -euo pipefail
           # Get version from pkg-config if possible, or from the header file
           VERSION=$(pkg-config --modversion libuv 2>/dev/null || true)
           if [ -z "$VERSION" ]; then
@@ -275,17 +277,31 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Basic functional check: try to compile a tiny libuv program
-          cat > test_uv.c << EOF
+          cat > /tmp/test_uv.c << 'EOF'
           #include <uv.h>
           #include <stdio.h>
+          static void on_timer(uv_timer_t *handle) {
+            int *fired = handle->data;
+            *fired = 1;
+            uv_timer_stop(handle);
+            uv_close((uv_handle_t *)handle, NULL);
+          }
           int main() {
-            printf("libuv version: %s\n", uv_version_string());
+            uv_loop_t *loop = uv_default_loop();
+            uv_timer_t timer;
+            int fired = 0;
+            if (uv_timer_init(loop, &timer) != 0) return 1;
+            timer.data = &fired;
+            if (uv_timer_start(&timer, on_timer, 1, 0) != 0) return 2;
+            if (uv_run(loop, UV_RUN_DEFAULT) != 0) return 3;
+            if (!fired) return 4;
+            printf("libuv-timer-ok:%s\n", uv_version_string());
             return 0;
           }
           EOF
-          if gcc test_uv.c -luv -o test_uv && ./test_uv; then
+          if gcc /tmp/test_uv.c $(pkg-config --cflags --libs libuv) -o /tmp/test_uv && /tmp/test_uv | grep -q '^libuv-timer-ok:'; then
             echo "✓ Basic functional check passed (compilation and execution)"
             echo "status=passed" >> $GITHUB_OUTPUT
           else

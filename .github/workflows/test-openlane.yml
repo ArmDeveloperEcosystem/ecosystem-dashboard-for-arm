@@ -554,58 +554,23 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
-          IDENTITY_KIND="${{ steps.expectations.outputs.identity_kind }}"
-          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
-          IDENTITY_EXPECT="${{ steps.expectations.outputs.identity_expect }}"
-          EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            case "$IDENTITY_KIND" in
-              go_module)
-                grep -Fx "module $IDENTITY_EXPECT" "$IDENTITY_TARGET" >/dev/null
-                RESULT="Verified go module identity in $IDENTITY_TARGET"
-                ;;
-              toml_name)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); name=(data.get('project') or {}).get('name') or ((data.get('tool') or {}).get('poetry') or {}).get('name'); assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified TOML package identity in $IDENTITY_TARGET"
-                ;;
-              package_json_name)
-                python3 -c "import json,sys; data=json.load(open(sys.argv[1], encoding='utf-8')); assert data.get('name') == sys.argv[2], (data.get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified package.json identity in $IDENTITY_TARGET"
-                ;;
-              cargo_package)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); assert (data.get('package') or {}).get('name') == sys.argv[2], ((data.get('package') or {}).get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified Cargo package identity in $IDENTITY_TARGET"
-                ;;
-              chart_name)
-                python3 -c "from pathlib import Path; import sys; lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(); matches=[line.split(':', 1)[1].strip() for line in lines if line.startswith('name:')]; name=matches[0] if matches else ''; assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified chart identity in $IDENTITY_TARGET"
-                ;;
-              grep_file)
-                grep -Eiq "$IDENTITY_EXPECT" "$IDENTITY_TARGET"
-                RESULT="Verified package-specific content in $IDENTITY_TARGET"
-                ;;
-              *)
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                echo "note=No bounded identity check was configured for this package." >> "$GITHUB_OUTPUT"
-                exit 1
-                ;;
-            esac
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=$RESULT" >> "$GITHUB_OUTPUT"
-          else
-            TEMP_PAGE=$(mktemp)
-            trap 'rm -f "$TEMP_PAGE"' EXIT
-            if curl -fsSL "$OFFICIAL_DOCS" -o "$TEMP_PAGE" || curl -fsSL "$HOMEPAGE_URL" -o "$TEMP_PAGE" || curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_PAGE"; then
-              grep -Eiq "$EXTERNAL_EXPECT" "$TEMP_PAGE"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Verified external package identity from published docs or homepage content using /$EXTERNAL_EXPECT/." >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Could not fetch published docs or homepage content for bounded external validation." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
+          if [ "$MODE" != "github_source" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=OpenLane bounded preflight requires the source checkout." >> "$GITHUB_OUTPUT"
+            exit 1
           fi
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends tcl >/dev/null
+          cd baseline-src
+          test -f flow.tcl
+          test -d configuration
+          CONFIG=$(find designs -path '*/config.tcl' | head -n 1)
+          [ -n "$CONFIG" ]
+          tclsh flow.tcl -help >/tmp/openlane-help.txt 2>&1 || true
+          grep -Eiq 'openlane|flow|design|usage' /tmp/openlane-help.txt
+          grep -Eiq 'CLOCK|DESIGN|PDK|PLATFORM' "$CONFIG"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Ran the OpenLane Tcl entrypoint help on Arm64 and validated a bundled design config. Full RTL-to-GDSII remains scoped because PDK and full EDA toolchain execution are required." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -618,6 +583,25 @@ jobs:
           lane_kind: ${{ env.LANE_KIND }}
           next_version_override: "0.23"
           candidate_tag_override: "v0.23"
+          limited_cpu_probe: |
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends tcl >/dev/null
+            test -f next-src/Makefile
+            test -d next-src/configuration
+            test -f next-src/flow.tcl
+            CONFIG=$(find next-src/designs -path '*/config.tcl' | head -n 1)
+            [ -n "$CONFIG" ]
+            (cd next-src && tclsh flow.tcl -help >/tmp/openlane-next-help.txt 2>&1 || true)
+            grep -Eiq 'openlane|flow|design|usage' /tmp/openlane-next-help.txt
+            grep -Eiq 'CLOCK|DESIGN|PDK|PLATFORM' "$CONFIG"
+            python3 - <<'PY'
+            from pathlib import Path
+            readme = Path("next-src/README.md").read_text(encoding="utf-8", errors="ignore")
+            makefile = Path("next-src/Makefile").read_text(encoding="utf-8", errors="ignore")
+            assert "OpenLane" in readme
+            assert "openlane" in makefile.lower()
+            PY
+          limited_cpu_description: "Ran the next OpenLane candidate Tcl entrypoint help on Arm64 and validated a bundled design config. This does not install PDKs or run an ASIC flow."
 
       - name: Calculate test summary
         id: summary

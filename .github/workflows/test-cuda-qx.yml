@@ -87,6 +87,8 @@ jobs:
       HOMEPAGE_URL: "https://nvidia.github.io/cudaqx/"
       OFFICIAL_DOCS: "https://nvidia.github.io/cudaqx/quickstart/installation.html"
       GITHUB_REPO: "NVIDIA/cudaqx"
+      PACKAGE_PAGE: "content/linux/opensource_packages/cuda-qx.md"
+      GIT_LFS_SKIP_SMUDGE: "1"
 
     outputs:
       contract_version: "2.0"
@@ -121,6 +123,7 @@ jobs:
       - name: Set test metadata
         id: metadata
         run: |
+          # shellcheck disable=SC2129
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=cuda-qx" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/linux/opensource_packages/cuda-qx" >> "$GITHUB_OUTPUT"
@@ -128,13 +131,17 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates g++ git-lfs"
           quiet: "true"
 
       - name: Install baseline source or artifact
         id: install
         run: |
+          # shellcheck disable=SC2129
           set -euo pipefail
+          write_output() {
+            printf '%s\n' "$@" >> "$GITHUB_OUTPUT"
+          }
           rm -rf baseline-src baseline-external
           mkdir -p baseline-src baseline-external
           if [ -n "$GITHUB_REPO" ]; then
@@ -147,26 +154,22 @@ jobs:
             done
             if [ -n "$RESOLVED_TAG" ]; then
               git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
+              write_output "resolved_tag=$RESOLVED_TAG"
             else
               git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
+              write_output "resolved_tag=default_branch"
             fi
             if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
+              write_output "install_mode=github_source" "install_status=success"
               exit 0
             fi
           fi
           if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
             printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
+            write_output "resolved_tag=external_artifact" "install_mode=external_artifact" "install_status=success"
             exit 0
           fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
+          write_output "install_mode=unresolved" "install_status=failed"
           exit 1
 
       - name: Get baseline version
@@ -179,7 +182,12 @@ jobs:
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          if [ ! -f "$PACKAGE_PAGE" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           if [ "${{ steps.install.outputs.install_status || 'failed' }}" = "success" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -193,13 +201,30 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ -n "$BASELINE_VERSION" ]; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          if ! grep -Fq "version_number: $BASELINE_VERSION" "$PACKAGE_PAGE"; then
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          if [ "$MODE" = "github_source" ]; then
+            RESOLVED="${{ steps.install.outputs.resolved_tag || '' }}"
+            if [ -z "$RESOLVED" ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            if [ "$RESOLVED" != "default_branch" ] && [ "$RESOLVED" != "$BASELINE_VERSION" ] && [ "$RESOLVED" != "v$BASELINE_VERSION" ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            if [ ! -f baseline-external/metadata.txt ] || ! grep -Fq "$DOWNLOAD_URL" baseline-external/metadata.txt; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -213,7 +238,7 @@ jobs:
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
             FOUND_PATH=""
-            for candidate in CMakeLists.txt libs include docs pyproject.toml python; do
+            for candidate in CMakeLists.txt libs/core/include/cuda-qx/core/tear_down.h libs/qec/python/cudaq_qec libs/solvers/python/cudaq_solvers docs/sphinx/index.rst; do
               if [ -e "$candidate" ]; then
                 FOUND_PATH="$candidate"
                 break
@@ -244,13 +269,17 @@ jobs:
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ "$(uname -m)" = "aarch64" ]; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
+          if [ "$(uname -m)" != "aarch64" ]; then
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          if ! grep -q '^works_on_arm: true' "$PACKAGE_PAGE"; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -261,28 +290,53 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            if [ -f CMakeLists.txt ]; then
-              grep -Eiq 'project\s*\(|cudaq|cuda-qx|qx' CMakeLists.txt
-              RESULT="cmake-project-metadata"
-            else
-              grep -R -Eiq 'cudaq|cuda-qx|quantum' docs include libs python 2>/dev/null
-              RESULT="source-symbol-check"
-            fi
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=Executed CUDA-QX bounded smoke: $RESULT" >> "$GITHUB_OUTPUT"
-          else
-            if [ -f baseline-external/metadata.txt ]; then
-              grep -Eq '^download=https?://' baseline-external/metadata.txt
-              grep -Eq '^homepage=https?://' baseline-external/metadata.txt
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated CUDA-QX external distribution links and documentation references." >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
+          if [ "$MODE" != "github_source" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=CUDA-QX Arm preflight requires the package source checkout; metadata-only evidence is not treated as a smoke pass." >> "$GITHUB_OUTPUT"
+            exit 1
           fi
+          ROOT="baseline-src"
+          [ "$(uname -m)" = "aarch64" ]
+          [ -f "$ROOT/CMakeLists.txt" ]
+          [ -f "$ROOT/libs/core/include/cuda-qx/core/tear_down.h" ]
+          [ -d "$ROOT/libs/qec/python/cudaq_qec" ]
+          [ -d "$ROOT/libs/solvers/python/cudaq_solvers" ]
+          TMPDIR="$(mktemp -d)"
+          trap 'rm -rf "$TMPDIR"' EXIT
+          cat > "$TMPDIR/cudaqx_header_probe.cpp" <<'CPP'
+          #include <cuda-qx/core/tear_down.h>
+          #include <memory>
+          struct ProofTearDown final : cudaqx::tear_down {
+            void runTearDown() const override {}
+          };
+          int main() {
+            std::unique_ptr<cudaqx::tear_down> proof(new ProofTearDown());
+            return proof ? 0 : 1;
+          }
+          CPP
+          g++ -std=c++17 -I"$ROOT/libs/core/include" -fsyntax-only "$TMPDIR/cudaqx_header_probe.cpp"
+          python3 - "$ROOT" <<'PY'
+          import compileall
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          for rel in ("libs/qec/python/cudaq_qec", "libs/solvers/python/cudaq_solvers"):
+              target = root / rel
+              if not target.exists():
+                  raise SystemExit(f"missing CUDA-QX Python package source: {rel}")
+              if not compileall.compile_dir(str(target), quiet=1):
+                  raise SystemExit(f"compileall failed for {rel}")
+          for rel in ("libs/qec", "libs/solvers"):
+              pyprojects = sorted((root / rel).glob("pyproject.toml*"))
+              if not pyprojects:
+                  raise SystemExit(f"missing CUDA-QX package metadata under {rel}")
+              if not any("cudaq" in path.read_text(encoding="utf-8").lower() for path in pyprojects):
+                  raise SystemExit(f"CUDA-QX package identity missing from {rel}/pyproject.toml*")
+          print("cudaqx-preflight-ok: core header syntax and qec/solvers Python sources compiled")
+          PY
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=CUDA-QX Arm preflight passed: compiled a core C++ header surface and qec/solvers Python package sources on Arm64; CUDA-Q/GPU/QPU runtime execution is not claimed." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -293,10 +347,54 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            set -euo pipefail
+            ROOT="next-src"
+            [ "$(uname -m)" = "aarch64" ]
+            [ -f "$ROOT/CMakeLists.txt" ]
+            [ -f "$ROOT/libs/core/include/cuda-qx/core/tear_down.h" ]
+            [ -d "$ROOT/libs/qec/python/cudaq_qec" ]
+            [ -d "$ROOT/libs/solvers/python/cudaq_solvers" ]
+            TMPDIR="$(mktemp -d)"
+            trap 'rm -rf "$TMPDIR"' EXIT
+            cat > "$TMPDIR/cudaqx_header_probe.cpp" <<'CPP'
+            #include <cuda-qx/core/tear_down.h>
+            #include <memory>
+            struct ProofTearDown final : cudaqx::tear_down {
+              void runTearDown() const override {}
+            };
+            int main() {
+              std::unique_ptr<cudaqx::tear_down> proof(new ProofTearDown());
+              return proof ? 0 : 1;
+            }
+            CPP
+            g++ -std=c++17 -I"$ROOT/libs/core/include" -fsyntax-only "$TMPDIR/cudaqx_header_probe.cpp"
+            python3 - "$ROOT" <<'PY'
+            import compileall
+            import sys
+            from pathlib import Path
+
+            root = Path(sys.argv[1])
+            for rel in ("libs/qec/python/cudaq_qec", "libs/solvers/python/cudaq_solvers"):
+                target = root / rel
+                if not target.exists():
+                    raise SystemExit(f"missing CUDA-QX Python package source: {rel}")
+                if not compileall.compile_dir(str(target), quiet=1):
+                    raise SystemExit(f"compileall failed for {rel}")
+            for rel in ("libs/qec", "libs/solvers"):
+                pyprojects = sorted((root / rel).glob("pyproject.toml*"))
+                if not pyprojects:
+                    raise SystemExit(f"missing CUDA-QX package metadata under {rel}")
+                if not any("cudaq" in path.read_text(encoding="utf-8").lower() for path in pyprojects):
+                    raise SystemExit(f"CUDA-QX package identity missing from {rel}/pyproject.toml*")
+            print("cudaqx-next-preflight-ok: core header syntax and qec/solvers Python sources compiled")
+            PY
+          limited_cpu_description: "Test 6 limited_cpu_smoke_validated: reran the CUDA-QX bounded Arm preflight against the next stable source candidate, compiling the core C++ header surface and qec/solvers Python package sources on Arm64. This is CPU-side package preflight evidence only; no CUDA-Q, GPU, or QPU runtime execution is claimed."
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
+          # shellcheck disable=SC2129
           T1="${{ steps.test1.outputs.status || '' }}"
           T2="${{ steps.test2.outputs.status || '' }}"
           T3="${{ steps.test3.outputs.status || '' }}"
@@ -335,10 +433,12 @@ jobs:
             OVERALL_STATUS="failure"
             BADGE_STATUS="failing"
           fi
-          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
-          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
-          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
-          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
-          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
-          echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
-          echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          {
+            echo "passed=$PASSED"
+            echo "failed=$FAILED"
+            echo "skipped=$SKIPPED"
+            echo "duration=$DURATION"
+            echo "core_failed=$CORE_FAILED"
+            echo "overall_status=$OVERALL_STATUS"
+            echo "badge_status=$BADGE_STATUS"
+          } >> "$GITHUB_OUTPUT"

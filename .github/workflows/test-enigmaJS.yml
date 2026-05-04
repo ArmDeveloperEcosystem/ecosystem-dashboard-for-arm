@@ -134,6 +134,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
       
       - name: Set test metadata
         id: metadata
@@ -144,13 +149,14 @@ jobs:
       - name: Install Enigma.js
         id: install
         run: |
-          echo "Installing Enigma.js..."
+          set -euo pipefail
+          echo "Installing pinned Enigma.js baseline..."
           
           # Initialize a new npm project
-          npm init -y
+          npm init -y >/dev/null 2>&1
           
           # Install enigma.js and ws (WebSocket dependency)
-          if npm install enigma.js ws; then
+          if npm install --no-audit --no-fund enigma.js@1.0.0 ws@8; then
              echo "Enigma.js installed successfully"
              echo "install_status=success" >> $GITHUB_OUTPUT
           else
@@ -165,8 +171,8 @@ jobs:
       - name: Get Enigma.js version
         id: version
         run: |
-          # Get version from npm list
-          VERSION=$(npm list enigma.js --depth=0 | grep enigma.js | cut -d@ -f2 | head -1 || echo "unknown")
+          set -euo pipefail
+          VERSION=$(node -p "require('enigma.js/package.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Enigma.js version: $VERSION"
       
@@ -267,31 +273,25 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Functional Validation
-          
-          # Create a script that tries to use the library slightly more
-          cat > test_schema.js << EOF
-          try {
-            const enigma = require('enigma.js');
-            // Just check if we can access the library object properties
-            if (typeof enigma.create === 'function' || typeof enigma.Global === 'function' || Object.keys(enigma).length > 0) {
-               console.log('enigma.js object seems valid');
-               process.exit(0);
-            } else {
-               console.error('enigma.js object is empty or invalid');
-               process.exit(1);
-            }
-          } catch (e) {
-            console.error(e);
+          node > /tmp/enigma-runtime.log <<'NODE'
+          const enigma = require('enigma.js');
+          const session = enigma.create({
+            schema: { structs: { Global: { name: 'Global', functions: [], properties: [] } } },
+            url: 'ws://127.0.0.1:65535/app/engineData',
+            createSocket: () => ({ on() {}, send() {}, close() {} }),
+          });
+          if (!session || typeof session.open !== 'function' || typeof session.close !== 'function') {
             process.exit(1);
           }
-          EOF
-          
-          if node test_schema.js; then
+          console.log('enigma-runtime-ok');
+          NODE
+          if grep -qx 'enigma-runtime-ok' /tmp/enigma-runtime.log; then
              echo "✓ enigma.js basic usage test passed"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
+             cat /tmp/enigma-runtime.log || true
              echo "✗ enigma.js basic usage test failed"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
@@ -318,19 +318,69 @@ jobs:
       # UPDATE THIS: Calculate summary based on your number of tests
       # Add/remove test result checks to match your tests above
 
-      - name: Regression applicability - package manager installed
+      - name: Test 6 - Regression Validation
         id: test6
         run: |
           set -euo pipefail
+          START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
-          echo "duration=0" >> "$GITHUB_OUTPUT"
+          npm view enigma.js versions --json > /tmp/enigma-versions.json
+          NEXT=$(CURRENT="$CURRENT" node <<'NODE'
+          const fs = require('fs');
+          const current = process.env.CURRENT.replace(/^v/, '');
+          const versions = JSON.parse(fs.readFileSync('/tmp/enigma-versions.json', 'utf8'))
+            .filter((v) => /^\d+\.\d+\.\d+$/.test(v))
+            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+          process.stdout.write(versions.find((v) => v.localeCompare(current, undefined, { numeric: true }) > 0) || '');
+          NODE
+          )
+
+          if [ -z "$NEXT" ]; then
+            echo "latest_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable Enigma.js version is available from npm" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Enigma.js $CURRENT passed runtime smoke tests; npm did not report a newer stable candidate for Test 6." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "latest_version=$NEXT" >> "$GITHUB_OUTPUT"
+          NEXT_DIR=$(mktemp -d)
+          cd "$NEXT_DIR"
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund "enigma.js@${NEXT}" ws@8
+          INSTALLED=$(node -p "require('enigma.js/package.json').version")
+          node <<'NODE' > /tmp/enigma-next-runtime.log
+          const enigma = require('enigma.js');
+          const session = enigma.create({
+            schema: { structs: { Global: { name: 'Global', functions: [], properties: [] } } },
+            url: 'ws://127.0.0.1:65535/app/engineData',
+            createSocket: () => ({ on() {}, send() {}, close() {} }),
+          });
+          if (!session || typeof session.open !== 'function') process.exit(1);
+          console.log('enigma-next-ok');
+          NODE
+          if [ "$INSTALLED" = "$NEXT" ] && grep -qx 'enigma-next-ok' /tmp/enigma-next-runtime.log; then
+            echo "next_installed_version=$INSTALLED" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Enigma.js $CURRENT passed runtime smoke tests. Test 6 installed candidate $INSTALLED from npm and constructed an Enigma session on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/enigma-next-runtime.log || true
+            echo "next_installed_version=${INSTALLED:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Enigma.js $CURRENT passed, but candidate $NEXT did not complete the same runtime smoke on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         if: always()
@@ -408,4 +458,3 @@ jobs:
           echo "1. Check enigmajs binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "2. Check enigmajs version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "3. Check enigmajs help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-

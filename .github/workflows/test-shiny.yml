@@ -115,7 +115,7 @@ jobs:
         id: install
         run: |
           set -euo pipefail
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "r-base r-cran-shiny"
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "r-base r-cran-shiny curl"
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get Shiny version
@@ -188,10 +188,40 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if Rscript -e 'library(shiny); app <- shinyApp(ui=fluidPage("hello-arm64"), server=function(input, output, session){}); cat(inherits(app, "shiny.appobj"))' | grep -qx "TRUE"; then
+          APP_DIR=$(mktemp -d)
+          cat > "$APP_DIR/app.R" <<'EOF'
+          library(shiny)
+          ui <- fluidPage("hello-arm64")
+          server <- function(input, output, session) {}
+          shinyApp(ui = ui, server = server)
+          EOF
+          cleanup() {
+            if [ -n "${SHINY_PID:-}" ]; then
+              kill "$SHINY_PID" >/dev/null 2>&1 || true
+              wait "$SHINY_PID" >/dev/null 2>&1 || true
+            fi
+            rm -rf "$APP_DIR"
+          }
+          trap cleanup EXIT
+          Rscript -e "shiny::runApp('$APP_DIR', host='127.0.0.1', port=3838, launch.browser=FALSE)" >/tmp/shiny-smoke.log 2>&1 &
+          SHINY_PID=$!
+          READY=0
+          for _ in $(seq 1 30); do
+            if ! kill -0 "$SHINY_PID" >/dev/null 2>&1; then
+              break
+            fi
+            if curl -fsS --max-time 2 http://127.0.0.1:3838/ | grep -q "hello-arm64"; then
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$READY" -eq 1 ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            cat /tmp/shiny-smoke.log || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi

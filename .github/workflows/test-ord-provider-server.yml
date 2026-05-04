@@ -131,6 +131,11 @@ jobs:
           packages: "git curl jq tar unzip file ca-certificates"
           quiet: "true"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install baseline source or artifact
         id: install
         run: |
@@ -558,6 +563,43 @@ jobs:
           IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
           IDENTITY_EXPECT="${{ steps.expectations.outputs.identity_expect }}"
           EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
+          if [ "$PACKAGE_SLUG" = "ord-provider-server" ]; then
+            if [ "$MODE" != "github_source" ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=ORD Provider Server runtime smoke requires the checked-out source tree." >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            cd baseline-src
+            npm ci
+            npm run build
+            node dist/src/cli.js --help | grep -Eiq 'ord-provider-server|directory|base-url'
+            node dist/src/cli.js \
+              -d ./example \
+              --base-url 'http://127.0.0.1:18080' \
+              --host 127.0.0.1 \
+              --port 18080 >/tmp/ord-provider-server.log 2>&1 &
+            SERVER_PID=$!
+            trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+            for _ in {1..30}; do
+              if curl -fsS http://127.0.0.1:18080/.well-known/open-resource-discovery >/tmp/ord-provider-config.json; then
+                break
+              fi
+              sleep 1
+            done
+            if grep -Eiq 'openResourceDiscovery|documents|baseUrl' /tmp/ord-provider-config.json; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "note=Built the Node package and served the checked-in ORD example over HTTP on the Arm64 runner." >> "$GITHUB_OUTPUT"
+            else
+              cat /tmp/ord-provider-server.log || true
+              cat /tmp/ord-provider-config.json || true
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=ORD Provider Server did not serve the expected ORD discovery endpoint." >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
             case "$IDENTITY_KIND" in
@@ -616,6 +658,12 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            cd next-src
+            npm ci
+            npm run build
+            node dist/src/cli.js --help | grep -Eiq 'ord-provider-server|directory|base-url'
+          limited_cpu_description: "Built the next ORD Provider Server Node package and executed its CLI help path on the Arm64 runner. Full HTTP fixture coverage remains in Tests 1-5 for the pinned baseline."
 
       - name: Calculate test summary
         id: summary

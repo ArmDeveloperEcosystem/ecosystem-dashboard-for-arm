@@ -82,16 +82,14 @@ jobs:
     env:
       BASELINE_VERSION: "4.2"
       PACKAGE_SLUG: "godot"
-      LANE_KIND: "github release / source-build-or-tarball"
+      LANE_KIND: "apt package / CPU runtime"
       DOWNLOAD_URL: "https://github.com/godotengine/godot/releases"
       HOMEPAGE_URL: "https://docs.godotengine.org/en/stable/"
       OFFICIAL_DOCS: "https://docs.godotengine.org/en/latest/engine_details/development/compiling/"
       GITHUB_REPO: "godotengine/godot"
       PACKAGE_PAGE: "content/linux/opensource_packages/godot.md"
-      SOURCE_GLOBS: "core|editor|scene|modules|SConstruct"
-      EVIDENCE_RE: "Godot|game engine|2D|3D"
-      TEST5_MODE: "source"
-      PYTHON_TARGETS: ""
+      APT_PACKAGES: "godot3-server"
+      COMMAND_CANDIDATES: "godot3-server godot3 godot"
 
     outputs:
       contract_version: "2.0"
@@ -112,7 +110,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
-      regression_policy: "applicable"
+      regression_policy: "package_manager_installed"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -133,52 +131,36 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "${{ env.APT_PACKAGES }}"
           quiet: "true"
 
-      - name: Install baseline source or artifact
+      - name: Locate installed Godot command
         id: install
         run: |
           set -euo pipefail
-          rm -rf baseline-src baseline-external
-          mkdir -p baseline-src baseline-external
-          if [ -n "$GITHUB_REPO" ]; then
-            RESOLVED_TAG=""
-            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
-              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
-                RESOLVED_TAG="$CANDIDATE"
-                break
-              fi
-            done
-            if [ -n "$RESOLVED_TAG" ]; then
-              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
-            else
-              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
+          COMMAND_PATH=""
+          for CANDIDATE in $COMMAND_CANDIDATES; do
+            if command -v "$CANDIDATE" >/dev/null 2>&1; then
+              COMMAND_PATH=$(command -v "$CANDIDATE")
+              break
             fi
-            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
+          done
+          test -n "$COMMAND_PATH"
+          echo "command_path=$COMMAND_PATH" >> "$GITHUB_OUTPUT"
+          echo "install_mode=package_manager" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get baseline version
         id: version
         run: |
-          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected baseline version: $BASELINE_VERSION"
+          set -euo pipefail
+          VERSION=$(dpkg-query -W -f='${Version}\n' godot3-server 2>/dev/null | head -1 || true)
+          if [ -z "$VERSION" ]; then
+            VERSION=$("${{ steps.install.outputs.command_path }}" --version 2>&1 | grep -Eo '[0-9]+([.][0-9]+)+' | head -1 || true)
+          fi
+          [ -n "$VERSION" ] || VERSION="unknown"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected Godot version: $VERSION"
 
       - name: Test 1 - Baseline package evidence
         id: test1
@@ -186,103 +168,34 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if [ ! -f "$PACKAGE_PAGE" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if [ "$MODE" = "github_source" ]; then
-            FOUND=0
-            IFS='|' read -r -a PATTERNS <<< "$SOURCE_GLOBS"
-            for PATTERN in "${PATTERNS[@]}"; do
-              [ -z "$PATTERN" ] && continue
-              if compgen -G "baseline-src/$PATTERN" > /dev/null; then
-                FOUND=1
-                break
-              fi
-            done
-            if [ "$FOUND" -ne 1 ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          else
-            if [ ! -f baseline-external/metadata.txt ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
+          COMMAND_PATH="${{ steps.install.outputs.command_path || '' }}"
+          test "${{ steps.install.outputs.install_status || 'failed' }}" = "success"
+          test -x "$COMMAND_PATH"
+          dpkg-query -W godot3-server >/dev/null
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Baseline version and release alignment
+      - name: Test 2 - Installed runtime version
         id: test2
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if ! grep -Fq "version_number: $BASELINE_VERSION" "$PACKAGE_PAGE"; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if [ "$MODE" = "github_source" ]; then
-            RESOLVED="${{ steps.install.outputs.resolved_tag || '' }}"
-            if [ -z "$RESOLVED" ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            if [ "$RESOLVED" != "default_branch" ] && [ "$RESOLVED" != "$BASELINE_VERSION" ] && [ "$RESOLVED" != "v$BASELINE_VERSION" ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          else
-            if [ ! -f baseline-external/metadata.txt ] || ! grep -Fq "$DOWNLOAD_URL" baseline-external/metadata.txt; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
+          VERSION="${{ steps.version.outputs.version || 'unknown' }}"
+          test "$VERSION" != "unknown"
+          ("${{ steps.install.outputs.command_path }}" --version 2>&1 || true) | grep -Eiq 'Godot|[0-9]+[.][0-9]+'
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Package-specific source or docs evidence
+      - name: Test 3 - Godot headless help
         id: test3
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if [ "$MODE" = "github_source" ]; then
-            if ! grep -R -I -Eiq "$EVIDENCE_RE" baseline-src 2>/dev/null; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            DOC_FOUND=0
-            for PATTERN in README* docs examples; do
-              if compgen -G "baseline-src/$PATTERN" > /dev/null; then
-                DOC_FOUND=1
-                break
-              fi
-            done
-            if [ "$DOC_FOUND" -ne 1 ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          else
-            if ! grep -Eiq "$EVIDENCE_RE" "$PACKAGE_PAGE"; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            if ! grep -Fq "$HOMEPAGE_URL" baseline-external/metadata.txt; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
+          ("${{ steps.install.outputs.command_path }}" --help 2>&1 || true) | grep -Eiq 'headless|no-window|script'
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -294,6 +207,10 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           if [ "$(uname -m)" != "aarch64" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$(dpkg --print-architecture)" != "arm64" ]; then
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -311,83 +228,49 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          case "$TEST5_MODE" in
-            python)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              FOUND=0
-              IFS='|' read -r -a TARGETS <<< "$PYTHON_TARGETS"
-              for TARGET in "${TARGETS[@]}"; do
-                [ -z "$TARGET" ] && continue
-                if [ -d "baseline-src/$TARGET" ] || [ -f "baseline-src/$TARGET" ]; then
-                  python3 -m compileall -q "baseline-src/$TARGET"
-                  FOUND=1
-                  break
-                fi
-              done
-              if [ "$FOUND" -ne 1 ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package-specific Python sources with compileall without requiring optional accelerator runtimes." >> "$GITHUB_OUTPUT"
-              ;;
-            source)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              MATCHED=0
-              IFS='|' read -r -a PATTERNS <<< "$SOURCE_GLOBS"
-              for PATTERN in "${PATTERNS[@]}"; do
-                [ -z "$PATTERN" ] && continue
-                if compgen -G "baseline-src/$PATTERN" > /dev/null; then
-                  MATCHED=$((MATCHED + 1))
-                fi
-              done
-              if [ "$MATCHED" -lt 1 ] || ! grep -R -I -Eiq "$EVIDENCE_RE" baseline-src 2>/dev/null; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
-                echo "note=Validated package-specific source layout and documentation on Arm64; GPU or accelerator runtime remains out of scope for generic runners." >> "$GITHUB_OUTPUT"
-              else
-                echo "note=Validated package-specific source layout and documentation on Arm64 without claiming a full runtime build." >> "$GITHUB_OUTPUT"
-              fi
-              ;;
-            external)
-              if [ ! -f baseline-external/metadata.txt ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              if ! grep -Fq "download=$DOWNLOAD_URL" baseline-external/metadata.txt || ! grep -Fq "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt || ! grep -Eiq "$EVIDENCE_RE" "$PACKAGE_PAGE"; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package metadata, official endpoints, and Arm64 package-page evidence for this external/manual lane." >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-              ;;
-          esac
+          PROJECT=/tmp/godot-smoke-project
+          mkdir -p "$PROJECT/home" "$PROJECT/cache"
+          cat > "$PROJECT/project.godot" <<'EOF'
+          ; Engine configuration file.
+          [application]
+          config/name="Arm64Smoke"
+          EOF
+          cat > "$PROJECT/smoke.gd" <<'EOF'
+          extends SceneTree
+          func _init():
+              var f = File.new()
+              var err = f.open("user://smoke.txt", File.WRITE)
+              if err != OK:
+                  quit(2)
+                  return
+              f.store_string("arm64-smoke")
+              f.close()
+              quit(0)
+          EOF
+          HEADLESS_FLAG="--no-window"
+          if "${{ steps.install.outputs.command_path }}" --help 2>&1 | grep -q -- '--headless'; then
+            HEADLESS_FLAG="--headless"
+          fi
+          HOME="$PROJECT/home" XDG_CACHE_HOME="$PROJECT/cache" "${{ steps.install.outputs.command_path }}" "$HEADLESS_FLAG" --path "$PROJECT" --script "$PROJECT/smoke.gd"
+          test -s "$PROJECT/home/.local/share/godot/app_userdata/Arm64Smoke/smoke.txt"
+          echo "note=Ran a minimal Godot project script in headless/no-window mode on the Arm64 runner." >> "$GITHUB_OUTPUT"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 6 - Regression Validation
+      - name: Regression applicability - package manager installed
         id: test6
-        uses: ./.github/actions/generic-source-regression-check
-        with:
-          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
-          github_repo: ${{ env.GITHUB_REPO }}
-          lane_kind: ${{ env.LANE_KIND }}
-          next_version_override: "4.6.2"
-          candidate_tag_override: "4.6.2-stable"
+        run: |
+          set -euo pipefail
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
+          echo "comparison=The tested Godot runtime is installed via apt in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
+          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
       - name: Calculate test summary
         id: summary
         if: always()
