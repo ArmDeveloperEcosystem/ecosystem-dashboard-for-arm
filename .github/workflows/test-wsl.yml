@@ -593,16 +593,46 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          # Microsoft/WSL currently has newer source tags without release assets; use the latest published release artifact for this package proof.
+          next_version_override: "2.7.3"
+          candidate_tag_override: "2.7.3"
           limited_cpu_probe: |
             curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$CANDIDATE_TAG" -o /tmp/wsl-next-release.json
-            ASSET_URL="$(jq -r '.assets[] | select(.name | test("arm64|aarch64|ARM64|msix|msi"; "i")) | .browser_download_url' /tmp/wsl-next-release.json | head -n 1)"
+            ASSET_URL="$(jq -r '.assets[] | select(.name | test("arm64|aarch64|ARM64|msixbundle"; "i")) | .browser_download_url' /tmp/wsl-next-release.json | head -n 1)"
             [ -n "$ASSET_URL" ]
             curl -fL "$ASSET_URL" -o /tmp/wsl-next-arm64-package
             file /tmp/wsl-next-arm64-package | grep -Eiq 'Zip|Microsoft|PE32|data'
-            unzip -l /tmp/wsl-next-arm64-package >/tmp/wsl-next-package-list.txt
-            grep -Eiq 'AppxManifest.xml|wsl.*\.exe|wslservice.*\.exe|kernel|system\.vhd' /tmp/wsl-next-package-list.txt
-            unzip -p /tmp/wsl-next-arm64-package '*AppxManifest.xml' 2>/tmp/wsl-next-manifest-errors.txt | grep -Eiq 'ARM64|arm64|ProcessorArchitecture'
-          limited_cpu_description: "Test 6 reran the scoped WSL Arm preflight against the next stable release: Arm64 package download, payload listing, ARM64 manifest inspection, and WSL payload completeness checks. Launching WSL still requires Windows on Arm."
+            python3 - <<'PY'
+            from pathlib import Path
+            import re
+            import zipfile
+
+            package = Path("/tmp/wsl-next-arm64-package")
+            work = Path("/tmp/wsl-next-unpack")
+            work.mkdir(exist_ok=True)
+            names = []
+            manifest_text = []
+
+            def scan_zip(path, depth=0):
+                with zipfile.ZipFile(path) as archive:
+                    for name in archive.namelist():
+                        names.append(name)
+                        lower = name.lower()
+                        if lower.endswith("appxmanifest.xml"):
+                            manifest_text.append(archive.read(name).decode("utf-8", "ignore"))
+                        if depth < 2 and lower.endswith((".appx", ".msix", ".zip")):
+                            nested = work / f"nested-{depth}-{Path(name).name}"
+                            nested.write_bytes(archive.read(name))
+                            scan_zip(nested, depth + 1)
+
+            scan_zip(package)
+            Path("/tmp/wsl-next-package-list.txt").write_text("\n".join(names), encoding="utf-8")
+            joined_names = "\n".join(names)
+            joined_manifest = "\n".join(manifest_text)
+            assert re.search(r"AppxManifest.xml|wsl.*\.exe|wslservice.*\.exe|kernel|system\.vhd", joined_names, re.I), "missing expected WSL payload entries"
+            assert re.search(r"ARM64|arm64|ProcessorArchitecture", joined_manifest), "missing ARM64 manifest metadata"
+            PY
+          limited_cpu_description: "Test 6 reran the scoped WSL Arm preflight against the latest published WSL release artifact with Arm64 assets: package download, payload listing, ARM64 manifest inspection, and WSL payload completeness checks. Launching WSL still requires Windows on Arm."
           defer_on_limited_cpu_probe_failure: "true"
       - name: Calculate test summary
         id: summary
