@@ -299,21 +299,39 @@ jobs:
             fi
             if [ -x "$NEXT_ROOT/bin/emqx" ] && [ -f "$NEXT_ROOT/releases/emqx.rel" ]; then
               NEXT_INSTALLED_VERSION=$(awk -F '[{},"]+' '/{release,/{print $4; exit}' "$NEXT_ROOT/releases/emqx.rel" || true)
-              if [ "$NEXT_INSTALLED_VERSION" = "$LATEST_VERSION" ]; then
+              cleanup_next() {
+                "$NEXT_ROOT/bin/emqx" stop >/dev/null 2>&1 || true
+              }
+              trap cleanup_next EXIT
+              "$NEXT_ROOT/bin/emqx" start > emqx-next-start.log 2>&1 || true
+              NEXT_STATUS=""
+              for _ in $(seq 1 20); do
+                NEXT_STATUS=$("$NEXT_ROOT/bin/emqx" ctl status 2>&1 || true)
+                if echo "$NEXT_STATUS" | grep -Eqi "${LATEST_VERSION} is started|Node .+ is started|is started"; then
+                  break
+                fi
+                sleep 2
+              done
+
+              if [ "$NEXT_INSTALLED_VERSION" = "$LATEST_VERSION" ] && echo "$NEXT_STATUS" | grep -Eqi "${LATEST_VERSION} is started|Node .+ is started|is started"; then
                 echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned EMQX version ${CURRENT_VERSION} passed smoke tests in this run. Regression validation installed candidate version ${LATEST_VERSION} on Arm64, and the extracted tarball reported version ${NEXT_INSTALLED_VERSION}." >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned EMQX version ${CURRENT_VERSION} passed smoke tests in this run. Regression validation installed candidate version ${LATEST_VERSION} on Arm64, started the broker, and verified emqx ctl status from the candidate runtime." >> "$GITHUB_OUTPUT"
                 echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION}"
                 echo "Regression install result: Next version installed successfully on Arm64"
                 echo "status=passed" >> "$GITHUB_OUTPUT"
+                cleanup_next
+                trap - EXIT
               else
+                cat emqx-next-start.log || true
+                echo "$NEXT_STATUS" || true
                 echo "next_installed_version=${NEXT_INSTALLED_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-                echo "regression_result=Next version installed but reported a version mismatch on Arm64" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned EMQX version ${CURRENT_VERSION} passed smoke tests in this run, but the candidate ${LATEST_VERSION} reported version ${NEXT_INSTALLED_VERSION:-unknown} on Arm64." >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version runtime smoke failed on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned EMQX version ${CURRENT_VERSION} passed smoke tests in this run, but the candidate ${LATEST_VERSION} reported version ${NEXT_INSTALLED_VERSION:-unknown} or failed to start and answer emqx ctl status on Arm64." >> "$GITHUB_OUTPUT"
                 echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-unknown}"
-                echo "Regression install result: Next version installed but reported a version mismatch on Arm64"
+                echo "Regression install result: Next version runtime smoke failed on Arm64"
                 echo "status=failed" >> "$GITHUB_OUTPUT"
                 exit 1
               fi

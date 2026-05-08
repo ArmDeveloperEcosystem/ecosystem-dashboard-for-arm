@@ -91,8 +91,29 @@ jobs:
         test -f README.md && test -f go.mod && test -f cmd/limactl/main.go && test -d examples && test "$RESOLVED_TAG" = "v0.1.1"
       TEST3_COMMAND: >-
         test -d docs && test -f examples/README.md && grep -Fq 'Lima' README.md
-      TEST5_COMMAND: >-
-        python3 -c "from pathlib import Path; r=Path('README.md').read_text(); m=Path('cmd/limactl/main.go').read_text(); assert 'limactl start' in r and 'examples/fedora.yaml' in r and 'app.Name = "limactl"' in m"
+      TEST5_COMMAND: |
+        TAG="$RESOLVED_TAG"
+        [ -n "$TAG" ] && [ "$TAG" != "default_branch" ]
+        VERSION="${TAG#v}"
+        mkdir -p lima-runtime
+        ASSET_URL="$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$TAG" | jq -r --arg version "$VERSION" '[.assets[] | select(.name == ("lima-" + $version + "-Linux-aarch64.tar.gz")) | .browser_download_url][0] // empty')"
+        [ -n "$ASSET_URL" ]
+        curl -fL --retry 3 -o lima-runtime/lima.tgz "$ASSET_URL"
+        tar -xzf lima-runtime/lima.tgz -C lima-runtime
+        LIMACTL="$PWD/lima-runtime/bin/limactl"
+        [ -x "$LIMACTL" ]
+        file "$LIMACTL" | tee /tmp/lima-limactl.file
+        grep -Eiq 'ARM aarch64|aarch64' /tmp/lima-limactl.file
+        "$LIMACTL" --version | tee /tmp/lima-version.txt
+        grep -Fq "$VERSION" /tmp/lima-version.txt
+        "$LIMACTL" --help >/tmp/lima-help.txt
+        grep -Eiq 'Lima|Linux-on-Mac|Linux virtual machines' /tmp/lima-help.txt
+        LIMA_SMOKE_HOME="$PWD/lima-smoke-home"
+        mkdir -p "$LIMA_SMOKE_HOME/.lima"
+        HOME="$LIMA_SMOKE_HOME" "$LIMACTL" ls >/tmp/lima-ls.out 2>/tmp/lima-ls.err
+        grep -Eiq 'NAME[[:space:]]+SSH[[:space:]]+ARCH[[:space:]]+DIR' /tmp/lima-ls.out
+        grep -Eiq 'No instance found|Run `limactl start`' /tmp/lima-ls.err
+        echo "note=Arm preflight smoke passed for Lima: downloaded $ASSET_URL, verified limactl as AArch64, ran version/help, and exercised the non-VM limactl ls path against an empty Lima home. No VM launch, guest boot, or container runtime claim is made." >> "$GITHUB_OUTPUT"
 
     outputs:
       contract_version: "2.0"
@@ -127,9 +148,11 @@ jobs:
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          echo "package_slug=lima" >> "$GITHUB_OUTPUT"
-          echo "dashboard_link=/linux/opensource_packages/lima" >> "$GITHUB_OUTPUT"
+          {
+            echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "package_slug=lima"
+            echo "dashboard_link=/linux/opensource_packages/lima"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
@@ -146,6 +169,7 @@ jobs:
           mkdir -p baseline-src baseline-external
           if [ -n "$GITHUB_REPO" ]; then
             RESOLVED_TAG=""
+            RESOLVED_OUTPUT=""
             CANDIDATE_TAGS="$BASELINE_VERSION|v$BASELINE_VERSION"
             if [ -n "${EXTRA_TAG_CANDIDATES:-}" ]; then
               CANDIDATE_TAGS="${CANDIDATE_TAGS}|${EXTRA_TAG_CANDIDATES}"
@@ -162,14 +186,17 @@ jobs:
             IFS="$OLD_IFS"
             if [ -n "$RESOLVED_TAG" ]; then
               git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
+              RESOLVED_OUTPUT="$RESOLVED_TAG"
             else
               git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
+              RESOLVED_OUTPUT="default_branch"
             fi
             if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
+              {
+                echo "resolved_tag=$RESOLVED_OUTPUT"
+                echo "install_mode=github_source"
+                echo "install_status=success"
+              } >> "$GITHUB_OUTPUT"
               exit 0
             fi
           fi
@@ -179,13 +206,17 @@ jobs:
               echo "homepage=$HOMEPAGE_URL"
               echo "docs=$OFFICIAL_DOCS"
             } > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
+            {
+              echo "resolved_tag=external_artifact"
+              echo "install_mode=external_artifact"
+              echo "install_status=success"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
+          {
+            echo "install_mode=unresolved"
+            echo "install_status=failed"
+          } >> "$GITHUB_OUTPUT"
           exit 1
       - name: Get baseline version
         id: version
@@ -210,6 +241,7 @@ jobs:
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
           fi
+          export DOC_PATH RESOLVED_TAG
           eval "$TEST1_COMMAND"
           if [ "$MODE" = "github_source" ] && [ "$RESOLVED_TAG" = "default_branch" ]; then
             echo "note=Upstream source smoke used the default branch because no exact source tag matched the published baseline version." >> "$GITHUB_OUTPUT"
@@ -240,6 +272,7 @@ jobs:
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
           fi
+          export DOC_PATH
           eval "$TEST3_COMMAND"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
@@ -266,11 +299,15 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
+          RESOLVED_TAG="${{ steps.install.outputs.resolved_tag || '' }}"
           DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+          trap 'echo "status=failed" >> "$GITHUB_OUTPUT"; END_TIME=$(date +%s); echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"' ERR
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
           fi
+          export DOC_PATH RESOLVED_TAG
           eval "$TEST5_COMMAND"
+          trap - ERR
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -281,6 +318,31 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            test "$(uname -m)" = "aarch64"
+            ASSET_URL="$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$CANDIDATE_TAG" | jq -r --arg version "$LATEST_VERSION" '[.assets[] | select(.name == ("lima-" + $version + "-Linux-aarch64.tar.gz")) | .browser_download_url][0] // empty')"
+            [ -n "$ASSET_URL" ]
+            rm -rf lima-next-runtime lima-next-home
+            mkdir -p lima-next-runtime lima-next-home
+            curl -fL --retry 3 -o lima-next-runtime/lima.tgz "$ASSET_URL"
+            tar -xzf lima-next-runtime/lima.tgz -C lima-next-runtime
+            LIMACTL="$PWD/lima-next-runtime/bin/limactl"
+            [ -x "$LIMACTL" ]
+            file "$LIMACTL" | tee /tmp/lima-next-limactl.file
+            grep -Eiq 'ARM aarch64|aarch64' /tmp/lima-next-limactl.file
+            "$LIMACTL" --version | tee /tmp/lima-next-version.txt
+            grep -Fq "$LATEST_VERSION" /tmp/lima-next-version.txt
+            "$LIMACTL" --help >/tmp/lima-next-help.txt
+            grep -Eiq 'Lima|Linux virtual machines' /tmp/lima-next-help.txt
+            LIMA_HOME="$PWD/lima-next-home" HOME="$PWD/lima-next-home" "$LIMACTL" list --format json >/tmp/lima-next-list.out 2>/tmp/lima-next-list.err
+            if [ -s /tmp/lima-next-list.out ]; then
+              python3 -m json.tool /tmp/lima-next-list.out >/tmp/lima-next-list.pretty
+            else
+              grep -Eiq 'No instance found|Run `limactl create`' /tmp/lima-next-list.err
+            fi
+          limited_cpu_description: "Test 6 downloaded the next Lima Linux-aarch64 release asset, verified limactl as AArch64, ran version/help, and exercised the non-VM limactl list path against an empty Lima home. No VM launch, guest boot, or container runtime claim is made."
+          next_version_override: "2.1.1"
+          candidate_tag_override: "v2.1.1"
       - name: Calculate test summary
         id: summary
         if: always()
@@ -323,10 +385,12 @@ jobs:
             OVERALL_STATUS="failure"
             BADGE_STATUS="failing"
           fi
-          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
-          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
-          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
-          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
-          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
-          echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
-          echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          {
+            echo "passed=$PASSED"
+            echo "failed=$FAILED"
+            echo "skipped=$SKIPPED"
+            echo "duration=$DURATION"
+            echo "core_failed=$CORE_FAILED"
+            echo "overall_status=$OVERALL_STATUS"
+            echo "badge_status=$BADGE_STATUS"
+          } >> "$GITHUB_OUTPUT"

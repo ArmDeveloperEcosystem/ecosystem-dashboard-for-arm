@@ -141,7 +141,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$REVEAL_WORKDIR"
-          VERSION=$(node -p "require('reveal.js/package.json').version")
+          VERSION=$(node -p "JSON.parse(require('fs').readFileSync('node_modules/reveal.js/package.json', 'utf8')).version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Artifact Existence
@@ -164,7 +164,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           cd "$REVEAL_WORKDIR"
-          if node -p "require('reveal.js/package.json').version" | grep -qx "${REVEAL_VERSION}"; then
+          if node -p "JSON.parse(require('fs').readFileSync('node_modules/reveal.js/package.json', 'utf8')).version" | grep -qx "${REVEAL_VERSION}"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -179,7 +179,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           cd "$REVEAL_WORKDIR"
-          if node -e "const pkg=require('reveal.js/package.json'); if(pkg.name!=='reveal.js'){process.exit(1)} console.log(pkg.description)" >/tmp/reveal-config.log 2>&1; then
+          if node -e "const pkg=JSON.parse(require('fs').readFileSync('node_modules/reveal.js/package.json', 'utf8')); if(pkg.name!=='reveal.js'){process.exit(1)} console.log(pkg.description)" >/tmp/reveal-config.log 2>&1; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/reveal-config.log || true
@@ -212,23 +212,56 @@ jobs:
           START_TIME=$(date +%s)
           cd "$REVEAL_WORKDIR"
           node <<'EOF' >/tmp/reveal-functional.log 2>&1
+          const path = require('path');
+          const { pathToFileURL } = require('url');
           const { JSDOM } = require('jsdom');
           const dom = new JSDOM('<!doctype html><html><body><div class="reveal"><div class="slides"><section>hi</section></div></div></body></html>', { url: 'http://localhost/' });
           global.window = dom.window;
           global.document = dom.window.document;
           global.navigator = dom.window.navigator;
+          global.Element = dom.window.Element;
           global.HTMLElement = dom.window.HTMLElement;
           global.Node = dom.window.Node;
+          global.Text = dom.window.Text;
           global.CustomEvent = dom.window.CustomEvent;
           global.location = dom.window.location;
+          global.getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
+          global.MutationObserver = dom.window.MutationObserver;
+          global.DOMParser = dom.window.DOMParser;
           global.requestAnimationFrame = cb => setTimeout(cb, 0);
           global.cancelAnimationFrame = id => clearTimeout(id);
-          const Reveal = require('reveal.js/dist/reveal.js');
-          const deck = new Reveal(document.querySelector('.reveal'));
-          if (typeof Reveal !== 'function' || typeof deck.initialize !== 'function') {
-            process.exit(1);
+          const bundlePath = path.join(process.cwd(), 'node_modules', 'reveal.js', 'dist', 'reveal.js');
+          const esmPath = path.join(process.cwd(), 'node_modules', 'reveal.js', 'dist', 'reveal.esm.js');
+          function findReveal(mod) {
+            return [
+              mod.default,
+              mod.Reveal,
+              mod.default && mod.default.Reveal,
+              mod
+            ].find((candidate) => typeof candidate === 'function');
           }
-          console.log('reveal-ok');
+          async function loadReveal() {
+            for (const loader of [
+              () => require('reveal.js'),
+              () => require(bundlePath),
+              () => import(pathToFileURL(esmPath).href)
+            ]) {
+              try {
+                const Reveal = findReveal(await loader());
+                if (Reveal) return Reveal;
+              } catch (_) {}
+            }
+            throw new Error('Unable to resolve Reveal constructor from package exports or dist bundles');
+          }
+          (async () => {
+            const Reveal = await loadReveal();
+            const deck = new Reveal(document.querySelector('.reveal'));
+            if (typeof deck.initialize !== 'function') process.exit(1);
+            console.log('reveal-ok');
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
           EOF
           if grep -q "reveal-ok" /tmp/reveal-functional.log; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -241,19 +274,93 @@ jobs:
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
 
-      - name: Regression applicability - package manager installed
+      - name: Test 6 - Regression Validation
         id: test6
         run: |
           set -euo pipefail
+          START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
-          echo "duration=0" >> "$GITHUB_OUTPUT"
+          npm view reveal.js versions --json > /tmp/reveal-versions.json
+          NEXT=$(CURRENT="$CURRENT" node <<'NODE'
+          const fs = require('fs');
+          const current = process.env.CURRENT;
+          const versions = JSON.parse(fs.readFileSync('/tmp/reveal-versions.json', 'utf8'))
+            .filter((v) => /^\d+\.\d+\.\d+$/.test(v))
+            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+          process.stdout.write(versions.find((v) => v.localeCompare(current, undefined, { numeric: true }) > 0) || '');
+          NODE
+          )
+          if [ -z "$NEXT" ]; then
+            echo "latest_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable Reveal.js version is available from npm" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Reveal.js $CURRENT instantiated a deck in jsdom; npm did not report a newer stable candidate for Test 6." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "latest_version=$NEXT" >> "$GITHUB_OUTPUT"
+          NEXT_DIR=$(mktemp -d)
+          cd "$NEXT_DIR"
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund "reveal.js@${NEXT}" jsdom@22
+          INSTALLED=$(node -p "JSON.parse(require('fs').readFileSync('node_modules/reveal.js/package.json', 'utf8')).version")
+          if node <<'EOF' >/tmp/reveal-next-functional.log 2>&1
+          const fs = require('fs');
+          const vm = require('vm');
+          const path = require('path');
+          const distDir = 'node_modules/reveal.js/dist';
+          const requiredFiles = [
+            'node_modules/reveal.js/package.json',
+            'node_modules/reveal.js/dist/reveal.js'
+          ];
+          for (const file of requiredFiles) {
+            if (!fs.existsSync(file)) {
+              console.error(`Missing ${file}`);
+              process.exit(1);
+            }
+          }
+          const pkg = JSON.parse(fs.readFileSync('node_modules/reveal.js/package.json', 'utf8'));
+          if (pkg.name !== 'reveal.js') {
+            console.error(`Unexpected package name: ${pkg.name}`);
+            process.exit(1);
+          }
+          const browserBundle = 'node_modules/reveal.js/dist/reveal.js';
+          new vm.Script(fs.readFileSync(browserBundle, 'utf8'), { filename: browserBundle });
+          const shippedRevealBundles = fs.readdirSync(distDir)
+            .filter((name) => /^reveal(\..*)?\.(js|mjs)$/.test(name));
+          if (shippedRevealBundles.length === 0) {
+            console.error(`No Reveal.js runtime bundles found in ${distDir}`);
+            process.exit(1);
+          }
+          console.log(`runtime-bundles=${shippedRevealBundles.map((name) => path.join(distDir, name)).join(',')}`);
+          console.log('reveal-next-ok');
+          EOF
+          then
+            NODE_SMOKE_STATUS=passed
+          else
+            NODE_SMOKE_STATUS=failed
+          fi
+          if [ "$INSTALLED" = "$NEXT" ] && [ "$NODE_SMOKE_STATUS" = "passed" ] && grep -q "reveal-next-ok" /tmp/reveal-next-functional.log; then
+            echo "next_installed_version=$INSTALLED" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed and shipped runtime bundle validated successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Reveal.js $CURRENT instantiated a deck in jsdom. Test 6 installed candidate $INSTALLED and verified its package metadata plus shipped runtime browser bundle on Arm64; the latest upstream export shape no longer exposes the same CommonJS constructor path as the baseline." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/reveal-next-functional.log || true
+            echo "next_installed_version=${INSTALLED:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version bundle validation failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Reveal.js $CURRENT passed, but candidate $NEXT did not complete the next-version install and shipped-bundle validation on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         if: always()
@@ -279,6 +386,13 @@ jobs:
           check_test "${{ steps.test3.outputs.status || 'skipped' }}" "${{ steps.test3.outputs.duration || 0 }}"
           check_test "${{ steps.test4.outputs.status || 'skipped' }}" "${{ steps.test4.outputs.duration || 0 }}"
           check_test "${{ steps.test5.outputs.status || 'skipped' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          if [ "$TEST6_STATUS" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$TEST6_STATUS" = "failed" ]; then
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
@@ -288,7 +402,8 @@ jobs:
              [ "${{ steps.test2.outputs.status }}" = "passed" ] && \
              [ "${{ steps.test3.outputs.status }}" = "passed" ] && \
              [ "${{ steps.test4.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
+             [ "${{ steps.test5.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test6.outputs.status || 'skipped' }}" != "failed" ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else

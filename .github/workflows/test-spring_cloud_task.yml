@@ -79,6 +79,9 @@ on:
 jobs:
   test-spring_cloud_task:
     runs-on: ubuntu-24.04-arm
+    env:
+      SPRING_CLOUD_TASK_VERSION: "3.0.0"
+      SPRING_CLOUD_TASK_NEXT_VERSION: "5.0.1"
     
     outputs:
       contract_version: "2.0"
@@ -118,38 +121,122 @@ jobs:
       - name: Install Spring Cloud Task (Verification)
         id: install
         run: |
+          set -euo pipefail
           echo "Verifying Spring Cloud Task availability..."
-          
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "maven openjdk-17-jdk"
-          # We verify by attempting to resolve it via Maven
-          cat > pom.xml << EOF
-          <project>
+          mkdir -p /tmp/spring-task-smoke/src/main/java/smoke /tmp/spring-task-smoke/src/test/java/smoke
+          cat >/tmp/spring-task-smoke/pom.xml <<EOF
+          <project xmlns="http://maven.apache.org/POM/4.0.0"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
             <modelVersion>4.0.0</modelVersion>
-            <groupId>org.test</groupId>
-            <artifactId>test</artifactId>
-            <version>1.0</version>
+            <groupId>smoke</groupId>
+            <artifactId>spring-task-smoke</artifactId>
+            <version>1.0.0</version>
+            <properties>
+              <java.version>17</java.version>
+              <spring-boot.version>3.0.13</spring-boot.version>
+              <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+            </properties>
+            <dependencyManagement>
+              <dependencies>
+                <dependency>
+                  <groupId>org.springframework.boot</groupId>
+                  <artifactId>spring-boot-dependencies</artifactId>
+                  <version>\${spring-boot.version}</version>
+                  <type>pom</type>
+                  <scope>import</scope>
+                </dependency>
+              </dependencies>
+            </dependencyManagement>
             <dependencies>
               <dependency>
                 <groupId>org.springframework.cloud</groupId>
                 <artifactId>spring-cloud-starter-task</artifactId>
-                <version>3.0.0</version>
+                <version>${SPRING_CLOUD_TASK_VERSION}</version>
+              </dependency>
+              <dependency>
+                <groupId>com.h2database</groupId>
+                <artifactId>h2</artifactId>
+                <scope>runtime</scope>
+              </dependency>
+              <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-test</artifactId>
+                <scope>test</scope>
               </dependency>
             </dependencies>
+            <build>
+              <plugins>
+                <plugin>
+                  <groupId>org.apache.maven.plugins</groupId>
+                  <artifactId>maven-compiler-plugin</artifactId>
+                  <version>3.12.1</version>
+                  <configuration>
+                    <release>17</release>
+                  </configuration>
+                </plugin>
+              </plugins>
+            </build>
           </project>
           EOF
-          
-          if mvn dependency:resolve; then
+          cat >/tmp/spring-task-smoke/src/main/java/smoke/TaskSmokeApplication.java <<'EOF'
+          package smoke;
+
+          import java.util.concurrent.atomic.AtomicBoolean;
+          import org.springframework.boot.CommandLineRunner;
+          import org.springframework.boot.SpringApplication;
+          import org.springframework.boot.autoconfigure.SpringBootApplication;
+          import org.springframework.cloud.task.configuration.EnableTask;
+
+          @EnableTask
+          @SpringBootApplication
+          public class TaskSmokeApplication implements CommandLineRunner {
+            static final AtomicBoolean RAN = new AtomicBoolean(false);
+
+            public static void main(String[] args) {
+              SpringApplication.run(TaskSmokeApplication.class, args);
+            }
+
+            @Override
+            public void run(String... args) {
+              RAN.set(true);
+              System.out.println("task-ok");
+            }
+          }
+          EOF
+          cat >/tmp/spring-task-smoke/src/test/java/smoke/TaskSmokeTest.java <<'EOF'
+          package smoke;
+
+          import org.junit.jupiter.api.Test;
+          import org.springframework.beans.factory.annotation.Autowired;
+          import org.springframework.boot.test.context.SpringBootTest;
+          import org.springframework.context.ApplicationContext;
+
+          import static org.assertj.core.api.Assertions.assertThat;
+
+          @SpringBootTest(args = "--spring.cloud.task.name=arm64-smoke")
+          class TaskSmokeTest {
+            @Autowired
+            ApplicationContext context;
+
+            @Test
+            void startsTaskEnabledApplication() {
+              assertThat(context.getBean(TaskSmokeApplication.class)).isNotNull();
+              assertThat(TaskSmokeApplication.RAN.get()).isTrue();
+            }
+          }
+          EOF
+          cd /tmp/spring-task-smoke
+          if mvn -B -q dependency:resolve -DincludeArtifactIds=spring-cloud-starter-task; then
             echo "Spring Cloud Task dependencies resolved successfully"
-            echo "install_status=success" >> $GITHUB_OUTPUT
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "Dependency resolution failed"
-            echo "install_status=failed" >> $GITHUB_OUTPUT
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
       
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
       - name: Get Spring Cloud Task version
         id: version
         run: |
@@ -170,128 +257,142 @@ jobs:
               print line
               exit
             }
-          ' pom.xml || true)
+          ' /tmp/spring-task-smoke/pom.xml || true)
           if [ -z "$VERSION" ]; then
-            VERSION="3.0.0"
+            VERSION="${SPRING_CLOUD_TASK_VERSION}"
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Spring Cloud Task version: $VERSION"
-      
-      # ============================================================
-      # ADD YOUR TESTS BELOW
-      # Each test should:
-      # 1. Have a unique id (test1, test2, etc.)
-      # 2. Track start/end time for duration
-      # 3. Set status=passed or status=failed
-      # 4. Exit 1 on failure
-      # ============================================================
       
       - name: Test 1 - Check jar files exist in local repo
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if find ~/.m2/repository/org/springframework/cloud/spring-cloud-starter-task -name "*.jar" | grep -q ".jar"; then
+          if find ~/.m2/repository/org/springframework/cloud/spring-cloud-starter-task -name "spring-cloud-starter-task-${SPRING_CLOUD_TASK_VERSION}.jar" | grep -q ".jar"; then
             echo "✓ JAR files found in local repository"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "✗ JAR files not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
       - name: Test 2 - Check dependency tree
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if mvn dependency:tree | grep -q "spring-cloud-starter-task"; then
+          cd /tmp/spring-task-smoke
+          if mvn -B dependency:tree -DincludeArtifactIds=spring-cloud-starter-task | grep -q "spring-cloud-starter-task"; then
             echo "✓ dependency tree verified"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "✗ dependency tree verification failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
-      - name: Test 3 - Build dummy project
+      - name: Test 3 - Compile Spring Cloud Task app
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if mvn package -DskipTests; then
-            echo "✓ project built successfully with Spring Cloud Task"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          cd /tmp/spring-task-smoke
+          if mvn -B -q test-compile; then
+            echo "✓ project compiled successfully with Spring Cloud Task"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "✗ build failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
-            fi
-          
+          fi
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       
       # Architecture Verification
       - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          echo "Checking system architecture..."
           ARCH=$(uname -m)
           if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 5 - Functional Validation
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Being a library, we verify its build artifacts
-          if find ~/.m2/repository/org/springframework/cloud/spring-cloud-starter-task -name "*.jar" | grep -q ".jar"; then
-            echo "✓ Library validation passed (JAR exists)"
-            echo "status=passed" >> $GITHUB_OUTPUT
+          cd /tmp/spring-task-smoke
+          if mvn -B -q test; then
+            echo "✓ Spring Cloud Task tiny app unit test passed"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "✗ Library validation failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "✗ Spring Cloud Task unit test failed"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Regression applicability - package manager installed
+      - name: Test 6 - Regression Validation
         id: test6
         run: |
           set -euo pipefail
+          START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST="${SPRING_CLOUD_TASK_NEXT_VERSION}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
-          echo "duration=0" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Workflow metadata review required" >> "$GITHUB_OUTPUT"
+            echo "comparison=Configured Spring Cloud Task baseline ${CURRENT} matches the Test 6 candidate ${LATEST}; repin baseline older than the candidate to validate an upgrade." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          NEXT_PROJECT=$(mktemp -d)
+          cp -R /tmp/spring-task-smoke/. "$NEXT_PROJECT/"
+          SPRING_CLOUD_TASK_VERSION="${SPRING_CLOUD_TASK_VERSION}" LATEST="${LATEST}" perl -0pi -e 'BEGIN { $from = "<version>$ENV{SPRING_CLOUD_TASK_VERSION}</version>"; $to = "<version>$ENV{LATEST}</version>"; } s/\Q$from\E/$to/ or die "starter version not replaced\n";' "$NEXT_PROJECT/pom.xml"
+          if (cd "$NEXT_PROJECT" && mvn -B -q test); then
+            echo "next_installed_version=$LATEST" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed and ran successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current Spring Cloud Task ${CURRENT} completed a tiny @EnableTask Spring unit test. Test 6 installed starter ${LATEST} in a copied smoke project and ran the same Maven unit test on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install/runtime failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current Spring Cloud Task ${CURRENT} passed baseline smoke tests, but starter ${LATEST} did not complete the same Maven unit test on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         if: always()
@@ -317,7 +418,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Test 3 - Build dummy project
+          # Test 3 - Compile Spring Cloud Task app
           if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -368,6 +469,14 @@ jobs:
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
           echo "1. Test 1 - Check jar files exist in local repo: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "2. Test 2 - Check dependency tree: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Test 3 - Build dummy project: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Test 3 - Compile Spring Cloud Task app: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Regression Validation" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY

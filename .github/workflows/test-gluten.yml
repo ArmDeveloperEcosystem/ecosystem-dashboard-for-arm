@@ -133,7 +133,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates openjdk-17-jdk-headless maven"
           quiet: "true"
 
       - name: Install baseline source or artifact
@@ -312,70 +312,32 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
-          case "$TEST5_MODE" in
-            python)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              FOUND=0
-              IFS='|' read -r -a TARGETS <<< "$PYTHON_TARGETS"
-              for TARGET in "${TARGETS[@]}"; do
-                [ -z "$TARGET" ] && continue
-                if [ -d "baseline-src/$TARGET" ] || [ -f "baseline-src/$TARGET" ]; then
-                  python3 -m compileall -q "baseline-src/$TARGET"
-                  FOUND=1
-                  break
-                fi
-              done
-              if [ "$FOUND" -ne 1 ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package-specific Python sources with compileall without requiring optional accelerator runtimes." >> "$GITHUB_OUTPUT"
-              ;;
-            source)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              MATCHED=0
-              IFS='|' read -r -a PATTERNS <<< "$SOURCE_GLOBS"
-              for PATTERN in "${PATTERNS[@]}"; do
-                [ -z "$PATTERN" ] && continue
-                if compgen -G "baseline-src/$PATTERN" > /dev/null; then
-                  MATCHED=$((MATCHED + 1))
-                fi
-              done
-              if [ "$MATCHED" -lt 1 ] || ! grep -R -I -Eiq "$EVIDENCE_RE" baseline-src 2>/dev/null; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
-                echo "note=Validated package-specific source layout and documentation on Arm64; GPU or accelerator runtime remains out of scope for generic runners." >> "$GITHUB_OUTPUT"
-              else
-                echo "note=Validated package-specific source layout and documentation on Arm64 without claiming a full runtime build." >> "$GITHUB_OUTPUT"
-              fi
-              ;;
-            external)
-              if [ ! -f baseline-external/metadata.txt ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              if ! grep -Fq "download=$DOWNLOAD_URL" baseline-external/metadata.txt || ! grep -Fq "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt || ! grep -Eiq "$EVIDENCE_RE" "$PACKAGE_PAGE"; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package metadata, official endpoints, and Arm64 package-page evidence for this external/manual lane." >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-              ;;
-          esac
+          if [ "$MODE" != "github_source" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=Gluten source smoke requires the checked-out source tree." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          cd baseline-src
+          mvn -q \
+            -DskipTests \
+            -Dcheckstyle.skip=true \
+            -Drat.skip=true \
+            -Dspotless.check.skip=true \
+            -Dscalastyle.skip=true \
+            -Pjava-17 \
+            -Pspark-3.5 \
+            -pl gluten-core -am compile >/tmp/gluten-maven-compile.log 2>&1
+
+          if find gluten-core -path '*/target/classes/*' -type f -print -quit | grep -q .; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Compiled Gluten JVM core modules on the Arm64 runner. Native Velox/ClickHouse backend runtime remains scoped to a heavier Spark/native integration lane." >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/gluten-maven-compile.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=Gluten bounded JVM compile did not produce class files on Arm64." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -386,6 +348,13 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-17-jdk-headless maven"
+            cd next-src
+            mvn -q -DskipTests -Dcheckstyle.skip=true -Drat.skip=true -Dspotless.check.skip=true -Dscalastyle.skip=true -Pjava-17 -Pspark-3.5 -pl gluten-core -am compile >/tmp/gluten-next-maven-compile.log 2>&1 || { cat /tmp/gluten-next-maven-compile.log; exit 1; }
+            find gluten-core -path '*/target/classes/*' -type f -print -quit | grep -q .
+          limited_cpu_description: "Test 6 attempts the same scoped Gluten JVM core compile against the next stable source candidate on the Arm64 runner. Full Spark plus native Velox/ClickHouse backend runtime remains scoped to a heavier integration lane."
+          defer_on_limited_cpu_probe_failure: "true"
 
       - name: Calculate test summary
         id: summary

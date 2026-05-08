@@ -144,8 +144,9 @@ jobs:
       - name: Install OneTbb
         id: install
         run: |
+          set -euo pipefail
           echo "Installing OneTbb (libtbb-dev)..."
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "libtbb-dev"
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "libtbb-dev build-essential pkg-config"
           # Verify installation (checking for library)
           if [ -f "/usr/lib/aarch64-linux-gnu/libtbb.so" ] || [ -f "/usr/lib/libtbb.so" ]; then
             echo "OneTbb installed successfully"
@@ -159,8 +160,9 @@ jobs:
       - name: Get OneTbb version
         id: version
         run: |
+          set -euo pipefail
           # TBB version is often matched to the package version
-          VERSION=$(dpkg -l libtbb-dev | grep libtbb-dev | awk '{print $3}' | cut -d'-' -f1 || echo "unknown")
+          VERSION=$(dpkg-query -W -f='${Version}' libtbb-dev 2>/dev/null | cut -d'-' -f1 || echo "unknown")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected OneTbb version: $VERSION"
       
@@ -256,24 +258,38 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # TBB is a library, so we verify that it can be found by the linker
-          if ldconfig -p | grep -q "libtbb.so"; then
-            echo "✓ TBB library is registered in ldconfig"
+          cat > /tmp/tbb-smoke.cc <<'CPP'
+          #include <atomic>
+          #include <iostream>
+          #include <tbb/parallel_for.h>
+          #include <tbb/blocked_range.h>
+          int main() {
+            std::atomic<long long> sum{0};
+            tbb::parallel_for(tbb::blocked_range<int>(1, 1001), [&](const tbb::blocked_range<int>& range) {
+              long long local = 0;
+              for (int i = range.begin(); i != range.end(); ++i) {
+                local += i;
+              }
+              sum.fetch_add(local, std::memory_order_relaxed);
+            });
+            if (sum.load() != 500500) return 1;
+            std::cout << "tbb-parallel-ok\n";
+            return 0;
+          }
+          CPP
+          if g++ -std=c++17 /tmp/tbb-smoke.cc -ltbb -o /tmp/tbb-smoke && /tmp/tbb-smoke | grep -q '^tbb-parallel-ok$'; then
+            echo "✓ TBB parallel operation completed"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "✗ TBB library not found in ldconfig"
-            # Fallback check
-            if [ -f "/usr/lib/aarch64-linux-gnu/libtbb.so" ] || [ -f "/usr/lib/libtbb.so" ]; then
-                echo "✓ Library found in common paths (fallback)"
-                echo "status=passed" >> $GITHUB_OUTPUT
-            else
-                echo "status=failed" >> $GITHUB_OUTPUT
-                exit 1
-            fi
+            echo "✗ TBB parallel operation failed"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
           fi
 
           END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
       - name: Regression applicability - package manager installed
         id: test6
@@ -368,4 +384,3 @@ jobs:
 
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-

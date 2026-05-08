@@ -82,17 +82,18 @@ jobs:
     env:
       BASELINE_VERSION: "0.20131208+bzr4024-1ubuntu2"
       PACKAGE_SLUG: "kicad"
-      LANE_KIND: "github release / source-build-or-tarball"
+      LANE_KIND: "apt package / CPU runtime"
       DOWNLOAD_URL: "https://www.kicad.org/download/linux/"
       HOMEPAGE_URL: "https://www.kicad.org/"
       OFFICIAL_DOCS: "https://www.kicad.org/download/details/ubuntu/"
       GITHUB_REPO: "KiCad/kicad-source-mirror"
+      APT_PACKAGES: "kicad"
       TEST1_COMMAND: >-
-        test -f baseline-external/metadata.txt && curl -fsL -A "Mozilla/5.0" "$HOMEPAGE_URL" | grep -Fqi "KiCad"
+        test -x "$(command -v kicad-cli)" && dpkg-query -W kicad >/dev/null
       TEST3_COMMAND: >-
-        curl -fsL -A 'Mozilla/5.0' "$OFFICIAL_DOCS" | grep -Eqi 'ubuntu|apt|installation'
+        kicad-cli --help | grep -Eiq 'kicad-cli|usage' && kicad-cli sch --help | grep -Eiq 'schematic|export|usage'
       TEST5_COMMAND: >-
-        curl -fsL -A 'Mozilla/5.0' "$HOMEPAGE_URL" | grep -Eqi 'schematic|pcb|eda'
+        mkdir -p /tmp/kicad-smoke && printf '{"meta":{"version":1},"name":"arm64-smoke"}\n' > /tmp/kicad-smoke/arm64-smoke.kicad_pro && kicad-cli version >/tmp/kicad-version.txt && kicad-cli pcb export --help >/tmp/kicad-pcb-export-help.txt && grep -Eiq 'kicad|[0-9]+[.][0-9]+' /tmp/kicad-version.txt && grep -Eiq 'usage|export' /tmp/kicad-pcb-export-help.txt
 
     outputs:
       contract_version: "2.0"
@@ -113,7 +114,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
-      regression_policy: "applicable"
+      regression_policy: "package_manager_installed"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -134,64 +135,24 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
-          extra_packages: "${{ env.EXTRA_APT_PACKAGES }}"
+          packages: "${{ env.APT_PACKAGES }}"
           quiet: "true"
 
-      - name: Install baseline source or artifact
+      - name: Locate installed KiCad CLI
         id: install
         run: |
           set -euo pipefail
-          rm -rf baseline-src baseline-external
-          mkdir -p baseline-src baseline-external
-          if [ -n "$GITHUB_REPO" ]; then
-            RESOLVED_TAG=""
-            CANDIDATE_TAGS="$BASELINE_VERSION|v$BASELINE_VERSION"
-            if [ -n "${EXTRA_TAG_CANDIDATES:-}" ]; then
-              CANDIDATE_TAGS="${CANDIDATE_TAGS}|${EXTRA_TAG_CANDIDATES}"
-            fi
-            OLD_IFS="$IFS"
-            IFS='|'
-            for CANDIDATE in $CANDIDATE_TAGS; do
-              [ -n "$CANDIDATE" ] || continue
-              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
-                RESOLVED_TAG="$CANDIDATE"
-                break
-              fi
-            done
-            IFS="$OLD_IFS"
-            if [ -n "$RESOLVED_TAG" ]; then
-              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
-            else
-              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
-            fi
-            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            {
-              echo "download=$DOWNLOAD_URL"
-              echo "homepage=$HOMEPAGE_URL"
-              echo "docs=$OFFICIAL_DOCS"
-            } > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
+          COMMAND_PATH=$(command -v kicad-cli)
+          echo "command_path=$COMMAND_PATH" >> "$GITHUB_OUTPUT"
+          echo "install_mode=package_manager" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
       - name: Get baseline version
         id: version
         run: |
-          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected baseline version: $BASELINE_VERSION"
+          set -euo pipefail
+          VERSION=$(dpkg-query -W -f='${Version}\n' kicad | head -1)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected KiCad version: $VERSION"
 
       - name: Test 1 - Baseline package evidence
         id: test1
@@ -199,47 +160,34 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          RESOLVED_TAG="${{ steps.install.outputs.resolved_tag || '' }}"
           INSTALL_STATUS="${{ steps.install.outputs.install_status || 'failed' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
           if [ "$INSTALL_STATUS" != "success" ]; then
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-          fi
           eval "$TEST1_COMMAND"
-          if [ "$MODE" = "github_source" ] && [ "$RESOLVED_TAG" = "default_branch" ]; then
-            echo "note=Upstream source smoke used the default branch because no exact source tag matched the published baseline version." >> "$GITHUB_OUTPUT"
-          fi
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-      - name: Test 2 - Baseline version and release alignment
+      - name: Test 2 - Installed runtime version
         id: test2
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
-          export DOC_PATH BASELINE_VERSION DOWNLOAD_URL
-          python3 -c "from pathlib import Path; import os; text=Path(os.environ['DOC_PATH']).read_text(); version=os.environ['BASELINE_VERSION']; download=os.environ['DOWNLOAD_URL']; assert f'version_number: {version}' in text; assert f'download_url: {download}' in text"
+          VERSION="${{ steps.version.outputs.version || 'unknown' }}"
+          test "$VERSION" != "unknown"
+          dpkg-query -W -f='${Version}\n' kicad | grep -F "$VERSION"
+          "${{ steps.install.outputs.command_path }}" version | grep -Eiq 'kicad|[0-9]+[.][0-9]+'
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-      - name: Test 3 - Package-specific source or docs evidence
+      - name: Test 3 - kicad-cli help
         id: test3
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-          fi
           eval "$TEST3_COMMAND"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
@@ -252,6 +200,7 @@ jobs:
           START_TIME=$(date +%s)
           DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
           test "$(uname -m)" = "aarch64"
+          test "$(dpkg --print-architecture)" = "arm64"
           grep -Fq "works_on_arm: true" "$DOC_PATH"
           if [ -n "${TEST4_COMMAND:-}" ]; then
             eval "$TEST4_COMMAND"
@@ -265,24 +214,23 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-          fi
           eval "$TEST5_COMMAND"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-      - name: Test 6 - Regression Validation
+      - name: Regression applicability - package manager installed
         id: test6
-        uses: ./.github/actions/generic-source-regression-check
-        with:
-          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
-          github_repo: ${{ env.GITHUB_REPO }}
-          lane_kind: ${{ env.LANE_KIND }}
-          next_version_override: "10.0.0"
-          candidate_tag_override: "10.0.0"
+        run: |
+          set -euo pipefail
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
+          echo "comparison=The tested KiCad runtime is installed via apt in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
+          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         id: summary

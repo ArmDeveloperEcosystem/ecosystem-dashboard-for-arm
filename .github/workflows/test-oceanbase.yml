@@ -247,19 +247,54 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Regression applicability - package manager installed
+      - name: Test 6 - Regression Validation
         id: test6
         run: |
           set -euo pipefail
+          START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          NEXT_STAGE=$(mktemp -d)
+          NEXT_COMPAT=$(mktemp -d)
+          trap 'rm -rf "$NEXT_STAGE" "$NEXT_COMPAT"' EXIT
+
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "duration=0" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${OCEANBASE_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+
+          AIO_LIB=$(ldconfig -p | awk '/libaio.so.1t64/ {print $NF; exit}')
+          ln -s "$AIO_LIB" "${NEXT_COMPAT}/libaio.so.1"
+          curl -fsSL -o "${NEXT_STAGE}/oceanbase-next.rpm" "https://github.com/oceanbase/oceanbase/releases/download/${OCEANBASE_NEXT_TAG}/${OCEANBASE_NEXT_ASSET}"
+          (
+            cd "$NEXT_STAGE"
+            rpm2cpio oceanbase-next.rpm | cpio -idmv >/tmp/oceanbase-next-install.log 2>&1
+          )
+          NEXT_OBSERVER=$(find "$NEXT_STAGE" -type f -name observer | head -n 1)
+          NEXT_VERSION=$(LD_LIBRARY_PATH="${NEXT_COMPAT}:${LD_LIBRARY_PATH:-}" "$NEXT_OBSERVER" -V 2>&1 | sed -n 's/^observer (OceanBase_CE \([0-9.]*\)).*/\1/p' | head -n 1 | tr -d '\r' || true)
+
+          if [ -x "$NEXT_OBSERVER" ] && \
+             [ "$NEXT_VERSION" = "${OCEANBASE_NEXT_VERSION}" ] && \
+             file "$NEXT_OBSERVER" | grep -q 'ARM aarch64' && \
+             ! LD_LIBRARY_PATH="${NEXT_COMPAT}:${LD_LIBRARY_PATH:-}" ldd "$NEXT_OBSERVER" | tee /tmp/oceanbase-next-ldd.log | grep -q 'not found'; then
+            echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=OceanBase baseline ${CURRENT} passed Arm64 observer binary, dependency, and version probes. Candidate ${OCEANBASE_NEXT_VERSION} extracted from the next Linux/Arm64 RPM and passed the same observer version, architecture, and dependency checks." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/oceanbase-next-install.log 2>/dev/null || true
+            cat /tmp/oceanbase-next-ldd.log 2>/dev/null || true
+            [ -n "${NEXT_OBSERVER:-}" ] && file "$NEXT_OBSERVER" || true
+            echo "next_installed_version=${NEXT_VERSION:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=OceanBase candidate ${OCEANBASE_NEXT_VERSION} did not pass Arm64 observer extraction, version, architecture, or dependency validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         if: always()

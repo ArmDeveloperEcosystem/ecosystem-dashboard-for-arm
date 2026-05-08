@@ -104,7 +104,29 @@ fi
 install_cmd+=("${package_array[@]}")
 
 if [[ "$QUIET" == "true" ]]; then
-  "${install_cmd[@]}" >/dev/null
+  attempt=1
+  backoff="$INITIAL_BACKOFF_SECONDS"
+  until "${install_cmd[@]}" >/dev/null; do
+    if (( attempt >= RETRIES )); then
+      echo "apt-get install failed after ${RETRIES} attempts" >&2
+      exit 100
+    fi
+    echo "apt-get install failed on attempt ${attempt}; retrying in ${backoff}s" >&2
+    sleep "$backoff"
+    attempt=$((attempt + 1))
+    backoff=$((backoff * 2))
+  done
 else
-  "${install_cmd[@]}"
+  attempt=1
+  backoff="$INITIAL_BACKOFF_SECONDS"
+  until "${install_cmd[@]}"; do
+    if (( attempt >= RETRIES )); then
+      echo "apt-get install failed after ${RETRIES} attempts" >&2
+      exit 100
+    fi
+    echo "apt-get install failed on attempt ${attempt}; retrying in ${backoff}s" >&2
+    sleep "$backoff"
+    attempt=$((attempt + 1))
+    backoff=$((backoff * 2))
+  done
 fi

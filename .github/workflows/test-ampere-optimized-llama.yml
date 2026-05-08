@@ -343,58 +343,23 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
-          IDENTITY_KIND="${{ steps.expectations.outputs.identity_kind }}"
-          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
-          IDENTITY_EXPECT="${{ steps.expectations.outputs.identity_expect }}"
-          EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            case "$IDENTITY_KIND" in
-              go_module)
-                grep -Fx "module $IDENTITY_EXPECT" "$IDENTITY_TARGET" >/dev/null
-                RESULT="Verified go module identity in $IDENTITY_TARGET"
-                ;;
-              toml_name)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); name=(data.get('project') or {}).get('name') or ((data.get('tool') or {}).get('poetry') or {}).get('name'); assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified TOML package identity in $IDENTITY_TARGET"
-                ;;
-              package_json_name)
-                python3 -c "import json,sys; data=json.load(open(sys.argv[1], encoding='utf-8')); assert data.get('name') == sys.argv[2], (data.get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified package.json identity in $IDENTITY_TARGET"
-                ;;
-              cargo_package)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); assert (data.get('package') or {}).get('name') == sys.argv[2], ((data.get('package') or {}).get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified Cargo package identity in $IDENTITY_TARGET"
-                ;;
-              chart_name)
-                python3 -c "from pathlib import Path; import sys; lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(); matches=[line.split(':', 1)[1].strip() for line in lines if line.startswith('name:')]; name=matches[0] if matches else ''; assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified chart identity in $IDENTITY_TARGET"
-                ;;
-              grep_file)
-                grep -Eiq "$IDENTITY_EXPECT" "$IDENTITY_TARGET"
-                RESULT="Verified package-specific content in $IDENTITY_TARGET"
-                ;;
-              *)
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                echo "note=No bounded identity check was configured for this package." >> "$GITHUB_OUTPUT"
-                exit 1
-                ;;
-            esac
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=$RESULT" >> "$GITHUB_OUTPUT"
-          else
-            TEMP_PAGE=$(mktemp)
-            trap 'rm -f "$TEMP_PAGE"' EXIT
-            if curl -fsSL "$OFFICIAL_DOCS" -o "$TEMP_PAGE" || curl -fsSL "$HOMEPAGE_URL" -o "$TEMP_PAGE" || curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_PAGE"; then
-              grep -Eiq "$EXTERNAL_EXPECT" "$TEMP_PAGE"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Verified external package identity from published docs or homepage content using /$EXTERNAL_EXPECT/." >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Could not fetch published docs or homepage content for bounded external validation." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
+          if [ "$MODE" != "github_source" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=Ampere Optimized llama.cpp preflight requires the source checkout for build proof." >> "$GITHUB_OUTPUT"
+            exit 1
           fi
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential cmake >/dev/null
+          cd baseline-src
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF
+          cmake --build build --target llama-cli -j2 || cmake --build build --target main -j2
+          BIN=$(find build -type f \( -name llama-cli -o -name main \) -perm -111 | head -n 1)
+          [ -n "$BIN" ]
+          file "$BIN" | grep -Eiq 'aarch64|arm64'
+          "$BIN" --help >/tmp/llama-help.txt 2>&1 || "$BIN" -h >/tmp/llama-help.txt 2>&1
+          grep -Eiq 'usage|llama|model|prompt' /tmp/llama-help.txt
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Configured and built the Ampere llama.cpp CLI on the Arm64 runner, verified the resulting binary is Arm64, and ran CLI help. No GGUF model inference is claimed without weights." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
@@ -404,6 +369,22 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends build-essential cmake >/dev/null
+            cd next-src
+            SOURCE_DIR="$(dirname "$(find . -maxdepth 4 -name CMakeLists.txt -print -quit)")"
+            [ -n "$SOURCE_DIR" ] && [ "$SOURCE_DIR" != "." ] || SOURCE_DIR="."
+            test -f "$SOURCE_DIR/CMakeLists.txt"
+            cmake -S "$SOURCE_DIR" -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF
+            cmake --build build --target llama-cli -j2 || cmake --build build --target main -j2 || cmake --build build -j2
+            BIN=$(find build -type f \( -name llama-cli -o -name main -o -name llama-simple \) -perm -111 | head -n 1)
+            [ -n "$BIN" ]
+            file "$BIN" | grep -Eiq 'aarch64|arm64'
+            "$BIN" --help >/tmp/llama-next-help.txt 2>&1 || "$BIN" -h >/tmp/llama-next-help.txt 2>&1
+            grep -Eiq 'usage|llama|model|prompt' /tmp/llama-next-help.txt
+          limited_cpu_description: "Test 6 attempts the same scoped Ampere llama.cpp Arm CLI build against the next stable source candidate when that candidate contains buildable llama.cpp CMake sources. No GGUF model inference is claimed without weights."
+          defer_on_limited_cpu_probe_failure: "true"
       - name: Calculate test summary
         id: summary
         if: always()

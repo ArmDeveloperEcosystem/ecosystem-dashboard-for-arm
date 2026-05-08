@@ -81,7 +81,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       PG_MAJOR: "17"
-      TIMESCALEDB_VERSION: "2.25.2"
+      TIMESCALEDB_VERSION: "2.26.4"
+      TIMESCALEDB_PACKAGE: "timescaledb-2-postgresql-17"
 
     outputs:
       contract_version: "2.0"
@@ -139,14 +140,14 @@ jobs:
 
           sudo apt-get update
 
-          BASELINE_PACKAGE=$(apt-cache madison "postgresql-${PG_MAJOR}-timescaledb" | awk -v want="${TIMESCALEDB_VERSION}" '$3 ~ "^"want { print $3; exit }')
+          BASELINE_PACKAGE=$(apt-cache madison "${TIMESCALEDB_PACKAGE}" | awk -v want="${TIMESCALEDB_VERSION}" '$3 ~ "^"want { print $3; exit }')
           if [ -z "${BASELINE_PACKAGE}" ]; then
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
             echo "Baseline package ${TIMESCALEDB_VERSION} is not available for PostgreSQL ${PG_MAJOR} on this Arm64 apt repository."
             exit 1
           fi
 
-          sudo apt-get install -y "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" "postgresql-${PG_MAJOR}-timescaledb=${BASELINE_PACKAGE}"
+          sudo apt-get install -y "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" "${TIMESCALEDB_PACKAGE}=${BASELINE_PACKAGE}"
 
           if [ -f "/usr/share/postgresql/${PG_MAJOR}/extension/timescaledb.control" ] && [ -f "/usr/lib/postgresql/${PG_MAJOR}/lib/timescaledb.so" ]; then
             echo "baseline_package=${BASELINE_PACKAGE}" >> "$GITHUB_OUTPUT"
@@ -160,7 +161,7 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          VERSION=$(dpkg-query -W -f='${Version}\n' "postgresql-${PG_MAJOR}-timescaledb" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+          VERSION=$(dpkg-query -W -f='${Version}\n' "${TIMESCALEDB_PACKAGE}" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "latest=not_applicable" >> "$GITHUB_OUTPUT"
           echo "Detected TimescaleDB version: $VERSION"
@@ -185,10 +186,10 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if dpkg-query -W -f='${Version}\n' "postgresql-${PG_MAJOR}-timescaledb" | grep -q "${TIMESCALEDB_VERSION}"; then
+          if dpkg-query -W -f='${Version}\n' "${TIMESCALEDB_PACKAGE}" | grep -q "${TIMESCALEDB_VERSION}"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            dpkg-query -W -f='${Version}\n' "postgresql-${PG_MAJOR}-timescaledb" || true
+            dpkg-query -W -f='${Version}\n' "${TIMESCALEDB_PACKAGE}" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -201,10 +202,14 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           CONTROL_FILE="/usr/share/postgresql/${PG_MAJOR}/extension/timescaledb.control"
-          if grep -q "default_version = '${TIMESCALEDB_VERSION}'" "$CONTROL_FILE" && psql --help >/dev/null 2>&1; then
+          CONTROL_DEFAULT=$(awk -F"'" '/^default_version[[:space:]]*=/{print $2; exit}' "$CONTROL_FILE")
+          SQL_FILE="/usr/share/postgresql/${PG_MAJOR}/extension/timescaledb--${CONTROL_DEFAULT}.sql"
+          if [ -n "$CONTROL_DEFAULT" ] && [ -f "$SQL_FILE" ] && psql --help >/dev/null 2>&1; then
+            echo "control_default_version=${CONTROL_DEFAULT}" >> "$GITHUB_OUTPUT"
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat "$CONTROL_FILE" || true
+            ls -l "/usr/share/postgresql/${PG_MAJOR}/extension"/timescaledb--*.sql || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -256,7 +261,8 @@ jobs:
           sudo -u postgres psql -p "${TEST_PORT}" -d postgres -c "CREATE TABLE IF NOT EXISTS metrics(time timestamptz NOT NULL, value double precision);" >/tmp/timescaledb-create-table.txt
           sudo -u postgres psql -p "${TEST_PORT}" -d postgres -c "SELECT create_hypertable('metrics', 'time', if_not_exists => TRUE);" >/tmp/timescaledb-hypertable.txt
 
-          if grep -q "${TIMESCALEDB_VERSION}" /tmp/timescaledb-extversion.txt && grep -q "metrics" /tmp/timescaledb-hypertable.txt; then
+          EXPECTED_VERSION="${{ steps.test3.outputs.control_default_version || env.TIMESCALEDB_VERSION }}"
+          if grep -q "${EXPECTED_VERSION}" /tmp/timescaledb-extversion.txt && grep -q "metrics" /tmp/timescaledb-hypertable.txt; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/timescaledb-cluster.log || true

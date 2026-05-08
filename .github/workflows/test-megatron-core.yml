@@ -93,8 +93,37 @@ jobs:
         python3 -c "import json,urllib.request; d=json.load(urllib.request.urlopen('https://pypi.org/pypi/megatron-core/0.11.0/json')); assert d['info']['version']=='0.11.0'"
       TEST3_COMMAND: >-
         curl -fsL "$OFFICIAL_DOCS" | grep -Eqi 'pip|install|wheel'
-      TEST5_COMMAND: >-
-        python3 -c "import json,urllib.request; d=json.load(urllib.request.urlopen('https://pypi.org/pypi/megatron-core/0.11.0/json')); names=[u['filename'] for u in d['urls']]; assert any('cp310' in n and 'aarch64' in n for n in names) and any('cp311' in n and 'aarch64' in n for n in names)"
+      TEST5_COMMAND: |
+        test "$(uname -m)" = "aarch64"
+        python -m venv .megatron-core-smoke
+        . .megatron-core-smoke/bin/activate
+        python -m pip install --upgrade pip setuptools wheel
+        python -m pip install --only-binary=:all: "torch==2.5.1" packaging
+        python -m pip install --no-deps --only-binary=:all: "megatron-core==$BASELINE_VERSION"
+        python - <<'PY'
+        import os
+        import platform
+        from importlib.metadata import distribution, version
+
+        assert platform.machine() == "aarch64"
+        installed = version("megatron-core")
+        if installed != os.environ["BASELINE_VERSION"]:
+            raise SystemExit(f"installed Megatron-Core {installed}, expected {os.environ['BASELINE_VERSION']}")
+
+        dist = distribution("megatron-core")
+        config_path = dist.locate_file("megatron/core/model_parallel_config.py")
+        namespace = {"__name__": "megatron_core_config_probe"}
+        exec(compile(config_path.read_text(encoding="utf-8"), str(config_path), "exec"), namespace)
+        cfg_class = namespace["ModelParallelConfig"]
+        cfg = cfg_class(
+            tensor_model_parallel_size=1,
+            pipeline_model_parallel_size=1,
+            sequence_parallel=False,
+        )
+        if cfg.tensor_model_parallel_size != 1 or cfg.pipeline_model_parallel_size != 1:
+            raise SystemExit("Megatron-Core ModelParallelConfig did not retain CPU-side settings")
+        print(f"megatron-core-arm-preflight-ok: {installed}")
+        PY
 
     outputs:
       contract_version: "2.0"
@@ -125,6 +154,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up Python 3.11 for Megatron-Core Arm wheels
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Set test metadata
         id: metadata
@@ -292,6 +326,39 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            test "$(uname -m)" = "aarch64"
+            test -d next-src/megatron/core
+            python -m venv .megatron-core-next-smoke
+            . .megatron-core-next-smoke/bin/activate
+            python -m pip install --upgrade pip setuptools wheel
+            python -m pip install --only-binary=:all: "torch==2.5.1" packaging
+            python -m pip install --no-deps --only-binary=:all: "megatron-core==$LATEST_VERSION"
+            python - <<'PY'
+            import os
+            import platform
+            from importlib.metadata import distribution, version
+
+            assert platform.machine() == "aarch64"
+            installed = version("megatron-core")
+            if installed != os.environ["LATEST_VERSION"]:
+                raise SystemExit(f"installed Megatron-Core {installed}, expected {os.environ['LATEST_VERSION']}")
+
+            dist = distribution("megatron-core")
+            config_path = dist.locate_file("megatron/core/model_parallel_config.py")
+            namespace = {"__name__": "megatron_core_config_probe"}
+            exec(compile(config_path.read_text(encoding="utf-8"), str(config_path), "exec"), namespace)
+            cfg_class = namespace["ModelParallelConfig"]
+            cfg = cfg_class(
+                tensor_model_parallel_size=1,
+                pipeline_model_parallel_size=1,
+                sequence_parallel=False,
+            )
+            if cfg.tensor_model_parallel_size != 1 or cfg.pipeline_model_parallel_size != 1:
+                raise SystemExit("Megatron-Core next ModelParallelConfig did not retain CPU-side settings")
+            print(f"megatron-core-next-arm-preflight-ok: {installed}")
+            PY
+          limited_cpu_description: "Test 6 limited_cpu_smoke_validated: cloned the pinned Megatron-Core next candidate and installed/imported the matching Arm64 PyPI wheel, then instantiated ModelParallelConfig on the Arm runner. This is CPU-side API/config evidence only; no distributed or GPU training execution is claimed."
           next_version_override: "0.12.0"
           candidate_tag_override: "core_v0.12.0"
 

@@ -252,11 +252,41 @@ jobs:
           BUILD_ROOT="${{ steps.install.outputs.build_root }}"
           LIB_PATH="${{ steps.install.outputs.lib_path }}"
 
-          HELP_OUTPUT=$(LD_LIBRARY_PATH="$LIB_PATH" "$BUILD_ROOT/src/tools/pmempool/pmempool" info --help 2>&1 || true)
-          if printf '%s\n' "$HELP_OUTPUT" | grep -Eiq 'print information|pmempool info|usage: pmempool info|info -'; then
+          WORKDIR="${RUNNER_TEMP}/pmdk-functional"
+          rm -rf "$WORKDIR"
+          mkdir -p "$WORKDIR"
+          cat > "$WORKDIR/pmem_fixture.c" <<'EOF'
+          #include <libpmem.h>
+          #include <stddef.h>
+          #include <string.h>
+
+          int main(void) {
+              size_t mapped_len = 0;
+              int is_pmem = 0;
+              char *addr = pmem_map_file("pmem-smoke.dat", 4096, PMEM_FILE_CREATE, 0666, &mapped_len, &is_pmem);
+              if (addr == NULL || mapped_len < 4096) {
+                  return 1;
+              }
+              strcpy(addr, "pmdk-arm64-smoke");
+              pmem_persist(addr, 18);
+              pmem_unmap(addr, mapped_len);
+              return 0;
+          }
+          EOF
+
+          gcc \
+            -I"$BUILD_ROOT/src/include" \
+            "$WORKDIR/pmem_fixture.c" \
+            -L"$BUILD_ROOT/src/nondebug" \
+            -Wl,-rpath,"$BUILD_ROOT/src/nondebug" \
+            -lpmem \
+            -o "$WORKDIR/pmem_fixture"
+
+          if (cd "$WORKDIR" && LD_LIBRARY_PATH="$LIB_PATH" ./pmem_fixture) && \
+             grep -aq 'pmdk-arm64-smoke' "$WORKDIR/pmem-smoke.dat"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            printf '%s\n' "$HELP_OUTPUT"
+            ls -l "$WORKDIR" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -300,7 +330,7 @@ jobs:
             NEXT_INSTALLED="not_applicable"
             DECISION="no_newer_stable_available"
             REGRESSION_RESULT="No newer stable release available for Test 6"
-            COMPARISON="Current pinned PMDK version ${CURRENT_VERSION} already matches the newest public stable PMDK release. Tests 1-5 validate the real Arm64 source-build and pmempool smoke path, but there is no newer stable upstream candidate for a genuine Test 6 upgrade check."
+            COMPARISON="Current pinned PMDK version ${CURRENT_VERSION} already matches the newest public stable PMDK release. Tests 1-5 validate the real Arm64 source-build and libpmem persistence fixture, but there is no newer stable upstream candidate for a genuine Test 6 upgrade check."
             STATUS="skipped"
           else
             NEXT_ROOT="${RUNNER_TEMP}/pmdk-${LATEST_VERSION}-next"
@@ -318,17 +348,48 @@ jobs:
               NEXT_LIB="$NEXT_ROOT/source/src/nondebug:$NEXT_ROOT/source/src/debug"
               NEXT_INSTALLED=$(LD_LIBRARY_PATH="$NEXT_LIB" "$NEXT_ROOT/source/src/tools/pmempool/pmempool" --help | awk '/^pmempool / {print $2; exit}')
 
+              NEXT_WORKDIR="${RUNNER_TEMP}/pmdk-next-functional"
+              rm -rf "$NEXT_WORKDIR"
+              mkdir -p "$NEXT_WORKDIR"
+              cat > "$NEXT_WORKDIR/pmem_fixture.c" <<'EOF'
+          #include <libpmem.h>
+          #include <stddef.h>
+          #include <string.h>
+
+          int main(void) {
+              size_t mapped_len = 0;
+              int is_pmem = 0;
+              char *addr = pmem_map_file("pmem-next-smoke.dat", 4096, PMEM_FILE_CREATE, 0666, &mapped_len, &is_pmem);
+              if (addr == NULL || mapped_len < 4096) {
+                  return 1;
+              }
+              strcpy(addr, "pmdk-next-arm64-smoke");
+              pmem_persist(addr, 23);
+              pmem_unmap(addr, mapped_len);
+              return 0;
+          }
+          EOF
+
+              gcc \
+                -I"$NEXT_ROOT/source/src/include" \
+                "$NEXT_WORKDIR/pmem_fixture.c" \
+                -L"$NEXT_ROOT/source/src/nondebug" \
+                -Wl,-rpath,"$NEXT_ROOT/source/src/nondebug" \
+                -lpmem \
+                -o "$NEXT_WORKDIR/pmem_fixture"
+
               if [ "$NEXT_INSTALLED" = "$LATEST_VERSION" ] && \
-                 LD_LIBRARY_PATH="$NEXT_LIB" "$NEXT_ROOT/source/src/tools/pmempool/pmempool" info --help >/tmp/pmdk-next-help.log 2>&1; then
+                 (cd "$NEXT_WORKDIR" && LD_LIBRARY_PATH="$NEXT_LIB" ./pmem_fixture) && \
+                 grep -aq 'pmdk-next-arm64-smoke' "$NEXT_WORKDIR/pmem-next-smoke.dat"; then
                 DECISION="next_install_validated"
                 REGRESSION_RESULT="Next version installed successfully on Arm64"
-                COMPARISON="Current pinned PMDK version ${CURRENT_VERSION} passed smoke tests in this run. Regression validation built candidate ${LATEST_VERSION} on Arm64, and pmempool reported version ${NEXT_INSTALLED}."
+                COMPARISON="Current pinned PMDK version ${CURRENT_VERSION} built and ran a libpmem persistence fixture in this run. Regression validation built candidate ${LATEST_VERSION} on Arm64, pmempool reported version ${NEXT_INSTALLED}, and the same libpmem fixture executed."
                 STATUS="passed"
               else
-                cat /tmp/pmdk-next-help.log || true
+                ls -l "$NEXT_WORKDIR" || true
                 DECISION="next_install_failed"
                 REGRESSION_RESULT="Next version install failed on Arm64"
-                COMPARISON="Current pinned PMDK version ${CURRENT_VERSION} passed smoke tests in this run, but the regression candidate ${LATEST_VERSION} did not complete the pmempool validation path on Arm64."
+                COMPARISON="Current pinned PMDK version ${CURRENT_VERSION} passed smoke tests in this run, but the regression candidate ${LATEST_VERSION} did not complete the libpmem persistence validation path on Arm64."
                 STATUS="failed"
               fi
             else

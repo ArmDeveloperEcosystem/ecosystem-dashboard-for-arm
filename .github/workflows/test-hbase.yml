@@ -81,7 +81,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
 
     env:
-      BASELINE_VERSION: "2.5.11"
+      BASELINE_VERSION: "2.5.13"
+      NEXT_VERSION: "2.5.14"
 
     outputs:
       contract_version: "2.0"
@@ -134,12 +135,7 @@ jobs:
             local secondary_url="https://downloads.apache.org/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
             local archive_url="https://archive.apache.org/dist/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
             local archive_url_http="http://archive.apache.org/dist/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
-            local urls=()
-            if [ "$version" = "${{ env.BASELINE_VERSION }}" ]; then
-              urls=("$archive_url" "$archive_url_http")
-            else
-              urls=("$primary_url" "$secondary_url" "$archive_url" "$archive_url_http")
-            fi
+            local urls=("$primary_url" "$secondary_url" "$archive_url" "$archive_url_http")
             DOWNLOAD_ATTEMPTS=3 \
             DOWNLOAD_CONNECT_TIMEOUT=20 \
             DOWNLOAD_MAX_TIME=450 \
@@ -433,32 +429,7 @@ jobs:
             exit 0
           fi
           export CURRENT
-          NEXT="$(
-            python3 - <<'PY'
-          import os
-          import re
-          import urllib.request
-
-          current = os.environ.get("CURRENT", "")
-          if not re.fullmatch(r"\d+\.\d+\.\d+", current):
-              print("")
-              raise SystemExit(0)
-
-          cparts = tuple(int(x) for x in current.split("."))
-          html = urllib.request.urlopen("https://archive.apache.org/dist/hbase/", timeout=20).read().decode("utf-8", "ignore")
-          versions = sorted(
-              set(re.findall(r'href="(\d+\.\d+\.\d+)/"', html)),
-              key=lambda s: tuple(int(x) for x in s.split(".")),
-          )
-          next_version = ""
-          for v in versions:
-              parts = tuple(int(x) for x in v.split("."))
-              if parts > cparts:
-                  next_version = v
-                  break
-          print(next_version)
-          PY
-          )"
+          NEXT="${NEXT_VERSION}"
 
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=${NEXT:-$CURRENT}" >> "$GITHUB_OUTPUT"
@@ -487,12 +458,7 @@ jobs:
             local secondary_url="https://downloads.apache.org/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
             local archive_url="https://archive.apache.org/dist/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
             local archive_url_http="http://archive.apache.org/dist/hbase/${version}/hbase-${version}-hadoop3-bin.tar.gz"
-            local urls=()
-            if [ "$version" = "${{ env.BASELINE_VERSION }}" ]; then
-              urls=("$archive_url" "$archive_url_http")
-            else
-              urls=("$primary_url" "$secondary_url" "$archive_url" "$archive_url_http")
-            fi
+            local urls=("$primary_url" "$secondary_url" "$archive_url" "$archive_url_http")
             DOWNLOAD_ATTEMPTS=3 \
             DOWNLOAD_CONNECT_TIMEOUT=30 \
             DOWNLOAD_MAX_TIME=450 \
@@ -514,8 +480,20 @@ jobs:
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          tar -tzf "$NEXT_TAR" > "$NEXT_DIR/archive-contents.txt"
           tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
-          NEXT_HOME="$NEXT_DIR/hbase-${NEXT}-hadoop3-bin"
+          NEXT_EXTRACTED_DIR=$(awk -F/ 'NF>1 {print $1; exit}' "$NEXT_DIR/archive-contents.txt")
+          NEXT_HOME="$NEXT_DIR/$NEXT_EXTRACTED_DIR"
+          if [ -z "${NEXT_EXTRACTED_DIR:-}" ] || [ ! -d "$NEXT_HOME" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version archive layout failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned HBase version ${CURRENT} passed the baseline startup smoke on Arm64, but the official next candidate release ${NEXT} did not extract a recognizable HBase directory." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           sed -i '/^export JAVA_HOME=/d' "$NEXT_HOME/conf/hbase-env.sh"
           echo "export JAVA_HOME=$JAVA_HOME" >> "$NEXT_HOME/conf/hbase-env.sh"
           NEXT_REPORTED="$(
@@ -539,7 +517,7 @@ jobs:
           PY
           )" || true
 
-          if [ "$NEXT_REPORTED" = "$NEXT" ] \
+          if { [ "$NEXT_REPORTED" = "$NEXT" ] || [ "$NEXT_REPORTED" = "${NEXT}-hadoop3" ]; } \
             && { [ -f "$NEXT_HOME/lib/hbase-server-${NEXT}.jar" ] || [ -f "$NEXT_HOME/lib/hbase-server-${NEXT}-hadoop3.jar" ]; } \
             && { [ -f "$NEXT_HOME/lib/hbase-common-${NEXT}.jar" ] || [ -f "$NEXT_HOME/lib/hbase-common-${NEXT}-hadoop3.jar" ]; } \
             && [ -f "$NEXT_HOME/conf/hbase-site.xml" ]; then

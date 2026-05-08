@@ -158,7 +158,16 @@ jobs:
               exit 0
             fi
           fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
+          BASELINE_IMAGE="amperecomputingai/pytorch:${BASELINE_VERSION}"
+          if docker manifest inspect --verbose "$BASELINE_IMAGE" > baseline-external/manifest.json 2>/dev/null \
+            && jq -e '[.. | objects | select((.architecture? == "arm64") or ((.platform? // {}) | .architecture? == "arm64"))] | length > 0' baseline-external/manifest.json >/dev/null; then
+            printf 'download=%s\nhomepage=%s\ndocs=%s\nimage=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" "$BASELINE_IMAGE" > baseline-external/metadata.txt
+            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
+            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 20 "$HOMEPAGE_URL" >/dev/null 2>&1; then
             printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
             echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
             echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
@@ -342,59 +351,13 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          IDENTITY_KIND="${{ steps.expectations.outputs.identity_kind }}"
-          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
-          IDENTITY_EXPECT="${{ steps.expectations.outputs.identity_expect }}"
-          EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            case "$IDENTITY_KIND" in
-              go_module)
-                grep -Fx "module $IDENTITY_EXPECT" "$IDENTITY_TARGET" >/dev/null
-                RESULT="Verified go module identity in $IDENTITY_TARGET"
-                ;;
-              toml_name)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); name=(data.get('project') or {}).get('name') or ((data.get('tool') or {}).get('poetry') or {}).get('name'); assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified TOML package identity in $IDENTITY_TARGET"
-                ;;
-              package_json_name)
-                python3 -c "import json,sys; data=json.load(open(sys.argv[1], encoding='utf-8')); assert data.get('name') == sys.argv[2], (data.get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified package.json identity in $IDENTITY_TARGET"
-                ;;
-              cargo_package)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); assert (data.get('package') or {}).get('name') == sys.argv[2], ((data.get('package') or {}).get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified Cargo package identity in $IDENTITY_TARGET"
-                ;;
-              chart_name)
-                python3 -c "from pathlib import Path; import sys; lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(); matches=[line.split(':', 1)[1].strip() for line in lines if line.startswith('name:')]; name=matches[0] if matches else ''; assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified chart identity in $IDENTITY_TARGET"
-                ;;
-              grep_file)
-                grep -Eiq "$IDENTITY_EXPECT" "$IDENTITY_TARGET"
-                RESULT="Verified package-specific content in $IDENTITY_TARGET"
-                ;;
-              *)
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                echo "note=No bounded identity check was configured for this package." >> "$GITHUB_OUTPUT"
-                exit 1
-                ;;
-            esac
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=$RESULT" >> "$GITHUB_OUTPUT"
-          else
-            TEMP_PAGE=$(mktemp)
-            trap 'rm -f "$TEMP_PAGE"' EXIT
-            if curl -fsSL "$OFFICIAL_DOCS" -o "$TEMP_PAGE" || curl -fsSL "$HOMEPAGE_URL" -o "$TEMP_PAGE" || curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_PAGE"; then
-              grep -Eiq "$EXTERNAL_EXPECT" "$TEMP_PAGE"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Verified external package identity from published docs or homepage content using /$EXTERNAL_EXPECT/." >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Could not fetch published docs or homepage content for bounded external validation." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
+          IMAGE="amperecomputingai/pytorch:${BASELINE_VERSION}"
+          docker manifest inspect --verbose "$IMAGE" > /tmp/pytorch-manifest.json
+          jq -e '[.. | objects | select((.architecture? == "arm64") or ((.platform? // {}) | .architecture? == "arm64"))] | length > 0' /tmp/pytorch-manifest.json >/dev/null
+          docker pull --platform linux/arm64 "$IMAGE"
+          docker run --rm --platform linux/arm64 --entrypoint /bin/bash "$IMAGE" -lc 'python3 -c '"'"'import pathlib, struct, torch; native=pathlib.Path(torch._C.__file__).resolve(); data=native.read_bytes()[:20]; assert data[:4] == b"\x7fELF", native; machine=struct.unpack(("<" if data[5] == 1 else ">") + "H", data[18:20])[0]; assert machine == 183, machine; result=torch.matmul(torch.ones((2, 2)), torch.eye(2)); assert result.tolist() == [[1.0, 1.0], [1.0, 1.0]]; print(f"torch={torch.__version__}")'"'"''
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Pulled the official Ampere Optimized PyTorch Arm64 image, imported torch, verified the native extension is Arm64, and ran a tiny CPU tensor matmul. Full optimized training/inference remains out of scope." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
@@ -406,12 +369,30 @@ jobs:
           NEXT_VERSION=$(python3 -c "import json, urllib.request; data=json.load(urllib.request.urlopen('https://hub.docker.com/v2/repositories/amperecomputingai/pytorch/tags?page_size=100', timeout=20)); tags=[r.get('name','') for r in data.get('results', [])]; stable=[t for t in tags if t and t != 'latest' and '-ol' not in t and '-ub' not in t and all(x.isdigit() for x in t.split('.'))]; stable.sort(key=lambda s: tuple(int(x) for x in s.split('.'))); print(stable[-1] if stable else '')")
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           if [ -n "$NEXT_VERSION" ] && [ "$NEXT_VERSION" != "$CURRENT" ]; then
-            echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
-            echo "decision=validated_next_release" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next stable published image tag validated on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Tests 1-5 validated the current official Docker Hub/docs evidence for Ampere Optimized PyTorch on Arm64. The newer stable image tag $NEXT_VERSION was found on the official Docker Hub tags feed and validated at the same bounded evidence level." >> "$GITHUB_OUTPUT"
-            echo "status=passed" >> "$GITHUB_OUTPUT"
+            IMAGE="amperecomputingai/pytorch:${NEXT_VERSION}"
+            if docker manifest inspect --verbose "$IMAGE" > /tmp/pytorch-next-manifest.json \
+              && jq -e '[.. | objects | select((.architecture? == "arm64") or ((.platform? // {}) | .architecture? == "arm64"))] | length > 0' /tmp/pytorch-next-manifest.json >/dev/null \
+              && docker pull --platform linux/arm64 "$IMAGE" \
+              && docker run --rm --platform linux/arm64 --entrypoint /bin/bash "$IMAGE" -lc 'python3 -c '"'"'import pathlib, struct, torch; native=pathlib.Path(torch._C.__file__).resolve(); data=native.read_bytes()[:20]; assert data[:4] == b"\x7fELF", native; machine=struct.unpack(("<" if data[5] == 1 else ">") + "H", data[18:20])[0]; assert machine == 183, machine; result=torch.matmul(torch.ones((2, 2)), torch.eye(2)); assert result.tolist() == [[1.0, 1.0], [1.0, 1.0]]; print(f"torch={torch.__version__}")'"'"'' >/tmp/pytorch-next-runtime.log 2>&1; then
+              cat /tmp/pytorch-next-runtime.log
+              echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+              echo "decision=limited_cpu_smoke_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Arm preflight proof passed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=The newer stable Ampere Optimized PyTorch image tag $NEXT_VERSION was pulled for linux/arm64, imported torch, verified the native extension architecture, and ran a tiny CPU tensor matmul. This does not claim full optimized training or model inference." >> "$GITHUB_OUTPUT"
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              cat /tmp/pytorch-next-runtime.log || true
+              echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=runtime_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_runtime_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next Ampere Optimized PyTorch image failed to execute on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=The candidate image $IMAGE advertises an Arm64 manifest and was pulled for linux/arm64, but the bounded Python/Torch CPU smoke did not execute successfully on the Arm runner. This is treated as a real vendor/runtime artifact failure, not a dashboard green." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
           else
             echo "latest_version=${NEXT_VERSION:-$CURRENT}" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=n/a" >> "$GITHUB_OUTPUT"

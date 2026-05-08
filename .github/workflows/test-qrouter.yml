@@ -553,59 +553,24 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          IDENTITY_KIND="${{ steps.expectations.outputs.identity_kind }}"
-          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
-          IDENTITY_EXPECT="${{ steps.expectations.outputs.identity_expect }}"
-          EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            case "$IDENTITY_KIND" in
-              go_module)
-                grep -Fx "module $IDENTITY_EXPECT" "$IDENTITY_TARGET" >/dev/null
-                RESULT="Verified go module identity in $IDENTITY_TARGET"
-                ;;
-              toml_name)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); name=(data.get('project') or {}).get('name') or ((data.get('tool') or {}).get('poetry') or {}).get('name'); assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified TOML package identity in $IDENTITY_TARGET"
-                ;;
-              package_json_name)
-                python3 -c "import json,sys; data=json.load(open(sys.argv[1], encoding='utf-8')); assert data.get('name') == sys.argv[2], (data.get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified package.json identity in $IDENTITY_TARGET"
-                ;;
-              cargo_package)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); assert (data.get('package') or {}).get('name') == sys.argv[2], ((data.get('package') or {}).get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified Cargo package identity in $IDENTITY_TARGET"
-                ;;
-              chart_name)
-                python3 -c "from pathlib import Path; import sys; lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(); matches=[line.split(':', 1)[1].strip() for line in lines if line.startswith('name:')]; name=matches[0] if matches else ''; assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified chart identity in $IDENTITY_TARGET"
-                ;;
-              grep_file)
-                grep -Eiq "$IDENTITY_EXPECT" "$IDENTITY_TARGET"
-                RESULT="Verified package-specific content in $IDENTITY_TARGET"
-                ;;
-              *)
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                echo "note=No bounded identity check was configured for this package." >> "$GITHUB_OUTPUT"
-                exit 1
-                ;;
-            esac
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=$RESULT" >> "$GITHUB_OUTPUT"
-          else
-            TEMP_PAGE=$(mktemp)
-            trap 'rm -f "$TEMP_PAGE"' EXIT
-            if curl -fsSL "$OFFICIAL_DOCS" -o "$TEMP_PAGE" || curl -fsSL "$HOMEPAGE_URL" -o "$TEMP_PAGE" || curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_PAGE"; then
-              grep -Eiq "$EXTERNAL_EXPECT" "$TEMP_PAGE"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Verified external package identity from published docs or homepage content using /$EXTERNAL_EXPECT/." >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Could not fetch published docs or homepage content for bounded external validation." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
+          sudo apt-get update
+          if ! apt-cache show qrouter >/dev/null 2>&1; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=qrouter is not available from the configured Ubuntu repositories on this runner, so no honest package-manager CLI smoke can run." >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends qrouter
+          qrouter -v0 -h
+          cat > qrouter-smoke.tcl <<'EOF'
+          puts "qrouter_tcl_smoke version=$QROUTER_VERSION"
+          quit
+          EOF
+          qrouter -noc -s qrouter-smoke.tcl > qrouter-smoke.out
+          grep -F "qrouter_tcl_smoke" qrouter-smoke.out
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Installed qrouter from Ubuntu packages, verified CLI help, and executed a tiny Tcl batch script inside qrouter." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -618,6 +583,31 @@ jobs:
           lane_kind: ${{ env.LANE_KIND }}
           next_version_override: "1.4.90"
           candidate_tag_override: "1.4.90"
+          limited_cpu_probe: |
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential tcl-dev tk-dev libx11-dev libxt-dev libxpm-dev file autotools-dev >/dev/null
+            cd next-src
+            for helper in config.guess config.sub; do
+              helper_path="$(dpkg -L autotools-dev | grep "/${helper}$" | head -1 || true)"
+              if [ -n "$helper_path" ]; then
+                find . -name "$helper" -type f -exec cp "$helper_path" {} \;
+              fi
+            done
+            ./configure --build=aarch64-unknown-linux-gnu --host=aarch64-unknown-linux-gnu --prefix="$PWD/install"
+            make -j2
+            make install
+            export PATH="$PWD/install/bin:$PATH"
+            QROUTER_HELPER="$PWD/install/share/qrouter/qrouternullg"
+            test -x "$QROUTER_HELPER"
+            file "$QROUTER_HELPER" | grep -Eiq 'aarch64|arm64'
+            qrouter -v0 -h >/tmp/qrouter-next-help.txt 2>&1 || true
+            cat > qrouter-smoke.tcl <<'EOF'
+            puts "qrouter_tcl_smoke version=$QROUTER_VERSION"
+            quit
+            EOF
+            qrouter -noc -nog -s qrouter-smoke.tcl > qrouter-smoke.out
+            grep -F "qrouter_tcl_smoke" qrouter-smoke.out
+          limited_cpu_description: "Test 6 built the next qrouter source candidate on the Arm64 runner, verified the installed no-graphics helper is AArch64, captured CLI help, and executed a tiny Tcl batch script inside qrouter. Real LEF/DEF routing quality, GUI operation, and full ASIC signoff flows remain out of scope."
 
       - name: Calculate test summary
         id: summary

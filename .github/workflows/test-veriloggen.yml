@@ -118,6 +118,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Python for runtime smoke
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
       - name: Set test metadata
         id: metadata
         run: |
@@ -128,7 +133,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates python3-venv"
           quiet: "true"
 
       - name: Install baseline source or artifact
@@ -342,59 +347,27 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          IDENTITY_KIND="${{ steps.expectations.outputs.identity_kind }}"
-          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
-          IDENTITY_EXPECT="${{ steps.expectations.outputs.identity_expect }}"
-          EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            case "$IDENTITY_KIND" in
-              go_module)
-                grep -Fx "module $IDENTITY_EXPECT" "$IDENTITY_TARGET" >/dev/null
-                RESULT="Verified go module identity in $IDENTITY_TARGET"
-                ;;
-              toml_name)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); name=(data.get('project') or {}).get('name') or ((data.get('tool') or {}).get('poetry') or {}).get('name'); assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified TOML package identity in $IDENTITY_TARGET"
-                ;;
-              package_json_name)
-                python3 -c "import json,sys; data=json.load(open(sys.argv[1], encoding='utf-8')); assert data.get('name') == sys.argv[2], (data.get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified package.json identity in $IDENTITY_TARGET"
-                ;;
-              cargo_package)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); assert (data.get('package') or {}).get('name') == sys.argv[2], ((data.get('package') or {}).get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified Cargo package identity in $IDENTITY_TARGET"
-                ;;
-              chart_name)
-                python3 -c "from pathlib import Path; import sys; lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(); matches=[line.split(':', 1)[1].strip() for line in lines if line.startswith('name:')]; name=matches[0] if matches else ''; assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified chart identity in $IDENTITY_TARGET"
-                ;;
-              grep_file)
-                grep -Eiq "$IDENTITY_EXPECT" "$IDENTITY_TARGET"
-                RESULT="Verified package-specific content in $IDENTITY_TARGET"
-                ;;
-              *)
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                echo "note=No bounded identity check was configured for this package." >> "$GITHUB_OUTPUT"
-                exit 1
-                ;;
-            esac
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=$RESULT" >> "$GITHUB_OUTPUT"
-          else
-            TEMP_PAGE=$(mktemp)
-            trap 'rm -f "$TEMP_PAGE"' EXIT
-            if curl -fsSL "$OFFICIAL_DOCS" -o "$TEMP_PAGE" || curl -fsSL "$HOMEPAGE_URL" -o "$TEMP_PAGE" || curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_PAGE"; then
-              grep -Eiq "$EXTERNAL_EXPECT" "$TEMP_PAGE"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Verified external package identity from published docs or homepage content using /$EXTERNAL_EXPECT/." >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Could not fetch published docs or homepage content for bounded external validation." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
+          python -m venv smoke-venv
+          . smoke-venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          timeout 240 python -m pip install "veriloggen==$BASELINE_VERSION"
+          python - <<'PY'
+          from pathlib import Path
+          import veriloggen as vg
+
+          module = vg.Module("arm_smoke")
+          clk = module.Input("CLK")
+          rst = module.Input("RST")
+          led = module.OutputReg("LED")
+          module.Always(vg.Posedge(clk))(
+              vg.If(rst)(led(0)).Else(led(vg.Not(led)))
+          )
+          code = module.to_verilog()
+          Path("veriloggen_smoke.v").write_text(code, encoding="utf-8")
+          assert "module arm_smoke" in code and "always" in code
+          PY
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Installed Veriloggen $BASELINE_VERSION on Arm64 and generated a tiny Verilog module." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
@@ -404,6 +377,28 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            python -m venv next-venv
+            . next-venv/bin/activate
+            python -m pip install --upgrade pip setuptools wheel
+            timeout 240 python -m pip install "veriloggen==$LATEST_VERSION"
+            python - <<'PY'
+            from pathlib import Path
+            import veriloggen as vg
+
+            module = vg.Module("arm_next_smoke")
+            clk = module.Input("CLK")
+            rst = module.Input("RST")
+            led = module.OutputReg("LED")
+            module.Always(vg.Posedge(clk))(
+                vg.If(rst)(led(0)).Else(led(vg.Not(led)))
+            )
+            code = module.to_verilog()
+            Path("veriloggen_next_smoke.v").write_text(code, encoding="utf-8")
+            assert "module arm_next_smoke" in code and "always" in code
+            PY
+          limited_cpu_description: |
+            Installed the next Veriloggen candidate on Arm64 and generated a tiny Verilog module.
       - name: Calculate test summary
         id: summary
         if: always()

@@ -80,21 +80,23 @@ jobs:
   test-mindspore:
     runs-on: ubuntu-24.04-arm
     env:
-      BASELINE_VERSION: "1.0.0"
+      SUPPORTED_MINIMUM_VERSION: "1.0.0"
+      BASELINE_VERSION: "2.7.2"
+      NEXT_VERSION: "2.8.0"
       PACKAGE_SLUG: "mindspore"
-      LANE_KIND: "manual-review"
+      LANE_KIND: "python-cpu-runtime"
       DOWNLOAD_URL: "https://www.mindspore.cn/versions/en"
       HOMEPAGE_URL: "https://www.mindspore.cn/en"
       OFFICIAL_DOCS: "https://github.com/mindspore-ai/mindspore#pip-mode-method-installation"
-      GITHUB_REPO: "mindspore-ai/mindspore"
+      GITHUB_REPO: ""
       TEST1_COMMAND: >-
-        test -f baseline-external/metadata.txt && curl -fsL "$DOWNLOAD_URL" | grep -Fqi "MindSpore"
+        test -f "$DOC_PATH" && grep -Fq "name: Mindspore" "$DOC_PATH" && grep -Fq "works_on_arm: true" "$DOC_PATH" && grep -Fq "version_number: $SUPPORTED_MINIMUM_VERSION" "$DOC_PATH"
       TEST2_COMMAND: >-
         curl -fsL "$DOWNLOAD_URL" | grep -Fqi "MindSpore" && (curl -fsL "$HOMEPAGE_URL" | grep -Fqi "MindSpore" || true)
       TEST3_COMMAND: >-
         curl -fsL "$OFFICIAL_DOCS" | grep -Eqi 'pip|install'
       TEST5_COMMAND: >-
-        python3 -c "from pathlib import Path; import os; t=Path(os.environ['DOC_PATH']).read_text(); assert 'Aarch64 wheels are available from the initial stable version' in t"
+        :
 
     outputs:
       contract_version: "2.0"
@@ -136,7 +138,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates python3-venv python3-pip"
           extra_packages: "${{ env.EXTRA_APT_PACKAGES }}"
           quiet: "true"
 
@@ -237,6 +239,7 @@ jobs:
             export DOC_PATH BASELINE_VERSION DOWNLOAD_URL
             python3 -c "from pathlib import Path; import os; text=Path(os.environ['DOC_PATH']).read_text(); version=os.environ['BASELINE_VERSION']; download=os.environ['DOWNLOAD_URL']; assert f'version_number: {version}' in text; assert f'download_url: {download}' in text"
           fi
+          grep -Fq "version_number: $SUPPORTED_MINIMUM_VERSION" "$DOC_PATH"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -276,22 +279,58 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-          fi
-          eval "$TEST5_COMMAND"
+          rm -rf baseline-venv
+          python3 -m venv baseline-venv
+          . baseline-venv/bin/activate
+          python -m pip install -q --upgrade pip
+          python -m pip install -q --no-cache-dir "mindspore==${BASELINE_VERSION}"
+          python - <<'PY'
+          import os
+          import platform
+          import mindspore as ms
+
+          expected = os.environ["BASELINE_VERSION"]
+          assert platform.machine() == "aarch64"
+          assert ms.__version__ == expected, ms.__version__
+          tensor = ms.Tensor([1, 2, 3])
+          assert tensor.shape == (3,)
+          print(f"validated MindSpore {ms.__version__} tensor smoke on {platform.machine()}")
+          PY
           echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Installed MindSpore ${BASELINE_VERSION} and created a tensor on the Arm64 runner; package metadata still records ${SUPPORTED_MINIMUM_VERSION} as the supported minimum." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
         id: test6
-        uses: ./.github/actions/generic-source-regression-check
-        with:
-          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
-          github_repo: ${{ env.GITHUB_REPO }}
-          lane_kind: ${{ env.LANE_KIND }}
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          rm -rf next-venv
+          python3 -m venv next-venv
+          . next-venv/bin/activate
+          python -m pip install -q --upgrade pip
+          python -m pip install -q --no-cache-dir "mindspore==${NEXT_VERSION}"
+          INSTALLED_VERSION="$(python - <<'PY'
+          import platform
+          import mindspore as ms
+
+          assert platform.machine() == "aarch64"
+          tensor = ms.Tensor([1, 2, 3])
+          assert tensor.shape == (3,)
+          print(ms.__version__)
+          PY
+          )"
+          END_TIME=$(date +%s)
+          {
+            echo "current_version=${BASELINE_VERSION}"
+            echo "latest_version=${NEXT_VERSION}"
+            echo "next_installed_version=${INSTALLED_VERSION}"
+            echo "decision=next_install_validated"
+            echo "regression_result=MindSpore next stable Python package installed and executed a tensor smoke successfully on Arm64"
+            echo "comparison=Supported minimum ${SUPPORTED_MINIMUM_VERSION} remains recorded in package metadata. For runtime credibility, this workflow installs recent stable ${BASELINE_VERSION} and next stable ${NEXT_VERSION}; both create tensors on the Ubuntu Arm64 runner."
+            echo "status=passed"
+            echo "duration=$((END_TIME - START_TIME))"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         id: summary

@@ -126,6 +126,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Python for runtime smoke
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
       - name: Set test metadata
         id: metadata
         run: |
@@ -136,7 +141,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates python3-venv"
           extra_packages: "${{ env.EXTRA_APT_PACKAGES }}"
           quiet: "true"
 
@@ -281,8 +286,23 @@ jobs:
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
           fi
-          eval "$TEST5_COMMAND"
+          python -m venv ../mlflow-smoke-venv
+          . ../mlflow-smoke-venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          timeout 360 python -m pip install "mlflow==$BASELINE_VERSION"
+          mkdir -p ../mlruns
+          mlflow server --backend-store-uri sqlite:///../mlflow-smoke.db --default-artifact-root ../mlruns --host 127.0.0.1 --port 5051 >/tmp/mlflow-smoke.log 2>&1 &
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:5051/health >/tmp/mlflow-health.txt; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:5051/health >/tmp/mlflow-health.txt
           echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Installed MLflow $BASELINE_VERSION, started a local SQLite-backed tracking server, and verified its health endpoint." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
@@ -292,6 +312,23 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            python -m venv mlflow-next-venv
+            . mlflow-next-venv/bin/activate
+            python -m pip install --upgrade pip setuptools wheel
+            timeout 360 python -m pip install "mlflow==$LATEST_VERSION"
+            mkdir -p mlruns-next
+            mlflow server --backend-store-uri sqlite:///mlflow-next-smoke.db --default-artifact-root mlruns-next --host 127.0.0.1 --port 5052 >/tmp/mlflow-next-smoke.log 2>&1 &
+            PID=$!
+            trap 'kill "$PID" 2>/dev/null || true' EXIT
+            for _ in $(seq 1 60); do
+              if curl -fsS http://127.0.0.1:5052/health >/tmp/mlflow-next-health.txt; then
+                break
+              fi
+              sleep 1
+            done
+            curl -fsS http://127.0.0.1:5052/health >/tmp/mlflow-next-health.txt
+          limited_cpu_description: "Installed the next MLflow candidate, started a local SQLite-backed tracking server, and verified its health endpoint on Arm64."
       - name: Calculate test summary
         id: summary
         if: always()

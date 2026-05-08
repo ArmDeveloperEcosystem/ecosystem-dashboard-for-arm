@@ -147,6 +147,8 @@ jobs:
       - name: Install Apache Kudu (Source Check)
         id: install
         run: |
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "git g++ file"
           echo "Cloning Apache Kudu repository..."
           git clone --branch "${KUDU_BASELINE_VERSION}" --depth 1 https://github.com/apache/kudu.git
           
@@ -265,17 +267,42 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 5 - Functional Validation (Placeholder)
+      - name: Test 5 - Compile and Run Arm64 Atomic Probe
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Placeholder for actual functional test if we could build it
-          echo "Source integrity checked. Skipping compilation in smoke test."
-          echo "status=passed" >> $GITHUB_OUTPUT
+          cd kudu
+
+          cat > /tmp/kudu-arm64-atomic-smoke.cc <<'EOF_CPP'
+          #include <cstdint>
+          #include <iostream>
+          #include "kudu/gutil/atomicops.h"
+
+          int main() {
+            volatile base::subtle::Atomic64 value = 41;
+            base::subtle::MemoryBarrier();
+            base::subtle::Atomic64 result = base::subtle::NoBarrier_AtomicIncrement(&value, 1);
+            std::cout << result << std::endl;
+            return result == 42 ? 0 : 1;
+          }
+          EOF_CPP
+
+          g++ -std=c++17 -Isrc /tmp/kudu-arm64-atomic-smoke.cc -o /tmp/kudu-arm64-atomic-smoke
+          OUTPUT=$(/tmp/kudu-arm64-atomic-smoke)
+
+          if [ "$OUTPUT" = "42" ] && file /tmp/kudu-arm64-atomic-smoke | grep -qiE 'aarch64|arm64'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            file /tmp/kudu-arm64-atomic-smoke || true
+            echo "Arm64 atomic smoke output: ${OUTPUT:-<empty>}"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 6 - Regression Validation
         id: test6
@@ -297,14 +324,30 @@ jobs:
           git clone --branch "${LATEST_VERSION}" --depth 1 https://github.com/apache/kudu.git "${WORKDIR}/kudu-next"
 
           if [ -f "${WORKDIR}/kudu-next/README.adoc" ] || [ -f "${WORKDIR}/kudu-next/README.md" ]; then
-            if [ -f "${WORKDIR}/kudu-next/CMakeLists.txt" ] && [ -d "${WORKDIR}/kudu-next/src/kudu" ]; then
+            cat > /tmp/kudu-next-arm64-atomic-smoke.cc <<'EOF_CPP'
+          #include <cstdint>
+          #include <iostream>
+          #include "kudu/gutil/atomicops.h"
+
+          int main() {
+            volatile base::subtle::Atomic64 value = 41;
+            base::subtle::MemoryBarrier();
+            base::subtle::Atomic64 result = base::subtle::NoBarrier_AtomicIncrement(&value, 1);
+            std::cout << result << std::endl;
+            return result == 42 ? 0 : 1;
+          }
+          EOF_CPP
+            if [ -f "${WORKDIR}/kudu-next/CMakeLists.txt" ] && [ -d "${WORKDIR}/kudu-next/src/kudu" ] && \
+               g++ -std=c++17 -I"${WORKDIR}/kudu-next/src" /tmp/kudu-next-arm64-atomic-smoke.cc -o /tmp/kudu-next-arm64-atomic-smoke && \
+               [ "$(/tmp/kudu-next-arm64-atomic-smoke)" = "42" ] && \
+               file /tmp/kudu-next-arm64-atomic-smoke | grep -qiE 'aarch64|arm64'; then
               NEXT_INSTALLED_VERSION="${LATEST_VERSION}"
               DECISION="next_install_validated"
               REGRESSION_RESULT="Next version installed successfully on Arm64"
-              COMPARISON="Apache Kudu baseline ${CURRENT_VERSION} passed source-structure smoke tests in this run. Regression validation cloned candidate ${LATEST_VERSION} on Arm64, and the candidate preserved the expected README, CMake, and src/kudu source layout."
+              COMPARISON="Apache Kudu baseline ${CURRENT_VERSION} compiled and ran an Arm64 atomic operations probe. Regression validation cloned candidate ${LATEST_VERSION} on Arm64 and compiled/ran the same Kudu atomic probe successfully."
               echo "status=passed" >> $GITHUB_OUTPUT
             else
-              COMPARISON="Apache Kudu candidate ${LATEST_VERSION} cloned on Arm64 but did not preserve the expected CMake or src/kudu source layout."
+              COMPARISON="Apache Kudu candidate ${LATEST_VERSION} cloned on Arm64 but did not preserve the expected source layout or failed the Arm64 atomic compile/run probe."
               echo "status=failed" >> $GITHUB_OUTPUT
               exit 1
             fi

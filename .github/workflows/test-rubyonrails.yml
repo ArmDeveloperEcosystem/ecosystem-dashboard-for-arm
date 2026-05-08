@@ -122,7 +122,10 @@ jobs:
         id: install
         run: |
           set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev
           gem install rails -v "${RAILS_VERSION}" --no-document
+          gem install sqlite3 --no-document
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get Ruby/Rails version
@@ -216,10 +219,29 @@ jobs:
             --skip-test \
             --skip-system-test >/tmp/rails-functional.out 2>&1
 
-          if [ -f /tmp/rails-smoke/config/application.rb ] && [ -x /tmp/rails-smoke/bin/rails ]; then
+          cd /tmp/rails-smoke
+          bundle config set path vendor/bundle
+          timeout 10m bundle install --jobs 2 --retry 3 >>/tmp/rails-functional.out 2>&1
+          cat > app/controllers/smoke_controller.rb <<'EOF'
+          class SmokeController < ActionController::Base
+            def index
+              render plain: "rails-arm64-ok"
+            end
+          end
+          EOF
+          cat > config/routes.rb <<'EOF'
+          Rails.application.routes.draw do
+            get "/smoke", to: "smoke#index"
+          end
+          EOF
+          RAILS_PROOF=$(RAILS_ENV=test bin/rails runner 'route = Rails.application.routes.recognize_path("/smoke", method: :get); puts "#{route[:controller]}##{route[:action]}"')
+          SQLITE_PROOF=$(RAILS_ENV=test bin/rails runner 'require "sqlite3"; db = SQLite3::Database.new(":memory:"); db.execute("create table smoke(message text)"); db.execute("insert into smoke values (?)", ["rails-arm64-ok"]); puts db.get_first_value("select message from smoke")')
+
+          if [ -f config/application.rb ] && [ -x bin/rails ] && [ "$RAILS_PROOF" = "smoke#index" ] && [ "$SQLITE_PROOF" = "rails-arm64-ok" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/rails-functional.out || true
+            printf 'route proof: %s\nsqlite proof: %s\n' "${RAILS_PROOF:-missing}" "${SQLITE_PROOF:-missing}"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi

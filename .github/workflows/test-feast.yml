@@ -123,6 +123,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Python for runtime smoke
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
       - name: Set test metadata
         id: metadata
         run: |
@@ -133,7 +138,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates python3-venv"
           quiet: "true"
 
       - name: Install baseline source or artifact
@@ -311,71 +316,60 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          case "$TEST5_MODE" in
-            python)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              FOUND=0
-              IFS='|' read -r -a TARGETS <<< "$PYTHON_TARGETS"
-              for TARGET in "${TARGETS[@]}"; do
-                [ -z "$TARGET" ] && continue
-                if [ -d "baseline-src/$TARGET" ] || [ -f "baseline-src/$TARGET" ]; then
-                  python3 -m compileall -q "baseline-src/$TARGET"
-                  FOUND=1
-                  break
-                fi
-              done
-              if [ "$FOUND" -ne 1 ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package-specific Python sources with compileall without requiring optional accelerator runtimes." >> "$GITHUB_OUTPUT"
-              ;;
-            source)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              MATCHED=0
-              IFS='|' read -r -a PATTERNS <<< "$SOURCE_GLOBS"
-              for PATTERN in "${PATTERNS[@]}"; do
-                [ -z "$PATTERN" ] && continue
-                if compgen -G "baseline-src/$PATTERN" > /dev/null; then
-                  MATCHED=$((MATCHED + 1))
-                fi
-              done
-              if [ "$MATCHED" -lt 1 ] || ! grep -R -I -Eiq "$EVIDENCE_RE" baseline-src 2>/dev/null; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
-                echo "note=Validated package-specific source layout and documentation on Arm64; GPU or accelerator runtime remains out of scope for generic runners." >> "$GITHUB_OUTPUT"
-              else
-                echo "note=Validated package-specific source layout and documentation on Arm64 without claiming a full runtime build." >> "$GITHUB_OUTPUT"
-              fi
-              ;;
-            external)
-              if [ ! -f baseline-external/metadata.txt ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              if ! grep -Fq "download=$DOWNLOAD_URL" baseline-external/metadata.txt || ! grep -Fq "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt || ! grep -Eiq "$EVIDENCE_RE" "$PACKAGE_PAGE"; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package metadata, official endpoints, and Arm64 package-page evidence for this external/manual lane." >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-              ;;
-          esac
+          python -m venv smoke-venv
+          . smoke-venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          timeout 300 python -m pip install "feast==$BASELINE_VERSION" pandas pyarrow
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          from feast import Entity, FeatureStore, FeatureView, Field
+          from feast.types import Float32
+          from feast.infra.offline_stores.file_source import FileSource
+
+          root = Path("feast_smoke")
+          repo = root / "repo"
+          data = root / "driver.parquet"
+          repo.mkdir(parents=True, exist_ok=True)
+          pd.DataFrame(
+              {
+                  "driver_id": [1, 2],
+                  "event_timestamp": pd.to_datetime(["2024-01-01", "2024-01-02"], utc=True),
+                  "rating": [4.5, 4.8],
+              }
+          ).to_parquet(data)
+          (repo / "feature_store.yaml").write_text(
+              "project: smoke\n"
+              "registry: data/registry.db\n"
+              "provider: local\n"
+              "online_store:\n"
+              "  type: sqlite\n"
+              "  path: data/online.db\n",
+              encoding="utf-8",
+          )
+          source = FileSource(path=str(data.resolve()), timestamp_field="event_timestamp")
+          driver = Entity(name="driver", join_keys=["driver_id"])
+          ratings = FeatureView(
+              name="driver_ratings",
+              entities=[driver],
+              schema=[Field(name="rating", dtype=Float32)],
+              source=source,
+          )
+          store = FeatureStore(repo_path=str(repo))
+          store.apply([driver, ratings])
+          features = store.get_historical_features(
+              entity_df=pd.DataFrame(
+                  {
+                      "driver_id": [1],
+                      "event_timestamp": pd.to_datetime(["2024-01-03"], utc=True),
+                  }
+              ),
+              features=["driver_ratings:rating"],
+          ).to_df()
+          assert float(features["rating"].iloc[0]) == 4.5
+          PY
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Installed Feast $BASELINE_VERSION on Arm64 and proved a local file/SQLite feature store with historical retrieval." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -386,6 +380,51 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            python -m venv next-venv
+            . next-venv/bin/activate
+            python -m pip install --upgrade pip setuptools wheel
+            timeout 300 python -m pip install "feast==$LATEST_VERSION" pandas pyarrow
+            python - <<'PY'
+            from pathlib import Path
+            import pandas as pd
+            from feast import Entity, FeatureStore, FeatureView, Field
+            from feast.types import Float32
+            from feast.infra.offline_stores.file_source import FileSource
+
+            root = Path("next_feast_smoke")
+            repo = root / "repo"
+            data = root / "driver.parquet"
+            repo.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(
+                {
+                    "driver_id": [1, 2],
+                    "event_timestamp": pd.to_datetime(["2024-01-01", "2024-01-02"], utc=True),
+                    "rating": [4.5, 4.8],
+                }
+            ).to_parquet(data)
+            (repo / "feature_store.yaml").write_text(
+                "project: smoke\n"
+                "registry: data/registry.db\n"
+                "provider: local\n"
+                "online_store:\n"
+                "  type: sqlite\n"
+                "  path: data/online.db\n",
+                encoding="utf-8",
+            )
+            source = FileSource(path=str(data.resolve()), timestamp_field="event_timestamp")
+            driver = Entity(name="driver", join_keys=["driver_id"])
+            ratings = FeatureView(name="driver_ratings", entities=[driver], schema=[Field(name="rating", dtype=Float32)], source=source)
+            store = FeatureStore(repo_path=str(repo))
+            store.apply([driver, ratings])
+            features = store.get_historical_features(
+                entity_df=pd.DataFrame({"driver_id": [1], "event_timestamp": pd.to_datetime(["2024-01-03"], utc=True)}),
+                features=["driver_ratings:rating"],
+            ).to_df()
+            assert float(features["rating"].iloc[0]) == 4.5
+            PY
+          limited_cpu_description: |
+            Installed the next Feast candidate on the Arm64 runner and proved a bounded local file/SQLite feature store with historical retrieval.
       - name: Calculate test summary
         id: summary
         if: always()

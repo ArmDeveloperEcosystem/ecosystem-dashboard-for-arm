@@ -276,13 +276,34 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-          fi
-          eval "$TEST5_COMMAND"
+          ASSET_URL=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/v${BASELINE_VERSION}" | jq -r '.assets[] | select(.name | test("linux_arm64.*\\.tar\\.gz$")) | .browser_download_url' | head -n 1)
+          test -n "$ASSET_URL"
+          rm -rf mediamtx-runtime
+          mkdir mediamtx-runtime
+          curl -fsSL "$ASSET_URL" -o mediamtx-runtime/server.tgz
+          tar -xzf mediamtx-runtime/server.tgz -C mediamtx-runtime
+          BIN=$(find mediamtx-runtime -maxdepth 2 -type f \( -name mediamtx -o -name rtsp-simple-server \) | head -n 1)
+          test -n "$BIN"
+          chmod +x "$BIN"
+          "$BIN" --version || "$BIN" -version
+          "$BIN" >/tmp/mediamtx-smoke.log 2>&1 &
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || true' EXIT
+          READY=0
+          for _ in $(seq 1 50); do
+            if curl --max-time 2 --silent --show-error "rtsp://127.0.0.1:8554/" >/tmp/mediamtx-curl.txt 2>&1; then
+              READY=1
+              break
+            fi
+            if grep -Eiq "RTSP|method|path|not found|bad request" /tmp/mediamtx-curl.txt 2>/dev/null; then
+              READY=1
+              break
+            fi
+            sleep 0.2
+          done
+          test "$READY" = "1"
           echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Downloaded the Arm64 MediaMTX/rtsp-simple-server release, started it locally, and curled the RTSP endpoint on port 8554." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
@@ -292,6 +313,34 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            ASSET_URL=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${CANDIDATE_TAG}" | jq -r '.assets[] | select(.name | test("linux_arm64.*\\.tar\\.gz$")) | .browser_download_url' | head -n 1)
+            test -n "$ASSET_URL"
+            rm -rf mediamtx-next-runtime
+            mkdir mediamtx-next-runtime
+            curl -fsSL "$ASSET_URL" -o mediamtx-next-runtime/server.tgz
+            tar -xzf mediamtx-next-runtime/server.tgz -C mediamtx-next-runtime
+            BIN=$(find mediamtx-next-runtime -maxdepth 2 -type f \( -name mediamtx -o -name rtsp-simple-server \) | head -n 1)
+            test -n "$BIN"
+            chmod +x "$BIN"
+            "$BIN" --version || "$BIN" -version
+            "$BIN" >/tmp/mediamtx-next-smoke.log 2>&1 &
+            PID=$!
+            trap 'kill "$PID" 2>/dev/null || true' EXIT
+            READY=0
+            for _ in $(seq 1 50); do
+              if curl --max-time 2 --silent --show-error "rtsp://127.0.0.1:8554/" >/tmp/mediamtx-next-curl.txt 2>&1; then
+                READY=1
+                break
+              fi
+              if grep -Eiq "RTSP|method|path|not found|bad request" /tmp/mediamtx-next-curl.txt 2>/dev/null; then
+                READY=1
+                break
+              fi
+              sleep 0.2
+            done
+            test "$READY" = "1"
+          limited_cpu_description: "Downloaded the next Arm64 MediaMTX release asset, started the server locally, and curled the RTSP endpoint on port 8554."
       - name: Calculate test summary
         id: summary
         if: always()

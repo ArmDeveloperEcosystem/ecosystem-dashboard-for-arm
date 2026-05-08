@@ -129,6 +129,7 @@ jobs:
           npm pack "ignite-ui@${IGNITEUI_VERSION}" >/tmp/igniteui-pack.log
           PKG=$(tail -n 1 /tmp/igniteui-pack.log)
           tar -xzf "$PKG"
+          npm install --no-audit --no-fund jquery@3 jsdom@22 >/dev/null
           test -f "${IGNITEUI_WORKDIR}/package/package.json"
           echo "package_dir=${IGNITEUI_WORKDIR}/package" >> "$GITHUB_OUTPUT"
           echo "install_status=success" >> "$GITHUB_OUTPUT"
@@ -236,8 +237,11 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          node - <<'NODE' > /tmp/igniteui-functional.log
+          if NODE_PATH="${IGNITEUI_WORKDIR}/node_modules" node - <<'NODE' > /tmp/igniteui-functional.log 2>&1
           const fs = require('fs');
+          const vm = require('vm');
+          const { JSDOM } = require('jsdom');
+          const jquery = require('jquery');
           const base = process.env.IGNITEUI_WORKDIR + '/package';
           const checks = [
             'README.md',
@@ -246,15 +250,33 @@ jobs:
             'js/infragistics.core-lite.js',
             'js/infragistics.lob-lite.js'
           ];
-          if (checks.every((path) => fs.existsSync(`${base}/${path}`))) {
-            console.log('ignite-ui-assets-ok');
-          } else {
+          if (!checks.every((path) => fs.existsSync(`${base}/${path}`))) {
             process.exit(1);
           }
+          const dom = new JSDOM('<!doctype html><html><body><div id="grid"></div></body></html>', { url: 'http://localhost/' });
+          const $ = jquery(dom.window);
+          for (const file of ['js/infragistics.core-lite.js', 'js/infragistics.lob-lite.js']) {
+            const source = fs.readFileSync(`${base}/${file}`, 'utf8');
+            new vm.Script(source, { filename: file });
+            if (!source.includes('$.ig') && !source.includes('jQuery.ig') && !source.includes('igGrid')) {
+              process.exit(1);
+            }
+          }
+          $('#grid').data('arm64-smoke', true);
+          if ($('#grid').data('arm64-smoke') !== true) {
+            process.exit(1);
+          }
+          console.log('ignite-ui-runtime-ok');
           NODE
-          if grep -Fq 'ignite-ui-assets-ok' /tmp/igniteui-functional.log; then
+          then
+            NODE_SMOKE_STATUS=passed
+          else
+            NODE_SMOKE_STATUS=failed
+          fi
+          if [ "$NODE_SMOKE_STATUS" = "passed" ] && grep -Fq 'ignite-ui-runtime-ok' /tmp/igniteui-functional.log; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            cat /tmp/igniteui-functional.log || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -263,25 +285,80 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Regression applicability - package manager installed
+      - name: Test 6 - Regression Validation
         id: test6
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || env.IGNITEUI_VERSION }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=Ignite UI is installed in Tests 1-5 via npm, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
-          echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: $CURRENT"
-          echo "Next version targeted for install validation: not_applicable"
-          echo "Next version installed on Arm64: not_applicable"
-          echo "Regression install result: Regression validation not applicable because the tested package is installed via package manager"
-          echo "Details: Ignite UI is installed through npm, so this workflow stops at Tests 1-5 under the current regression policy."
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          npm view ignite-ui versions --json > /tmp/igniteui-versions.json
+          NEXT=$(CURRENT="$CURRENT" node <<'NODE'
+          const fs = require('fs');
+          const current = process.env.CURRENT;
+          const versions = JSON.parse(fs.readFileSync('/tmp/igniteui-versions.json', 'utf8'))
+            .filter((v) => /^\d+\.\d+\.\d+$/.test(v))
+            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+          process.stdout.write(versions.find((v) => v.localeCompare(current, undefined, { numeric: true }) > 0) || '');
+          NODE
+          )
+          if [ -z "$NEXT" ]; then
+            echo "latest_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable Ignite UI version is available from npm" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Ignite UI $CURRENT parsed its shipped browser bundles and ran a jsdom/jQuery preflight on Arm64; npm did not report a newer stable candidate for Test 6." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "latest_version=$NEXT" >> "$GITHUB_OUTPUT"
+          NEXT_DIR=$(mktemp -d)
+          cd "$NEXT_DIR"
+          npm init -y >/dev/null 2>&1
+          npm pack "ignite-ui@${NEXT}" >/tmp/igniteui-next-pack.log
+          tar -xzf "$(tail -n 1 /tmp/igniteui-next-pack.log)"
+          npm install --no-audit --no-fund jquery@3 jsdom@22 >/dev/null
+          INSTALLED=$(node -p "require('./package/package.json').version")
+          if node <<'NODE' > /tmp/igniteui-next-functional.log 2>&1
+          const fs = require('fs');
+          const vm = require('vm');
+          const { JSDOM } = require('jsdom');
+          const jquery = require('jquery');
+          const dom = new JSDOM('<!doctype html><html><body><div id="grid"></div></body></html>', { url: 'http://localhost/' });
+          const $ = jquery(dom.window);
+          for (const file of ['package/js/infragistics.core-lite.js', 'package/js/infragistics.lob-lite.js']) {
+            const source = fs.readFileSync(file, 'utf8');
+            new vm.Script(source, { filename: file });
+            if (!source.includes('$.ig') && !source.includes('jQuery.ig') && !source.includes('igGrid')) {
+              process.exit(1);
+            }
+          }
+          $('#grid').data('arm64-smoke', true);
+          if ($('#grid').data('arm64-smoke') !== true) process.exit(1);
+          console.log('ignite-ui-next-ok');
+          NODE
+          then
+            NODE_SMOKE_STATUS=passed
+          else
+            NODE_SMOKE_STATUS=failed
+          fi
+          if [ "$INSTALLED" = "$NEXT" ] && [ "$NODE_SMOKE_STATUS" = "passed" ] && grep -Fq 'ignite-ui-next-ok' /tmp/igniteui-next-functional.log; then
+            echo "next_installed_version=$INSTALLED" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed and passed the Arm64 bundle preflight" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Ignite UI $CURRENT parsed its shipped browser bundles and ran a jsdom/jQuery preflight on Arm64. Test 6 installed candidate $INSTALLED and repeated the same bounded preflight." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/igniteui-next-functional.log || true
+            echo "next_installed_version=${INSTALLED:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version Arm64 bundle preflight failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Ignite UI $CURRENT passed, but candidate $NEXT did not complete the same shipped-bundle parse and jsdom/jQuery preflight on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 

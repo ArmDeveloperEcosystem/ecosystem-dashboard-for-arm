@@ -111,18 +111,17 @@ jobs:
       - name: Install Grafanalib
         id: install
         run: |
-          echo "Installing Grafanalib..."
-          
-          # Install using pip
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "python3 python3-pip"
-          if pip3 install grafanalib --break-system-packages; then
-             echo "Grafanalib installed successfully"
-             echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-             echo "Grafanalib installation failed"
-             echo "install_status=failed" >> $GITHUB_OUTPUT
-             exit 1
-          fi
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "python3 python3-pip python3-venv"
+          VENV_DIR="$GITHUB_WORKSPACE/.venv-grafanalib"
+          python3 -m venv "$VENV_DIR"
+          "$VENV_DIR/bin/python" -m pip install --upgrade pip
+          "$VENV_DIR/bin/pip" install grafanalib
+
+          echo "venv_dir=$VENV_DIR" >> "$GITHUB_OUTPUT"
+          echo "python_path=$VENV_DIR/bin/python" >> "$GITHUB_OUTPUT"
+          echo "pip_path=$VENV_DIR/bin/pip" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       # ============================================================
       # CUSTOMIZE THIS: Get the package version
@@ -130,9 +129,9 @@ jobs:
       - name: Get Grafanalib version
         id: version
         run: |
-          # Get version from pip
-          VERSION=$(pip3 show grafanalib | grep Version | awk '{print $2}' || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          VERSION=$("${{ steps.install.outputs.python_path }}" -c "from importlib.metadata import version; print(version('grafanalib'))")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Grafanalib version: $VERSION"
 
       # ============================================================
@@ -150,7 +149,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if python3 -c "import grafanalib"; then
+          if "${{ steps.install.outputs.python_path }}" -c "import grafanalib"; then
             echo "✓ import grafanalib passed"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -168,7 +167,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if python3 -c "from grafanalib.core import Dashboard, Row, Graph"; then
+          if "${{ steps.install.outputs.python_path }}" -c "from grafanalib.core import Dashboard, Row, Graph"; then
             echo "✓ import core classes passed"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -202,7 +201,7 @@ jobs:
           print("Dashboard object created successfully")
           EOF
           
-          if python3 test_dashboard.py; then
+          if "${{ steps.install.outputs.python_path }}" test_dashboard.py; then
              echo "✓ Dashboard object creation passed"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -240,7 +239,7 @@ jobs:
           print(json_output)
           EOF
           
-          if python3 generate_json.py | grep -q "Python Generated Dashboard"; then
+          if "${{ steps.install.outputs.python_path }}" generate_json.py | grep -q "Python Generated Dashboard"; then
              echo "✓ JSON generation passed"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -255,28 +254,44 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 5 - Check pip show info
+      - name: Test 5 - Generate dashboard target JSON
         id: test5
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          # Functional Validation
           
-          if pip3 show grafanalib | grep -q "Summary"; then
-             echo "✓ pip show info passed"
+          cat > generate_target_json.py << EOF
+          from grafanalib.core import Dashboard, Graph, Row, Target
+          from grafanalib._gen import DashboardEncoder
+          import json
+
+          dashboard = Dashboard(
+              title="Arm Smoke Dashboard",
+              rows=[
+                  Row(panels=[
+                      Graph(
+                          title="Latency",
+                          targets=[Target(expr="up")]
+                      )
+                  ])
+              ]
+          )
+          rendered = json.loads(json.dumps(dashboard.to_json_data(), cls=DashboardEncoder))
+          assert rendered["title"] == "Arm Smoke Dashboard"
+          assert rendered["rows"][0]["panels"][0]["targets"][0]["expr"] == "up"
+          print("target-json-ok")
+          EOF
+
+          if "${{ steps.install.outputs.python_path }}" generate_target_json.py | grep -q "target-json-ok"; then
+             echo "✓ dashboard target JSON generation passed"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ pip show info failed"
+             echo "✗ dashboard target JSON generation failed"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
-            fi
-          
-          # Architecture Verification
-          ARCH=$(uname -m)
-          if [ "$ARCH" != "aarch64" ]; then
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
           fi
+
+          rm -f generate_target_json.py
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
@@ -339,7 +354,7 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
-          # Check pip show info
+          # Generate dashboard target JSON
           if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
@@ -376,5 +391,4 @@ jobs:
           echo "2. Test 2 - Check core classes import: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "3. Test 3 - Create simple dashboard object: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Test 4 - Generate JSON from dashboard: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Check pip show info: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "5. Test 5 - Generate dashboard target JSON: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY

@@ -117,8 +117,7 @@ jobs:
           echo "Installing freeglut..."
           
           # Install using apt-get
-          sudo apt-get update
-          if sudo apt-get install -y freeglut3-dev gcc; then
+          if bash .github/actions/apt-bootstrap/bootstrap.sh --packages "freeglut3-dev gcc xvfb mesa-common-dev libgl1-mesa-dev"; then
              echo "freeglut installed successfully"
              echo "install_status=success" >> $GITHUB_OUTPUT
           else
@@ -191,13 +190,23 @@ jobs:
           START_TIME=$(date +%s)
           
           # Create a simple C program using freeglut
-          cat > test_glut.c << EOF
+          cat > test_glut.c << 'EOF'
           #include <GL/freeglut.h>
+          #include <GL/gl.h>
           #include <stdio.h>
           
           int main(int argc, char** argv) {
               glutInit(&argc, argv);
-              printf("GLUT initialized\n");
+              glutInitDisplayMode(GLUT_RGBA | GLUT_DOUBLE);
+              glutInitWindowSize(64, 64);
+              int window = glutCreateWindow("freeglut smoke");
+              const GLubyte* gl_version = glGetString(GL_VERSION);
+              int glut_version = glutGet(GLUT_VERSION);
+              if (window <= 0 || gl_version == NULL || glut_version <= 0) {
+                  return 1;
+              }
+              printf("freeglut-window-ok:%d:%s\n", glut_version, gl_version);
+              glutDestroyWindow(window);
               return 0;
           }
           EOF
@@ -232,50 +241,52 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          # Run the program
-          # glutInit might fail without display, but we check if it runs at all
-          if ./test_glut 2>&1 | grep -q "GLUT initialized"; then
-             echo "✓ Execution passed"
+          if xvfb-run -a ./test_glut | grep -q '^freeglut-window-ok:'; then
+             echo "✓ freeglut created a headless GL window successfully"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ Execution failed or no output"
-             # It might fail due to "freeglut (./test_glut): failed to open display ''"
-             # We accept that failure as "running"
-             if ./test_glut 2>&1 | grep -q "failed to open display"; then
-                echo "✓ Execution attempted (display error expected)"
-                echo "status=passed" >> $GITHUB_OUTPUT
-            else
-                # If it printed "GLUT initialized", it passed. If not, check output.
-                ./test_glut || true
-                echo "status=passed" >> $GITHUB_OUTPUT
-            fi
+             echo "✗ freeglut headless runtime check failed"
+             xvfb-run -a ./test_glut || true
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
           fi
-          
-          # Cleanup
-          rm test_glut.c test_glut
-          
+
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 5 - Check pkg-config
+      - name: Test 5 - Verify pkg-config runtime link
         id: test5
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
           # Functional Validation
-          
-          if pkg-config --exists glut; then
-             echo "✓ pkg-config found glut"
-             pkg-config --modversion glut
-             echo "status=passed" >> $GITHUB_OUTPUT
-          elif pkg-config --exists freeglut; then
-             echo "✓ pkg-config found freeglut"
-             pkg-config --modversion freeglut
+
+          GLUT_PC="glut"
+          if ! pkg-config --exists "$GLUT_PC"; then
+             GLUT_PC="freeglut"
+          fi
+
+          cat > test_glut_pkg.c <<'EOF'
+          #include <GL/freeglut.h>
+          #include <stdio.h>
+
+          int main(int argc, char** argv) {
+              glutInit(&argc, argv);
+              glutInitWindowSize(32, 32);
+              int window = glutCreateWindow("freeglut pkg-config smoke");
+              printf("freeglut-pkg-ok:%d\n", window > 0);
+              glutDestroyWindow(window);
+              return window > 0 ? 0 : 1;
+          }
+          EOF
+
+          if pkg-config --exists "$GLUT_PC" && gcc test_glut_pkg.c $(pkg-config --cflags --libs "$GLUT_PC") -o test_glut_pkg && xvfb-run -a ./test_glut_pkg | grep -q '^freeglut-pkg-ok:1$'; then
+             echo "✓ freeglut pkg-config compile and runtime check passed"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ pkg-config did not find glut or freeglut"
-             # Don't fail if pkg-config is not set up for it, but it usually is
-             echo "status=passed" >> $GITHUB_OUTPUT
+             echo "✗ freeglut pkg-config compile or runtime check failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
           fi
           
           # Architecture Verification
@@ -384,4 +395,3 @@ jobs:
           echo "3. Test 3 - Compile simple program: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Test 4 - Run compiled program (headless check): ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Check pkg-config: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-

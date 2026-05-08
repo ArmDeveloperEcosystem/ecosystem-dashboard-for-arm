@@ -126,6 +126,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Python for runtime smoke
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
       - name: Set test metadata
         id: metadata
         run: |
@@ -136,7 +141,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates python3-venv"
           extra_packages: "${{ env.EXTRA_APT_PACKAGES }}"
           quiet: "true"
 
@@ -281,8 +286,23 @@ jobs:
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
           fi
-          eval "$TEST5_COMMAND"
+          python - <<'PY'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, ".")
+          from migen import Module, Signal
+          from migen.fhdl import verilog
+
+          counter = Signal(8)
+          led = Signal()
+          module = Module()
+          module.comb += led.eq(counter[0])
+          generated = verilog.convert(module, ios={counter, led}).main_source
+          Path("migen_smoke.v").write_text(generated, encoding="utf-8")
+          assert "module" in generated and "assign" in generated
+          PY
           echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Imported Migen from the baseline source and generated a tiny Verilog module on Arm64." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
@@ -292,6 +312,25 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            test -d next-src/migen
+            test -f next-src/setup.py
+            python3 - <<'PY'
+            import sys
+            from pathlib import Path
+            sys.path.insert(0, "next-src")
+            from migen import Module, Signal
+            from migen.fhdl import verilog
+
+            counter = Signal(8)
+            led = Signal()
+            module = Module()
+            module.comb += led.eq(counter[0])
+            generated = verilog.convert(module, ios={counter, led}).main_source
+            Path("migen_next_smoke.v").write_text(generated, encoding="utf-8")
+            assert "module" in generated and "assign" in generated
+            PY
+          limited_cpu_description: "Imported the next Migen source candidate on Arm64 and generated a tiny Verilog module."
       - name: Calculate test summary
         id: summary
         if: always()

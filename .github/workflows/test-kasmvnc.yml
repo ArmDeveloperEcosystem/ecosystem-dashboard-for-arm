@@ -92,8 +92,46 @@ jobs:
         test -f README.md && test -f BUILDING.md && test -f CMakeLists.txt && test -d kasmvnc-functional-tests && test "$RESOLVED_TAG" = "v0.9.3-beta"
       TEST3_COMMAND: >-
         test -d tests && test -d kasmvnc-functional-tests && grep -Fq 'KasmVNC' README.md
-      TEST5_COMMAND: >-
-        sh -n alpine/kasmvncserver/kasmvncserver.post-install && sh -n alpine/kasmvncserver/kasmvncserver.post-deinstall
+      TEST5_COMMAND: |
+        TAG="$RESOLVED_TAG"
+        [ -n "$TAG" ] && [ "$TAG" != "default_branch" ]
+        mkdir -p artifacts kasmvnc-root
+        ASSET_URL="$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$TAG" | jq -r '[.assets[] | select(.name | test("kasmvncserver_(noble|jammy|bookworm|bullseye|focal)_.*_arm64\\.deb$"; "i"))] | sort_by(if (.name | test("_noble_"; "i")) then 0 elif (.name | test("_jammy_"; "i")) then 1 elif (.name | test("_bookworm_"; "i")) then 2 elif (.name | test("_bullseye_"; "i")) then 3 else 4 end) | .[0].browser_download_url // empty')"
+        [ -n "$ASSET_URL" ]
+        curl -fL --retry 3 -o artifacts/kasmvnc.deb "$ASSET_URL"
+        dpkg-deb -f artifacts/kasmvnc.deb Package Version Architecture | tee /tmp/kasmvnc-control.txt
+        grep -Fx arm64 /tmp/kasmvnc-control.txt >/dev/null
+        dpkg-deb -x artifacts/kasmvnc.deb kasmvnc-root
+        XKASM_EXTRACTED="$(find kasmvnc-root -type f \( -name Xkasmvnc -o -name Xvnc \) -print -quit)"
+        [ -n "$XKASM_EXTRACTED" ]
+        file "$XKASM_EXTRACTED" | tee /tmp/kasmvnc-xserver.file
+        grep -Eiq 'ARM aarch64|aarch64' /tmp/kasmvnc-xserver.file
+        sudo DEBIAN_FRONTEND=noninteractive dpkg -i artifacts/kasmvnc.deb || sudo DEBIAN_FRONTEND=noninteractive apt-get -f install -y
+        XKASM="$(command -v Xkasmvnc || command -v Xvnc)"
+        KASMVNCSERVER="$(command -v kasmvncserver)"
+        [ -x "$XKASM" ]
+        [ -x "$KASMVNCSERVER" ]
+        "$XKASM" -version >/tmp/kasmvnc-version.log 2>&1 || true
+        grep -Eiq 'KasmVNC|Xkasmvnc|Xvnc|version' /tmp/kasmvnc-version.log
+        ("$KASMVNCSERVER" -help || "$KASMVNCSERVER" --help || true) >/tmp/kasmvncserver-help.log 2>&1
+        grep -Eiq 'KasmVNC|kasmvncserver|usage|options' /tmp/kasmvncserver-help.log
+        DISPLAY_NUM=29
+        "$XKASM" ":$DISPLAY_NUM" -geometry 800x600 -depth 24 -SecurityTypes None -rfbport 5929 -localhost >/tmp/kasmvnc-xserver.log 2>&1 &
+        XKASM_PID=$!
+        trap 'kill "$XKASM_PID" 2>/dev/null || true' EXIT
+        READY=0
+        for _ in $(seq 1 20); do
+          if xdpyinfo -display ":$DISPLAY_NUM" >/tmp/kasmvnc-xdpyinfo.log 2>&1; then
+            READY=1
+            break
+          fi
+          sleep 1
+        done
+        test "$READY" = "1"
+        grep -Eiq 'dimensions|screen|vendor' /tmp/kasmvnc-xdpyinfo.log
+        kill "$XKASM_PID" 2>/dev/null || true
+        wait "$XKASM_PID" 2>/dev/null || true
+        echo "note=Arm preflight smoke passed for KasmVNC: downloaded $ASSET_URL, verified Debian package architecture arm64, verified extracted X server as AArch64, ran X server version and kasmvncserver help, started a bounded local headless X/VNC server, queried the display with xdpyinfo, and stopped it. No full VNC client session or desktop workload is claimed." >> "$GITHUB_OUTPUT"
 
     outputs:
       contract_version: "2.0"
@@ -128,14 +166,16 @@ jobs:
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          echo "package_slug=kasmvnc" >> "$GITHUB_OUTPUT"
-          echo "dashboard_link=/linux/opensource_packages/kasmvnc" >> "$GITHUB_OUTPUT"
+          {
+            echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "package_slug=kasmvnc"
+            echo "dashboard_link=/linux/opensource_packages/kasmvnc"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates x11-utils"
           extra_packages: "${{ env.EXTRA_APT_PACKAGES }}"
           quiet: "true"
 
@@ -147,6 +187,7 @@ jobs:
           mkdir -p baseline-src baseline-external
           if [ -n "$GITHUB_REPO" ]; then
             RESOLVED_TAG=""
+            RESOLVED_OUTPUT=""
             CANDIDATE_TAGS="$BASELINE_VERSION|v$BASELINE_VERSION"
             if [ -n "${EXTRA_TAG_CANDIDATES:-}" ]; then
               CANDIDATE_TAGS="${CANDIDATE_TAGS}|${EXTRA_TAG_CANDIDATES}"
@@ -163,14 +204,17 @@ jobs:
             IFS="$OLD_IFS"
             if [ -n "$RESOLVED_TAG" ]; then
               git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
+              RESOLVED_OUTPUT="$RESOLVED_TAG"
             else
               git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
+              RESOLVED_OUTPUT="default_branch"
             fi
             if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
+              {
+                echo "resolved_tag=$RESOLVED_OUTPUT"
+                echo "install_mode=github_source"
+                echo "install_status=success"
+              } >> "$GITHUB_OUTPUT"
               exit 0
             fi
           fi
@@ -180,13 +224,17 @@ jobs:
               echo "homepage=$HOMEPAGE_URL"
               echo "docs=$OFFICIAL_DOCS"
             } > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
+            {
+              echo "resolved_tag=external_artifact"
+              echo "install_mode=external_artifact"
+              echo "install_status=success"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
+          {
+            echo "install_mode=unresolved"
+            echo "install_status=failed"
+          } >> "$GITHUB_OUTPUT"
           exit 1
       - name: Get baseline version
         id: version
@@ -211,6 +259,7 @@ jobs:
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
           fi
+          export DOC_PATH RESOLVED_TAG
           eval "$TEST1_COMMAND"
           if [ "$MODE" = "github_source" ] && [ "$RESOLVED_TAG" = "default_branch" ]; then
             echo "note=Upstream source smoke used the default branch because no exact source tag matched the published baseline version." >> "$GITHUB_OUTPUT"
@@ -241,6 +290,7 @@ jobs:
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
           fi
+          export DOC_PATH
           eval "$TEST3_COMMAND"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
@@ -267,11 +317,15 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
+          RESOLVED_TAG="${{ steps.install.outputs.resolved_tag || '' }}"
           DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+          trap 'echo "status=failed" >> "$GITHUB_OUTPUT"; END_TIME=$(date +%s); echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"' ERR
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
           fi
+          export DOC_PATH RESOLVED_TAG
           eval "$TEST5_COMMAND"
+          trap - ERR
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -282,6 +336,30 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            test "$(uname -m)" = "aarch64"
+            ASSET_URL="$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$CANDIDATE_TAG" | jq -r '[.assets[] | select(.name | test("kasmvncserver_(noble|jammy|bookworm|bullseye|focal)_.*_arm64\\.deb$"; "i"))] | sort_by(if (.name | test("_noble_"; "i")) then 0 elif (.name | test("_jammy_"; "i")) then 1 elif (.name | test("_bookworm_"; "i")) then 2 elif (.name | test("_bullseye_"; "i")) then 3 else 4 end) | .[0].browser_download_url // empty')"
+            [ -n "$ASSET_URL" ]
+            curl -fL --retry 3 -o "$RUNNER_TEMP/kasmvnc-next.deb" "$ASSET_URL"
+            dpkg-deb -f "$RUNNER_TEMP/kasmvnc-next.deb" Package Version Architecture | tee /tmp/kasmvnc-next-control.txt
+            test "$(dpkg-deb -f "$RUNNER_TEMP/kasmvnc-next.deb" Architecture)" = "arm64"
+            rm -rf "$RUNNER_TEMP/kasmvnc-next-root"
+            mkdir -p "$RUNNER_TEMP/kasmvnc-next-root"
+            dpkg-deb -x "$RUNNER_TEMP/kasmvnc-next.deb" "$RUNNER_TEMP/kasmvnc-next-root"
+            XKASM_EXTRACTED="$(find "$RUNNER_TEMP/kasmvnc-next-root" -type f \( -name Xkasmvnc -o -name Xvnc \) -print -quit)"
+            [ -n "$XKASM_EXTRACTED" ]
+            file "$XKASM_EXTRACTED" | tee /tmp/kasmvnc-next-xserver.file
+            grep -Eiq 'ARM aarch64|aarch64' /tmp/kasmvnc-next-xserver.file
+            sudo DEBIAN_FRONTEND=noninteractive dpkg -i "$RUNNER_TEMP/kasmvnc-next.deb" || sudo DEBIAN_FRONTEND=noninteractive apt-get -f install -y
+            XKASM="$(command -v Xkasmvnc || command -v Xvnc)"
+            KASMVNCSERVER="$(command -v kasmvncserver)"
+            [ -x "$XKASM" ]
+            [ -x "$KASMVNCSERVER" ]
+            "$XKASM" -version >/tmp/kasmvnc-next-version.log 2>&1 || true
+            grep -Eiq 'KasmVNC|Xkasmvnc|Xvnc|version' /tmp/kasmvnc-next-version.log
+            ("$KASMVNCSERVER" -help || "$KASMVNCSERVER" --help || true) >/tmp/kasmvnc-next-help.log 2>&1
+            grep -Eiq 'KasmVNC|kasmvncserver|usage|options' /tmp/kasmvnc-next-help.log
+          limited_cpu_description: "Test 6 installed the next KasmVNC Arm64 Debian package candidate, verified package architecture and the extracted AArch64 X server, then ran X server version plus kasmvncserver help. No full VNC client session, desktop workload, or WAN remoting claim is made."
           next_version_override: "1.4.0"
           candidate_tag_override: "v1.4.0"
       - name: Calculate test summary
@@ -326,10 +404,12 @@ jobs:
             OVERALL_STATUS="failure"
             BADGE_STATUS="failing"
           fi
-          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
-          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
-          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
-          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
-          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
-          echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
-          echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          {
+            echo "passed=$PASSED"
+            echo "failed=$FAILED"
+            echo "skipped=$SKIPPED"
+            echo "duration=$DURATION"
+            echo "core_failed=$CORE_FAILED"
+            echo "overall_status=$OVERALL_STATUS"
+            echo "badge_status=$BADGE_STATUS"
+          } >> "$GITHUB_OUTPUT"

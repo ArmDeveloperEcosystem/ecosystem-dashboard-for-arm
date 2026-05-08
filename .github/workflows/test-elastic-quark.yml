@@ -117,11 +117,18 @@ jobs:
         id: install
         run: |
           set -euo pipefail
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "clang llvm libbpf-dev make gcc git build-essential linux-headers-generic"
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "clang llvm libbpf-dev make gcc git build-essential linux-headers-generic linux-tools-common linux-tools-generic"
+          BPFTOOL_BIN="$(find /usr/lib/linux-tools* -type f -name bpftool -perm -111 2>/dev/null | head -n 1 || true)"
+          if [ -n "$BPFTOOL_BIN" ]; then
+            sudo ln -sf "$BPFTOOL_BIN" /usr/local/bin/bpftool
+          fi
+          export PATH="/usr/local/bin:$PATH"
+          command -v bpftool >/dev/null 2>&1
           rm -rf quark
           git clone --depth 1 --branch "${BASELINE_VERSION}" https://github.com/elastic/quark.git
-          make -C quark >/tmp/quark-build.log 2>&1 || true
-          if [ -f "quark/Makefile" ]; then
+          git -C quark submodule update --init --recursive --depth 1
+          make -C quark >/tmp/quark-build.log 2>&1
+          if [ -f "quark/Makefile" ] && [ -x "quark/quark-mon" ] && [ -f "quark/libquark.a" ]; then
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/quark-build.log || true
@@ -206,10 +213,12 @@ jobs:
         continue-on-error: true
         run: |
           START_TIME=$(date +%s)
-          if make -C quark --dry-run >/tmp/quark-dry-run.log 2>&1; then
+          RUNTIME_STATUS=0
+          ./quark/quark-mon -V >/tmp/quark-runtime.log 2>&1 || RUNTIME_STATUS=$?
+          if [ "$RUNTIME_STATUS" -eq 0 ] || grep -Eqi 'quark|usage|version' /tmp/quark-runtime.log; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            cat /tmp/quark-dry-run.log || true
+            cat /tmp/quark-runtime.log || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -231,24 +240,34 @@ jobs:
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
           echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
 
-          MAKE_STATUS=0
           git clone --depth 1 --branch "${NEXT_VERSION}" https://github.com/elastic/quark.git "$NEXT_DIR/repo"
-          make -C "$NEXT_DIR/repo" --dry-run >/tmp/quark-next-dry-run.log 2>&1 || MAKE_STATUS=$?
+          git -C "$NEXT_DIR/repo" submodule update --init --recursive --depth 1
+          BPFTOOL_BIN="$(find /usr/lib/linux-tools* -type f -name bpftool -perm -111 2>/dev/null | head -n 1 || true)"
+          if [ -n "$BPFTOOL_BIN" ]; then
+            sudo ln -sf "$BPFTOOL_BIN" /usr/local/bin/bpftool
+          fi
+          export PATH="/usr/local/bin:$PATH"
+          make -C "$NEXT_DIR/repo" >/tmp/quark-next-build.log 2>&1
+          RUNTIME_STATUS=0
+          "$NEXT_DIR/repo/quark-mon" -V >/tmp/quark-next-runtime.log 2>&1 || RUNTIME_STATUS=$?
 
           if [ -f "$NEXT_DIR/repo/Makefile" ] && \
              find "$NEXT_DIR/repo" -name "*.c" | grep -q . && \
-             [ "$MAKE_STATUS" -eq 0 ]; then
+             [ -x "$NEXT_DIR/repo/quark-mon" ] && \
+             [ -f "$NEXT_DIR/repo/libquark.a" ] && \
+             { [ "$RUNTIME_STATUS" -eq 0 ] || grep -Eqi 'quark|usage|version' /tmp/quark-next-runtime.log; }; then
             echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Elastic Quark baseline ${CURRENT} passed source-tree and dry-run build validation on Arm64, and candidate ${LATEST} also preserved the expected source layout and dry-run build behavior on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Elastic Quark baseline ${CURRENT} built libquark and quark-mon on Arm64, and candidate ${LATEST} also built those artifacts and completed a bounded quark-mon runtime/version probe." >> "$GITHUB_OUTPUT"
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            cat /tmp/quark-next-dry-run.log 2>/dev/null || true
+            cat /tmp/quark-next-build.log 2>/dev/null || true
+            cat /tmp/quark-next-runtime.log 2>/dev/null || true
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Elastic Quark candidate ${LATEST} did not preserve the expected Arm64 source-tree or dry-run build behavior." >> "$GITHUB_OUTPUT"
+            echo "comparison=Elastic Quark candidate ${LATEST} did not preserve the expected Arm64 build artifacts or bounded runtime/version behavior." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"

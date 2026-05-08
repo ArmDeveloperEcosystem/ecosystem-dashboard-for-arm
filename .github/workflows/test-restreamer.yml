@@ -81,6 +81,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       BASELINE_VERSION: "0.1.0"
+      RESTREAMER_RUNTIME_VERSION: "2.12.0"
       PACKAGE_SLUG: "restreamer"
       LANE_KIND: "docker/image-or-cluster"
       DOWNLOAD_URL: "https://hub.docker.com/r/datarhei/restreamer/tags"
@@ -172,8 +173,9 @@ jobs:
       - name: Get baseline version
         id: version
         run: |
-          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected baseline version: $BASELINE_VERSION"
+          echo "version=$RESTREAMER_RUNTIME_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected Restreamer Arm64 runtime version: $RESTREAMER_RUNTIME_VERSION"
+          echo "Checked-in historical metadata version remains: $BASELINE_VERSION"
 
       - name: Define package-specific expectations
         id: expectations
@@ -582,6 +584,42 @@ jobs:
           IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
           IDENTITY_EXPECT="${{ steps.expectations.outputs.identity_expect }}"
           EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
+          if [ "$PACKAGE_SLUG" = "restreamer" ]; then
+            IMAGE="datarhei/restreamer:${RESTREAMER_RUNTIME_VERSION}"
+            if docker manifest inspect "$IMAGE" >/tmp/restreamer-manifest.json 2>&1; then
+              grep -q '"architecture": "arm64"' /tmp/restreamer-manifest.json
+            else
+              cat /tmp/restreamer-manifest.json || true
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=Could not inspect the Restreamer Docker manifest for $IMAGE." >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+
+            docker pull "$IMAGE"
+            docker rm -f restreamer-smoke >/dev/null 2>&1 || true
+            docker run -d --name restreamer-smoke -p 18080:8080 "$IMAGE" >/tmp/restreamer-container.id
+            trap 'docker logs restreamer-smoke >/tmp/restreamer-container.log 2>&1 || true; docker rm -f restreamer-smoke >/dev/null 2>&1 || true' EXIT
+
+            for _ in {1..45}; do
+              if curl -fsS http://127.0.0.1:18080/ >/tmp/restreamer-http.out 2>&1; then
+                break
+              fi
+              sleep 2
+            done
+
+            if [ -s /tmp/restreamer-http.out ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "note=Pulled and started Arm64 Restreamer image ${IMAGE}, then reached the HTTP service on the Arm64 runner. The checked-in 0.1.0 metadata is retained, but that historical tag does not expose an Arm64 image manifest." >> "$GITHUB_OUTPUT"
+            else
+              docker logs restreamer-smoke || true
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=Restreamer Arm64 container did not expose an HTTP response during the bounded smoke window." >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
             case "$IDENTITY_KIND" in
@@ -635,11 +673,73 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
-        uses: ./.github/actions/generic-source-regression-check
-        with:
-          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
-          github_repo: ${{ env.GITHUB_REPO }}
-          lane_kind: ${{ env.LANE_KIND }}
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${RESTREAMER_RUNTIME_VERSION}"
+          NEXT="$(python3 - <<'PY'
+          import json
+          import re
+          import urllib.request
+
+          current = tuple(int(part) for part in "2.12.0".split("."))
+          data = json.load(urllib.request.urlopen("https://hub.docker.com/v2/repositories/datarhei/restreamer/tags?page_size=100", timeout=20))
+          candidates = []
+          for result in data.get("results", []):
+              name = result.get("name") or ""
+              if not re.fullmatch(r"\d+\.\d+\.\d+", name):
+                  continue
+              arches = {image.get("architecture") for image in result.get("images", [])}
+              if "arm64" not in arches:
+                  continue
+              version = tuple(int(part) for part in name.split("."))
+              if version > current:
+                  candidates.append((version, name))
+          print(sorted(candidates)[0][1] if candidates else "")
+          PY
+          )"
+          if [ -z "$NEXT" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "latest_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=n/a" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable Arm64 Restreamer image is available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Tests 1-5 run the current Arm64 Restreamer image ${CURRENT}. Docker Hub exposes no newer stable semver Arm64 image beyond ${CURRENT}; dev/nightly tags are intentionally excluded from Test 6." >> "$GITHUB_OUTPUT"
+          else
+            IMAGE="datarhei/restreamer:${NEXT}"
+            docker pull "$IMAGE"
+            docker rm -f restreamer-next-smoke >/dev/null 2>&1 || true
+            docker run -d --name restreamer-next-smoke -p 18081:8080 "$IMAGE" >/tmp/restreamer-next-container.id
+            trap 'docker logs restreamer-next-smoke >/tmp/restreamer-next-container.log 2>&1 || true; docker rm -f restreamer-next-smoke >/dev/null 2>&1 || true' EXIT
+            for _ in {1..45}; do
+              if curl -fsS http://127.0.0.1:18081/ >/tmp/restreamer-next-http.out 2>&1; then
+                break
+              fi
+              sleep 2
+            done
+            if [ -s /tmp/restreamer-next-http.out ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+              echo "latest_version=$NEXT" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=$NEXT" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next Restreamer Arm64 image started successfully" >> "$GITHUB_OUTPUT"
+              echo "comparison=Baseline Arm64 image ${CURRENT} passed Tests 1-5, and next Arm64 image ${NEXT} started and served HTTP on the Arm64 runner." >> "$GITHUB_OUTPUT"
+            else
+              docker logs restreamer-next-smoke || true
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+              echo "latest_version=$NEXT" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next Restreamer Arm64 image failed runtime smoke" >> "$GITHUB_OUTPUT"
+              echo "comparison=Next Restreamer image ${NEXT} did not serve HTTP during the bounded Arm64 smoke window." >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         id: summary

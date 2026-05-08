@@ -318,22 +318,28 @@ jobs:
                 echo "status=failed" >> "$GITHUB_OUTPUT"
                 exit 1
               fi
-              FOUND=0
-              IFS='|' read -r -a TARGETS <<< "$PYTHON_TARGETS"
-              for TARGET in "${TARGETS[@]}"; do
-                [ -z "$TARGET" ] && continue
-                if [ -d "baseline-src/$TARGET" ] || [ -f "baseline-src/$TARGET" ]; then
-                  python3 -m compileall -q "baseline-src/$TARGET"
-                  FOUND=1
-                  break
-                fi
-              done
-              if [ "$FOUND" -ne 1 ]; then
+              if [ ! -f baseline-src/deepspeed/runtime/config.py ] || [ ! -f baseline-src/op_builder/builder.py ]; then
                 echo "status=failed" >> "$GITHUB_OUTPUT"
                 exit 1
               fi
+              python3 -m py_compile baseline-src/deepspeed/runtime/config.py baseline-src/op_builder/builder.py
+              python3 - <<'PY'
+          import ast
+          from pathlib import Path
+
+          root = Path("baseline-src")
+          config_tree = ast.parse((root / "deepspeed" / "runtime" / "config.py").read_text())
+          config_names = {node.name for node in ast.walk(config_tree) if isinstance(node, ast.ClassDef)}
+          if "DeepSpeedConfig" not in config_names:
+              raise SystemExit("DeepSpeedConfig class was not found in runtime config surface")
+
+          builder_tree = ast.parse((root / "op_builder" / "builder.py").read_text())
+          builder_names = {node.name for node in ast.walk(builder_tree) if isinstance(node, ast.ClassDef)}
+          if not {"OpBuilder", "CUDAOpBuilder"} & builder_names:
+              raise SystemExit("DeepSpeed op builder class surface was not found")
+          PY
               echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package-specific Python sources with compileall without requiring optional accelerator runtimes." >> "$GITHUB_OUTPUT"
+              echo "note=Validated DeepSpeed runtime config and op-builder Python surfaces on Arm64 without claiming GPU training or accelerator kernels." >> "$GITHUB_OUTPUT"
               ;;
             source)
               if [ "$MODE" != "github_source" ]; then
@@ -386,6 +392,26 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            test -f next-src/deepspeed/runtime/config.py
+            test -f next-src/op_builder/builder.py
+            python3 -m py_compile next-src/deepspeed/runtime/config.py next-src/op_builder/builder.py
+            python3 - <<'PY'
+            import ast
+            from pathlib import Path
+
+            root = Path("next-src")
+            config_tree = ast.parse((root / "deepspeed" / "runtime" / "config.py").read_text())
+            config_names = {node.name for node in ast.walk(config_tree) if isinstance(node, ast.ClassDef)}
+            if "DeepSpeedConfig" not in config_names:
+                raise SystemExit("DeepSpeedConfig class was not found in next runtime config surface")
+
+            builder_tree = ast.parse((root / "op_builder" / "builder.py").read_text())
+            builder_names = {node.name for node in ast.walk(builder_tree) if isinstance(node, ast.ClassDef)}
+            if not {"OpBuilder", "CUDAOpBuilder"} & builder_names:
+                raise SystemExit("DeepSpeed op builder class surface was not found in next candidate")
+            PY
+          limited_cpu_description: "Test 6 limited_cpu_smoke_validated: cloned the next DeepSpeed source candidate on Arm64 and compiled/inspected its runtime config plus op-builder Python surfaces. This is CPU-side preflight evidence only; no GPU training or accelerator kernel execution is claimed."
       - name: Calculate test summary
         id: summary
         if: always()

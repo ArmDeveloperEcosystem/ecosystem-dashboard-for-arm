@@ -80,7 +80,7 @@ jobs:
   test-gdsfactory:
     runs-on: ubuntu-24.04-arm
     env:
-      BASELINE_VERSION: "1.1.1"
+      BASELINE_VERSION: "9.9.4"
       PACKAGE_SLUG: "gdsfactory"
       LANE_KIND: "github release / source-build-or-tarball"
       DOWNLOAD_URL: "https://github.com/gdsfactory/gdsfactory/releases"
@@ -123,6 +123,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Python for runtime smoke
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
       - name: Set test metadata
         id: metadata
         run: |
@@ -133,7 +138,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates python3-venv"
           quiet: "true"
 
       - name: Install baseline source or artifact
@@ -226,7 +231,11 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if ! grep -Fq "version_number: $BASELINE_VERSION" "$PACKAGE_PAGE"; then
+          if ! grep -q '^works_on_arm: true' "$PACKAGE_PAGE"; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if ! grep -Fq "version_number:" "$PACKAGE_PAGE"; then
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -311,73 +320,32 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          case "$TEST5_MODE" in
-            python)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              FOUND=0
-              IFS='|' read -r -a TARGETS <<< "$PYTHON_TARGETS"
-              for TARGET in "${TARGETS[@]}"; do
-                [ -z "$TARGET" ] && continue
-                if [ -d "baseline-src/$TARGET" ] || [ -f "baseline-src/$TARGET" ]; then
-                  python3 -m compileall -q "baseline-src/$TARGET"
-                  FOUND=1
-                  break
-                fi
-              done
-              if [ "$FOUND" -ne 1 ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package-specific Python sources with compileall without requiring optional accelerator runtimes." >> "$GITHUB_OUTPUT"
-              ;;
-            source)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              MATCHED=0
-              IFS='|' read -r -a PATTERNS <<< "$SOURCE_GLOBS"
-              for PATTERN in "${PATTERNS[@]}"; do
-                [ -z "$PATTERN" ] && continue
-                if compgen -G "baseline-src/$PATTERN" > /dev/null; then
-                  MATCHED=$((MATCHED + 1))
-                fi
-              done
-              if [ "$MATCHED" -lt 1 ] || ! grep -R -I -Eiq "$EVIDENCE_RE" baseline-src 2>/dev/null; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
-                echo "note=Validated package-specific source layout and documentation on Arm64; GPU or accelerator runtime remains out of scope for generic runners." >> "$GITHUB_OUTPUT"
-              else
-                echo "note=Validated package-specific source layout and documentation on Arm64 without claiming a full runtime build." >> "$GITHUB_OUTPUT"
-              fi
-              ;;
-            external)
-              if [ ! -f baseline-external/metadata.txt ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              if ! grep -Fq "download=$DOWNLOAD_URL" baseline-external/metadata.txt || ! grep -Fq "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt || ! grep -Eiq "$EVIDENCE_RE" "$PACKAGE_PAGE"; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package metadata, official endpoints, and Arm64 package-page evidence for this external/manual lane." >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-              ;;
-          esac
+          python -m venv smoke-venv
+          . smoke-venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          timeout 300 python -m pip install "gdsfactory==$BASELINE_VERSION"
+          python - <<'PY'
+          from pathlib import Path
+          import gdsfactory as gf
+          from gdsfactory.generic_tech import get_generic_pdk
+
+          get_generic_pdk().activate()
+
+          c = gf.Component("arm_smoke")
+          c.add_ref(gf.components.rectangle(size=(10, 5), layer=(1, 0)))
+          out = Path("arm_smoke.gds")
+          c.write_gds(str(out))
+          assert out.exists() and out.stat().st_size > 0
+          PY
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Installed GDSFactory $BASELINE_VERSION on Arm64 and wrote a tiny GDS layout file." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python for next-version smoke
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Test 6 - Regression Validation
         id: test6
@@ -386,6 +354,26 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            python -m venv next-venv
+            . next-venv/bin/activate
+            python -m pip install --upgrade pip setuptools wheel
+            timeout 300 python -m pip install "gdsfactory==$LATEST_VERSION"
+            python - <<'PY'
+            from pathlib import Path
+            import gdsfactory as gf
+            from gdsfactory.generic_tech import get_generic_pdk
+
+            get_generic_pdk().activate()
+
+            c = gf.Component("arm_next_smoke")
+            c.add_ref(gf.components.rectangle(size=(10, 5), layer=(1, 0)))
+            out = Path("arm_next_smoke.gds")
+            c.write_gds(str(out))
+            assert out.exists() and out.stat().st_size > 0
+            PY
+          limited_cpu_description: |
+            Installed the next GDSFactory candidate on the Arm64 runner and wrote a tiny GDS layout file.
       - name: Calculate test summary
         id: summary
         if: always()

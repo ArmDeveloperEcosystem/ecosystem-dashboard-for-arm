@@ -107,7 +107,7 @@ jobs:
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
-      regression_policy: "applicable"
+      regression_policy: "package_manager_installed"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
       job_name: ${{ github.job }}
@@ -128,52 +128,31 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates ucx-utils libucx0"
           quiet: "true"
 
       - name: Install baseline source or artifact
         id: install
         run: |
           set -euo pipefail
-          rm -rf baseline-src baseline-external
-          mkdir -p baseline-src baseline-external
-          if [ -n "$GITHUB_REPO" ]; then
-            RESOLVED_TAG=""
-            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
-              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
-                RESOLVED_TAG="$CANDIDATE"
-                break
-              fi
-            done
-            if [ -n "$RESOLVED_TAG" ]; then
-              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
-            else
-              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
-            fi
-            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
+          if command -v ucx_info >/dev/null && command -v ucx_perftest >/dev/null; then
+            echo "resolved_tag=package_manager" >> "$GITHUB_OUTPUT"
+            echo "install_mode=package_manager" >> "$GITHUB_OUTPUT"
             echo "install_status=success" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
+          echo "resolved_tag=package_manager_missing_tools" >> "$GITHUB_OUTPUT"
+          echo "install_mode=package_manager" >> "$GITHUB_OUTPUT"
           echo "install_status=failed" >> "$GITHUB_OUTPUT"
           exit 1
 
       - name: Get baseline version
         id: version
         run: |
-          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected baseline version: $BASELINE_VERSION"
+          set -euo pipefail
+          VERSION="$(dpkg-query -W -f='${Version}' ucx-utils)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected UCX package version: $VERSION"
 
       - name: Define package-specific expectations
         id: expectations
@@ -187,53 +166,12 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          SOURCE_MARKERS="${{ steps.expectations.outputs.source_markers }}"
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "note=Baseline source or external metadata could not be acquired." >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            FOUND=0
-            HITS=""
-            IFS='|' read -r -a MARKERS <<< "$SOURCE_MARKERS"
-            REQUIRED=${#MARKERS[@]}
-            if [ "$REQUIRED" -gt 2 ]; then
-              REQUIRED=2
-            fi
-            if [ "$REQUIRED" -lt 1 ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=No package-specific source markers were derived for the baseline." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            for marker in "${MARKERS[@]}"; do
-              if [ -n "$marker" ] && [ -e "$marker" ]; then
-                FOUND=$((FOUND + 1))
-                if [ -z "$HITS" ]; then
-                  HITS="$marker"
-                else
-                  HITS="$HITS, $marker"
-                fi
-              fi
-            done
-            if [ "$FOUND" -ge "$REQUIRED" ]; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Found package-specific baseline markers: $HITS" >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Expected at least $REQUIRED package-specific markers from: $SOURCE_MARKERS" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          elif [ -f baseline-external/metadata.txt ]; then
-            grep -Fx "download=$DOWNLOAD_URL" baseline-external/metadata.txt >/dev/null
-            grep -Fx "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt >/dev/null
+          if command -v ucx_info >/dev/null && command -v ucx_perftest >/dev/null; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=Validated external baseline metadata for the published source links." >> "$GITHUB_OUTPUT"
+            echo "note=Found ucx_info and ucx_perftest from the ucx-utils package." >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "note=External baseline metadata was not emitted." >> "$GITHUB_OUTPUT"
+            echo "note=ucx-utils did not provide expected UCX command-line tools." >> "$GITHUB_OUTPUT"
             exit 1
           fi
           END_TIME=$(date +%s)
@@ -263,56 +201,13 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          DOC_MARKERS="${{ steps.expectations.outputs.doc_markers }}"
-          ENTRYPOINT_MARKERS="${{ steps.expectations.outputs.entrypoint_markers }}"
-          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            FOUND=0
-            HITS=""
-            IFS='|' read -r -a MARKERS <<< "$DOC_MARKERS"
-            for marker in "${MARKERS[@]}"; do
-              if [ -n "$marker" ] && [ -e "$marker" ]; then
-                FOUND=$((FOUND + 1))
-                if [ -z "$HITS" ]; then
-                  HITS="$marker"
-                else
-                  HITS="$HITS, $marker"
-                fi
-              fi
-            done
-            if [ -n "$IDENTITY_TARGET" ]; then
-              [ -e "$IDENTITY_TARGET" ]
-            fi
-            ENTRY_OK=0
-            if [ -n "$ENTRYPOINT_MARKERS" ]; then
-              IFS='|' read -r -a ENTRYPOINTS <<< "$ENTRYPOINT_MARKERS"
-              for marker in "${ENTRYPOINTS[@]}"; do
-                if [ -n "$marker" ] && [ -e "$marker" ]; then
-                  ENTRY_OK=1
-                  break
-                fi
-              done
-            else
-              ENTRY_OK=1
-            fi
-            if [ "$FOUND" -ge 1 ] && [ "$ENTRY_OK" -eq 1 ]; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package-specific docs and entrypoint markers: $HITS" >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Expected package-specific docs and entrypoint markers from: $DOC_MARKERS / $ENTRYPOINT_MARKERS" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          elif [ -f baseline-external/metadata.txt ]; then
-            grep -Fx "docs=$OFFICIAL_DOCS" baseline-external/metadata.txt >/dev/null
-            grep -Fx "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt >/dev/null
+          if ucx_info -v >/tmp/ucx-info-version.txt 2>&1 && grep -Eiq 'UCX|version' /tmp/ucx-info-version.txt; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=Validated external documentation and homepage metadata for the baseline package." >> "$GITHUB_OUTPUT"
+            echo "note=ucx_info reports UCX version information successfully." >> "$GITHUB_OUTPUT"
           else
+            cat /tmp/ucx-info-version.txt || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "note=External documentation metadata was not emitted." >> "$GITHUB_OUTPUT"
+            echo "note=ucx_info -v did not produce expected version output." >> "$GITHUB_OUTPUT"
             exit 1
           fi
           END_TIME=$(date +%s)
@@ -327,12 +222,9 @@ jobs:
           CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
           [ "$(uname -m)" = "aarch64" ]
           grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
+          dpkg --print-architecture | grep -Fx arm64 >/dev/null
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          if echo "$LANE_KIND" | grep -Eiq 'gpu|specialized|manual-review'; then
-            echo "note=Validated Arm64 support metadata on a generic Arm runner; deeper runtime checks for this lane still require the package-specific environment: $LANE_KIND." >> "$GITHUB_OUTPUT"
-          else
-            echo "note=Validated Arm64 runner architecture and published Arm support metadata." >> "$GITHUB_OUTPUT"
-          fi
+          echo "note=Validated Arm64 runner architecture, dpkg arm64 architecture, and published Arm support metadata." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -342,68 +234,33 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          IDENTITY_KIND="${{ steps.expectations.outputs.identity_kind }}"
-          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
-          IDENTITY_EXPECT="${{ steps.expectations.outputs.identity_expect }}"
-          EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            case "$IDENTITY_KIND" in
-              go_module)
-                grep -Fx "module $IDENTITY_EXPECT" "$IDENTITY_TARGET" >/dev/null
-                RESULT="Verified go module identity in $IDENTITY_TARGET"
-                ;;
-              toml_name)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); name=(data.get('project') or {}).get('name') or ((data.get('tool') or {}).get('poetry') or {}).get('name'); assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified TOML package identity in $IDENTITY_TARGET"
-                ;;
-              package_json_name)
-                python3 -c "import json,sys; data=json.load(open(sys.argv[1], encoding='utf-8')); assert data.get('name') == sys.argv[2], (data.get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified package.json identity in $IDENTITY_TARGET"
-                ;;
-              cargo_package)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); assert (data.get('package') or {}).get('name') == sys.argv[2], ((data.get('package') or {}).get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified Cargo package identity in $IDENTITY_TARGET"
-                ;;
-              chart_name)
-                python3 -c "from pathlib import Path; import sys; lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(); matches=[line.split(':', 1)[1].strip() for line in lines if line.startswith('name:')]; name=matches[0] if matches else ''; assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified chart identity in $IDENTITY_TARGET"
-                ;;
-              grep_file)
-                grep -Eiq "$IDENTITY_EXPECT" "$IDENTITY_TARGET"
-                RESULT="Verified package-specific content in $IDENTITY_TARGET"
-                ;;
-              *)
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                echo "note=No bounded identity check was configured for this package." >> "$GITHUB_OUTPUT"
-                exit 1
-                ;;
-            esac
+          if ucx_perftest -h >/tmp/ucx-perftest-help.txt 2>&1 || [ -s /tmp/ucx-perftest-help.txt ]; then
+            grep -Eiq 'Usage|ucx_perftest|test' /tmp/ucx-perftest-help.txt
             echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=$RESULT" >> "$GITHUB_OUTPUT"
+            echo "note=ucx_perftest help path executed successfully without requiring network/RDMA hardware." >> "$GITHUB_OUTPUT"
           else
-            TEMP_PAGE=$(mktemp)
-            trap 'rm -f "$TEMP_PAGE"' EXIT
-            if curl -fsSL "$OFFICIAL_DOCS" -o "$TEMP_PAGE" || curl -fsSL "$HOMEPAGE_URL" -o "$TEMP_PAGE" || curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_PAGE"; then
-              grep -Eiq "$EXTERNAL_EXPECT" "$TEMP_PAGE"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Verified external package identity from published docs or homepage content using /$EXTERNAL_EXPECT/." >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Could not fetch published docs or homepage content for bounded external validation." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
+            cat /tmp/ucx-perftest-help.txt || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=ucx_perftest help smoke did not produce expected output." >> "$GITHUB_OUTPUT"
+            exit 1
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
         id: test6
-        uses: ./.github/actions/generic-source-regression-check
-        with:
-          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
-          github_repo: ${{ env.GITHUB_REPO }}
-          lane_kind: ${{ env.LANE_KIND }}
+        run: |
+          set -euo pipefail
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          {
+            echo "current_version=$CURRENT"
+            echo "latest_version=not_applicable"
+            echo "next_installed_version=not_applicable"
+            echo "decision=not_applicable_package_manager"
+            echo "regression_result=Regression validation not applicable: UCX is tested from Ubuntu package-manager artifacts in Tests 1-5"
+            echo "comparison=The workflow installs ucx-utils/libucx0 via apt and validates CPU-safe command paths. Version-to-version source regression is not shown under the current package-manager policy."
+            echo "status=skipped"
+            echo "duration=0"
+          } >> "$GITHUB_OUTPUT"
       - name: Calculate test summary
         id: summary
         if: always()

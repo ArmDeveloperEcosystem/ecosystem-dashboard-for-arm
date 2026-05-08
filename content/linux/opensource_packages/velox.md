@@ -18,10 +18,10 @@ optional_info:
         arm_content: https://developer.arm.com/community/arm-community-blogs/b/servers-and-cloud-computing-blog/posts/spark-sql-arm64-gluten-velox
         partner_content:
     arm_recommended_minimum_version:
-        version_number:
-        release_date:
+        version_number: 2026.03.13.00
+        release_date: 2026/03/13
         reference_content:
-        rationale:
+        rationale: Used for current Arm smoke validation because it is a stable tagged Velox source candidate that can be checked on current Ubuntu Arm runners.
  
 optional_hidden_info:
     release_notes__supported_minimum: https://facebookincubator.github.io/velox/monthly-updates/2024/july-2024.html

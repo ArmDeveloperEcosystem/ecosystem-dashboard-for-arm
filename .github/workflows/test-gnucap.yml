@@ -311,71 +311,22 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          case "$TEST5_MODE" in
-            python)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              FOUND=0
-              IFS='|' read -r -a TARGETS <<< "$PYTHON_TARGETS"
-              for TARGET in "${TARGETS[@]}"; do
-                [ -z "$TARGET" ] && continue
-                if [ -d "baseline-src/$TARGET" ] || [ -f "baseline-src/$TARGET" ]; then
-                  python3 -m compileall -q "baseline-src/$TARGET"
-                  FOUND=1
-                  break
-                fi
-              done
-              if [ "$FOUND" -ne 1 ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package-specific Python sources with compileall without requiring optional accelerator runtimes." >> "$GITHUB_OUTPUT"
-              ;;
-            source)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              MATCHED=0
-              IFS='|' read -r -a PATTERNS <<< "$SOURCE_GLOBS"
-              for PATTERN in "${PATTERNS[@]}"; do
-                [ -z "$PATTERN" ] && continue
-                if compgen -G "baseline-src/$PATTERN" > /dev/null; then
-                  MATCHED=$((MATCHED + 1))
-                fi
-              done
-              if [ "$MATCHED" -lt 1 ] || ! grep -R -I -Eiq "$EVIDENCE_RE" baseline-src 2>/dev/null; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
-                echo "note=Validated package-specific source layout and documentation on Arm64; GPU or accelerator runtime remains out of scope for generic runners." >> "$GITHUB_OUTPUT"
-              else
-                echo "note=Validated package-specific source layout and documentation on Arm64 without claiming a full runtime build." >> "$GITHUB_OUTPUT"
-              fi
-              ;;
-            external)
-              if [ ! -f baseline-external/metadata.txt ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              if ! grep -Fq "download=$DOWNLOAD_URL" baseline-external/metadata.txt || ! grep -Fq "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt || ! grep -Eiq "$EVIDENCE_RE" "$PACKAGE_PAGE"; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package metadata, official endpoints, and Arm64 package-page evidence for this external/manual lane." >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-              ;;
-          esac
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gnucap gnucap-default-plugins0
+          dpkg-query -W -f='${Package} ${Version}\n' gnucap gnucap-default-plugins0
+          cat > gnucap-divider.ckt <<'EOF'
+          * tiny DC divider smoke
+          v1 in 0 dc 5
+          r1 in out 1k
+          r2 out 0 1k
+          .print op v(out)
+          .op
+          .end
+          EOF
+          gnucap -b gnucap-divider.ckt > gnucap-divider.out
+          grep -E '(^|[[:space:]])2\.5([[:space:]]|$)' gnucap-divider.out
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Installed gnucap from Ubuntu packages and ran a tiny SPICE DC divider simulation with v(out)=2.5V." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -385,13 +336,15 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || env.BASELINE_VERSION }}"
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=metadata_review" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=metadata_review" >> "$GITHUB_OUTPUT"
-          echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Automatic next-version resolution needs manual review" >> "$GITHUB_OUTPUT"
-          echo "comparison=Tests 1-5 validated the current Gnucap package evidence on Arm64, but the pinned distro baseline ${CURRENT} does not map cleanly to the upstream Savannah tag stream, which is dominated by dev-style branches and cannot yet be compared automatically to a next stable public release." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          {
+            echo "current_version=$CURRENT"
+            echo "latest_version=package-manager managed"
+            echo "next_installed_version=n/a"
+            echo "decision=not_applicable_package_manager"
+            echo "regression_result=Package-manager lane; separate source-tag regression validation is not applicable"
+            echo "comparison=Tests 1-5 install and execute Gnucap from Ubuntu packages on Arm64, including a tiny SPICE DC simulation. Because this workflow validates the distro package-manager lane, the package manager selects the supported Arm64 package candidate; a separate upstream source-tag next-version install is not applicable for this smoke path."
+            echo "status=skipped"
+          } >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -444,3 +397,32 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: Create test summary
+        if: always()
+        uses: ./.github/actions/write-package-job-summary
+        with:
+          package_name: 'Gnucap'
+          version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
+          overall_status: ${{ steps.summary.outputs.overall_status || 'unknown' }}
+          tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+          tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+          tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+          duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+          test1_label: 'Test 1 - Baseline package evidence'
+          test2_label: 'Test 2 - Baseline version and release alignment'
+          test3_label: 'Test 3 - Package-specific source or docs evidence'
+          test4_label: 'Test 4 - Arm64 support gate'
+          test5_label: 'Test 5 - Bounded package-specific smoke'
+          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
+          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
+          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
+          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
+          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
+          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test6_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || env.BASELINE_VERSION }}
+          regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
+          regression_details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
