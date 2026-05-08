@@ -3,7 +3,7 @@ name: Curve
 category: Storage
 description: Curve is a storage project hosted by the CNCF Foundation, emphasizing its focus on data storage solutions for modern, scalable, cloud-native use cases.
 download_url: https://github.com/opencurve/curve/releases
-works_on_arm: true
+works_on_arm: false
 supported_minimum_version:
     version_number: 1.2.5
     release_date: 2022/10/10
@@ -26,6 +26,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: Linux/ARM64 release notes are not available. Installation and Testing were done using released tar files.
+    other_info: Temporarily marked unsupported on Arm because current public Curve release artifacts did not provide a runnable Arm64 binary in smoke validation. Restore this entry only after a real Arm64 artifact or source-build runtime proof is available.
 
 ---
