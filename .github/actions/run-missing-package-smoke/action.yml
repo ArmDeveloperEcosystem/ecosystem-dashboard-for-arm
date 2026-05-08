@@ -182,6 +182,144 @@ runs:
           test6_duration=0
         }
 
+        pypi_latest_version() {
+          local package="$1"
+          python3 - "$package" <<'PY'
+        import json
+        import sys
+        import urllib.request
+
+        package = sys.argv[1]
+        with urllib.request.urlopen(f"https://pypi.org/pypi/{package}/json", timeout=30) as response:
+            data = json.load(response)
+        print(data["info"]["version"])
+        PY
+        }
+
+        run_fastai_regression() {
+          local current="${1:-unknown}"
+          local start latest work_next
+          start=$(date +%s)
+          regression_current_version="$current"
+          latest="$(pypi_latest_version fastai 2>/tmp/fastai-pypi-latest-error.log || true)"
+          regression_latest_version="${latest:-unknown}"
+          if [ -z "$latest" ]; then
+            regression_decision="next_lookup_failed"
+            regression_next_installed_version="not_installed"
+            regression_result="Next FastAI version lookup failed on Arm64"
+            regression_details="Baseline FastAI ${current} passed Tests 1-5, but PyPI latest-version lookup failed, so Test 6 could not honestly select a next candidate."
+            set_test 6 failed "$start"
+            return
+          fi
+          if [ "$latest" = "$current" ]; then
+            regression_decision="current_is_latest_stable"
+            regression_next_installed_version="not_applicable"
+            regression_result="Current FastAI version is already latest stable"
+            regression_details="Baseline FastAI ${current} passed Tests 1-5, and PyPI reports the same version as latest stable. There is no newer stable FastAI candidate for Test 6."
+            set_test 6 skipped "$start"
+            return
+          fi
+          if ! apt_bootstrap podman; then
+            regression_decision="next_install_failed"
+            regression_next_installed_version="not_installed"
+            regression_result="Podman CLI dependency failed to install on Arm64"
+            regression_details="Baseline Podman Compose ${current} passed Tests 1-5, but Test 6 could not install the Podman CLI dependency required to validate PyPI latest ${latest} on the Arm64 runner."
+            set_test 6 failed "$start"
+            return
+          fi
+          work_next=$(mktemp -d)
+          if python3 -m venv "$work_next/venv" && \
+             "$work_next/venv/bin/python" -m pip install --upgrade pip >/dev/null && \
+             "$work_next/venv/bin/python" -m pip install "fastai==${latest}" ipython >/tmp/fastai-next-install.log 2>&1 && \
+             "$work_next/venv/bin/python" - <<'PY'
+        import fastai
+        import fastai.torch_core
+        import platform
+        import torch
+        from fastai.torch_core import tensor
+
+        assert platform.machine() in ("aarch64", "arm64")
+        assert fastai.__version__
+        value = tensor([1, 2, 3])
+        assert torch.equal(value + 1, torch.tensor([2, 3, 4]))
+        PY
+          then
+            regression_decision="next_install_validated"
+            regression_next_installed_version="$latest"
+            regression_result="Next FastAI version installed and passed bounded Arm64 tensor smoke"
+            regression_details="Baseline FastAI ${current} passed Tests 1-5, and PyPI latest ${latest} installed on the Arm64 runner, imported FastAI/Torch, verified the Arm64 Python runtime, and ran the same bounded tensor smoke."
+            set_test 6 passed "$start"
+          else
+            cat /tmp/fastai-next-install.log 2>/dev/null || true
+            regression_decision="next_install_failed"
+            regression_next_installed_version="not_installed"
+            regression_result="Next FastAI version failed bounded Arm64 validation"
+            regression_details="Baseline FastAI ${current} passed Tests 1-5, but PyPI latest ${latest} did not complete the same bounded install/import/tensor smoke on the Arm64 runner."
+            set_test 6 failed "$start"
+          fi
+        }
+
+        run_podman_compose_regression() {
+          local current="${1:-unknown}"
+          local start latest work_next
+          start=$(date +%s)
+          regression_current_version="$current"
+          latest="$(pypi_latest_version podman-compose 2>/tmp/podman-compose-pypi-latest-error.log || true)"
+          regression_latest_version="${latest:-unknown}"
+          if [ -z "$latest" ]; then
+            regression_decision="next_lookup_failed"
+            regression_next_installed_version="not_installed"
+            regression_result="Next Podman Compose version lookup failed on Arm64"
+            regression_details="Baseline Podman Compose ${current} passed Tests 1-5, but PyPI latest-version lookup failed, so Test 6 could not honestly select a next candidate."
+            set_test 6 failed "$start"
+            return
+          fi
+          if [ "$latest" = "$current" ]; then
+            regression_decision="current_is_latest_stable"
+            regression_next_installed_version="not_applicable"
+            regression_result="Current Podman Compose version is already latest stable"
+            regression_details="Baseline Podman Compose ${current} passed Tests 1-5, and PyPI reports the same version as latest stable. There is no newer stable Podman Compose candidate for Test 6."
+            set_test 6 skipped "$start"
+            return
+          fi
+          work_next=$(mktemp -d)
+          if python3 -m venv "$work_next/venv" && \
+             "$work_next/venv/bin/python" -m pip install --upgrade pip >/dev/null && \
+             "$work_next/venv/bin/python" -m pip install "podman-compose==${latest}" >/tmp/podman-compose-next-install.log 2>&1; then
+            cat > "$work_next/compose.yml" <<'EOF'
+        services:
+          smoke:
+            image: quay.io/podman/hello
+            command: ["echo", "arm64"]
+        EOF
+            if "$work_next/venv/bin/podman-compose" --version | grep -q "$latest" && \
+               "$work_next/venv/bin/podman-compose" --help | grep -qiE 'usage|podman-compose' && \
+               "$work_next/venv/bin/python" -m pip check && \
+               [ "$(uname -m)" = "aarch64" ] && \
+               "$work_next/venv/bin/podman-compose" --dry-run -f "$work_next/compose.yml" config >/tmp/podman-compose-next-config.log 2>&1 && \
+               grep -qi 'smoke' /tmp/podman-compose-next-config.log; then
+              regression_decision="next_install_validated"
+              regression_next_installed_version="$latest"
+              regression_result="Next Podman Compose version installed and passed bounded Arm64 dry-run validation"
+              regression_details="Baseline Podman Compose ${current} passed Tests 1-5, and PyPI latest ${latest} installed on the Arm64 runner with the Podman CLI dependency, reported the expected version/help output, passed dependency checks, and rendered the same dry-run Compose config."
+              set_test 6 passed "$start"
+            else
+              regression_decision="next_install_failed"
+              regression_next_installed_version="not_installed"
+              regression_result="Next Podman Compose version failed bounded Arm64 validation"
+              regression_details="Baseline Podman Compose ${current} passed Tests 1-5, but PyPI latest ${latest} did not complete the same version/help/dependency/dry-run config validation on the Arm64 runner."
+              set_test 6 failed "$start"
+            fi
+          else
+            cat /tmp/podman-compose-next-install.log 2>/dev/null || true
+            regression_decision="next_install_failed"
+            regression_next_installed_version="not_installed"
+            regression_result="Next Podman Compose version failed to install on Arm64"
+            regression_details="Baseline Podman Compose ${current} passed Tests 1-5, but PyPI latest ${latest} did not install on the Arm64 runner."
+            set_test 6 failed "$start"
+          fi
+        }
+
         write_outputs() {
           {
             echo "version=${version}"
@@ -398,7 +536,7 @@ runs:
         assert torch.equal(value + 1, torch.tensor([2, 3, 4]))
         PY
             fi
-            finish_package_manager_test6 "$version"
+            run_fastai_regression "$version"
             ;;
 
           podman-compose)
@@ -428,7 +566,7 @@ runs:
         EOF
               start=$(date +%s); "$work/venv/bin/podman-compose" --dry-run -f "$work/compose.yml" config >/tmp/podman-compose-config.log 2>&1 && grep -qi 'smoke' /tmp/podman-compose-config.log && set_test 5 passed "$start" || set_test 5 failed "$start"
             fi
-            finish_package_manager_test6 "$version"
+            run_podman_compose_regression "$version"
             ;;
 
           luigi-source)
