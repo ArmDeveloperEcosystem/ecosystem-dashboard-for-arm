@@ -371,20 +371,28 @@ jobs:
           lane_kind: ${{ env.LANE_KIND }}
           limited_cpu_probe: |
             sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends build-essential cmake >/dev/null
-            cd next-src
-            SOURCE_DIR="$(dirname "$(find . -maxdepth 4 -name CMakeLists.txt -print -quit)")"
-            [ -n "$SOURCE_DIR" ] && [ "$SOURCE_DIR" != "." ] || SOURCE_DIR="."
-            test -f "$SOURCE_DIR/CMakeLists.txt"
-            cmake -S "$SOURCE_DIR" -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF
-            cmake --build build --target llama-cli -j2 || cmake --build build --target main -j2 || cmake --build build -j2
-            BIN=$(find build -type f \( -name llama-cli -o -name main -o -name llama-simple \) -perm -111 | head -n 1)
+            sudo apt-get install -y --no-install-recommends curl file jq tar >/dev/null
+            WORK_DIR="$(mktemp -d)"
+            RELEASE_JSON="$WORK_DIR/release.json"
+            curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${CANDIDATE_TAG}" -o "$RELEASE_JSON"
+            ASSET_URL="$(jq -r '.assets[] | select(.name | test("^llama_aio_.*\\.tar\\.gz$"; "i")) | .browser_download_url' "$RELEASE_JSON" | head -n 1)"
+            [ -n "$ASSET_URL" ] && [ "$ASSET_URL" != "null" ]
+            curl -fsSL "$ASSET_URL" -o "$WORK_DIR/llama-aio.tar.gz"
+            tar -xzf "$WORK_DIR/llama-aio.tar.gz" -C "$WORK_DIR"
+            BIN="$(find "$WORK_DIR" -type f \( -name llama-cli -o -name main \) -perm -111 | head -n 1)"
             [ -n "$BIN" ]
             file "$BIN" | grep -Eiq 'aarch64|arm64'
+            export LD_LIBRARY_PATH="$(dirname "$BIN"):${LD_LIBRARY_PATH:-}"
             "$BIN" --help >/tmp/llama-next-help.txt 2>&1 || "$BIN" -h >/tmp/llama-next-help.txt 2>&1
             grep -Eiq 'usage|llama|model|prompt' /tmp/llama-next-help.txt
-          limited_cpu_description: "Test 6 attempts the same scoped Ampere llama.cpp Arm CLI build against the next stable source candidate when that candidate contains buildable llama.cpp CMake sources. No GGUF model inference is claimed without weights."
-          defer_on_limited_cpu_probe_failure: "true"
+            SERVER_BIN="$(find "$WORK_DIR" -type f -name llama-server -perm -111 | head -n 1 || true)"
+            if [ -n "$SERVER_BIN" ]; then
+              file "$SERVER_BIN" | grep -Eiq 'aarch64|arm64'
+              "$SERVER_BIN" --help >/tmp/llama-server-next-help.txt 2>&1 || "$SERVER_BIN" -h >/tmp/llama-server-next-help.txt 2>&1
+              grep -Eiq 'usage|server|model|host|port' /tmp/llama-server-next-help.txt
+            fi
+          limited_cpu_description: "Test 6 reran a scoped Ampere llama.cpp Arm64 release-artifact preflight against the next stable release: downloaded the official AIO tarball, verified the included llama binaries are AArch64, and ran CLI/server help on the Arm64 runner. No source build, GGUF model inference, model quality, or performance claim is made."
+          defer_on_limited_cpu_probe_failure: "false"
       - name: Calculate test summary
         id: summary
         if: always()
