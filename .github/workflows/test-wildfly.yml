@@ -1,0 +1,438 @@
+name: Test WildFly on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-wildfly.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-wildfly.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-wildfly.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-wildfly.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-wildfly.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-wildfly.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-wildfly.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-wildfly.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-wildfly.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-wildfly.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-wildfly.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-wildfly.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-wildfly.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-wildfly.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-wildfly.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-wildfly.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-wildfly.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-wildfly.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-wildfly.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-wildfly.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-wildfly.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-wildfly.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-wildfly.outputs.timestamp }}
+jobs:
+  test-wildfly:
+    runs-on: ubuntu-24.04-arm
+
+    env:
+      WILDFLY_VERSION: 35.0.0.Final
+      WILDFLY_NEXT_VERSION: 35.0.1.Final
+      WILDFLY_ARCHIVE: wildfly-35.0.0.Final.tar.gz
+      WILDFLY_DIR: wildfly-35.0.0.Final
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'WildFly'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=wildfly" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/wildfly" >> "$GITHUB_OUTPUT"
+      - name: Install WildFly
+        id: install
+        run: |
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-17-jre-headless curl"
+          wget -q "https://github.com/wildfly/wildfly/releases/download/${WILDFLY_VERSION}/${WILDFLY_ARCHIVE}"
+          tar -xzf "$WILDFLY_ARCHIVE"
+          echo "$GITHUB_WORKSPACE/$WILDFLY_DIR/bin" >> "$GITHUB_PATH"
+          echo "wildfly_home=$GITHUB_WORKSPACE/$WILDFLY_DIR" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Get WildFly version
+        id: version
+        run: |
+          VERSION=$("${{ steps.install.outputs.wildfly_home }}/bin/standalone.sh" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.Final' | head -n 1 || echo "unknown")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=${WILDFLY_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Test 1 - Check Binary Existence
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+
+          if [ -x "${{ steps.install.outputs.wildfly_home }}/bin/standalone.sh" ] && [ -x "${{ steps.install.outputs.wildfly_home }}/bin/jboss-cli.sh" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check Version Output
+        id: test2
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+
+          if "${{ steps.install.outputs.wildfly_home }}/bin/standalone.sh" --version 2>&1 | grep -q "${WILDFLY_VERSION}"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check Help Output
+        id: test3
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+
+          if "${{ steps.install.outputs.wildfly_home }}/bin/standalone.sh" --help >/dev/null 2>&1 && "${{ steps.install.outputs.wildfly_home }}/bin/jboss-cli.sh" --help >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          ARCH=$(uname -m)
+
+          if [ "$ARCH" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          "${{ steps.install.outputs.wildfly_home }}/bin/standalone.sh" \
+            -b 127.0.0.1 \
+            -Djboss.socket.binding.port-offset=100 \
+            > /tmp/wildfly.log 2>&1 &
+          WILDFLY_PID=$!
+          trap 'kill $WILDFLY_PID 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8180/ > /tmp/wildfly.out 2>/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+
+          if grep -qi 'WildFly' /tmp/wildfly.out; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/wildfly.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          kill "$WILDFLY_PID" 2>/dev/null || true
+          wait "$WILDFLY_PID" 2>/dev/null || true
+          trap - EXIT
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ -z "${LATEST}" ] || [ "${LATEST}" = "unknown" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned WildFly version ${CURRENT} passed release-tarball validation in this run, but the latest stable release could not be resolved for isolated Arm64 regression validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          TMP_DIR=$(mktemp -d)
+          cleanup() {
+            if [ -n "${WILDFLY_PID:-}" ] && kill -0 "${WILDFLY_PID}" 2>/dev/null; then
+              kill "${WILDFLY_PID}" 2>/dev/null || true
+              wait "${WILDFLY_PID}" 2>/dev/null || true
+            fi
+            rm -rf "${TMP_DIR}"
+          }
+          trap cleanup EXIT
+
+          NEXT_ARCHIVE="wildfly-${LATEST}.tar.gz"
+          NEXT_URL="https://github.com/wildfly/wildfly/releases/download/${LATEST}/${NEXT_ARCHIVE}"
+          curl -fsSL -o "${TMP_DIR}/${NEXT_ARCHIVE}" "${NEXT_URL}"
+          tar -xzf "${TMP_DIR}/${NEXT_ARCHIVE}" -C "${TMP_DIR}"
+          NEXT_HOME="${TMP_DIR}/wildfly-${LATEST}"
+
+          if ! "${NEXT_HOME}/bin/standalone.sh" --version >/tmp/wildfly-next-version.log 2>&1 || \
+             ! grep -q "${LATEST}" /tmp/wildfly-next-version.log || \
+             ! "${NEXT_HOME}/bin/jboss-cli.sh" --help >/tmp/wildfly-next-help.log 2>&1; then
+            cat /tmp/wildfly-next-version.log || true
+            cat /tmp/wildfly-next-help.log || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned WildFly version ${CURRENT} passed release-tarball validation in this run, but candidate release ${LATEST} did not complete isolated version/help smoke on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          "${NEXT_HOME}/bin/standalone.sh" \
+            -b 127.0.0.1 \
+            -Djboss.socket.binding.port-offset=200 \
+            >/tmp/wildfly-next.log 2>&1 &
+          WILDFLY_PID=$!
+          READY=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8280/ >/tmp/wildfly-next-body.txt 2>/dev/null; then
+              READY=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$READY" -eq 1 ] && grep -qi 'WildFly' /tmp/wildfly-next-body.txt; then
+            echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
+            if [ "${CURRENT}" = "${LATEST}" ]; then
+              echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+              echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            else
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned WildFly version ${CURRENT} passed release-tarball validation in this run, and candidate release ${LATEST} also passed isolated version, help, and bounded server-start smoke on Arm64." >> "$GITHUB_OUTPUT"
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            cat /tmp/wildfly-next.log || true
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned WildFly version ${CURRENT} passed release-tarball validation in this run, but candidate release ${LATEST} did not complete the bounded server-start smoke on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+              *)
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                  REGRESSION_RESULT="Regression validation passed"
+                else
+                  REGRESSION_RESULT="Regression validation failed"
+                fi
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+
+          check_test() {
+            local status=$1
+            local duration=$2
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + $duration))
+          }
+
+          check_test "${{ steps.test1.outputs.status || 'skipped' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_test "${{ steps.test2.outputs.status || 'skipped' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_test "${{ steps.test3.outputs.status || 'skipped' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_test "${{ steps.test4.outputs.status || 'skipped' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_test "${{ steps.test5.outputs.status || 'skipped' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_test "${{ steps.test6.outputs.status || 'skipped' }}" "${{ steps.test6.outputs.duration || 0 }}"
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## WildFly Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Test 1 - Check Binary Existence: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Test 2 - Check Version Output: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Test 3 - Check Help Output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current (pinned):** ${{ steps.test6.outputs.current_version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next candidate:** ${{ steps.test6.outputs.candidate_version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Notes:** ${{ steps.test6.outputs.note }}" >> "$GITHUB_STEP_SUMMARY"

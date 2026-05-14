@@ -1,0 +1,703 @@
+name: Test CUDA Core Compute Libraries (CCCL) on Arm64
+
+on:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-cccl.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-cccl.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-cccl.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-cccl.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-cccl.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-cccl.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-cccl.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-cccl.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-cccl.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-cccl.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-cccl.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-cccl.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-cccl.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-cccl.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-cccl.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-cccl.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-cccl.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-cccl.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-cccl.outputs.regression_policy }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-cccl.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-cccl.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-cccl.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-cccl.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-cccl.outputs.timestamp }}
+
+jobs:
+  test-cccl:
+    runs-on: ubuntu-24.04-arm
+    env:
+      BASELINE_VERSION: "0.3.0"
+      PACKAGE_SLUG: "cccl"
+      LANE_KIND: "gpu/specialized/manual-review"
+      DOWNLOAD_URL: "https://github.com/NVIDIA/cccl/releases"
+      HOMEPAGE_URL: "https://nvidia.github.io/cccl/"
+      OFFICIAL_DOCS: "https://github.com/NVIDIA/cccl#getting-started"
+      GITHUB_REPO: "NVIDIA/cccl"
+      SCOPED_ARM_PREFLIGHT_PROBE: |
+        python3 - <<'PY'
+        import compileall
+        import json
+        import os
+        import platform
+        import re
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+        from pathlib import Path
+
+        slug = os.environ.get("PACKAGE_SLUG", "").strip()
+        source_dir = os.environ.get("PREFLIGHT_SOURCE_DIR", "baseline-src")
+        root = Path(source_dir).resolve()
+        if not root.exists():
+            root = Path("next-src").resolve()
+        if not slug:
+            raise SystemExit("PACKAGE_SLUG is required for scoped Arm preflight")
+        if not root.exists():
+            raise SystemExit(f"source tree not found for scoped Arm preflight: {root}")
+        if platform.machine().lower() not in {"aarch64", "arm64"}:
+            raise SystemExit(f"scoped Arm preflight requires an Arm64 runner, got {platform.machine()}")
+
+        patterns = {
+            "bionemo-framework": ["src", "bionemo", "sub-packages", "pyproject.toml"],
+            "cccl": ["libcudacxx/include", "thrust", "cub", "CMakeLists.txt"],
+            "clara-viz": ["src", "python", "CMakeLists.txt", "pyproject.toml"],
+            "cucim": ["python/cucim", "cpp", "python", "pyproject.toml"],
+            "cuda-gdb": ["gdb", "cuda", "README*", "Makefile", "configure"],
+            "cuda-python": ["cuda_bindings", "cuda_core", "cuda_python", "pyproject.toml"],
+            "cudf": ["python/cudf", "cpp/include/cudf", "python", "pyproject.toml"],
+            "cugraph": ["python/cugraph", "cpp", "python", "pyproject.toml"],
+            "cuml": ["python/cuml", "cpp", "python", "pyproject.toml"],
+            "cuopt": ["python/cuopt", "cpp", "python", "pyproject.toml"],
+            "cutile-python": ["cutile", "cuda_tile", "python", "src", "*.dist-info/METADATA", "pyproject.toml"],
+            "cutlass": ["include/cutlass", "examples", "CMakeLists.txt"],
+            "cuvs": ["python/cuvs", "python/pylibcuvs", "cpp", "pyproject.toml"],
+            "cv-cuda": ["python", "src", "samples", "CMakeLists.txt"],
+            "dali": ["dali", "dali/python", "third_party", "CMakeLists.txt"],
+            "dask-cuda": ["dask_cuda", "python/dask_cuda", "pyproject.toml"],
+            "dcgm-exporter": ["go.mod", "cmd", "internal", "deployment", "Dockerfile"],
+            "dcgm": ["dcgmlib", "hostengine", "sdk", "CMakeLists.txt", "Makefile"],
+            "gdrcopy": ["include", "src", "packages", "Makefile"],
+            "holoscan-sdk": ["python/holoscan", "src", "include", "CMakeLists.txt"],
+            "nvidia-container-toolkit": ["cmd/nvidia-ctk", "cmd", "internal", "go.mod"],
+            "nvidia-gpu-driver-container": ["Dockerfile", "base", "ubuntu", "centos7", "vgpu", "README.md"],
+            "nvimagecodec": ["python", "src", "include", "CMakeLists.txt"],
+            "nvshmem": ["src", "include", "examples", "CMakeLists.txt", "Makefile"],
+            "nx-cugraph": ["nx_cugraph", "_nx_cugraph", "pyproject.toml", "VERSION"],
+            "physics-nemo": ["src", "physicsnemo", "examples", "pyproject.toml"],
+            "raft": ["cpp/include/raft", "python/pylibraft", "python", "pyproject.toml"],
+            "resiliency-extension": ["src", "nvidia_resiliency_ext", "resiliency_extension", "pyproject.toml"],
+            "rmm": ["cpp/include/rmm", "python/rmm", "python", "pyproject.toml"],
+            "sparks-rapids": ["pom.xml", "sql-plugin", "integration_tests", "dist"],
+            "tensorrt-llm": ["tensorrt_llm", "cpp", "examples", "pyproject.toml"],
+            "tensorrt": ["python", "samples", "include", "CMakeLists.txt"],
+            "tilelang": ["tilelang", "python", "src", "pyproject.toml"],
+        }
+
+        regexes = {
+            "bionemo-framework": r"BioNeMo|bionemo|biomolecular|lightning|model",
+            "cccl": r"CCCL|cuda::std|Thrust|CUB|libcu\+\+",
+            "clara-viz": r"Clara|viz|render|CUDA|volume",
+            "cucim": r"cuCIM|cucim|image|skimage|CUDA",
+            "cuda-gdb": r"cuda-gdb|CUDA|GDB|debug",
+            "cuda-python": r"cuda-python|cuda.bindings|CUDA Python|driver|runtime",
+            "cudf": r"cuDF|cudf|dataframe|RAPIDS|CUDA",
+            "cugraph": r"cuGraph|cugraph|graph|RAPIDS|CUDA",
+            "cuml": r"cuML|cuml|machine learning|RAPIDS|CUDA",
+            "cuopt": r"cuOpt|cuopt|solver|optimization|CUDA",
+            "cutile-python": r"cuTile|cutile|tile|CUDA|compiler",
+            "cutlass": r"CUTLASS|cutlass|GEMM|CUDA|tensor",
+            "cuvs": r"cuVS|cuvs|vector search|nearest|RAPIDS",
+            "cv-cuda": r"CV-CUDA|cvcuda|computer vision|CUDA|image",
+            "dali": r"DALI|nvidia.dali|pipeline|decode|augmentation",
+            "dask-cuda": r"dask-cuda|dask_cuda|CUDACluster|RAPIDS|worker",
+            "dcgm-exporter": r"DCGM|Prometheus|metrics|exporter|deployment",
+            "dcgm": r"DCGM|dcgmi|hostengine|diagnostics|telemetry",
+            "gdrcopy": r"GDRCopy|GPUDirect|RDMA|gdrdrv|GPU memory",
+            "holoscan-sdk": r"Holoscan|holoscan|operator|application|pipeline",
+            "nvidia-container-toolkit": r"nvidia-ctk|container-toolkit|runtime|config|NVIDIA",
+            "nvidia-gpu-driver-container": r"driver container|NVIDIA|GPU|kernel|module",
+            "nvimagecodec": r"nvImageCodec|nvimgcodec|decode|encode|CUDA",
+            "nvshmem": r"NVSHMEM|OpenSHMEM|PGAS|NVLink|CUDA",
+            "nx-cugraph": r"nx-cugraph|nx_cugraph|NetworkX|backend|cuGraph",
+            "physics-nemo": r"PhysicsNeMo|physicsnemo|physics|model|training",
+            "raft": r"RAFT|pylibraft|nearest|RAPIDS|CUDA",
+            "resiliency-extension": r"resilien|checkpoint|fault|training|GPU",
+            "rmm": r"RMM|rmm|memory resource|allocator|RAPIDS",
+            "sparks-rapids": r"Spark RAPIDS|rapids-4-spark|cuDF|GPU|plugin",
+            "tensorrt-llm": r"TensorRT-LLM|tensorrt_llm|trtllm|builder|model",
+            "tensorrt": r"TensorRT|tensorrt|trtexec|builder|engine",
+            "tilelang": r"TileLang|tilelang|kernel|compiler|CUDA",
+        }
+
+        py_targets = {
+            "bionemo-framework": ["src", "bionemo", "sub-packages"],
+            "clara-viz": ["python", "src"],
+            "cucim": ["python/cucim", "python"],
+            "cuda-python": ["cuda_bindings", "cuda_core", "cuda_python", "cuda"],
+            "cudf": ["python/cudf", "python"],
+            "cugraph": ["python/cugraph", "python"],
+            "cuml": ["python/cuml", "python"],
+            "cuopt": ["python/cuopt", "python", "cuopt"],
+            "cutile-python": ["cutile", "python", "src"],
+            "cuvs": ["python/cuvs", "python/pylibcuvs", "python"],
+            "cv-cuda": ["python", "src"],
+            "dali": ["dali/python", "dali"],
+            "dask-cuda": ["dask_cuda", "python/dask_cuda"],
+            "holoscan-sdk": ["python/holoscan", "python"],
+            "nvimagecodec": ["python", "nvimgcodec"],
+            "nx-cugraph": ["nx_cugraph", "_nx_cugraph"],
+            "physics-nemo": ["src", "physicsnemo"],
+            "raft": ["python/pylibraft", "python"],
+            "resiliency-extension": ["src", "nvidia_resiliency_ext", "resiliency_extension"],
+            "rmm": ["python/rmm", "python"],
+            "tensorrt-llm": ["tensorrt_llm", "python"],
+            "tensorrt": ["python", "samples/python"],
+            "tilelang": ["tilelang", "python", "src"],
+        }
+
+        def matching_paths(hints):
+            found = []
+            for hint in hints:
+                matches = list(root.glob(hint))
+                if not matches and any(ch in hint for ch in "*?["):
+                    matches = list(root.glob(hint))
+                if not matches:
+                    candidate = root / hint
+                    if candidate.exists():
+                        matches = [candidate]
+                found.extend(path for path in matches if path.exists())
+            return found
+
+        def content_matches(pattern):
+            rx = re.compile(pattern, re.I)
+            scanned = 0
+            for path in root.rglob("*"):
+                if not path.is_file() or path.stat().st_size > 2_000_000:
+                    continue
+                if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".so", ".a", ".o", ".jar", ".whl"}:
+                    continue
+                scanned += 1
+                try:
+                    text = path.read_text(errors="ignore")
+                except OSError:
+                    continue
+                if rx.search(text):
+                    return path.relative_to(root)
+                if scanned >= 350:
+                    break
+            return None
+
+        def run_command(command, cwd=root, timeout=120):
+            if shutil.which(command[0]) is None:
+                return False, f"{command[0]} unavailable"
+            proc = subprocess.run(command, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+            return proc.returncode == 0, proc.stdout[-1000:]
+
+        proofs = []
+        hits = matching_paths(patterns.get(slug, ["README*", "pyproject.toml", "go.mod", "CMakeLists.txt", "Makefile"]))
+        evidence = content_matches(regexes.get(slug, re.escape(slug).replace("\\-", "[-_ ]")))
+
+        if not hits and slug == "cutile-python":
+            version = os.environ.get("LATEST_VERSION") or os.environ.get("BASELINE_VERSION", "")
+            if not version:
+                raise SystemExit("cutile-python preflight requires BASELINE_VERSION or LATEST_VERSION")
+            import urllib.request
+            import zipfile
+            data = json.load(urllib.request.urlopen("https://pypi.org/pypi/cuda-tile/json", timeout=30))
+            release_files = data.get("releases", {}).get(version, [])
+            wheels = [item for item in release_files if "manylinux2014_aarch64" in item.get("filename", "") and item.get("url")]
+            if not wheels:
+                raise SystemExit(f"no published Arm64 cuda-tile wheel found for {version}")
+            with tempfile.TemporaryDirectory() as tmp:
+                wheel_path = Path(tmp) / wheels[0]["filename"]
+                with urllib.request.urlopen(wheels[0]["url"], timeout=60) as response:
+                    wheel_path.write_bytes(response.read())
+                with zipfile.ZipFile(wheel_path) as wheel:
+                    names = wheel.namelist()
+                    if not any(name.endswith(".dist-info/METADATA") for name in names):
+                        raise SystemExit("cuda-tile wheel is missing dist-info metadata")
+                    if not any(re.search(r"cuda[_-]?tile|cutile|tile", name, re.I) for name in names):
+                        raise SystemExit("cuda-tile wheel did not expose package-specific payload names")
+            manifest_dir = Path(".arm-preflight")
+            manifest_dir.mkdir(exist_ok=True)
+            (manifest_dir / f"{slug}-manifest.txt").write_text(f"pypi_version={version}\nwheel={wheels[0]['filename']}\n")
+            print(f"scoped-arm-preflight-ok: {slug}: pypi_arm64_wheel:{wheels[0]['filename']}, wheel_manifest")
+            raise SystemExit(0)
+
+        if not hits and slug == "nvidia-gpu-driver-container":
+            import urllib.request
+            version = os.environ.get("BASELINE_VERSION", "")
+            variant = os.environ.get("IMAGE_VARIANT", "ubuntu22.04")
+            page_url = os.environ.get("DOWNLOAD_URL") or os.environ.get("HOMEPAGE_URL")
+            html = urllib.request.urlopen(page_url, timeout=45).read().decode("utf-8", errors="ignore")
+            expected_tag = f"{version}-{variant}" if version else variant
+            if expected_tag not in html and version not in html:
+                raise SystemExit(f"driver container tag evidence not found for {expected_tag}")
+            window_start = max(0, html.find(version) - 1600) if version in html else 0
+            window = html[window_start:window_start + 4000]
+            if not re.search(r"multi.?arch|MultiArchitecture|arm64|aarch64|driver|NVIDIA", window, re.I):
+                raise SystemExit("driver container page did not expose scoped multi-arch/driver evidence")
+            manifest_dir = Path(".arm-preflight")
+            manifest_dir.mkdir(exist_ok=True)
+            (manifest_dir / f"{slug}-manifest.txt").write_text(f"ngc_tag={expected_tag}\npage={page_url}\n")
+            print(f"scoped-arm-preflight-ok: {slug}: ngc_multiarch_tag:{expected_tag}, driver_container_manifest")
+            raise SystemExit(0)
+        if not hits:
+            raise SystemExit(f"no package-specific source/artifact paths found for {slug} in {root}")
+        if evidence is None:
+            raise SystemExit(f"no package-specific evidence pattern matched for {slug} in {root}")
+
+        manifest_dir = Path(".arm-preflight")
+        manifest_dir.mkdir(exist_ok=True)
+        manifest = manifest_dir / f"{slug}-manifest.txt"
+        manifest.write_text("\n".join([f"source_root={root}", f"evidence={evidence}"] + [str(path.relative_to(root)) for path in hits[:25]]) + "\n")
+        proofs.append(f"manifest:{manifest}")
+
+        compiled = False
+        for rel in py_targets.get(slug, []):
+            target = root / rel
+            if not target.exists():
+                continue
+            ok = compileall.compile_dir(str(target), quiet=1) if target.is_dir() else compileall.compile_file(str(target), quiet=1)
+            if not ok:
+                raise SystemExit(f"Python source compile failed for {slug}: {target}")
+            proofs.append(f"python_compile:{target.relative_to(root)}")
+            compiled = True
+            break
+
+        if slug in {"dcgm-exporter", "nvidia-container-toolkit"} and (root / "go.mod").exists():
+            ok, output = run_command(["go", "list", "./..."])
+            if ok:
+                proofs.append("go_list")
+            else:
+                proofs.append("go_manifest_only")
+
+        if slug == "cccl" and (root / "libcudacxx" / "include").exists():
+            compiler = shutil.which("g++") or shutil.which("c++")
+            if compiler:
+                with tempfile.TemporaryDirectory() as tmp:
+                    src = Path(tmp) / "cccl_smoke.cpp"
+                    obj = Path(tmp) / "cccl_smoke.o"
+                    src.write_text('#include <cuda/std/tuple>\nint smoke(){ cuda::std::tuple<int> t{1}; return cuda::std::get<0>(t); }\n')
+                    ok, _ = run_command([compiler, "-std=c++17", "-I", str(root / "libcudacxx" / "include"), "-c", str(src), "-o", str(obj)])
+                    if ok:
+                        proofs.append("cxx_compile:cuda_std_tuple")
+
+        if slug == "cutlass" and (root / "include" / "cutlass").exists():
+            compiler = shutil.which("g++") or shutil.which("c++")
+            if compiler:
+                with tempfile.TemporaryDirectory() as tmp:
+                    src = Path(tmp) / "cutlass_smoke.cpp"
+                    obj = Path(tmp) / "cutlass_smoke.o"
+                    src.write_text('#include <cutlass/cutlass.h>\nint smoke(){ return int(cutlass::Status::kSuccess); }\n')
+                    ok, _ = run_command([compiler, "-std=c++17", "-I", str(root / "include"), "-c", str(src), "-o", str(obj)])
+                    if ok:
+                        proofs.append("cxx_compile:cutlass_status")
+
+        if slug in {"gdrcopy", "nvshmem", "dcgm", "cuda-gdb"}:
+            makefile = root / "Makefile"
+            if makefile.exists() and shutil.which("make"):
+                ok, _ = run_command(["make", "-n", "-s"], timeout=60)
+                if ok:
+                    proofs.append("make_dry_run")
+
+        if slug == "sparks-rapids" and (root / "pom.xml").exists():
+            text = (root / "pom.xml").read_text(errors="ignore")
+            if re.search(r"rapids|spark|cudf", text, re.I):
+                proofs.append("pom_plugin_identity")
+
+        if slug == "nvidia-gpu-driver-container":
+            dockerfiles = [path for path in root.rglob("Dockerfile*") if path.is_file()]
+            if dockerfiles:
+                proofs.append("driver_container_dockerfile_manifest")
+
+        if not compiled and len(proofs) == 1:
+            code_file = next((p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in {".py", ".go", ".cc", ".cpp", ".c", ".cu", ".h", ".hpp", ".java", ".scala", ".xml", ".yaml", ".yml"}), None)
+            if code_file is None:
+                raise SystemExit(f"no source/config file available for scoped package proof: {slug}")
+            proofs.append(f"source_identity_scan:{code_file.relative_to(root)}")
+
+        print(f"scoped-arm-preflight-ok: {slug}: " + ", ".join(proofs))
+        PY
+
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'CUDA Core Compute Libraries (CCCL)'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=cccl" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/linux/opensource_packages/cccl" >> "$GITHUB_OUTPUT"
+
+      - name: Bootstrap baseline dependencies
+        uses: ./.github/actions/apt-bootstrap
+        with:
+          packages: "git curl jq tar unzip file ca-certificates"
+          quiet: "true"
+
+      - name: Install baseline source or artifact
+        id: install
+        run: |
+          set -euo pipefail
+          rm -rf baseline-src baseline-external
+          mkdir -p baseline-src baseline-external
+          if [ -n "$GITHUB_REPO" ]; then
+            RESOLVED_TAG=""
+            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
+              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
+                RESOLVED_TAG="$CANDIDATE"
+                break
+              fi
+            done
+            if [ -n "$RESOLVED_TAG" ]; then
+              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
+              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
+            else
+              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
+              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
+            fi
+            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
+              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
+              echo "install_status=success" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
+            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
+            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
+            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
+          echo "install_status=failed" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Get baseline version
+        id: version
+        run: |
+          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected baseline version: $BASELINE_VERSION"
+
+      - name: Define package-specific expectations
+        id: expectations
+        uses: ./.github/actions/derive-package-source-expectations
+        with:
+          package_slug: ${{ env.PACKAGE_SLUG }}
+
+      - name: Test 1 - Check package-specific baseline markers
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          SOURCE_MARKERS="${{ steps.expectations.outputs.source_markers }}"
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=Baseline source or external metadata could not be acquired." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+            FOUND=0
+            HITS=""
+            IFS='|' read -r -a MARKERS <<< "$SOURCE_MARKERS"
+            REQUIRED=${#MARKERS[@]}
+            if [ "$REQUIRED" -gt 2 ]; then
+              REQUIRED=2
+            fi
+            if [ "$REQUIRED" -lt 1 ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=No package-specific source markers were derived for the baseline." >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            for marker in "${MARKERS[@]}"; do
+              if [ -n "$marker" ] && [ -e "$marker" ]; then
+                FOUND=$((FOUND + 1))
+                if [ -z "$HITS" ]; then
+                  HITS="$marker"
+                else
+                  HITS="$HITS, $marker"
+                fi
+              fi
+            done
+            if [ "$FOUND" -ge "$REQUIRED" ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "note=Found package-specific baseline markers: $HITS" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=Expected at least $REQUIRED package-specific markers from: $SOURCE_MARKERS" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          elif [ -f baseline-external/metadata.txt ]; then
+            grep -Fx "download=$DOWNLOAD_URL" baseline-external/metadata.txt >/dev/null
+            grep -Fx "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt >/dev/null
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Validated external baseline metadata for the published source links." >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=External baseline metadata was not emitted." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check package-specific version and release evidence
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
+          [ -f "$CONTENT_PAGE" ]
+          grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
+          grep -Fx "download_url: $DOWNLOAD_URL" "$CONTENT_PAGE" >/dev/null
+          grep -Fx "    homepage_url: $HOMEPAGE_URL" "$CONTENT_PAGE" >/dev/null
+          grep -Fx "        official_docs: $OFFICIAL_DOCS" "$CONTENT_PAGE" >/dev/null
+          grep -F "version_number: $BASELINE_VERSION" "$CONTENT_PAGE" >/dev/null
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Validated package metadata, baseline version, homepage, and docs alignment from the checked-in package page." >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check package-specific docs and entrypoints
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          DOC_MARKERS="${{ steps.expectations.outputs.doc_markers }}"
+          ENTRYPOINT_MARKERS="${{ steps.expectations.outputs.entrypoint_markers }}"
+          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+            FOUND=0
+            HITS=""
+            IFS='|' read -r -a MARKERS <<< "$DOC_MARKERS"
+            for marker in "${MARKERS[@]}"; do
+              if [ -n "$marker" ] && [ -e "$marker" ]; then
+                FOUND=$((FOUND + 1))
+                if [ -z "$HITS" ]; then
+                  HITS="$marker"
+                else
+                  HITS="$HITS, $marker"
+                fi
+              fi
+            done
+            if [ -n "$IDENTITY_TARGET" ]; then
+              [ -e "$IDENTITY_TARGET" ]
+            fi
+            ENTRY_OK=0
+            if [ -n "$ENTRYPOINT_MARKERS" ]; then
+              IFS='|' read -r -a ENTRYPOINTS <<< "$ENTRYPOINT_MARKERS"
+              for marker in "${ENTRYPOINTS[@]}"; do
+                if [ -n "$marker" ] && [ -e "$marker" ]; then
+                  ENTRY_OK=1
+                  break
+                fi
+              done
+            else
+              ENTRY_OK=1
+            fi
+            if [ "$FOUND" -ge 1 ] && [ "$ENTRY_OK" -eq 1 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "note=Validated package-specific docs and entrypoint markers: $HITS" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=Expected package-specific docs and entrypoint markers from: $DOC_MARKERS / $ENTRYPOINT_MARKERS" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          elif [ -f baseline-external/metadata.txt ]; then
+            grep -Fx "docs=$OFFICIAL_DOCS" baseline-external/metadata.txt >/dev/null
+            grep -Fx "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt >/dev/null
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Validated external documentation and homepage metadata for the baseline package." >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=External documentation metadata was not emitted." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Verify Arm64 runner and lane assumptions
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
+          [ "$(uname -m)" = "aarch64" ]
+          grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          if echo "$LANE_KIND" | grep -Eiq 'gpu|specialized|manual-review'; then
+            echo "note=Validated Arm64 support metadata on a generic Arm runner; deeper runtime checks for this lane still require the package-specific environment: $LANE_KIND." >> "$GITHUB_OUTPUT"
+          else
+            echo "note=Validated Arm64 runner architecture and published Arm support metadata." >> "$GITHUB_OUTPUT"
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Run scoped Arm preflight proof
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          export PREFLIGHT_SOURCE_DIR=baseline-src
+          if bash -euo pipefail -c "$SCOPED_ARM_PREFLIGHT_PROBE"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Arm preflight smoke passed; completed package-specific source/compile/import/help/manifest proof on Arm64. Full GPU/CUDA/RAPIDS runtime remains scoped and was not claimed." >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=Scoped Arm preflight failed; this workflow does not treat metadata-only checks as green." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+      - name: Test 6 - Regression Validation
+        id: test6
+        uses: ./.github/actions/generic-source-regression-check
+        with:
+          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
+          github_repo: ${{ env.GITHUB_REPO }}
+          lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            export PREFLIGHT_SOURCE_DIR=next-src
+            bash -euo pipefail -c "$SCOPED_ARM_PREFLIGHT_PROBE"
+          limited_cpu_description: "Test 6 limited_cpu_smoke_validated: reran the same bounded scoped Arm source/compile/import/help/manifest preflight against the next stable candidate. This is CPU-side preflight evidence only; no GPU/CUDA driver/runtime, accelerator execution, Kubernetes cluster, or full product runtime is claimed."
+      - name: Calculate test summary
+        id: summary
+        if: always()
+        run: |
+          T1="${{ steps.test1.outputs.status || '' }}"
+          T2="${{ steps.test2.outputs.status || '' }}"
+          T3="${{ steps.test3.outputs.status || '' }}"
+          T4="${{ steps.test4.outputs.status || '' }}"
+          T5="${{ steps.test5.outputs.status || '' }}"
+          T6="${{ steps.test6.outputs.status || '' }}"
+          D1="${{ steps.test1.outputs.duration || '0' }}"
+          D2="${{ steps.test2.outputs.duration || '0' }}"
+          D3="${{ steps.test3.outputs.duration || '0' }}"
+          D4="${{ steps.test4.outputs.duration || '0' }}"
+          D5="${{ steps.test5.outputs.duration || '0' }}"
+          D6="${{ steps.test6.outputs.duration || '0' }}"
+          PASSED=0
+          FAILED=0
+          SKIPPED=0
+          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
+            if [ "$STATUS" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$STATUS" = "failed" ]; then
+              FAILED=$((FAILED + 1))
+            else
+              SKIPPED=$((SKIPPED + 1))
+            fi
+          done
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          CORE_FAILED=0
+          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
+            if [ "$STATUS" = "failed" ]; then
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          done
+          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+            OVERALL_STATUS="success"
+            BADGE_STATUS="passing"
+          else
+            OVERALL_STATUS="failure"
+            BADGE_STATUS="failing"
+          fi
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
+          echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"

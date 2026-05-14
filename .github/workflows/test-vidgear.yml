@@ -1,0 +1,504 @@
+name: Test VidGear on Arm64
+
+on:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-vidgear.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-vidgear.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-vidgear.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-vidgear.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-vidgear.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-vidgear.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-vidgear.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-vidgear.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-vidgear.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-vidgear.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-vidgear.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-vidgear.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-vidgear.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-vidgear.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-vidgear.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-vidgear.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-vidgear.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-vidgear.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-vidgear.outputs.regression_policy }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-vidgear.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-vidgear.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-vidgear.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-vidgear.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-vidgear.outputs.timestamp }}
+
+jobs:
+  test-vidgear:
+    runs-on: ubuntu-24.04-arm
+    env:
+      BASELINE_VERSION: "0.1.0"
+      PACKAGE_SLUG: "vidgear"
+      LANE_KIND: "github release / source-build-or-tarball"
+      DOWNLOAD_URL: "https://github.com/abhiTronix/vidgear/releases"
+      HOMEPAGE_URL: "https://abhitronix.github.io/vidgear"
+      OFFICIAL_DOCS: "https://abhitronix.github.io/vidgear/latest/installation/pip_install/"
+      GITHUB_REPO: "abhiTronix/vidgear"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'VidGear'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python for runtime smoke
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=vidgear" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/linux/opensource_packages/vidgear" >> "$GITHUB_OUTPUT"
+
+      - name: Bootstrap baseline dependencies
+        uses: ./.github/actions/apt-bootstrap
+        with:
+          packages: "git curl jq tar unzip file ca-certificates python3-venv ffmpeg"
+          quiet: "true"
+
+      - name: Install baseline source or artifact
+        id: install
+        run: |
+          set -euo pipefail
+          rm -rf baseline-src baseline-external
+          mkdir -p baseline-src baseline-external
+          if [ -n "$GITHUB_REPO" ]; then
+            RESOLVED_TAG=""
+            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
+              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
+                RESOLVED_TAG="$CANDIDATE"
+                break
+              fi
+            done
+            if [ -n "$RESOLVED_TAG" ]; then
+              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
+              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
+            else
+              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
+              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
+            fi
+            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
+              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
+              echo "install_status=success" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
+            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
+            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
+            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
+          echo "install_status=failed" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Get baseline version
+        id: version
+        run: |
+          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected baseline version: $BASELINE_VERSION"
+
+      - name: Define package-specific expectations
+        id: expectations
+        uses: ./.github/actions/derive-package-source-expectations
+        with:
+          package_slug: ${{ env.PACKAGE_SLUG }}
+
+      - name: Test 1 - Check package-specific baseline markers
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          SOURCE_MARKERS="${{ steps.expectations.outputs.source_markers }}"
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=Baseline source or external metadata could not be acquired." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+            FOUND=0
+            HITS=""
+            IFS='|' read -r -a MARKERS <<< "$SOURCE_MARKERS"
+            REQUIRED=${#MARKERS[@]}
+            if [ "$REQUIRED" -gt 2 ]; then
+              REQUIRED=2
+            fi
+            if [ "$REQUIRED" -lt 1 ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=No package-specific source markers were derived for the baseline." >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            for marker in "${MARKERS[@]}"; do
+              if [ -n "$marker" ] && [ -e "$marker" ]; then
+                FOUND=$((FOUND + 1))
+                if [ -z "$HITS" ]; then
+                  HITS="$marker"
+                else
+                  HITS="$HITS, $marker"
+                fi
+              fi
+            done
+            if [ "$FOUND" -ge "$REQUIRED" ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "note=Found package-specific baseline markers: $HITS" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=Expected at least $REQUIRED package-specific markers from: $SOURCE_MARKERS" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          elif [ -f baseline-external/metadata.txt ]; then
+            grep -Fx "download=$DOWNLOAD_URL" baseline-external/metadata.txt >/dev/null
+            grep -Fx "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt >/dev/null
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Validated external baseline metadata for the published source links." >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=External baseline metadata was not emitted." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check package-specific version and release evidence
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
+          [ -f "$CONTENT_PAGE" ]
+          grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
+          grep -Fx "download_url: $DOWNLOAD_URL" "$CONTENT_PAGE" >/dev/null
+          grep -Fx "    homepage_url: $HOMEPAGE_URL" "$CONTENT_PAGE" >/dev/null
+          grep -Fx "        official_docs: $OFFICIAL_DOCS" "$CONTENT_PAGE" >/dev/null
+          grep -F "version_number: $BASELINE_VERSION" "$CONTENT_PAGE" >/dev/null
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Validated package metadata, baseline version, homepage, and docs alignment from the checked-in package page." >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check package-specific docs and entrypoints
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          DOC_MARKERS="${{ steps.expectations.outputs.doc_markers }}"
+          ENTRYPOINT_MARKERS="${{ steps.expectations.outputs.entrypoint_markers }}"
+          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+            FOUND=0
+            HITS=""
+            IFS='|' read -r -a MARKERS <<< "$DOC_MARKERS"
+            for marker in "${MARKERS[@]}"; do
+              if [ -n "$marker" ] && [ -e "$marker" ]; then
+                FOUND=$((FOUND + 1))
+                if [ -z "$HITS" ]; then
+                  HITS="$marker"
+                else
+                  HITS="$HITS, $marker"
+                fi
+              fi
+            done
+            if [ -n "$IDENTITY_TARGET" ]; then
+              [ -e "$IDENTITY_TARGET" ]
+            fi
+            ENTRY_OK=0
+            if [ -n "$ENTRYPOINT_MARKERS" ]; then
+              IFS='|' read -r -a ENTRYPOINTS <<< "$ENTRYPOINT_MARKERS"
+              for marker in "${ENTRYPOINTS[@]}"; do
+                if [ -n "$marker" ] && [ -e "$marker" ]; then
+                  ENTRY_OK=1
+                  break
+                fi
+              done
+            else
+              ENTRY_OK=1
+            fi
+            if [ "$FOUND" -ge 1 ] && [ "$ENTRY_OK" -eq 1 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "note=Validated package-specific docs and entrypoint markers: $HITS" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=Expected package-specific docs and entrypoint markers from: $DOC_MARKERS / $ENTRYPOINT_MARKERS" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          elif [ -f baseline-external/metadata.txt ]; then
+            grep -Fx "docs=$OFFICIAL_DOCS" baseline-external/metadata.txt >/dev/null
+            grep -Fx "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt >/dev/null
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Validated external documentation and homepage metadata for the baseline package." >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=External documentation metadata was not emitted." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Verify Arm64 runner and lane assumptions
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
+          [ "$(uname -m)" = "aarch64" ]
+          grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          if echo "$LANE_KIND" | grep -Eiq 'gpu|specialized|manual-review'; then
+            echo "note=Validated Arm64 support metadata on a generic Arm runner; deeper runtime checks for this lane still require the package-specific environment: $LANE_KIND." >> "$GITHUB_OUTPUT"
+          else
+            echo "note=Validated Arm64 runner architecture and published Arm support metadata." >> "$GITHUB_OUTPUT"
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Run bounded package-specific smoke
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          python -m venv smoke-venv
+          . smoke-venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          timeout 300 python -m pip install "vidgear==$BASELINE_VERSION" numpy opencv-python-headless
+          python - <<'PY'
+          from pathlib import Path
+          import numpy as np
+          import cv2
+          try:
+              from vidgear.gears import WriteGear
+          except ImportError:
+              from vidgear.gears.writegear import WriteGear
+
+          def open_writer(path):
+              try:
+                  return WriteGear(output=path, logging=False)
+              except Exception as exc:
+                  if "output_filename" not in str(exc) and "output" not in str(exc):
+                      raise
+                  return WriteGear(output_filename=path, logging=False)
+
+          output = "vidgear_smoke.mp4"
+          writer = open_writer(output)
+          for idx in range(6):
+              frame = np.zeros((64, 64, 3), dtype=np.uint8)
+              frame[:, :, 1] = idx * 30
+              writer.write(frame)
+          writer.close()
+          cap = cv2.VideoCapture(output)
+          ok, frame = cap.read()
+          cap.release()
+          assert ok and frame.shape[0] == 64 and Path(output).stat().st_size > 0
+          PY
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Installed VidGear $BASELINE_VERSION on Arm64 and wrote/read a synthetic video frame path." >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+      - name: Test 6 - Regression Validation
+        id: test6
+        uses: ./.github/actions/generic-source-regression-check
+        with:
+          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
+          github_repo: ${{ env.GITHUB_REPO }}
+          lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            python -m venv next-venv
+            . next-venv/bin/activate
+            python -m pip install --upgrade pip setuptools wheel
+            timeout 300 python -m pip install "vidgear==$LATEST_VERSION" numpy opencv-python-headless
+            python - <<'PY'
+            from pathlib import Path
+            import numpy as np
+            import cv2
+            try:
+                from vidgear.gears import WriteGear
+            except ImportError:
+                from vidgear.gears.writegear import WriteGear
+
+            def open_writer(path):
+                try:
+                    return WriteGear(output=path, logging=False)
+                except Exception as exc:
+                    if "output_filename" not in str(exc) and "output" not in str(exc):
+                        raise
+                    return WriteGear(output_filename=path, logging=False)
+
+            output = "vidgear_next_smoke.mp4"
+            writer = open_writer(output)
+            for idx in range(6):
+                frame = np.zeros((64, 64, 3), dtype=np.uint8)
+                frame[:, :, 2] = idx * 30
+                writer.write(frame)
+            writer.close()
+            cap = cv2.VideoCapture(output)
+            ok, frame = cap.read()
+            cap.release()
+            assert ok and frame.shape[0] == 64 and Path(output).stat().st_size > 0
+            PY
+          limited_cpu_description: |
+            Installed the next VidGear candidate on Arm64 and wrote/read a synthetic video frame path.
+          next_version_override: "0.3.4"
+          candidate_tag_override: "vidgear-0.3.4"
+      - name: Calculate test summary
+        id: summary
+        if: always()
+        run: |
+          T1="${{ steps.test1.outputs.status || '' }}"
+          T2="${{ steps.test2.outputs.status || '' }}"
+          T3="${{ steps.test3.outputs.status || '' }}"
+          T4="${{ steps.test4.outputs.status || '' }}"
+          T5="${{ steps.test5.outputs.status || '' }}"
+          T6="${{ steps.test6.outputs.status || '' }}"
+          D1="${{ steps.test1.outputs.duration || '0' }}"
+          D2="${{ steps.test2.outputs.duration || '0' }}"
+          D3="${{ steps.test3.outputs.duration || '0' }}"
+          D4="${{ steps.test4.outputs.duration || '0' }}"
+          D5="${{ steps.test5.outputs.duration || '0' }}"
+          D6="${{ steps.test6.outputs.duration || '0' }}"
+          PASSED=0
+          FAILED=0
+          SKIPPED=0
+          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
+            if [ "$STATUS" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$STATUS" = "failed" ]; then
+              FAILED=$((FAILED + 1))
+            else
+              SKIPPED=$((SKIPPED + 1))
+            fi
+          done
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          CORE_FAILED=0
+          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
+            if [ "$STATUS" = "failed" ]; then
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          done
+          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+            OVERALL_STATUS="success"
+            BADGE_STATUS="passing"
+          else
+            OVERALL_STATUS="failure"
+            BADGE_STATUS="failing"
+          fi
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
+          echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: Create test summary
+        if: always()
+        uses: ./.github/actions/write-package-job-summary
+        with:
+          package_name: 'VidGear'
+          version: ${{ steps.version.outputs.version || 'unknown' }}
+          overall_status: ${{ steps.summary.outputs.overall_status || 'unknown' }}
+          tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+          tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+          tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+          duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
+          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
+          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
+          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
+          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
+          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test6_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+          regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
+          regression_details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}

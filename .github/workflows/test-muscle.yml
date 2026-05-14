@@ -1,0 +1,381 @@
+name: Test MUSCLE on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-muscle.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-muscle.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-muscle.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-muscle.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-muscle.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-muscle.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-muscle.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-muscle.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-muscle.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-muscle.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-muscle.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-muscle.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-muscle.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-muscle.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-muscle.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-muscle.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-muscle.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-muscle.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-muscle.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-muscle.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-muscle.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-muscle.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-muscle.outputs.timestamp }}
+jobs:
+  test-muscle:
+    runs-on: ubuntu-24.04-arm
+    env:
+      MUSCLE_VERSION: "v5.2"
+      MUSCLE_NEXT_VERSION: "v5.3"
+      MUSCLE_REPO: "https://github.com/rcedgar/muscle"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'MUSCLE'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=muscle" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/muscle" >> "$GITHUB_OUTPUT"
+
+      - name: Install MUSCLE baseline
+        id: install
+        run: |
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential curl file python3 wget"
+          mkdir -p "$HOME/.local/bin"
+          WORKDIR="$(mktemp -d)"
+          git clone --depth 1 --branch "${MUSCLE_VERSION}" "${MUSCLE_REPO}" "${WORKDIR}/muscle"
+          perl -0pi -e 's/defined\(__arm64__\)/defined(__arm64__) || defined(__aarch64__)/g' "${WORKDIR}/muscle/src/myutils.h"
+          cd "${WORKDIR}/muscle/src"
+          bash build_linux.bash >/tmp/muscle-build-baseline.log 2>&1
+          install -m 0755 "${WORKDIR}/muscle/bin/muscle" "$HOME/.local/bin/muscle"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "baseline_version=${MUSCLE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "binary=$HOME/.local/bin/muscle" >> "$GITHUB_OUTPUT"
+          echo "source_dir=${WORKDIR}/muscle" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Get MUSCLE version
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION="$(git -C "${{ steps.install.outputs.source_dir }}" describe --tags --exact-match 2>/dev/null || true)"
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ steps.install.outputs.baseline_version }}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected MUSCLE version: $VERSION"
+
+      - name: Test 1 - Check MUSCLE binary exists
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ -x "${{ steps.install.outputs.binary }}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check source tag metadata
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          VERSION="$(git -C "${{ steps.install.outputs.source_dir }}" describe --tags --exact-match 2>/dev/null || true)"
+          if [ "$VERSION" = "${MUSCLE_VERSION}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            git -C "${{ steps.install.outputs.source_dir }}" describe --tags --always || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check help output
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          BIN="${{ steps.install.outputs.binary }}"
+          OUTPUT="$({ timeout 10s "$BIN" -h || timeout 10s "$BIN" -help || true; } 2>&1)"
+          if printf '%s\n' "$OUTPUT" | grep -Eqi 'align|super5|usage|sequences'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$OUTPUT" || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "$(uname -m)" = "aarch64" ] && file "${{ steps.install.outputs.binary }}" | grep -Eqi 'ARM aarch64|aarch64'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            file "${{ steps.install.outputs.binary }}" || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          BIN="${{ steps.install.outputs.binary }}"
+          cat > input.fa <<'EOF'
+          >seq1
+          ACGTACGT
+          >seq2
+          ACGTTCGT
+          EOF
+
+          if timeout 30s "$BIN" -align input.fa -output output.afa >/tmp/muscle-align.log 2>&1 && \
+             [ -s output.afa ] && grep -q '^>seq1' output.afa; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/muscle-align.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || steps.install.outputs.baseline_version }}"
+          LATEST="${MUSCLE_NEXT_VERSION}"
+          NEXT_DIR="$(mktemp -d)"
+          git clone --depth 1 --branch "${LATEST}" "${MUSCLE_REPO}" "${NEXT_DIR}/muscle-next"
+          perl -0pi -e 's/defined\(__arm64__\)/defined(__arm64__) || defined(__aarch64__)/g' "${NEXT_DIR}/muscle-next/src/myutils.h"
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+
+          cd "${NEXT_DIR}/muscle-next/src"
+          bash build_linux.bash >/tmp/muscle-build-next.log 2>&1
+          NEXT_BIN="${NEXT_DIR}/muscle-next/bin/muscle"
+          NEXT_VERSION="$(git -C "${NEXT_DIR}/muscle-next" describe --tags --exact-match 2>/dev/null || true)"
+          if [ -z "$NEXT_VERSION" ]; then
+            NEXT_VERSION="${LATEST}"
+          fi
+
+          cat > candidate.fa <<'EOF'
+          >seq1
+          ACGTACGT
+          >seq2
+          ACGTTCGT
+          EOF
+
+          if [ -x "$NEXT_BIN" ] && \
+             file "$NEXT_BIN" | grep -Eqi 'ARM aarch64|aarch64' && \
+             [ "$NEXT_VERSION" = "${LATEST}" ] && \
+             timeout 30s "$NEXT_BIN" -align candidate.fa -output candidate.afa >/tmp/muscle-next.log 2>&1 && \
+             [ -s candidate.afa ] && grep -q '^>seq1' candidate.afa; then
+            echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MUSCLE source build ${CURRENT} passed Arm64 smoke tests in this run. Regression validation built candidate ${LATEST} from source, confirmed the Arm64 binary, and completed a simple alignment successfully." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/muscle-next.log || true
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned MUSCLE source build ${CURRENT} passed Arm64 smoke tests in this run, but candidate ${LATEST} did not complete the expected Arm64 build-and-alignment validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression validation result unavailable' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+          CORE_FAILED=0
+          REGRESSION_FAILED=0
+
+          check_test() {
+            local status="$1"
+            local duration="$2"
+            local kind="$3"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              if [ "$kind" = "core" ]; then
+                CORE_FAILED=1
+              else
+                REGRESSION_FAILED=1
+              fi
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}" "regression"
+
+          echo "passed=${PASSED}" >> "$GITHUB_OUTPUT"
+          echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+          echo "duration=${TOTAL_DURATION}" >> "$GITHUB_OUTPUT"
+
+          if [ "${CORE_FAILED}" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "${CORE_FAILED}" -eq 0 ] && [ "${REGRESSION_FAILED}" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          {
+            echo "## MUSCLE Test Results"
+            echo "- **Version:** ${{ steps.version.outputs.version }}"
+            echo "- **Status:** ${{ steps.summary.outputs.overall_status }}"
+            echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}"
+            echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}"
+            echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s"
+            echo "- **Runner:** ubuntu-24.04 (arm64)"
+            echo
+            echo "### Test Details"
+            echo "1. Test 1 - Check MUSCLE binary exists: ${{ steps.test1.outputs.status || 'failed' }}"
+            echo "2. Test 2 - Check version command: ${{ steps.test2.outputs.status || 'failed' }}"
+            echo "3. Test 3 - Check help output: ${{ steps.test3.outputs.status || 'failed' }}"
+            echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'failed' }}"
+            echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'failed' }}"
+            echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'failed' }}"
+            echo
+            echo "### Regression Validation"
+            echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+            echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+            echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+            echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression validation result unavailable' }}"
+            echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+          } >> "$GITHUB_STEP_SUMMARY"

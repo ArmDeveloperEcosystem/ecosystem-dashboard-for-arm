@@ -1,0 +1,413 @@
+name: Test NVIDIA Megatron-Core on Arm64
+
+on:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-megatron-core.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-megatron-core.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-megatron-core.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-megatron-core.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-megatron-core.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-megatron-core.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-megatron-core.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-megatron-core.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-megatron-core.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-megatron-core.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-megatron-core.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-megatron-core.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-megatron-core.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-megatron-core.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-megatron-core.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-megatron-core.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-megatron-core.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-megatron-core.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-megatron-core.outputs.regression_policy }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-megatron-core.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-megatron-core.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-megatron-core.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-megatron-core.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-megatron-core.outputs.timestamp }}
+
+jobs:
+  test-megatron-core:
+    runs-on: ubuntu-24.04-arm
+    env:
+      BASELINE_VERSION: "0.11.0"
+      PACKAGE_SLUG: "megatron-core"
+      LANE_KIND: "gpu/specialized/manual-review"
+      DOWNLOAD_URL: "https://pypi.org/project/megatron-core/#history"
+      HOMEPAGE_URL: "https://docs.nvidia.com/megatron-core/developer-guide/latest/get-started/overview.html"
+      OFFICIAL_DOCS: "https://docs.nvidia.com/megatron-core/developer-guide/latest/get-started/install.html"
+      GITHUB_REPO: "NVIDIA/Megatron-LM"
+      TEST1_COMMAND: >-
+        python3 -c "import json,urllib.request; d=json.load(urllib.request.urlopen('https://pypi.org/pypi/megatron-core/0.11.0/json')); names=[u['filename'] for u in d['urls']]; assert d['info']['version']=='0.11.0' and any('aarch64' in n for n in names)"
+      TEST2_COMMAND: >-
+        python3 -c "import json,urllib.request; d=json.load(urllib.request.urlopen('https://pypi.org/pypi/megatron-core/0.11.0/json')); assert d['info']['version']=='0.11.0'"
+      TEST3_COMMAND: >-
+        curl -fsL "$OFFICIAL_DOCS" | grep -Eqi 'pip|install|wheel'
+      TEST5_COMMAND: |
+        test "$(uname -m)" = "aarch64"
+        python -m venv .megatron-core-smoke
+        . .megatron-core-smoke/bin/activate
+        python -m pip install --upgrade pip setuptools wheel
+        python -m pip install --only-binary=:all: "torch==2.5.1" packaging
+        python -m pip install --no-deps --only-binary=:all: "megatron-core==$BASELINE_VERSION"
+        python - <<'PY'
+        import os
+        import platform
+        from importlib.metadata import distribution, version
+
+        assert platform.machine() == "aarch64"
+        installed = version("megatron-core")
+        if installed != os.environ["BASELINE_VERSION"]:
+            raise SystemExit(f"installed Megatron-Core {installed}, expected {os.environ['BASELINE_VERSION']}")
+
+        dist = distribution("megatron-core")
+        config_path = dist.locate_file("megatron/core/model_parallel_config.py")
+        namespace = {"__name__": "megatron_core_config_probe"}
+        exec(compile(config_path.read_text(encoding="utf-8"), str(config_path), "exec"), namespace)
+        cfg_class = namespace["ModelParallelConfig"]
+        cfg = cfg_class(
+            tensor_model_parallel_size=1,
+            pipeline_model_parallel_size=1,
+            sequence_parallel=False,
+        )
+        if cfg.tensor_model_parallel_size != 1 or cfg.pipeline_model_parallel_size != 1:
+            raise SystemExit("Megatron-Core ModelParallelConfig did not retain CPU-side settings")
+        print(f"megatron-core-arm-preflight-ok: {installed}")
+        PY
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'NVIDIA Megatron-Core'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11 for Megatron-Core Arm wheels
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=megatron-core" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/linux/opensource_packages/megatron-core" >> "$GITHUB_OUTPUT"
+
+      - name: Bootstrap baseline dependencies
+        uses: ./.github/actions/apt-bootstrap
+        with:
+          packages: "git curl jq tar unzip file ca-certificates"
+          extra_packages: "${{ env.EXTRA_APT_PACKAGES }}"
+          quiet: "true"
+
+      - name: Install baseline source or artifact
+        id: install
+        run: |
+          set -euo pipefail
+          rm -rf baseline-src baseline-external
+          mkdir -p baseline-src baseline-external
+          if [ -n "$GITHUB_REPO" ]; then
+            RESOLVED_TAG=""
+            CANDIDATE_TAGS="$BASELINE_VERSION|v$BASELINE_VERSION"
+            if [ -n "${EXTRA_TAG_CANDIDATES:-}" ]; then
+              CANDIDATE_TAGS="${CANDIDATE_TAGS}|${EXTRA_TAG_CANDIDATES}"
+            fi
+            OLD_IFS="$IFS"
+            IFS='|'
+            for CANDIDATE in $CANDIDATE_TAGS; do
+              [ -n "$CANDIDATE" ] || continue
+              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
+                RESOLVED_TAG="$CANDIDATE"
+                break
+              fi
+            done
+            IFS="$OLD_IFS"
+            if [ -n "$RESOLVED_TAG" ]; then
+              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
+              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
+            else
+              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
+              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
+            fi
+            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
+              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
+              echo "install_status=success" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
+            {
+              echo "download=$DOWNLOAD_URL"
+              echo "homepage=$HOMEPAGE_URL"
+              echo "docs=$OFFICIAL_DOCS"
+            } > baseline-external/metadata.txt
+            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
+            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
+          echo "install_status=failed" >> "$GITHUB_OUTPUT"
+          exit 1
+      - name: Get baseline version
+        id: version
+        run: |
+          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected baseline version: $BASELINE_VERSION"
+
+      - name: Test 1 - Check package-specific baseline markers
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          RESOLVED_TAG="${{ steps.install.outputs.resolved_tag || '' }}"
+          INSTALL_STATUS="${{ steps.install.outputs.install_status || 'failed' }}"
+          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+          if [ "$INSTALL_STATUS" != "success" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+          fi
+          eval "$TEST1_COMMAND"
+          if [ "$MODE" = "github_source" ] && [ "$RESOLVED_TAG" = "default_branch" ]; then
+            echo "note=Upstream source smoke used the default branch because no exact source tag matched the published baseline version." >> "$GITHUB_OUTPUT"
+          fi
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+      - name: Test 2 - Check package-specific version and release evidence
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          RESOLVED_TAG="${{ steps.install.outputs.resolved_tag || '' }}"
+          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+          fi
+          if [ -n "${TEST2_COMMAND:-}" ]; then
+            eval "$TEST2_COMMAND"
+          else
+            export DOC_PATH BASELINE_VERSION DOWNLOAD_URL
+            python3 -c "from pathlib import Path; import os; text=Path(os.environ['DOC_PATH']).read_text(); version=os.environ['BASELINE_VERSION']; download=os.environ['DOWNLOAD_URL']; assert f'version_number: {version}' in text; assert f'download_url: {download}' in text"
+          fi
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+      - name: Test 3 - Check package-specific docs and entrypoints
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+          fi
+          eval "$TEST3_COMMAND"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+          test "$(uname -m)" = "aarch64"
+          grep -Fq "works_on_arm: true" "$DOC_PATH"
+          if [ -n "${TEST4_COMMAND:-}" ]; then
+            eval "$TEST4_COMMAND"
+          fi
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+      - name: Test 5 - Run bounded package-specific smoke
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+          fi
+          eval "$TEST5_COMMAND"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+      - name: Test 6 - Regression Validation
+        id: test6
+        uses: ./.github/actions/generic-source-regression-check
+        with:
+          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
+          github_repo: ${{ env.GITHUB_REPO }}
+          lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            test "$(uname -m)" = "aarch64"
+            test -d next-src/megatron/core
+            python -m venv .megatron-core-next-smoke
+            . .megatron-core-next-smoke/bin/activate
+            python -m pip install --upgrade pip setuptools wheel
+            python -m pip install --only-binary=:all: "torch==2.5.1" packaging
+            python -m pip install --no-deps --only-binary=:all: "megatron-core==$LATEST_VERSION"
+            python - <<'PY'
+            import os
+            import platform
+            from importlib.metadata import distribution, version
+
+            assert platform.machine() == "aarch64"
+            installed = version("megatron-core")
+            if installed != os.environ["LATEST_VERSION"]:
+                raise SystemExit(f"installed Megatron-Core {installed}, expected {os.environ['LATEST_VERSION']}")
+
+            dist = distribution("megatron-core")
+            config_path = dist.locate_file("megatron/core/model_parallel_config.py")
+            namespace = {"__name__": "megatron_core_config_probe"}
+            exec(compile(config_path.read_text(encoding="utf-8"), str(config_path), "exec"), namespace)
+            cfg_class = namespace["ModelParallelConfig"]
+            cfg = cfg_class(
+                tensor_model_parallel_size=1,
+                pipeline_model_parallel_size=1,
+                sequence_parallel=False,
+            )
+            if cfg.tensor_model_parallel_size != 1 or cfg.pipeline_model_parallel_size != 1:
+                raise SystemExit("Megatron-Core next ModelParallelConfig did not retain CPU-side settings")
+            print(f"megatron-core-next-arm-preflight-ok: {installed}")
+            PY
+          limited_cpu_description: "Test 6 limited_cpu_smoke_validated: cloned the pinned Megatron-Core next candidate and installed/imported the matching Arm64 PyPI wheel, then instantiated ModelParallelConfig on the Arm runner. This is CPU-side API/config evidence only; no distributed or GPU training execution is claimed."
+          next_version_override: "0.12.0"
+          candidate_tag_override: "core_v0.12.0"
+
+      - name: Calculate test summary
+        id: summary
+        if: always()
+        run: |
+          T1="${{ steps.test1.outputs.status || '' }}"
+          T2="${{ steps.test2.outputs.status || '' }}"
+          T3="${{ steps.test3.outputs.status || '' }}"
+          T4="${{ steps.test4.outputs.status || '' }}"
+          T5="${{ steps.test5.outputs.status || '' }}"
+          T6="${{ steps.test6.outputs.status || '' }}"
+          D1="${{ steps.test1.outputs.duration || '0' }}"
+          D2="${{ steps.test2.outputs.duration || '0' }}"
+          D3="${{ steps.test3.outputs.duration || '0' }}"
+          D4="${{ steps.test4.outputs.duration || '0' }}"
+          D5="${{ steps.test5.outputs.duration || '0' }}"
+          D6="${{ steps.test6.outputs.duration || '0' }}"
+          PASSED=0
+          FAILED=0
+          SKIPPED=0
+          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
+            if [ "$STATUS" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$STATUS" = "failed" ]; then
+              FAILED=$((FAILED + 1))
+            else
+              SKIPPED=$((SKIPPED + 1))
+            fi
+          done
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          CORE_FAILED=0
+          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
+            if [ "$STATUS" = "failed" ]; then
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          done
+          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+            OVERALL_STATUS="success"
+            BADGE_STATUS="passing"
+          else
+            OVERALL_STATUS="failure"
+            BADGE_STATUS="failing"
+          fi
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
+          echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"

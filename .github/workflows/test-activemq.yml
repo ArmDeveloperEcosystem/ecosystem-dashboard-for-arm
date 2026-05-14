@@ -1,0 +1,380 @@
+name: Test ActiveMQ on Arm64
+
+on:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-activemq.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-activemq.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-activemq.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-activemq.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-activemq.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-activemq.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-activemq.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-activemq.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-activemq.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-activemq.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-activemq.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-activemq.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-activemq.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-activemq.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-activemq.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-activemq.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-activemq.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-activemq.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-activemq.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-activemq.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-activemq.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-activemq.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-activemq.outputs.timestamp }}
+jobs:
+  test-activemq:
+    runs-on: ubuntu-24.04-arm
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'ActiveMQ'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=activemq" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/activemq" >> "$GITHUB_OUTPUT"
+      - name: Install ActiveMQ
+        id: install
+        run: |
+          set -e
+          echo "Installing ActiveMQ from Ubuntu packages..."
+
+          sudo apt-get update
+          # Install Java + ActiveMQ (classic)
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            default-jre-headless \
+            activemq
+
+          # Find activemq binary
+          ACTIVEMQ_BIN=$(command -v activemq || dpkg -L activemq | grep '/bin/activemq$' | head -1 || true)
+
+          if [ -z "$ACTIVEMQ_BIN" ]; then
+            echo "✗ Could not find activemq binary after installation"
+            dpkg -L activemq || true
+            echo "install_status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          if [ ! -x "$ACTIVEMQ_BIN" ]; then
+            echo "✗ activemq binary exists but is not executable: $ACTIVEMQ_BIN"
+            ls -l "$ACTIVEMQ_BIN" || true
+            echo "install_status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "✓ ActiveMQ installed; binary at: $ACTIVEMQ_BIN"
+
+          # Export for later steps
+          echo "ACTIVEMQ_BIN=$ACTIVEMQ_BIN" >> $GITHUB_ENV
+
+          echo "install_status=success" >> $GITHUB_OUTPUT
+
+      # ============================================================
+      # Get ActiveMQ version (via dpkg, not CLI)
+      # ============================================================
+      - name: Get ActiveMQ version
+        id: version
+        run: |
+          VERSION=$(dpkg-query -W -f='${Version}\n' activemq 2>/dev/null | head -1 || true)
+
+          if [ -z "$VERSION" ]; then
+            VERSION="unknown"
+          fi
+
+          echo "Detected ActiveMQ (package) version: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      # ============================================================
+      # Tests (5 meaningful smoke tests)
+      # ============================================================
+
+      - name: Test 1 - Check activemq binary exists and is executable
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+
+          ACTIVEMQ_BIN="${ACTIVEMQ_BIN:-$(command -v activemq || true)}"
+
+          if [ -n "$ACTIVEMQ_BIN" ] && [ -x "$ACTIVEMQ_BIN" ]; then
+            echo "✓ activemq binary found and is executable: $ACTIVEMQ_BIN"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ activemq binary missing or not executable (ACTIVEMQ_BIN='$ACTIVEMQ_BIN')"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+            fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 2 - Check ActiveMQ package is installed (dpkg status)
+        id: test2
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+
+          if dpkg -s activemq 2>/dev/null | grep -q '^Status: install ok installed'; then
+            echo "✓ activemq package is installed (dpkg status OK)"
+            dpkg -s activemq | grep '^Version' || true
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ activemq package not in 'install ok installed' state"
+            dpkg -s activemq || true
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+            fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 3 - Check 'activemq --help' output
+        id: test3
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+
+          ACTIVEMQ_BIN="${ACTIVEMQ_BIN:-$(command -v activemq || true)}"
+          if [ -z "$ACTIVEMQ_BIN" ]; then
+            echo "✗ ACTIVEMQ_BIN not set and 'activemq' not on PATH"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+            fi
+
+          OUTPUT=$("$ACTIVEMQ_BIN" --help 2>&1 || true)
+          echo "$OUTPUT"
+
+          if echo "$OUTPUT" | grep -qi 'usage\|help\|ActiveMQ'; then
+            echo "✓ 'activemq --help' printed usage/help text"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ 'activemq --help' did not print expected usage/help text"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+            fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 4 - Check Java dependency
+        id: test4
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+
+          if command -v java &> /dev/null && java -version &> /dev/null; then
+            echo "✓ java is available and 'java -version' works"
+            java -version || true
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ java is not available or 'java -version' failed"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+            fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 5 - Check ActiveMQ has configuration files under /etc
+        id: test5
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          # Functional Validation
+
+          CONF_FILES=$(dpkg -L activemq 2>/dev/null | grep '^/etc/' || true)
+
+          if [ -n "$CONF_FILES" ]; then
+            echo "✓ ActiveMQ has configuration files under /etc:"
+            echo "$CONF_FILES"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ No ActiveMQ-owned configuration files found under /etc"
+            dpkg -L activemq || true
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+            fi
+
+          # Architecture Verification
+          ARCH=$(uname -m)
+          if [ "$ARCH" != "aarch64" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      # ============================================================
+      # Calculate test summary
+
+      - name: Regression applicability - package manager installed
+        id: test6
+        run: |
+          set -euo pipefail
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
+          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
+          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+
+          # Check activemq binary exists and is executable
+          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+
+          # Check ActiveMQ package is installed (dpkg status)
+          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+
+          # Check 'activemq --help' output
+          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
+
+          # Check Java dependency
+          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
+
+          # Check ActiveMQ has configuration files under /etc
+          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
+
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+
+          if [ $FAILED -eq 0 ]; then
+            echo "overall_status=success" >> $GITHUB_OUTPUT
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
+            echo "overall_status=failure" >> $GITHUB_OUTPUT
+            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## ActiveMQ Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check activemq binary exists and is executable: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check activemq package dpkg status: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Check 'activemq --help' output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "4. Check Java dependency: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Check ActiveMQ has configuration files under /etc: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+

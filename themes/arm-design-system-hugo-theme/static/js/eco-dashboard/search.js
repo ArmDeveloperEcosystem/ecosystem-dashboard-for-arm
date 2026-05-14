@@ -58,6 +58,120 @@ function normalizePackageName(input) {
         .toLowerCase();                 // Convert to lowercase
 }
 
+function shouldUseTrailingSlashForPackageUrl() {
+    const currentHost = window.location.hostname.toLowerCase();
+    return currentHost.includes('cloudfront.net');
+}
+
+function getDashboardPath(dashboardPath) {
+    let normalizedPath = dashboardPath;
+
+    if (!normalizedPath) {
+        normalizedPath = window.location.pathname;
+    }
+
+    if (!normalizedPath) {
+        return '/';
+    }
+
+    normalizedPath = normalizedPath.trim();
+    if (!normalizedPath.startsWith('/')) {
+        normalizedPath = '/' + normalizedPath;
+    }
+
+    normalizedPath = normalizedPath.replace(/\/+$/, '') || '/';
+
+    if (normalizedPath !== '/' && shouldUseTrailingSlashForPackageUrl()) {
+        normalizedPath = normalizedPath + '/';
+    }
+
+    return normalizedPath;
+}
+
+function normalizeDashboardUrlInAddressBar() {
+    const currentPath = window.location.pathname;
+    if (!currentPath || currentPath === '/') {
+        return;
+    }
+
+    let normalizedPath = currentPath.replace(/\/+$/, '') || '/';
+    if (normalizedPath !== '/' && shouldUseTrailingSlashForPackageUrl()) {
+        normalizedPath = normalizedPath + '/';
+    }
+
+    if (normalizedPath === currentPath) {
+        return;
+    }
+
+    window.history.replaceState(
+        window.history.state,
+        '',
+        normalizedPath + window.location.search + window.location.hash
+    );
+}
+  
+function buildPackageDashboardUrl(packageSlug, dashboardPath) {
+    const packageUrl = new URL(window.location.href);
+
+    packageUrl.pathname = getDashboardPath(dashboardPath);
+    packageUrl.search = '';
+    packageUrl.hash = '';
+    packageUrl.searchParams.set('package', packageSlug);
+
+    return packageUrl.toString();
+}
+
+async function copyTextToClipboard(textToCopy) {
+    if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(textToCopy);
+        return;
+    }
+
+    const temporaryTextArea = document.createElement('textarea');
+    temporaryTextArea.value = textToCopy;
+    temporaryTextArea.setAttribute('readonly', '');
+    temporaryTextArea.style.position = 'absolute';
+    temporaryTextArea.style.left = '-9999px';
+
+    document.body.appendChild(temporaryTextArea);
+    temporaryTextArea.select();
+
+    const copySucceeded = document.execCommand('copy');
+    document.body.removeChild(temporaryTextArea);
+
+    if (!copySucceeded) {
+        throw new Error('Copy command failed.');
+    }
+}
+
+async function copyPackageUrl(button) {
+    const packageSlug = button.getAttribute('data-package-slug');
+    const dashboardPath = button.getAttribute('data-dashboard-path');
+    const label = button.querySelector('.package-url-copy-label');
+    const defaultLabel = 'Copy package URL';
+
+    if (!packageSlug || !label) {
+        return;
+    }
+
+    try {
+        const packageUrl = buildPackageDashboardUrl(packageSlug, dashboardPath);
+        await copyTextToClipboard(packageUrl);
+        label.textContent = 'Copied URL';
+        button.setAttribute('aria-label', 'Package URL copied');
+    } catch (error) {
+        console.error('Unable to copy package URL.', error);
+        label.textContent = 'Copy failed';
+        button.setAttribute('aria-label', 'Copy package URL failed');
+    }
+
+    window.clearTimeout(button.copyResetTimeout);
+    button.copyResetTimeout = window.setTimeout(() => {
+        label.textContent = defaultLabel;
+        button.setAttribute('aria-label', defaultLabel);
+    }, 2000);
+}
+
 
 
 function updatePageMetadata(package_dom) {
@@ -75,7 +189,8 @@ function updatePageMetadata(package_dom) {
     if (!does_it_woa) {
         social_description = "View "+pkg_name+" in the Software Ecosystem Dashboard for Arm and discover if it runs on Arm Linux servers (Aarch64) and alternative packages.";
     }
-    let new_cannonical = 'https://developer.arm.com/ecosystem-dashboard?package='+normalizePackageName(pkg_name).replaceAll('(','').replaceAll(')','').replaceAll('__','/');
+    let package_slug = package_dom.getAttribute('data-title-urlized');
+    let new_cannonical = buildPackageDashboardUrl(package_slug);
 
 
 
@@ -99,6 +214,11 @@ function updatePageMetadata(package_dom) {
     const canonical_link = document.querySelector('link[rel="canonical"]');
     if (canonical_link) {
         canonical_link.setAttribute('href',new_cannonical);
+    }
+
+    const ogUrl = document.querySelector('meta[property="og:url"]');
+    if (ogUrl) {
+        ogUrl.setAttribute('content', new_cannonical);
     }
 
     // Update descriptions
@@ -663,6 +783,8 @@ function ifNeededMoveFiltersToMobileOrDesktop(state_is_below_breakpoint) {
         5. Activates URL search/filters
 */
 document.addEventListener("DOMContentLoaded", function () {
+
+    normalizeDashboardUrlInAddressBar();
 
 
 

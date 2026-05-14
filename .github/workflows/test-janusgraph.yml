@@ -1,0 +1,486 @@
+name: Test JanusGraph on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-janusgraph.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-janusgraph.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-janusgraph.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-janusgraph.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-janusgraph.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-janusgraph.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-janusgraph.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-janusgraph.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-janusgraph.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-janusgraph.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-janusgraph.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-janusgraph.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-janusgraph.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-janusgraph.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-janusgraph.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-janusgraph.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-janusgraph.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-janusgraph.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-janusgraph.outputs.regression_policy }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-janusgraph.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-janusgraph.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-janusgraph.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-janusgraph.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-janusgraph.outputs.timestamp }}
+jobs:
+  test-janusgraph:
+    runs-on: ubuntu-24.04-arm
+    env:
+      JANUSGRAPH_VERSION: "1.1.0"
+      JANUSGRAPH_HOME: /opt/janusgraph-smoke
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'JanusGraph'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=janusgraph" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/janusgraph" >> "$GITHUB_OUTPUT"
+      - name: Install JanusGraph
+        id: install
+        run: |
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "curl unzip openjdk-17-jre-headless python3"
+          curl -fsSL -o /tmp/janusgraph.zip "https://github.com/JanusGraph/janusgraph/releases/download/v${JANUSGRAPH_VERSION}/janusgraph-${JANUSGRAPH_VERSION}.zip"
+          sudo rm -rf "${JANUSGRAPH_HOME}"
+          sudo unzip -qo /tmp/janusgraph.zip -d /opt
+          sudo mv "/opt/janusgraph-${JANUSGRAPH_VERSION}" "${JANUSGRAPH_HOME}"
+
+          if [ -x "${JANUSGRAPH_HOME}/bin/gremlin.sh" ] && [ -x "${JANUSGRAPH_HOME}/bin/janusgraph-server.sh" ]; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Get JanusGraph version
+        id: version
+        run: |
+          set -euo pipefail
+          export JANUSGRAPH_VERSION
+          export GITHUB_TOKEN="${{ github.token }}"
+          NEXT="$(
+            python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import urllib.request
+
+          current = os.environ.get("JANUSGRAPH_VERSION", "")
+          if not re.fullmatch(r"\d+\.\d+\.\d+", current):
+              print("")
+              raise SystemExit(0)
+
+          request = urllib.request.Request(
+              "https://api.github.com/repos/JanusGraph/janusgraph/releases?per_page=100",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "arm-smoke-tests",
+              },
+          )
+          token = os.environ.get("GITHUB_TOKEN", "").strip()
+          if token:
+              request.add_header("Authorization", f"Bearer {token}")
+
+          try:
+              releases = json.load(urllib.request.urlopen(request, timeout=20))
+          except Exception as exc:
+              print(f"JanusGraph release lookup unavailable: {exc}", file=sys.stderr)
+              print("__LOOKUP_FAILED__")
+              raise SystemExit(0)
+
+          versions = []
+          for rel in releases:
+              if rel.get("draft") or rel.get("prerelease"):
+                  continue
+              raw = (rel.get("tag_name") or "").strip().lstrip("vV")
+              if re.fullmatch(r"\d+\.\d+\.\d+", raw):
+                  versions.append(tuple(int(x) for x in raw.split(".")))
+
+          versions = sorted(set(versions))
+          c = tuple(int(x) for x in current.split("."))
+          nxt = next(("{}.{}.{}".format(*v) for v in versions if v > c), "")
+          print(nxt)
+          PY
+          )"
+          echo "version=${JANUSGRAPH_VERSION}" >> "$GITHUB_OUTPUT"
+          if [ "${NEXT}" = "__LOOKUP_FAILED__" ]; then
+            echo "latest=unknown" >> "$GITHUB_OUTPUT"
+            echo "next=" >> "$GITHUB_OUTPUT"
+            echo "latest_lookup_status=failed" >> "$GITHUB_OUTPUT"
+          elif [ -n "${NEXT}" ]; then
+            echo "latest=${NEXT}" >> "$GITHUB_OUTPUT"
+            echo "next=${NEXT}" >> "$GITHUB_OUTPUT"
+            echo "latest_lookup_status=ok" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest=${JANUSGRAPH_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "next=" >> "$GITHUB_OUTPUT"
+            echo "latest_lookup_status=ok" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Test 1 - Artifact Existence
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ -x "${JANUSGRAPH_HOME}/bin/gremlin.sh" ] && [ -f "${JANUSGRAPH_HOME}/conf/janusgraph-inmemory.properties" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Version Check
+        id: test2
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ -f "${JANUSGRAPH_HOME}/lib/janusgraph-core-${JANUSGRAPH_VERSION}.jar" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Help Output Validation
+        id: test3
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if "${JANUSGRAPH_HOME}/bin/gremlin.sh" -h 2>&1 | grep -qi "usage"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          printf "%s\n" \
+            "graph = JanusGraphFactory.open('conf/janusgraph-inmemory.properties')" \
+            "g = graph.traversal()" \
+            "v = g.addV('person').property('name', 'arm').next()" \
+            "println(g.V(v).values('name').next())" \
+            "graph.close()" \
+            "System.exit(0)" \
+            > /tmp/janusgraph-smoke.groovy
+          OUTPUT=$("${JANUSGRAPH_HOME}/bin/gremlin.sh" -e /tmp/janusgraph-smoke.groovy 2>&1 | tail -n 20 || true)
+          if echo "$OUTPUT" | grep -qx "arm"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "$OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          NEXT="${{ steps.version.outputs.next || '' }}"
+          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+          LOOKUP_STATUS="${{ steps.version.outputs.latest_lookup_status || 'ok' }}"
+          NEXT_URL="https://github.com/JanusGraph/janusgraph/releases/download/v${LATEST}/janusgraph-${LATEST}.zip"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "$LOOKUP_STATUS" != "ok" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_deferred" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup deferred on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned JanusGraph version $CURRENT passed smoke tests in this run, but the GitHub Releases API lookup was unavailable or rate-limited, so no honest next-version install claim is made." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup deferred on Arm64"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "$NEXT" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned JanusGraph version $CURRENT already matches the newest public stable JanusGraph release stream, so there is no newer stable upstream candidate for a genuine Test 6 upgrade check." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: No newer stable release available for Test 6"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ] || [ "$LATEST" = "not_yet_checked" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned JanusGraph version $CURRENT passed smoke tests in this run, but the next stable version could not be resolved for Arm64 install validation." >> "$GITHUB_OUTPUT"
+            echo "Next version download status: failed"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          TMPDIR=$(mktemp -d)
+          cleanup() {
+            rm -rf "$TMPDIR"
+          }
+          trap cleanup EXIT
+          ARCHIVE_NAME=$(basename "${NEXT_URL%%\?*}")
+          ARCHIVE_PATH="$TMPDIR/$ARCHIVE_NAME"
+
+          if curl -fsSL "$NEXT_URL" -o "$ARCHIVE_PATH"; then
+            echo "Next version download status: passed"
+          else
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned JanusGraph version $CURRENT passed smoke tests in this run, but the candidate artifact $NEXT_URL could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version download status: failed"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          case "$ARCHIVE_NAME" in
+            *.tar.gz|*.tgz)
+              tar -xzf "$ARCHIVE_PATH" -C "$TMPDIR"
+              ;;
+            *.tar.xz)
+              tar -xJf "$ARCHIVE_PATH" -C "$TMPDIR"
+              ;;
+            *.zip)
+              unzip -q "$ARCHIVE_PATH" -d "$TMPDIR"
+              ;;
+            *)
+              chmod +x "$ARCHIVE_PATH" || true
+              ;;
+          esac
+
+          NEXT_INSTALLED_VERSION="$LATEST"
+          echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+          echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Current pinned JanusGraph version $CURRENT passed smoke tests in this run. Regression validation downloaded and prepared the next newer Arm64 artifact from $NEXT_URL successfully." >> "$GITHUB_OUTPUT"
+          echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
+          echo "Regression install result: Next version installed successfully on Arm64"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression validation result unavailable' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+          CORE_FAILED=0
+          REGRESSION_FAILED=0
+
+          check_test() {
+            local status="$1"
+            local duration="$2"
+            local kind="$3"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              if [ "$kind" = "core" ]; then
+                CORE_FAILED=1
+              else
+                REGRESSION_FAILED=1
+              fi
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_test "${{ steps.test1.outputs.status || 'skipped' }}" "${{ steps.test1.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test2.outputs.status || 'skipped' }}" "${{ steps.test2.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test3.outputs.status || 'skipped' }}" "${{ steps.test3.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test4.outputs.status || 'skipped' }}" "${{ steps.test4.outputs.duration || 0 }}" "core"
+          check_test "${{ steps.test5.outputs.status || 'skipped' }}" "${{ steps.test5.outputs.duration || 0 }}" "core"
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          if [ "$TEST6_STATUS" = "passed" ] || [ "$TEST6_STATUS" = "failed" ]; then
+            check_test "$TEST6_STATUS" "${{ steps.test6.outputs.duration || 0 }}" "regression"
+          else
+            TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+          fi
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          if [ $CORE_FAILED -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ $CORE_FAILED -eq 0 ] && [ $REGRESSION_FAILED -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          {
+            echo "## JanusGraph Arm64 Smoke Test Summary"
+            echo ""
+            echo "- Version tested: \`${{ steps.version.outputs.version }}\`"
+            echo "- Overall status: \`${{ steps.summary.outputs.overall_status }}\`"
+            echo ""
+            echo "| Test | Status | Duration (s) |"
+            echo "| --- | --- | ---: |"
+            echo "| Test 1 - Artifact Existence | ${{ steps.test1.outputs.status || 'skipped' }} | ${{ steps.test1.outputs.duration || 0 }} |"
+            echo "| Test 2 - Version Check | ${{ steps.test2.outputs.status || 'skipped' }} | ${{ steps.test2.outputs.duration || 0 }} |"
+            echo "| Test 3 - Help Output Validation | ${{ steps.test3.outputs.status || 'skipped' }} | ${{ steps.test3.outputs.duration || 0 }} |"
+            echo "| Test 4 - Architecture Verification | ${{ steps.test4.outputs.status || 'skipped' }} | ${{ steps.test4.outputs.duration || 0 }} |"
+            echo "| Test 5 - Functional Validation | ${{ steps.test5.outputs.status || 'skipped' }} | ${{ steps.test5.outputs.duration || 0 }} |"
+            echo "| Test 6 - Regression Validation | ${{ steps.test6.outputs.status || 'skipped' }} | ${{ steps.test6.outputs.duration || 0 }} |"
+            echo ""
+            echo "### Regression Validation (Next Version Install)"
+            echo ""
+            echo "- **Current version tested in Tests 1-5:** \`${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}\`"
+            echo "- **Next version targeted for install validation:** \`${{ steps.test6.outputs.latest_version || 'unknown' }}\`"
+            echo "- **Next version installed on Arm64:** \`${{ steps.test6.outputs.next_installed_version || 'not_installed' }}\`"
+            echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression validation result unavailable' }}"
+            echo "- **Details:** ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+          } >> "$GITHUB_STEP_SUMMARY"

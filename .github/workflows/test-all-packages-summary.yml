@@ -1,0 +1,1120 @@
+name: Global Test Summary (All Batches)
+
+concurrency:
+  group: global-summary
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_time:
+        description: "UTC timestamp captured by the orchestrator before dispatching batches"
+        required: true
+        default: ""
+      triggering_batch:
+        description: "Name of the workflow that triggered this summary (optional)"
+        required: false
+        default: ""
+
+jobs:
+  global-summary:
+    name: Generate Global Summary
+    runs-on: ubuntu-24.04-arm
+    if: always()
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - name: Pull latest branch state
+        run: |
+          echo "Pulling latest branch state..."
+          for i in {1..10}; do
+            if git pull --rebase origin "${{ github.ref_name }}"; then
+              echo "✅ Successfully pulled latest branch state"
+              exit 0
+            fi
+            echo "❌ Pull failed, retrying in 5s... (Attempt $i/10)"
+            sleep 5
+          done
+          echo "⚠️ Failed to pull latest branch state after 10 attempts. Proceeding with local checkout."
+
+      - name: Download batch artifacts
+        id: download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          START_TIME: ${{ inputs.start_time }}
+        run: |
+          if [ -z "$START_TIME" ]; then
+            echo "❌ Error: start_time input is required to locate the correct batch runs."
+            exit 1
+          fi
+
+          mkdir -p downloaded-results
+          DOWNLOADED_BATCHES=0
+          : > downloaded-results/.batch-runs.tsv
+
+          find_run_id() {
+            local workflow="$1"
+            gh run list \
+              --workflow "$workflow" \
+              --branch "${{ github.ref_name }}" \
+              --json databaseId,createdAt \
+              --limit 50 \
+              --jq ".[] | select(.createdAt >= \"$START_TIME\") | .databaseId" | head -n 1
+          }
+
+          for i in {1..21}; do
+            WORKFLOW="test-all-packages-batch${i}.yml"
+            ARTIFACT="batch${i}-test-results"
+            DEST="downloaded-results/batch${i}"
+            mkdir -p "$DEST"
+
+            RUN_ID=""
+            for attempt in {1..10}; do
+              RUN_ID=$(find_run_id "$WORKFLOW" || true)
+              if [ -n "$RUN_ID" ]; then
+                break
+              fi
+              echo "⚠️ Waiting for run registration for $WORKFLOW (attempt $attempt/10)..."
+              sleep 10
+            done
+
+            if [ -z "$RUN_ID" ]; then
+              echo "⚠️ Warning: Could not find a batch run for $WORKFLOW after $START_TIME."
+              continue
+            fi
+
+            echo "📥 Downloading $ARTIFACT from run $RUN_ID..."
+            if gh run download "$RUN_ID" -n "$ARTIFACT" -D "$DEST"; then
+              DOWNLOADED_BATCHES=$((DOWNLOADED_BATCHES + 1))
+              printf "%s\t%s\t%s\t%s\n" "$i" "$RUN_ID" "$WORKFLOW" "$ARTIFACT" >> downloaded-results/.batch-runs.tsv
+            else
+              echo "⚠️ Warning: Failed to download $ARTIFACT from run $RUN_ID."
+            fi
+          done
+
+          echo "downloaded_batches=$DOWNLOADED_BATCHES" >> $GITHUB_OUTPUT
+
+      - name: Build canonical package map
+        id: canonical
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          package_map = {}
+          package_roots = [
+              Path("content/linux/opensource_packages"),
+              Path("content/opensource_packages"),
+          ]
+          for package_root in package_roots:
+              if not package_root.exists():
+                  continue
+              for md_path in sorted(package_root.glob("*.md")):
+                  if md_path.name == "_index.md":
+                      continue
+                  package_map.setdefault(md_path.stem.lower(), md_path.stem)
+
+          Path(".summary-package-map.json").write_text(json.dumps(package_map, indent=2, sort_keys=True) + "\n")
+          print(f"Built canonical package map for {len(package_map)} package pages.")
+          PY
+
+      - name: Assemble candidate and previous-production staging sets
+        id: assemble
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import shutil
+          from pathlib import Path
+          import yaml
+
+          package_map = json.loads(Path(".summary-package-map.json").read_text())
+          stage_root = Path(".summary-staging")
+          candidate_dir = stage_root / "candidate-test-results"
+          previous_dir = stage_root / "previous-production-test-results"
+
+          if stage_root.exists():
+              shutil.rmtree(stage_root)
+          candidate_dir.mkdir(parents=True, exist_ok=True)
+          previous_dir.mkdir(parents=True, exist_ok=True)
+
+          existing_dir = Path("data/test-results")
+          downloaded_dir = Path("downloaded-results")
+          batch_runs_path = downloaded_dir / ".batch-runs.tsv"
+          gh_token = os.environ.get("GH_TOKEN", "").strip()
+          github_server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+          github_repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
+
+          counters = {
+              "malformed": 0,
+              "previous": 0,
+              "candidate": 0,
+              "synthesized": 0,
+          }
+          previous_payloads = {}
+
+          def canonical_slug(raw_slug: str, fallback_stem: str) -> str:
+              for candidate in (raw_slug, fallback_stem):
+                  if candidate:
+                      value = str(candidate).strip()
+                      if value:
+                          return package_map.get(value.lower(), value)
+              return fallback_stem
+              return fallback_stem
+
+          def write_canonical(source_path: Path, target_dir: Path, counter_key: str) -> None:
+              try:
+                  payload = json.loads(source_path.read_text())
+              except Exception:
+                  print(f"⚠️ Skipping malformed result artifact: {source_path}")
+                  counters["malformed"] += 1
+                  return
+
+              metadata = payload.setdefault("metadata", {})
+              canonical = canonical_slug(metadata.get("package_slug"), source_path.stem)
+              metadata["package_slug"] = canonical
+              target_path = target_dir / f"{canonical}.json"
+              target_path.write_text(json.dumps(payload, indent=2) + "\n")
+              counters[counter_key] += 1
+              if counter_key == "previous":
+                  previous_payloads[canonical] = payload
+
+          for source in sorted(existing_dir.glob("*.json")):
+              write_canonical(source, previous_dir, "previous")
+
+          for source in sorted(downloaded_dir.rglob("*.json")):
+              write_canonical(source, candidate_dir, "candidate")
+
+          job_cache = {}
+
+          def fetch_jobs(run_id: str):
+              if run_id in job_cache:
+                  return job_cache[run_id]
+              if not gh_token or not github_repository:
+                  job_cache[run_id] = []
+                  return []
+              try:
+                  raw = subprocess.check_output(
+                      [
+                          "gh",
+                          "api",
+                          f"repos/{github_repository}/actions/runs/{run_id}/jobs?per_page=100",
+                      ],
+                      text=True,
+                      env={**os.environ, "GH_TOKEN": gh_token},
+                  )
+                  jobs = json.loads(raw).get("jobs", [])
+              except Exception:
+                  jobs = []
+              job_cache[run_id] = jobs
+              return jobs
+
+          def resolve_expected_job(run_id: str, job_name: str, slug: str):
+              batch_run_url = f"{github_server}/{github_repository}/actions/runs/{run_id}" if github_repository else ""
+              jobs = fetch_jobs(run_id)
+              if not jobs:
+                  return batch_run_url, "batch_run_fallback"
+              by_name = {}
+              for job in jobs:
+                  name = str(job.get("name") or "").strip()
+                  html_url = str(job.get("html_url") or "").strip()
+                  if name and html_url:
+                      by_name[name.lower()] = html_url
+              candidates = [
+                  job_name,
+                  f"{job_name} / {job_name}",
+                  f"test-{slug}",
+                  f"test-{slug} / test-{slug}",
+              ]
+              for candidate in candidates:
+                  url = by_name.get(candidate.lower())
+                  if url:
+                      return url, "central_exact"
+              return batch_run_url, "batch_run_fallback"
+
+          if batch_runs_path.exists():
+              for raw_line in batch_runs_path.read_text().splitlines():
+                  if not raw_line.strip():
+                      continue
+                  batch_number, run_id, workflow_name, artifact_name = raw_line.split("\t", 3)
+                  batch_title = f"Batch {batch_number}"
+                  workflow_path = Path(".github/workflows") / workflow_name
+                  if not workflow_path.exists():
+                      continue
+                  workflow = yaml.safe_load(workflow_path.read_text()) or {}
+                  jobs = workflow.get("jobs") or {}
+                  expected = []
+                  for job_name, job_def in jobs.items():
+                      if job_name == "summary":
+                          continue
+                      uses = str((job_def or {}).get("uses") or "")
+                      if uses.startswith("./.github/workflows/test-") and uses.endswith(".yml"):
+                          stem = Path(uses).stem.replace("test-", "", 1)
+                          slug = canonical_slug(stem, stem)
+                          expected.append((slug, job_name))
+
+                  for slug, job_name in expected:
+                      target_path = candidate_dir / f"{slug}.json"
+                      if target_path.exists():
+                          continue
+
+                      previous = previous_payloads.get(slug, {})
+                      package = previous.get("package") or {}
+                      metadata = previous.get("metadata") or {}
+                      version = str((package.get("version") or "unknown")).strip() or "unknown"
+                      package_name = str((package.get("name") or slug)).strip() or slug
+                      dashboard_link = str((metadata.get("dashboard_link") or f"/linux/opensource_packages/{slug}")).strip()
+                      if dashboard_link.startswith("/opensource_packages/"):
+                          dashboard_link = dashboard_link.replace("/opensource_packages/", "/linux/opensource_packages/", 1)
+                      run_url, resolution_state = resolve_expected_job(run_id, job_name, slug)
+
+                      payload = {
+                          "schema_version": "2.0",
+                          "package": {
+                              "name": package_name,
+                              "version": version,
+                          },
+                          "run": {
+                              "id": str(run_id),
+                              "attempt": "1",
+                              "url": run_url,
+                              "timestamp": "",
+                              "status": "failure",
+                              "runner": {
+                                  "os": "ubuntu-24.04",
+                                  "arch": "arm64",
+                              },
+                              "job_name": f"{job_name} / {job_name}",
+                          },
+                          "tests": {
+                              "passed": 0,
+                              "failed": 0,
+                              "skipped": 0,
+                              "duration_seconds": 0,
+                              "details": [],
+                          },
+                          "metadata": {
+                              "contract_version": "missing",
+                              "package_slug": slug,
+                              "dashboard_link": dashboard_link,
+                              "badge_status": "failing",
+                              "core_failed": 1,
+                              "batch_title": batch_title,
+                              "job_url_resolution_status": resolution_state,
+                              "regression_applicability": "not_configured",
+                              "regression_reason": "result_not_emitted",
+                              "regression_note": "Workflow did not emit a terminal result JSON for this package in the current batch run.",
+                              "synthesis_state": "synthesized_missing_current_run_result",
+                          },
+                      }
+                      target_path.write_text(json.dumps(payload, indent=2) + "\n")
+                      counters["candidate"] += 1
+                      counters["synthesized"] += 1
+
+          candidate_count = len(list(candidate_dir.glob("*.json")))
+          previous_count = len(list(previous_dir.glob("*.json")))
+          metrics = Path(".summary-staging/assemble-metrics.env")
+          metrics.write_text(
+              "\n".join(
+                  [
+                      f"json_count={candidate_count}",
+                      f"malformed_count={counters['malformed']}",
+                      f"candidate_count={candidate_count}",
+                      f"previous_count={previous_count}",
+                      f"synthesized_count={counters['synthesized']}",
+                  ]
+              )
+              + "\n"
+          )
+
+          print(
+              f"Prepared {candidate_count} candidate package results and "
+              f"{previous_count} previous-production package results "
+              f"({counters['malformed']} malformed artifacts skipped, "
+              f"{counters['synthesized']} synthesized missing-package failures)."
+          )
+          PY
+
+          cat .summary-staging/assemble-metrics.env >> "$GITHUB_OUTPUT"
+          source .summary-staging/assemble-metrics.env
+          echo "✅ Prepared ${candidate_count:-0} candidate staged result files and ${previous_count:-0} previous-production files."
+
+      - name: Validate candidate exact job URLs
+        if: always() && steps.assemble.outputs.json_count != '0'
+        id: normalize
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          data_dir = Path(".summary-staging/candidate-test-results")
+          job_cache = {}
+          updated = 0
+          unresolved = []
+          duplicate_url_map = {}
+          weak_urls = []
+          blocked_slugs = {}
+          exact_urls = 0
+
+          def normalize_runner(runner):
+              if isinstance(runner, dict):
+                  return runner
+
+              if not isinstance(runner, str):
+                  return runner
+
+              value = runner.strip()
+              lowered = value.lower()
+              known_suffixes = [
+                  ("-arm64", "arm64"),
+                  ("-aarch64", "arm64"),
+                  ("-amd64", "amd64"),
+                  ("-x86_64", "amd64"),
+                  ("-arm", "arm64"),
+              ]
+
+              for suffix, arch in known_suffixes:
+                  if lowered.endswith(suffix):
+                      os_value = value[: -len(suffix)]
+                      if os_value:
+                          return {"os": os_value, "arch": arch}
+
+              return {"os": value, "arch": "unknown"}
+
+          def load_jobs(run_id: str):
+              if run_id in job_cache:
+                  return job_cache[run_id]
+              try:
+                  raw = subprocess.check_output(
+                      [
+                          "gh",
+                          "api",
+                          f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run_id}/jobs?per_page=100",
+                      ],
+                      text=True,
+                  )
+                  jobs = json.loads(raw).get("jobs", [])
+              except Exception:
+                  jobs = []
+              job_cache[run_id] = jobs
+              return jobs
+
+          def resolve_job_url(run_id: str, package_slug: str, fallback_url: str) -> str:
+              jobs = load_jobs(run_id)
+              if not jobs:
+                  return fallback_url
+
+              slug = (package_slug or "").strip()
+              slug_candidates = {
+                  slug,
+                  slug.lower(),
+                  slug.replace("_", "-"),
+                  slug.replace("-", "_"),
+                  slug.lower().replace("_", "-"),
+                  slug.lower().replace("-", "_"),
+              }
+              expected_job_ids = {f"test-{candidate}".lower() for candidate in slug_candidates if candidate}
+
+              for job in jobs:
+                  name = (job.get("name") or "").strip()
+                  if not name:
+                      continue
+                  parts = [part.strip().lower() for part in name.split("/")]
+                  if "summary" in parts:
+                      continue
+                  if any(part in expected_job_ids for part in parts):
+                      html_url = (job.get("html_url") or "").strip()
+                      if html_url:
+                          return html_url
+
+              return fallback_url
+
+          for json_path in sorted(list(data_dir.glob("*.json"))):
+              try:
+                  payload = json.loads(json_path.read_text())
+              except Exception:
+                  weak_urls.append((json_path.name, "malformed_json", "malformed_json"))
+                  continue
+
+              package_slug = (
+                  str((payload.get("metadata") or {}).get("package_slug") or "").strip()
+                  or json_path.stem
+              )
+              payload.setdefault("metadata", {})["package_slug"] = package_slug
+              run = payload.get("run") or {}
+              schema_changed = False
+              legacy_workflow_url = str(run.get("workflow_url") or "").strip()
+              run_id = str(run.get("id") or "").strip()
+              if not run_id and legacy_workflow_url:
+                  match = re.search(r"/actions/runs/(\d+)", legacy_workflow_url)
+                  if match:
+                      run_id = match.group(1)
+                      payload.setdefault("run", {})["id"] = run_id
+                      schema_changed = True
+
+              current_url = str(run.get("url") or "").strip()
+              if not current_url and legacy_workflow_url:
+                  current_url = legacy_workflow_url
+
+              if legacy_workflow_url:
+                  payload.setdefault("run", {}).pop("workflow_url", None)
+                  schema_changed = True
+
+              runner_value = run.get("runner")
+              normalized_runner = normalize_runner(runner_value)
+              runner_changed = normalized_runner != runner_value
+
+              if runner_changed:
+                  payload["run"]["runner"] = normalized_runner
+
+              if not run_id:
+                  weak_urls.append((json_path.name, "missing_run_id", current_url or "missing_run_id"))
+                  blocked_slugs[package_slug] = "missing_run_id"
+                  if runner_changed or schema_changed:
+                      json_path.write_text(json.dumps(payload, indent=2) + "\n")
+                      updated += 1
+                  continue
+
+              exact_url = resolve_job_url(run_id, package_slug, current_url)
+              if exact_url != current_url or runner_changed or schema_changed:
+                  payload["run"]["url"] = exact_url
+                  json_path.write_text(json.dumps(payload, indent=2) + "\n")
+                  updated += 1
+
+              final_url = str((payload.get("run") or {}).get("url") or "").strip()
+              if re.search(r"/actions/runs/\d+/job/\d+$", final_url):
+                  exact_urls += 1
+                  duplicate_url_map.setdefault(final_url, []).append(json_path.stem)
+              else:
+                  weak_urls.append((json_path.name, run_id, final_url or "missing_url"))
+                  blocked_slugs[package_slug] = "job_url_unresolved"
+                  unresolved.append(f"{json_path.name}\t{run_id}\t{package_slug}")
+
+          duplicate_clusters = {
+              url: slugs for url, slugs in duplicate_url_map.items() if len(slugs) > 1
+          }
+
+          for url, slugs in duplicate_clusters.items():
+              for slug in slugs:
+                  blocked_slugs[slug] = f"duplicate_exact_job_url:{url}"
+
+          metrics = Path(".summary-staging/normalize-metrics.env")
+          metrics.write_text(
+              "\n".join(
+                  [
+                      f"normalized_count={updated}",
+                      f"exact_url_count={exact_urls}",
+                      f"weak_url_count={len(weak_urls)}",
+                      f"duplicate_url_count={len(duplicate_clusters)}",
+                      f"unresolved_count={len(unresolved)}",
+                  ]
+              )
+              + "\n"
+          )
+          Path(".summary-staging/normalize-report.json").write_text(
+              json.dumps(
+                  {
+                      "blocked_slugs": blocked_slugs,
+                      "weak_urls": weak_urls,
+                      "duplicate_clusters": duplicate_clusters,
+                      "unresolved": unresolved,
+                  },
+                  indent=2,
+                  sort_keys=True,
+              )
+              + "\n"
+          )
+
+          print(f"Normalized {updated} result URLs to exact job links.")
+          if weak_urls:
+              print("Weak or unresolved result URLs:")
+              for name, run_id, url in weak_urls[:50]:
+                  print(f" - {name}\t{run_id}\t{url}")
+          if duplicate_clusters:
+              print("Duplicate exact job URLs detected:")
+              for url, slugs in list(duplicate_clusters.items())[:50]:
+                  print(f" - {url} => {', '.join(sorted(slugs))}")
+          if unresolved:
+              print("Unable to resolve exact job links for:")
+              for name in unresolved[:50]:
+                  print(f" - {name}")
+          PY
+
+          cat .summary-staging/normalize-metrics.env >> "$GITHUB_OUTPUT"
+
+      - name: Promote validated candidate results into production data
+        if: always()
+        id: publish
+        run: |
+          python3 - <<'PY'
+          import json
+          import re
+          import shutil
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          stage_root = Path(".summary-staging")
+          previous_dir = stage_root / "previous-production-test-results"
+          candidate_dir = stage_root / "candidate-test-results"
+          publish_dir = stage_root / "publish-data-test-results"
+          publish_dir.mkdir(parents=True, exist_ok=True)
+
+          normalize_report_path = stage_root / "normalize-report.json"
+          normalize_report = {
+              "blocked_slugs": {},
+              "weak_urls": [],
+              "duplicate_clusters": {},
+              "unresolved": [],
+          }
+          if normalize_report_path.exists():
+              normalize_report = json.loads(normalize_report_path.read_text())
+
+          previous_payloads = {}
+          for json_path in sorted(previous_dir.glob("*.json")):
+              previous_payloads[json_path.stem] = json.loads(json_path.read_text())
+              shutil.copy2(json_path, publish_dir / json_path.name)
+
+          decisions = {}
+          promoted_count = 0
+          warning_count = 0
+
+          def as_int(value, default=0):
+              try:
+                  return int(str(value).strip())
+              except Exception:
+                  return default
+
+          def regression_detail(payload):
+              tests = payload.get("tests") or {}
+              for detail in tests.get("details") or []:
+                  name = str(detail.get("name") or "")
+                  if "Regression Validation" in name:
+                      return detail
+                  if any(key in detail for key in ("decision", "regression_result", "latest_version", "next_installed_version")):
+                      return detail
+              return {}
+
+          def normalize_payload_status(payload):
+              tests = payload.setdefault("tests", {})
+              metadata = payload.setdefault("metadata", {})
+              run = payload.setdefault("run", {})
+
+              passed = as_int(tests.get("passed"), 0)
+              failed = as_int(tests.get("failed"), 0)
+              skipped = as_int(tests.get("skipped"), 0)
+              core_failed = as_int(metadata.get("core_failed"), 0)
+
+              detail = regression_detail(payload)
+              regression_status = str(detail.get("status") or metadata.get("regression_status") or "").strip().lower()
+              regression_decision = str(detail.get("decision") or metadata.get("regression_decision") or "").strip()
+              regression_applicability = str(metadata.get("regression_applicability") or "").strip()
+              regression_reason = str(metadata.get("regression_reason") or "").strip()
+
+              safe_policy_skip = (
+                  regression_applicability == "not_applicable"
+                  and regression_reason == "package_manager_installed"
+              )
+              safe_regression_skip = safe_policy_skip or regression_decision in {
+                  "no_newer_stable_available",
+                  "not_applicable_package_manager",
+                  "package_manager_installed",
+                  "package_manager_regression_safe_skip",
+                  "current_is_latest_stable",
+                  "pinned_is_latest",
+                  "already_current",
+                  "already_at_latest",
+                  "at_latest",
+                  "current_is_latest",
+                  "metadata_review_required",
+                  "runtime_validation_not_automated",
+                  "bounded_runtime_deferred",
+                  "arm64_desktop_artifact_unavailable",
+                  "hold_current_arm_dependency_gap",
+              }
+              non_failing_regression = safe_regression_skip and regression_status in {"skipped", "deferred", "not_applicable"}
+
+              if core_failed == 0 and failed > 0 and non_failing_regression:
+                  failed = max(0, failed - 1)
+                  skipped += 1
+
+              tests["passed"] = passed
+              tests["failed"] = failed
+              tests["skipped"] = skipped
+
+              is_success = passed > 0 and failed == 0 and (skipped == 0 or safe_regression_skip)
+              run["status"] = "success" if is_success else "failure"
+              metadata["badge_status"] = "passing" if is_success else "failing"
+              if regression_status:
+                  metadata["regression_status"] = regression_status
+              if regression_decision:
+                  metadata["regression_decision"] = regression_decision
+
+          def candidate_publish_reason(slug, payload):
+              blocked_reason = (normalize_report.get("blocked_slugs") or {}).get(slug)
+              if blocked_reason:
+                  return blocked_reason
+
+              final_url = str((payload.get("run") or {}).get("url") or "").strip()
+              if not re.search(r"/actions/runs/\d+/job/\d+$", final_url):
+                  return "non_exact_job_url"
+              return ""
+
+          for json_path in sorted(candidate_dir.glob("*.json")):
+              slug = json_path.stem
+              payload = json.loads(json_path.read_text())
+              normalize_payload_status(payload)
+              reason = candidate_publish_reason(slug, payload)
+              metadata = payload.setdefault("metadata", {})
+              metadata["production_refreshed_at"] = datetime.now(timezone.utc).isoformat()
+
+              if not reason:
+                  metadata["publish_state"] = "published"
+                  (publish_dir / json_path.name).write_text(json.dumps(payload, indent=2) + "\n")
+                  decisions[slug] = {
+                      "state": "published",
+                      "reason": "candidate_validated",
+                  }
+                  promoted_count += 1
+                  continue
+
+              metadata["publish_state"] = "published_with_warning"
+              metadata["publish_warning"] = reason
+              (publish_dir / json_path.name).write_text(json.dumps(payload, indent=2) + "\n")
+              decisions[slug] = {
+                  "state": "published_with_warning",
+                  "reason": reason,
+              }
+              promoted_count += 1
+              warning_count += 1
+
+          report_payload = {
+              "generated_at": datetime.now(timezone.utc).isoformat(),
+              "candidate_count": len(list(candidate_dir.glob("*.json"))),
+              "previous_count": len(list(previous_dir.glob("*.json"))),
+              "published_count": len(list(publish_dir.glob("*.json"))),
+              "promoted_count": promoted_count,
+              "warning_count": warning_count,
+              "normalize": normalize_report,
+              "decisions": decisions,
+          }
+          (stage_root / "publish-report.json").write_text(
+              json.dumps(report_payload, indent=2, sort_keys=True) + "\n"
+          )
+          (stage_root / "publish-metrics.env").write_text(
+              "\n".join(
+                  [
+                      f"candidate_count={report_payload['candidate_count']}",
+                      f"previous_count={report_payload['previous_count']}",
+                      f"published_count={report_payload['published_count']}",
+                      f"promoted_count={promoted_count}",
+                      f"warning_count={warning_count}",
+                  ]
+              )
+              + "\n"
+          )
+          PY
+
+          cat .summary-staging/publish-metrics.env >> "$GITHUB_OUTPUT"
+
+          rm -rf test-results
+          mkdir -p test-results data/test-results
+
+          find data/test-results -maxdepth 1 -name '*.json' -delete
+
+          for json_file in .summary-staging/publish-data-test-results/*.json; do
+            [ -f "$json_file" ] || continue
+            base=$(basename "$json_file" .json)
+            cp "$json_file" "data/test-results/${base}.json"
+            mkdir -p "test-results/${base}-test-results"
+            cp "$json_file" "test-results/${base}-test-results/${base}.json"
+          done
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          data_dir = Path("data/test-results")
+          index_payload = {}
+
+          for json_path in sorted(data_dir.glob("*.json")):
+              try:
+                  index_payload[json_path.stem] = json.loads(json_path.read_text())
+              except Exception:
+                  continue
+
+          Path("data/test-results-index.json").write_text(
+              json.dumps(index_payload, indent=2, sort_keys=True) + "\n"
+          )
+          print(f"Wrote canonical test-results index for {len(index_payload)} packages.")
+          PY
+
+      - name: Generate global summary
+        run: |
+          echo "# 📊 Global Package Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "_Last updated: $(date -u +'%Y-%m-%d %H:%M:%S UTC')_" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Batch artifacts downloaded | ${{ steps.download.outputs.downloaded_batches || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Candidate JSON files assembled | ${{ steps.assemble.outputs.candidate_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Candidate rows synthesized for missing current-run results | ${{ steps.assemble.outputs.synthesized_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Previous production rows loaded | ${{ steps.assemble.outputs.previous_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Malformed JSON artifacts skipped | ${{ steps.assemble.outputs.malformed_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Exact candidate job URLs resolved | ${{ steps.normalize.outputs.exact_url_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Candidate rows with weak URLs | ${{ steps.normalize.outputs.weak_url_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Candidate rows promoted to production | ${{ steps.publish.outputs.promoted_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Candidate rows published with warnings | ${{ steps.publish.outputs.warning_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          TOTAL=0
+          PASS=0
+          FAIL=0
+          MALFORMED=0
+          FAIL_LIST=""
+          PASS_LIST=""
+          REGRESSION_TOTAL=0
+          REGRESSION_PASS=0
+          REGRESSION_FAIL=0
+          REGRESSION_DEFERRED=0
+          REGRESSION_NOT_APPLICABLE_PM=0
+          REGRESSION_NOT_CONFIGURED=0
+          REGRESSION_PASS_LIST=""
+          REGRESSION_FAIL_LIST=""
+          REGRESSION_DEFERRED_LIST=""
+          REGRESSION_NOT_CONFIGURED_LIST=""
+
+          for result_dir in test-results/*/; do
+            for json_file in "$result_dir"*.json; do
+              [ -f "$json_file" ] || continue
+
+              SLUG=$(basename "$json_file" .json)
+              if [ ! -f "content/linux/opensource_packages/${SLUG}.md" ] && [ ! -f "content/opensource_packages/${SLUG}.md" ]; then
+                continue
+              fi
+
+              TOTAL=$((TOTAL + 1))
+
+              if ! jq empty "$json_file" >/dev/null 2>&1; then
+                MALFORMED=$((MALFORMED + 1))
+                FAIL=$((FAIL + 1))
+                FAIL_LIST="${FAIL_LIST}| ⚠️ ${SLUG} | malformed | invalid JSON artifact skipped |"$'\n'
+                continue
+              fi
+
+              NAME=$(jq -r '.package.name' "$json_file")
+              VERSION=$(jq -r '.package.version' "$json_file")
+              STATUS=$(jq -r '.run.status' "$json_file")
+              BADGE_STATUS=$(jq -r '.metadata.badge_status // ""' "$json_file")
+              CONTRACT_VERSION=$(jq -r '.metadata.contract_version // ""' "$json_file")
+              PASSED_COUNT=$(jq -r '.tests.passed' "$json_file")
+              FAILED_COUNT=$(jq -r '.tests.failed' "$json_file")
+              SKIPPED_COUNT=$(jq -r '.tests.skipped // 0' "$json_file")
+              TOTAL_TESTS=$((PASSED_COUNT + FAILED_COUNT + SKIPPED_COUNT))
+              REGRESSION_ENTRY=$(jq -c '.tests.details[]? | select(.name == "Test 6 - Regression Validation" or .name == "Regression Validation")' "$json_file" | head -n 1)
+              REGRESSION_APPLICABILITY=$(jq -r '.metadata.regression_applicability // ""' "$json_file")
+              REGRESSION_REASON=$(jq -r '.metadata.regression_reason // ""' "$json_file")
+              REGRESSION_NOTE=$(jq -r '.metadata.regression_note // ""' "$json_file" | tr '\n' ' ' | sed 's/|/\\|/g')
+
+              if [ -n "$REGRESSION_ENTRY" ] && { [ -z "$VERSION" ] || [ "$VERSION" = "unknown" ] || [ "$VERSION" = "n/a" ]; }; then
+                VERSION=$(echo "$REGRESSION_ENTRY" | jq -r '.current_version // .baseline_version // .current // ""')
+              fi
+              VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g' | cut -c 1-40)
+              [ "${#VERSION}" -gt 39 ] && VERSION="${VERSION}..."
+              if [ -z "$VERSION" ] || [ "$VERSION" = "unknown" ] || [ "$VERSION" = "n/a" ]; then
+                VERSION="unknown"
+              fi
+
+              # Classify package rows strictly by actual test counts so inconsistent
+              # top-level workflow metadata cannot place 6/6 packages under Failed Packages.
+              EFFECTIVE_STATUS="failure"
+              if [ "$FAILED_COUNT" -eq 0 ] && [ "$PASSED_COUNT" -gt 0 ]; then
+                EFFECTIVE_STATUS="success"
+              fi
+
+              if [ "$EFFECTIVE_STATUS" = "success" ]; then
+                PASS=$((PASS + 1))
+                if [ "$SKIPPED_COUNT" -gt 0 ]; then
+                  PASS_DETAILS="$PASSED_COUNT/$TOTAL_TESTS passed ($SKIPPED_COUNT skipped)"
+                else
+                  PASS_DETAILS="$PASSED_COUNT/$TOTAL_TESTS passed"
+                fi
+                PASS_LIST="${PASS_LIST}| ✅ $NAME | $VERSION | ${PASS_DETAILS} |"$'\n'
+              else
+                FAIL=$((FAIL + 1))
+                if [ "$TOTAL_TESTS" -eq 0 ] && [ "$FAILED_COUNT" -eq 0 ] && [ "$PASSED_COUNT" -eq 0 ]; then
+                  if [ "$CONTRACT_VERSION" = "missing" ]; then
+                    FAIL_DETAILS="No structured test results emitted (job cancelled or failed before summary outputs were published)"
+                  else
+                    FAIL_DETAILS="No structured test results emitted"
+                  fi
+                elif [ "$SKIPPED_COUNT" -gt 0 ]; then
+                  FAIL_DETAILS="$PASSED_COUNT/$TOTAL_TESTS passed ($FAILED_COUNT failed, $SKIPPED_COUNT skipped)"
+                else
+                  FAIL_DETAILS="$PASSED_COUNT/$TOTAL_TESTS passed ($FAILED_COUNT failed)"
+                fi
+                FAIL_LIST="${FAIL_LIST}| ❌ $NAME | $VERSION | ${FAIL_DETAILS} |"$'\n'
+              fi
+
+              if [ "$REGRESSION_APPLICABILITY" = "not_applicable" ] && [ "$REGRESSION_REASON" = "package_manager_installed" ]; then
+                REGRESSION_NOT_APPLICABLE_PM=$((REGRESSION_NOT_APPLICABLE_PM + 1))
+                continue
+              fi
+
+              if [ "$REGRESSION_APPLICABILITY" = "not_configured" ] || { [ -z "$REGRESSION_APPLICABILITY" ] && [ -z "$REGRESSION_ENTRY" ]; }; then
+                REGRESSION_NOT_CONFIGURED=$((REGRESSION_NOT_CONFIGURED + 1))
+                if [ -z "$REGRESSION_NOTE" ]; then
+                  REGRESSION_NOTE="Workflow did not emit regression classification or Test 6 result metadata for this run."
+                fi
+                REGRESSION_NOT_CONFIGURED_LIST="${REGRESSION_NOT_CONFIGURED_LIST}| ${NAME} | ${VERSION} | ${REGRESSION_NOTE} |"$'\n'
+                continue
+              fi
+
+              if [ -n "$REGRESSION_ENTRY" ]; then
+                REGRESSION_TOTAL=$((REGRESSION_TOTAL + 1))
+                REG_STATUS=$(echo "$REGRESSION_ENTRY" | jq -r '.status // "unknown"')
+                CURRENT_VERSION=$(echo "$REGRESSION_ENTRY" | jq -r '.current_version // .baseline_version // .current // ""')
+                LATEST_VERSION=$(echo "$REGRESSION_ENTRY" | jq -r '.latest_version // .next_version // .candidate_version // ""')
+                NEXT_INSTALLED_VERSION=$(echo "$REGRESSION_ENTRY" | jq -r '.next_installed_version // .installed_next_version // .next_reported_version // ""' || true)
+                DECISION=$(echo "$REGRESSION_ENTRY" | jq -r '.decision // "unspecified"')
+                REGRESSION_RESULT=$(echo "$REGRESSION_ENTRY" | jq -r '.regression_result // ""')
+                COMPARISON=$(echo "$REGRESSION_ENTRY" | jq -r '.comparison // .note // ""' | tr '\n' ' ' | sed 's/|/\\|/g')
+
+                case "$DECISION" in
+                  next_install_validated|next_bundle_validated|next_image_validated|limited_cpu_smoke_validated|safe_to_upgrade)
+                    REGRESSION_CLASS="passed"
+                    ;;
+                  metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|no_newer_stable_available|manual_review_needed|not_applicable_package_manager|hold_current_arm_dependency_gap|not_configured|baseline_failed|baseline_install_failed|runtime_validation_not_automated|bounded_runtime_deferred|arm64_desktop_artifact_unavailable)
+                    REGRESSION_CLASS="deferred"
+                    ;;
+                  *)
+                    if [ "$REG_STATUS" = "passed" ]; then
+                      REGRESSION_CLASS="passed"
+                    elif [ "$REG_STATUS" = "failed" ]; then
+                      REGRESSION_CLASS="failed"
+                    else
+                      REGRESSION_CLASS="deferred"
+                    fi
+                    ;;
+                esac
+
+                case "$REGRESSION_CLASS" in
+                  passed)
+                    REGRESSION_PASS=$((REGRESSION_PASS + 1))
+                    ;;
+                  failed)
+                    REGRESSION_FAIL=$((REGRESSION_FAIL + 1))
+                    ;;
+                  *)
+                    REGRESSION_DEFERRED=$((REGRESSION_DEFERRED + 1))
+                    ;;
+                esac
+
+                [ -z "$CURRENT_VERSION" ] && CURRENT_VERSION="unknown"
+                if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "n/a" ]; then
+                  case "$DECISION" in
+                    metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|no_newer_stable_available|baseline_failed|baseline_install_failed)
+                      LATEST_VERSION="$CURRENT_VERSION"
+                      ;;
+                    *)
+                      LATEST_VERSION="unknown"
+                      ;;
+                  esac
+                fi
+                [ -z "$NEXT_INSTALLED_VERSION" ] && NEXT_INSTALLED_VERSION="n/a"
+                if [ -z "$REGRESSION_RESULT" ]; then
+                  case "$DECISION" in
+                    next_install_validated)
+                      REGRESSION_RESULT="Next version installed successfully on Arm64"
+                      ;;
+                    limited_cpu_smoke_validated)
+                      REGRESSION_RESULT="Limited CPU-side proof passed on Arm64"
+                      ;;
+                    next_install_failed)
+                      REGRESSION_RESULT="Next version install failed on Arm64"
+                      ;;
+                    current_is_latest_stable)
+                      REGRESSION_RESULT="Current stable version already validated on Arm64"
+                      ;;
+                    manual_review_needed)
+                      REGRESSION_RESULT="Pending regression install validation"
+                      ;;
+                    no_newer_stable_available)
+                      REGRESSION_RESULT="No newer stable public release is available"
+                      ;;
+                    metadata_review_required)
+                      REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                      ;;
+                    runtime_validation_not_automated)
+                      REGRESSION_RESULT="Package-specific runtime validation is not automated"
+                      ;;
+                    baseline_failed|baseline_install_failed)
+                      REGRESSION_RESULT="Regression validation deferred because baseline install or core smoke checks failed"
+                      ;;
+                    not_configured)
+                      REGRESSION_RESULT="Regression validation not configured for this workflow"
+                      ;;
+                    *)
+                      if [ "$REGRESSION_CLASS" = "passed" ]; then
+                        REGRESSION_RESULT="Regression validation passed"
+                      elif [ "$REGRESSION_CLASS" = "failed" ]; then
+                        REGRESSION_RESULT="Regression validation failed"
+                      else
+                        REGRESSION_RESULT="Regression validation deferred"
+                      fi
+                      ;;
+                  esac
+                fi
+                REGRESSION_RESULT=$(echo "$REGRESSION_RESULT" | sed 's/|/\\|/g')
+                [ -z "$COMPARISON" ] && COMPARISON="No regression note recorded."
+                DEFERRED_REASON="$COMPARISON"
+                if [ -z "$DEFERRED_REASON" ] || [ "$DEFERRED_REASON" = "No regression note recorded." ]; then
+                  DEFERRED_REASON="$REGRESSION_RESULT"
+                fi
+                DEFERRED_REASON=$(echo "$DEFERRED_REASON" | sed 's/|/\\|/g')
+
+                case "$REGRESSION_CLASS" in
+                  passed)
+                    REGRESSION_PASS_LIST="${REGRESSION_PASS_LIST}| ${NAME} | ${CURRENT_VERSION} | ${LATEST_VERSION} | ${NEXT_INSTALLED_VERSION} | ${REGRESSION_RESULT} | ${COMPARISON} |"$'\n'
+                    ;;
+                  failed)
+                    REGRESSION_FAIL_LIST="${REGRESSION_FAIL_LIST}| ${NAME} | ${CURRENT_VERSION} | ${LATEST_VERSION} | ${NEXT_INSTALLED_VERSION} | ${REGRESSION_RESULT} | ${COMPARISON} |"$'\n'
+                    ;;
+                  *)
+                    REGRESSION_DEFERRED_LIST="${REGRESSION_DEFERRED_LIST}| ${NAME} | ${CURRENT_VERSION} | ${LATEST_VERSION} | ${DECISION} | ${DEFERRED_REASON} |"$'\n'
+                    ;;
+                esac
+              fi
+            done
+          done
+
+          echo "## Summary Statistics" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Total Packages** | $TOTAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Passed** | $PASS ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Failed** | $FAIL ❌ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Malformed Results** | $MALFORMED ⚠️ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Packages With Applicable Regression Validation** | $REGRESSION_TOTAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Regression Validation Passed** | $REGRESSION_PASS ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Regression Validation Failed** | $REGRESSION_FAIL ❌ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Regression Validation Deferred / Not Applicable** | $REGRESSION_DEFERRED ⏸️ |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Regression Not Applicable (package manager installed)** | $REGRESSION_NOT_APPLICABLE_PM ⏸️ |" >> $GITHUB_STEP_SUMMARY
+          if [ $REGRESSION_NOT_CONFIGURED -gt 0 ]; then
+            echo "| **Regression Not Configured / Not Emitted** | $REGRESSION_NOT_CONFIGURED |" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ $REGRESSION_PASS -gt 0 ]; then
+            echo "## 🔁 Regression Validation Snapshot" >> $GITHUB_STEP_SUMMARY
+            echo "| Package | Current Tested | Next Candidate | Next Installed | Regression Result | Notes |" >> $GITHUB_STEP_SUMMARY
+            echo "| :--- | :--- | :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+            echo -e "$REGRESSION_PASS_LIST" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ $REGRESSION_FAIL -gt 0 ]; then
+            echo "## ❌ Regression Validation Failed" >> $GITHUB_STEP_SUMMARY
+            echo "| Package | Current Tested | Next Candidate | Next Installed | Regression Result | Notes |" >> $GITHUB_STEP_SUMMARY
+            echo "| :--- | :--- | :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+            echo -e "$REGRESSION_FAIL_LIST" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ $REGRESSION_DEFERRED -gt 0 ]; then
+            echo "## ⏸️ Regression Validation Deferred / Not Applicable" >> $GITHUB_STEP_SUMMARY
+            echo "| Package | Current Tested | Next Candidate | Decision | Reason |" >> $GITHUB_STEP_SUMMARY
+            echo "| :--- | :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+            echo -e "$REGRESSION_DEFERRED_LIST" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ $REGRESSION_NOT_CONFIGURED -gt 0 ]; then
+            echo "## ⚠️ Regression Not Configured / Not Emitted" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "These workflows did not emit enough regression metadata for this run." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Package | Version | Reason |" >> $GITHUB_STEP_SUMMARY
+            echo "| :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+            echo -e "$REGRESSION_NOT_CONFIGURED_LIST" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ $FAIL -gt 0 ]; then
+            echo "## ❌ Failed Packages ($FAIL)" >> $GITHUB_STEP_SUMMARY
+            echo "| Package | Version | Details |" >> $GITHUB_STEP_SUMMARY
+            echo "| :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+            echo -e "$FAIL_LIST" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ $PASS -gt 0 ]; then
+            echo "<details>" >> $GITHUB_STEP_SUMMARY
+            echo "<summary><b>✅ Passing Packages ($PASS) - Click to expand</b></summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Package | Version | Details |" >> $GITHUB_STEP_SUMMARY
+            echo "| :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+            echo -e "$PASS_LIST" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ $TOTAL -eq 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **Warning:** No test results found. Check whether the batch artifacts completed and uploaded successfully." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Commit aggregated test results
+        if: always() && steps.assemble.outputs.json_count != '0'
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+          git add -A data/test-results data/test-results-index.json
+
+          if ! git diff --staged --quiet; then
+            git commit -m "Update aggregated test results [skip ci]"
+
+            PUSH_SUCCESS=false
+            for i in {1..10}; do
+              if git push origin HEAD:${{ github.ref_name }}; then
+                echo "✅ Successfully pushed aggregated test results"
+                PUSH_SUCCESS=true
+                break
+              fi
+
+              echo "⚠️ Push failed; fetching latest branch state and retrying..."
+              if git fetch origin "${{ github.ref_name }}" && git rebase "origin/${{ github.ref_name }}"; then
+                echo "✅ Rebased onto latest branch state"
+              else
+                echo "⚠️ Rebase failed; aborting and retrying..."
+                git rebase --abort || true
+              fi
+              sleep $((i * 5))
+            done
+
+            if [ "$PUSH_SUCCESS" = false ]; then
+              echo "❌ Error: Failed to push aggregated test results after 10 attempts."
+              exit 1
+            fi
+          else
+            echo "No aggregated test-result changes to commit"
+          fi

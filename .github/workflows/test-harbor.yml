@@ -1,0 +1,405 @@
+name: Test Harbor on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-harbor.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-harbor.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-harbor.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-harbor.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-harbor.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-harbor.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-harbor.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-harbor.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-harbor.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-harbor.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-harbor.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-harbor.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-harbor.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-harbor.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-harbor.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-harbor.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-harbor.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-harbor.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-harbor.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-harbor.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-harbor.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-harbor.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-harbor.outputs.timestamp }}
+jobs:
+  test-harbor:
+    runs-on: ubuntu-24.04-arm
+
+    env:
+      BASELINE_VERSION: "2.12.4"
+      NEXT_VERSION: "2.13.0"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Harbor'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=harbor" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/harbor" >> "$GITHUB_OUTPUT"
+          echo "current_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Install Harbor
+        id: install
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.metadata.outputs.current_version }}"
+          URL="https://github.com/goharbor/harbor/releases/download/v${VERSION}/harbor-offline-installer-v${VERSION}.tgz"
+
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "wget tar"
+          wget -q "$URL" -O /tmp/harbor-current.tgz
+          sudo rm -rf /opt/harbor
+          sudo tar -xzf /tmp/harbor-current.tgz -C /opt
+
+          if [ -d /opt/harbor ] && [ -f /opt/harbor/install.sh ] && [ -f /opt/harbor/harbor.yml.tmpl ]; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Get Harbor version
+        id: version
+        run: |
+          set -euo pipefail
+          echo "version=${{ steps.metadata.outputs.current_version }}" >> "$GITHUB_OUTPUT"
+
+      - name: Test 1 - Check Harbor install script exists
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ -f /opt/harbor/install.sh ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check Harbor configuration template exists
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ -f /opt/harbor/harbor.yml.tmpl ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check Harbor prepare script
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ -f /opt/harbor/prepare ]; then
+            sudo chmod +x /opt/harbor/prepare
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Check common.sh exists
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ -f /opt/harbor/common.sh ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Run Harbor prepare help path
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          sudo cp /opt/harbor/harbor.yml.tmpl /opt/harbor/harbor.yml
+          OUTPUT=$(sudo /opt/harbor/prepare --help 2>&1 || true)
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "aarch64" ] && [ -n "$OUTPUT" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+
+          LATEST="${NEXT_VERSION}"
+
+          echo "latest_version=${LATEST:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: ${LATEST:-unknown}"
+
+          if [ -z "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release is available for regression validation" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Harbor version ${CURRENT} passed smoke tests in this run, and no newer stable upstream release is available above that baseline for an Arm64 Test 6 installer check." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: No newer stable release is available for regression validation"
+            echo "Details: Current pinned Harbor version ${CURRENT} passed smoke tests in this run, and no newer stable upstream release is available above that baseline for an Arm64 Test 6 installer check."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_TAR="$RUNNER_TEMP/harbor-regression.tgz"
+          NEXT_DIR="$RUNNER_TEMP/harbor-regression"
+          NEXT_URL="https://github.com/goharbor/harbor/releases/download/v${LATEST}/harbor-offline-installer-v${LATEST}.tgz"
+          rm -rf "$NEXT_TAR" "$NEXT_DIR"
+
+          if wget -q -O "$NEXT_TAR" "$NEXT_URL"; then
+            mkdir -p "$NEXT_DIR"
+            tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
+            if [ -f "$NEXT_DIR/harbor/install.sh" ] && [ -f "$NEXT_DIR/harbor/harbor.yml.tmpl" ]; then
+              echo "next_installed_version=$LATEST" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Harbor version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and extracted candidate version ${LATEST} on Arm64, and the staged offline installer exposed the expected installation files." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $LATEST"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned Harbor version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and extracted candidate version ${LATEST} on Arm64, and the staged offline installer exposed the expected installation files."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Harbor version ${CURRENT} passed smoke tests in this run, but the candidate ${LATEST} did not extract a usable offline installer on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: install_failed"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Harbor version ${CURRENT} passed smoke tests in this run, but the candidate ${LATEST} did not extract a usable offline installer on Arm64."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Harbor version ${CURRENT} passed smoke tests in this run, but the candidate ${LATEST} could not be downloaded on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Harbor version ${CURRENT} passed smoke tests in this run, but the candidate ${LATEST} could not be downloaded on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          set -euo pipefail
+          PASSED=0
+          FAILED=0
+          CORE_FAILED=0
+          TOTAL_DURATION=0
+
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
+
+          if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Generate job summary
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Harbor Test Results
+
+          - **Version:** ${{ steps.version.outputs.version }}
+          - **Status:** ${{ steps.summary.outputs.overall_status }}
+          - **Tests Passed:** ${{ steps.summary.outputs.passed }}
+          - **Tests Failed:** ${{ steps.summary.outputs.failed }}
+          - **Duration:** ${{ steps.summary.outputs.duration }}s
+          - **Runner:** ubuntu-24.04 (arm64)
+
+          ### Test Details
+
+          1. Test 1 - Check Harbor install script exists: ${{ steps.test1.outputs.status || 'failed' }}
+          2. Test 2 - Check Harbor configuration template exists: ${{ steps.test2.outputs.status || 'failed' }}
+          3. Test 3 - Check Harbor prepare script: ${{ steps.test3.outputs.status || 'failed' }}
+          4. Test 4 - Check common.sh exists: ${{ steps.test4.outputs.status || 'failed' }}
+          5. Test 5 - Run Harbor prepare help path: ${{ steps.test5.outputs.status || 'failed' }}
+          6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'failed' }}
+
+          ### Regression Validation (Next Version Install)
+
+          - **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+          - **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}
+          - **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          - **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
+          - **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+          EOF

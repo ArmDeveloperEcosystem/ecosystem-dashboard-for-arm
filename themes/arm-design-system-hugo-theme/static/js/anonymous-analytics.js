@@ -154,12 +154,12 @@ document.addEventListener("DOMContentLoaded", function() {
         }
     
 
-        // GitHub issue tracking
-        let github_issue_links = document.querySelectorAll('a.github-issue-update-link');
-        for (let gh_link of github_issue_links) {
-            gh_link.addEventListener("click", () => {
-                let package_name = gh_link.closest('table').closest('tr').previousElementSibling.getAttribute('data-title');
-                trackGeneralContentInteraction('github_edit_package_click',package_name);
+        // Copy package URL tracking
+        let package_url_copy_links = document.querySelectorAll('a.package-url-copy-link');
+        for (let copy_button of package_url_copy_links) {
+            copy_button.addEventListener("click", () => {
+                let package_name = copy_button.closest('tr').previousElementSibling.getAttribute('data-title');
+                trackGeneralContentInteraction('copy_package_url_click',package_name);
             });
         }
 

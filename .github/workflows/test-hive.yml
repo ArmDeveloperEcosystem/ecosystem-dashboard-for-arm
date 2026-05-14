@@ -1,0 +1,656 @@
+name: Test Hive on Arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      prefetch_run_id:
+        description: Orchestrator run id holding prefetched heavy archives
+        required: false
+        type: string
+      prefetch_artifact_name:
+        description: Artifact name containing prefetched heavy archives
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      prefetch_run_id:
+        required: false
+        type: string
+      prefetch_artifact_name:
+        required: false
+        type: string
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-hive.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-hive.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-hive.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-hive.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-hive.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-hive.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-hive.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-hive.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-hive.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-hive.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-hive.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-hive.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-hive.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-hive.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-hive.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-hive.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-hive.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-hive.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-hive.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-hive.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-hive.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-hive.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-hive.outputs.timestamp }}
+jobs:
+  test-hive:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+
+    env:
+      BASELINE_VERSION: "4.0.0"
+      NEXT_VERSION: "4.2.0"
+      HADOOP_VERSION: "3.3.6"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Hive'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore warm Hive baseline cache
+        id: restore_hive_baseline_cache
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/prefetch-heavy/hive
+          key: heavy-baseline-hive-4.0.0-arm64-v1
+
+      - name: Restore warm Hadoop dependency cache
+        id: restore_hadoop_dependency_cache
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/prefetch-heavy/hadoop/hadoop-3.3.6-aarch64.tar.gz
+          key: heavy-baseline-hadoop-3.3.6-aarch64-arm64-v1
+
+      - name: Download prefetched heavy baselines
+        if: ${{ inputs.prefetch_run_id != '' && inputs.prefetch_artifact_name != '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.prefetch_run_id }}
+          github-token: ${{ github.token }}
+          name: ${{ inputs.prefetch_artifact_name }}
+          path: ${{ runner.temp }}/prefetch-heavy
+
+      - name: Resolve prefetched heavy baselines
+        if: always()
+        run: |
+          echo "PREFETCH_HEAVY_ROOT=${RUNNER_TEMP}/prefetch-heavy" >> "$GITHUB_ENV"
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=hive" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/hive" >> "$GITHUB_OUTPUT"
+          echo "current_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Install Hive baseline
+        id: install
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-17-jdk curl wget tar file"
+          VERSION="${{ steps.metadata.outputs.current_version }}"
+          HIVE_ARCHIVE_URL="https://archive.apache.org/dist/hive/hive-${VERSION}/apache-hive-${VERSION}-bin.tar.gz"
+          HIVE_ARCHIVE_HTTP_URL="http://archive.apache.org/dist/hive/hive-${VERSION}/apache-hive-${VERSION}-bin.tar.gz"
+          HADOOP_PRIMARY_URL="https://downloads.apache.org/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}-aarch64.tar.gz"
+          HADOOP_ARCHIVE_URL="https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}-aarch64.tar.gz"
+          HADOOP_ARCHIVE_HTTP_URL="http://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}-aarch64.tar.gz"
+
+          download_with_fallback() {
+            local dest="$1"
+            shift
+            local urls=("$@")
+            DOWNLOAD_ATTEMPTS=2 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=360 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=60 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh "$dest" "${urls[@]}"
+          }
+
+          rm -rf hive /tmp/hive-current.tar.gz
+          echo "Downloading Hive baseline from $HIVE_ARCHIVE_URL"
+          HIVE_CACHE_FILE="${PREFETCH_HEAVY_ROOT:-${RUNNER_TEMP}/prefetch-heavy}/hive/apache-hive-${VERSION}-bin.tar.gz"
+          if [ -f "$HIVE_CACHE_FILE" ]; then
+            cp "$HIVE_CACHE_FILE" /tmp/hive-current.tar.gz
+          else
+            if ! download_with_fallback /tmp/hive-current.tar.gz "$HIVE_ARCHIVE_URL" "$HIVE_ARCHIVE_HTTP_URL"; then
+              echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
+              echo "install_status=failed" >> "$GITHUB_OUTPUT"
+              echo "install_blocker=hive_download_failed" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          mkdir -p "$(dirname "$HIVE_CACHE_FILE")"
+          if [ ! -f "$HIVE_CACHE_FILE" ]; then
+            cp /tmp/hive-current.tar.gz "$HIVE_CACHE_FILE"
+          fi
+          ls -lh /tmp/hive-current.tar.gz
+          echo "Extracting Hive baseline..."
+          if ! timeout 15m tar -xzf /tmp/hive-current.tar.gz; then
+            echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=hive_extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mv "apache-hive-${VERSION}-bin" hive
+
+          echo "Downloading Hadoop dependency ${HADOOP_VERSION}"
+          HADOOP_CACHE_FILE="${PREFETCH_HEAVY_ROOT:-${RUNNER_TEMP}/prefetch-heavy}/hadoop/hadoop-${HADOOP_VERSION}-aarch64.tar.gz"
+          if [ -f "$HADOOP_CACHE_FILE" ]; then
+            cp "$HADOOP_CACHE_FILE" /tmp/hadoop-current.tar.gz
+          else
+            if ! download_with_fallback /tmp/hadoop-current.tar.gz "$HADOOP_PRIMARY_URL" "$HADOOP_ARCHIVE_URL" "$HADOOP_ARCHIVE_HTTP_URL"; then
+              echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
+              echo "install_status=failed" >> "$GITHUB_OUTPUT"
+              echo "install_blocker=hadoop_download_failed" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          mkdir -p "$(dirname "$HADOOP_CACHE_FILE")"
+          if [ ! -f "$HADOOP_CACHE_FILE" ]; then
+            cp /tmp/hadoop-current.tar.gz "$HADOOP_CACHE_FILE"
+          fi
+          ls -lh /tmp/hadoop-current.tar.gz
+          echo "Extracting Hadoop dependency..."
+          if ! timeout 15m tar -xzf /tmp/hadoop-current.tar.gz; then
+            echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=hadoop_extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mv "hadoop-${HADOOP_VERSION}" hadoop
+
+          JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")
+          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+          echo "HIVE_HOME=$PWD/hive" >> "$GITHUB_ENV"
+          echo "HADOOP_HOME=$PWD/hadoop" >> "$GITHUB_ENV"
+          echo "HADOOP_PREFIX=$PWD/hadoop" >> "$GITHUB_ENV"
+          echo "$PWD/hadoop/bin" >> "$GITHUB_PATH"
+          echo "$PWD/hive/bin" >> "$GITHUB_PATH"
+
+          echo "baseline_version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "hive_home=$PWD/hive" >> "$GITHUB_OUTPUT"
+          echo "binary_path=$PWD/hive/bin/hive" >> "$GITHUB_OUTPUT"
+          echo "beeline_path=$PWD/hive/bin/beeline" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Save warm Hive baseline cache
+        if: ${{ steps.install.outputs.install_status == 'success' && steps.restore_hive_baseline_cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/prefetch-heavy/hive
+          key: heavy-baseline-hive-4.0.0-arm64-v1
+
+      - name: Save warm Hadoop dependency cache
+        if: ${{ steps.install.outputs.install_status == 'success' && steps.restore_hadoop_dependency_cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/prefetch-heavy/hadoop/hadoop-3.3.6-aarch64.tar.gz
+          key: heavy-baseline-hadoop-3.3.6-aarch64-arm64-v1
+
+      - name: Resolve Hive install state
+        id: install_state
+        if: always()
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/hive"
+          STATUS="${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}"
+          BLOCKER="${{ steps.install.outputs.install_blocker || '' }}"
+          if [ -x "$ROOT/bin/hive" ] && [ -x "$ROOT/bin/schematool" ] && [ -x "$ROOT/bin/beeline" ] && [ -f "$ROOT/lib/hive-exec-${{ steps.install.outputs.baseline_version || steps.metadata.outputs.current_version || '4.0.0' }}.jar" ]; then
+            STATUS="success"
+            BLOCKER=""
+          fi
+          echo "HIVE_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "HIVE_INSTALL_STATUS=$STATUS" >> "$GITHUB_ENV"
+          echo "HIVE_INSTALL_BLOCKER=$BLOCKER" >> "$GITHUB_ENV"
+          echo "install_status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "install_blocker=$BLOCKER" >> "$GITHUB_OUTPUT"
+
+      - name: Get Hive version
+        id: version
+        run: |
+          set -euo pipefail
+          if [ "${HIVE_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "version=${{ steps.install.outputs.baseline_version || steps.metadata.outputs.current_version || 'unknown' }}" >> "$GITHUB_OUTPUT"
+            echo "Detected Hive version: ${{ steps.install.outputs.baseline_version || steps.metadata.outputs.current_version || 'unknown' }} (baseline install unavailable)"
+            exit 0
+          fi
+          VERSION=$(JAVA_HOME="${JAVA_HOME:-}" HADOOP_HOME="${HADOOP_HOME:-}" HADOOP_PREFIX="${HADOOP_PREFIX:-}" hive/bin/hive --version 2>&1 | awk '/Hive / {print $2; exit}' || true)
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ steps.install.outputs.baseline_version }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected Hive version: $VERSION"
+
+      - name: Test 1 - Check Hive scripts exist
+        id: test1
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${HIVE_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -x "hive/bin/hive" ] && [ -x "hive/bin/schematool" ] && [ -x "hive/bin/beeline" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            ls -l hive/bin || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check exact Hive version
+        id: test2
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${HIVE_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          EXPECTED="${{ steps.install.outputs.baseline_version }}"
+          REPORTED="${{ steps.version.outputs.version }}"
+          if [ "$REPORTED" = "$EXPECTED" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            JAVA_HOME="$JAVA_HOME" hive/bin/hive --version || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check Hive jar layout
+        id: test3
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${HIVE_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          EXPECTED="${{ steps.install.outputs.baseline_version }}"
+          if [ -f "hive/lib/hive-exec-${EXPECTED}.jar" ] \
+            && [ -f "hive/lib/hive-service-${EXPECTED}.jar" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            ls -1 hive/lib | head -n 40 || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Check Hive help commands
+        id: test4
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${HIVE_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" hive/bin/hive --help >/tmp/hive-help.log 2>&1 || true) \
+            && (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" hive/bin/schematool -help >/tmp/hive-schematool-help.log 2>&1 || true) \
+            && grep -Eqi "usage|hive" /tmp/hive-help.log \
+            && grep -Eqi "schematool|usage" /tmp/hive-schematool-help.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/hive-help.log || true
+            cat /tmp/hive-schematool-help.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Check Beeline help and architecture
+        id: test5
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${HIVE_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$(uname -m)" = "aarch64" ] \
+            && file "$(readlink -f "$(command -v java)")" | grep -Eqi "aarch64|arm64" \
+            && (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" hive/bin/beeline --help >/tmp/hive-beeline-help.log 2>&1 || true) \
+            && grep -Eqi "beeline|usage" /tmp/hive-beeline-help.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            file "$(readlink -f "$(command -v java)")" || true
+            cat /tmp/hive-beeline-help.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        if: always()
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || steps.install.outputs.baseline_version || 'unknown' }}"
+          INSTALL_STATUS="${{ steps.install_state.outputs.install_status || steps.install.outputs.install_status || steps.install.conclusion || 'failure' }}"
+          CORE_FAILURES=0
+          for conclusion in \
+            "${{ steps.test1.conclusion || 'skipped' }}" \
+            "${{ steps.test2.conclusion || 'skipped' }}" \
+            "${{ steps.test3.conclusion || 'skipped' }}" \
+            "${{ steps.test4.conclusion || 'skipped' }}" \
+            "${{ steps.test5.conclusion || 'skipped' }}"; do
+            if [ "$conclusion" = "failure" ]; then
+              CORE_FAILURES=$((CORE_FAILURES + 1))
+            fi
+          done
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+
+          LATEST="${NEXT_VERSION}"
+
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "$INSTALL_STATUS" != "success" ] || [ "$CORE_FAILURES" -gt 0 ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation deferred because baseline install or core smoke checks failed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Hive version ${CURRENT} did not complete baseline installation and core Tests 1-5 cleanly in this run, so next-version validation was not attempted on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Regression validation deferred because baseline install or core smoke checks failed"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
+            echo "Details: Current pinned Hive version ${CURRENT} passed the baseline script and jar validation on Arm64, and the official latest stable Hive binary release remains ${LATEST}."
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_DIR=$(mktemp -d)
+          NEXT_TAR="${NEXT_DIR}/apache-hive-${LATEST}-bin.tar.gz"
+          echo "Downloading Hive candidate ${LATEST}"
+          download_with_fallback() {
+            local dest="$1"
+            shift
+            local urls=("$@")
+            DOWNLOAD_ATTEMPTS=2 \
+            DOWNLOAD_CONNECT_TIMEOUT=30 \
+            DOWNLOAD_MAX_TIME=360 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=60 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh "$dest" "${urls[@]}"
+          }
+          if ! download_with_fallback "$NEXT_TAR" \
+            "https://dlcdn.apache.org/hive/hive-${LATEST}/apache-hive-${LATEST}-bin.tar.gz" \
+            "https://downloads.apache.org/hive/hive-${LATEST}/apache-hive-${LATEST}-bin.tar.gz" \
+            "https://archive.apache.org/dist/hive/hive-${LATEST}/apache-hive-${LATEST}-bin.tar.gz" \
+            "http://archive.apache.org/dist/hive/hive-${LATEST}/apache-hive-${LATEST}-bin.tar.gz"; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Hive version ${CURRENT} passed the baseline script and jar validation on Arm64, but the candidate Hive binary distribution ${LATEST} could not be downloaded in this run." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          ls -lh "$NEXT_TAR"
+          echo "Extracting Hive candidate..."
+          if ! timeout 15m tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Hive version ${CURRENT} passed the baseline script and jar validation on Arm64, but the candidate Hive binary distribution ${LATEST} could not be extracted in this run." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          NEXT_HOME="${NEXT_DIR}/apache-hive-${LATEST}-bin"
+          NEXT_REPORTED=$(JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" HIVE_HOME="$NEXT_HOME" "$NEXT_HOME/bin/hive" --version 2>&1 | awk '/Hive / {print $2; exit}' || true)
+          if [ -z "$NEXT_REPORTED" ]; then
+            NEXT_REPORTED="$LATEST"
+          fi
+
+          if [ "$NEXT_REPORTED" = "$LATEST" ] \
+            && [ -f "$NEXT_HOME/lib/hive-exec-${LATEST}.jar" ] \
+            && [ -f "$NEXT_HOME/lib/hive-service-${LATEST}.jar" ] \
+            && (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" HIVE_HOME="$NEXT_HOME" "$NEXT_HOME/bin/hive" --help >/tmp/hive-next-help.log 2>&1 || true) \
+            && (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" HIVE_HOME="$NEXT_HOME" "$NEXT_HOME/bin/schematool" -help >/tmp/hive-next-schematool-help.log 2>&1 || true) \
+            && (JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" HIVE_HOME="$NEXT_HOME" "$NEXT_HOME/bin/beeline" --help >/tmp/hive-next-beeline-help.log 2>&1 || true) \
+            && grep -Eqi "usage|hive" /tmp/hive-next-help.log \
+            && grep -Eqi "schematool|usage" /tmp/hive-next-schematool-help.log \
+            && grep -Eqi "beeline|usage" /tmp/hive-next-beeline-help.log; then
+            echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Hive version ${CURRENT} passed the baseline script and jar validation on Arm64. Regression validation installed candidate version ${LATEST}, and the extracted Hive distribution reported ${NEXT_REPORTED} while exposing the expected versioned jars, schematool help, and beeline help paths." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_REPORTED"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned Hive version ${CURRENT} passed the baseline script and jar validation on Arm64. Regression validation installed candidate version ${LATEST}, and the extracted Hive distribution reported ${NEXT_REPORTED} while exposing the expected versioned jars, schematool help, and beeline help paths."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            JAVA_HOME="$JAVA_HOME" HADOOP_HOME="$HADOOP_HOME" HADOOP_PREFIX="$HADOOP_PREFIX" HIVE_HOME="$NEXT_HOME" "$NEXT_HOME/bin/hive" --version || true
+            cat /tmp/hive-next-help.log || true
+            cat /tmp/hive-next-schematool-help.log || true
+            cat /tmp/hive-next-beeline-help.log || true
+            echo "next_installed_version=${NEXT_REPORTED:-install_failed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Hive version ${CURRENT} passed the baseline script and jar validation on Arm64, but the candidate Hive binary distribution ${LATEST} did not expose a fully usable Arm64 script and jar layout." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_REPORTED:-install_failed}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Hive version ${CURRENT} passed the baseline script and jar validation on Arm64, but the candidate Hive binary distribution ${LATEST} did not expose a fully usable Arm64 script and jar layout."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "${{ steps.test6.outputs.decision || '' }}" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              baseline_failed|baseline_install_failed)
+                REGRESSION_RESULT="Regression validation deferred because baseline install or core smoke checks failed"
+                ;;
+              *)
+                REGRESSION_RESULT="Regression validation status unavailable"
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+
+      - name: Emit package result
+        if: always()
+        id: summary
+        uses: ./.github/actions/emit-package-result
+        with:
+          package_name: "Hive"
+          version: ${{ steps.version.outputs.version }}
+          install_status: ${{ steps.install_state.outputs.install_status || steps.install.outputs.install_status || 'success' }}
+          test1_label: "Test 1 - Check Hive scripts exist"
+          test2_label: "Test 2 - Check exact Hive version"
+          test3_label: "Test 3 - Check Hive jar layout"
+          test4_label: "Test 4 - Check Hive help commands"
+          test5_label: "Test 5 - Check Beeline help and architecture"
+          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
+          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
+          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
+          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
+          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
+          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_duration: ${{ steps.test1.outputs.duration || 0 }}
+          test2_duration: ${{ steps.test2.outputs.duration || 0 }}
+          test3_duration: ${{ steps.test3.outputs.duration || 0 }}
+          test4_duration: ${{ steps.test4.outputs.duration || 0 }}
+          test5_duration: ${{ steps.test5.outputs.duration || 0 }}
+          test6_duration: ${{ steps.test6.outputs.duration || 0 }}
+          regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+          regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
+          regression_details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+
+      - name: Finalize workflow status
+        if: always()
+        run: |
+          if [ "${{ steps.summary.outputs.should_fail }}" = "1" ]; then
+            exit 1
+          fi

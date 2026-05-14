@@ -1,0 +1,582 @@
+name: Test Maven on Arm64
+on:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-maven.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-maven.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-maven.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-maven.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-maven.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-maven.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-maven.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-maven.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-maven.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-maven.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-maven.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-maven.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-maven.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-maven.outputs.regression_result }}
+      regression_policy:
+        description: Regression policy classification for publish pipeline
+        value: ${{ jobs.test-maven.outputs.regression_policy }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-maven.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-maven.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-maven.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-maven.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-maven.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-maven.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-maven.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-maven.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-maven.outputs.timestamp }}
+jobs:
+  test-maven:
+    runs-on: ubuntu-24.04-arm
+    env:
+      MAVEN_VERSION: "3.9.0"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Maven'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_policy: ${{ steps.test6.outputs.regression_policy || steps.metadata.outputs.regression_policy || 'applicable' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=maven" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/maven" >> "$GITHUB_OUTPUT"
+          echo "regression_policy=applicable" >> "$GITHUB_OUTPUT"
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install Maven
+        id: install
+        run: |
+          set -euo pipefail
+          echo "Installing Maven ${MAVEN_VERSION} from Apache archive..."
+
+          MAVEN_BASE="apache-maven-${MAVEN_VERSION}"
+          PRIMARY_URL="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/${MAVEN_VERSION}/${MAVEN_BASE}-bin.tar.gz"
+          ARCHIVE_URL="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/${MAVEN_BASE}-bin.tar.gz"
+          INSTALL_ROOT="${RUNNER_TEMP}/maven-install"
+          ARCHIVE_PATH="${RUNNER_TEMP}/${MAVEN_BASE}-bin.tar.gz"
+          rm -rf "${INSTALL_ROOT}"
+          mkdir -p "${INSTALL_ROOT}"
+
+          download_maven_tarball() {
+            local url="$1"
+            curl -fsSL --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 2 "$url" -o "${ARCHIVE_PATH}"
+          }
+
+          if ! download_maven_tarball "${PRIMARY_URL}"; then
+            echo "Primary Maven Central download failed, retrying via Apache archive..."
+            download_maven_tarball "${ARCHIVE_URL}"
+          fi
+
+          tar -xzf "${ARCHIVE_PATH}" -C "${INSTALL_ROOT}"
+          MAVEN_HOME="${INSTALL_ROOT}/${MAVEN_BASE}"
+          MAVEN_BIN="${MAVEN_HOME}/bin/mvn"
+
+          if [ -x "${MAVEN_BIN}" ]; then
+            echo "${MAVEN_HOME}/bin" >> "$GITHUB_PATH"
+            echo "home=${MAVEN_HOME}" >> "$GITHUB_OUTPUT"
+            echo "bin=${MAVEN_BIN}" >> "$GITHUB_OUTPUT"
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+            echo "Maven installed successfully"
+          else
+            echo "Maven installation failed"
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      # ============================================================
+      # CUSTOMIZE THIS: Get the package version
+      # ============================================================
+      - name: Get Maven version
+        id: version
+        run: |
+          VERSION=$("${{ steps.install.outputs.bin }}" -version 2>&1 | awk '/Apache Maven/ {print $3; exit}' || echo "unknown")
+          VERSION=$(echo "$VERSION" | sed 's/\x1b\[[0-9;]*m//g')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected Maven version: $VERSION"
+
+      # ============================================================
+      # ADD YOUR TESTS BELOW
+      # Each test should:
+      # 1. Have a unique id (test1, test2, etc.)
+      # 2. Track start/end time for duration
+      # 3. Set status=passed or status=failed
+      # 4. Exit 1 on failure
+      # ============================================================
+
+      - name: Test 1 - Check mvn binary
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          
+          if command -v mvn &> /dev/null; then
+            echo "✓ mvn binary found"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ mvn binary not found"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+            fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 2 - Check version command
+        id: test2
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          
+          if mvn -version 2>&1 | grep -q "Apache Maven"; then
+            echo "✓ version command works"
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "✗ version command failed"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+            fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 3 - Check help command
+        id: test3
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          
+          if mvn --help 2>&1 | grep -q "usage"; then
+             echo "✓ help command works"
+             echo "status=passed" >> $GITHUB_OUTPUT
+          else
+             echo "✗ help command failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+            fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 4 - Create simple project (archetype)
+        id: test4
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          
+          # Generate a simple project non-interactively
+          if mvn archetype:generate -DgroupId=com.mycompany.app -DartifactId=my-app -DarchetypeArtifactId=maven-archetype-quickstart -DarchetypeVersion=1.4 -DinteractiveMode=false; then
+             if [ -d "my-app" ]; then
+                echo "✓ Project creation passed"
+                echo "status=passed" >> $GITHUB_OUTPUT
+            else
+                echo "✗ Project creation failed (dir not found)"
+                echo "status=failed" >> $GITHUB_OUTPUT
+                exit 1
+            fi
+          else
+             echo "✗ Project creation failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+            fi
+          
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 5 - Build project
+        id: test5
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          # Functional Validation
+          
+          cd my-app
+          if mvn package; then
+             if [ -f "target/my-app-1.0-SNAPSHOT.jar" ]; then
+                echo "✓ Build passed"
+                echo "status=passed" >> $GITHUB_OUTPUT
+            else
+                echo "✗ Build failed (jar not found)"
+                echo "status=failed" >> $GITHUB_OUTPUT
+                exit 1
+            fi
+          else
+             echo "✗ Build failed"
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+            fi
+          
+          # Architecture Verification
+          ARCH=$(uname -m)
+          if [ "$ARCH" != "aarch64" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        if: always()
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          echo "regression_policy=${{ steps.metadata.outputs.regression_policy || 'applicable' }}" >> "$GITHUB_OUTPUT"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=unknown" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation skipped because one or more baseline tests (1-5) failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline tests failed, so next-version validation is not trustworthy for this run." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          METADATA_URL="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/maven-metadata.xml"
+          METADATA_XML="${RUNNER_TEMP}/apache-maven-metadata.xml"
+          LOOKUP_STATUS="failed"
+          NEXT=""
+
+          for attempt in 1 2 3; do
+            if curl -fsSL --retry 5 --retry-delay 2 "${METADATA_URL}" -o "${METADATA_XML}"; then
+              NEXT="$(
+                python3 - "${CURRENT}" "${METADATA_XML}" <<'PY'
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
+
+          current = (sys.argv[1] or "").strip()
+          metadata_path = (sys.argv[2] or "").strip()
+
+          if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", current):
+              print("")
+              raise SystemExit(0)
+
+          try:
+              root = ET.parse(metadata_path).getroot()
+          except ET.ParseError:
+              print("__LOOKUP_FAILED__")
+              raise SystemExit(0)
+
+          versions = []
+          for node in root.findall("versioning/versions/version"):
+              value = (node.text or "").strip()
+              if re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", value):
+                  versions.append(value)
+
+          def key(v: str):
+              return tuple(int(part) for part in v.split("."))
+
+          current_key = key(current)
+          current_major = current.split(".")[0]
+          candidates = sorted(
+              {v for v in versions if v.split(".")[0] == current_major and key(v) > current_key},
+              key=key,
+          )
+          print(candidates[0] if candidates else "")
+          PY
+              )"
+
+              if [ "${NEXT}" != "__LOOKUP_FAILED__" ]; then
+                LOOKUP_STATUS="ok"
+                break
+              fi
+            fi
+
+            sleep 2
+          done
+
+          if [ "${LOOKUP_STATUS}" != "ok" ]; then
+            NEXT="__LOOKUP_FAILED__"
+          fi
+
+          if [ "$NEXT" = "__LOOKUP_FAILED__" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=unknown" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT} passed Tests 1-5, but Maven metadata lookup for the next newer stable release failed during this run." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ -z "${NEXT}" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable Maven release exists in the same major stream as the tested baseline." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT} has no higher stable version in the current major stream; Test 6 is not applicable for this run." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_BASE="apache-maven-${NEXT}"
+          NEXT_DIR="${RUNNER_TEMP}/maven-next"
+          NEXT_TARBALL="${RUNNER_TEMP}/${NEXT_BASE}-bin.tar.gz"
+          NEXT_SERIES_DIR="maven-${NEXT%%.*}"
+          NEXT_PRIMARY_URL="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/${NEXT}/${NEXT_BASE}-bin.tar.gz"
+          NEXT_ARCHIVE_URL="https://archive.apache.org/dist/maven/${NEXT_SERIES_DIR}/${NEXT}/binaries/${NEXT_BASE}-bin.tar.gz"
+          rm -rf "${NEXT_DIR}"
+          mkdir -p "${NEXT_DIR}"
+
+          download_next_maven_tarball() {
+            local url="$1"
+            curl -fsSL --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 2 "$url" -o "${NEXT_TARBALL}"
+          }
+
+          if ! download_next_maven_tarball "${NEXT_PRIMARY_URL}"; then
+            echo "Primary Maven Central candidate download failed, retrying via Apache archive..."
+            download_next_maven_tarball "${NEXT_ARCHIVE_URL}"
+          fi
+
+          tar -xzf "${NEXT_TARBALL}" -C "${NEXT_DIR}"
+          NEXT_BIN="${NEXT_DIR}/${NEXT_BASE}/bin/mvn"
+          NEXT_INSTALLED=$("${NEXT_BIN}" -version 2>&1 | awk '/Apache Maven/ {print $3; exit}' | sed 's/\x1b\[[0-9;]*m//g')
+
+          if [ -z "${NEXT_INSTALLED}" ] || [ "${NEXT_INSTALLED}" != "${NEXT}" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${NEXT}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${NEXT_INSTALLED:-not_installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Failed to install and verify the selected next Maven release." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT}; attempted next ${NEXT}; observed ${NEXT_INSTALLED:-not_installed}." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          "${NEXT_BIN}" -q -f my-app/pom.xml -DskipTests package >/tmp/maven-next-build.log 2>&1 || {
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${NEXT}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next-version Maven build smoke test failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline ${CURRENT}; next ${NEXT} installed, but build regression check did not pass." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          }
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
+          echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Validated baseline Maven against the next newer stable release with successful install and build smoke checks." >> "$GITHUB_OUTPUT"
+          echo "comparison=Baseline ${CURRENT} and next ${NEXT} both passed smoke validation; no regression observed in this workflow scope." >> "$GITHUB_OUTPUT"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+            # ============================================================
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      # UPDATE THIS: Calculate summary based on your number of tests
+      # Add/remove test result checks to match your tests above
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          CORE_FAILED=0
+          SKIPPED=0
+          TOTAL_DURATION=0
+
+          # Check mvn binary
+          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+
+          # Check version command
+          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+
+          # Check help command
+          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
+
+          # Create simple project (archetype)
+          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
+
+          # Build project
+          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+            CORE_FAILED=$((CORE_FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
+
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          if [ "$TEST6_STATUS" == "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$TEST6_STATUS" == "failed" ]; then
+            FAILED=$((FAILED + 1))
+          else
+            SKIPPED=$((SKIPPED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
+          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
+          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
+
+          if [ $CORE_FAILED -eq 0 ]; then
+            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          else
+            echo "badge_status=failing" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
+            echo "overall_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "overall_status=failure" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $CORE_FAILED -ne 0 ]; then
+            exit 1
+          fi
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## Maven Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
+          echo "1. Test 1 - Check mvn binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "2. Test 2 - Check version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "3. Test 3 - Check help command: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "4. Test 4 - Create simple project (archetype): ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Test 5 - Build project: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Regression Validation (Next Version Install)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> $GITHUB_STEP_SUMMARY

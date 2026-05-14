@@ -1,0 +1,910 @@
+name: Test NVSentinel on Arm64
+
+on:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-nvsentinel.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-nvsentinel.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-nvsentinel.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-nvsentinel.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-nvsentinel.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-nvsentinel.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-nvsentinel.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-nvsentinel.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-nvsentinel.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-nvsentinel.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-nvsentinel.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-nvsentinel.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-nvsentinel.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-nvsentinel.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-nvsentinel.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-nvsentinel.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-nvsentinel.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-nvsentinel.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy classification
+        value: ${{ jobs.test-nvsentinel.outputs.regression_policy }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-nvsentinel.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-nvsentinel.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-nvsentinel.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-nvsentinel.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-nvsentinel.outputs.timestamp }}
+
+jobs:
+  test-nvsentinel:
+    runs-on: ubuntu-24.04-arm
+    env:
+      BASELINE_VERSION: "0.3.0"
+      PACKAGE_SLUG: "nvsentinel"
+      LANE_KIND: "gpu/specialized/manual-review"
+      DOWNLOAD_URL: "https://github.com/NVIDIA/NVSentinel/releases"
+      HOMEPAGE_URL: "https://github.com/NVIDIA/NVSentinel"
+      OFFICIAL_DOCS: "https://github.com/NVIDIA/NVSentinel#-quick-start"
+      GITHUB_REPO: "NVIDIA/NVSentinel"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'NVSentinel'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=nvsentinel" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/linux/opensource_packages/nvsentinel" >> "$GITHUB_OUTPUT"
+
+      - name: Bootstrap baseline dependencies
+        uses: ./.github/actions/apt-bootstrap
+        with:
+          packages: "git curl jq tar unzip file ca-certificates"
+          quiet: "true"
+
+      - name: Install baseline source or artifact
+        id: install
+        run: |
+          set -euo pipefail
+          rm -rf baseline-src baseline-external
+          mkdir -p baseline-src baseline-external
+          if [ -n "$GITHUB_REPO" ]; then
+            RESOLVED_TAG=""
+            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
+              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
+                RESOLVED_TAG="$CANDIDATE"
+                break
+              fi
+            done
+            if [ -n "$RESOLVED_TAG" ]; then
+              git clone --filter=blob:none --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
+              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
+            else
+              git clone --filter=blob:none --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
+              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
+            fi
+            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
+              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
+              echo "install_status=success" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
+            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
+            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
+            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
+          echo "install_status=failed" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Get baseline version
+        id: version
+        run: |
+          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected baseline version: $BASELINE_VERSION"
+
+      - name: Define package-specific expectations
+        id: expectations
+        run: |
+          set -euo pipefail
+          CONTENT_PAGE="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+          echo "content_page=$CONTENT_PAGE" >> "$GITHUB_OUTPUT"
+          case "$PACKAGE_SLUG" in
+            ngspice)
+              echo "source_markers=ANALYSES|DEVICES|src|README|man" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README|README.adms|README.tcl|src" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
+              echo "identity_target=README" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=ngspice" >> "$GITHUB_OUTPUT"
+              echo "external_expect=ngspice" >> "$GITHUB_OUTPUT"
+              ;;
+            nvidia-container-toolkit)
+              echo "source_markers=cmd/nvidia-ctk|cmd/nvidia-container-runtime|go.mod|pkg" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|cmd/nvidia-container-runtime|CHANGELOG.md|go.mod" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=go_module" >> "$GITHUB_OUTPUT"
+              echo "identity_target=go.mod" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=github.com/NVIDIA/nvidia-container-toolkit" >> "$GITHUB_OUTPUT"
+              echo "external_expect=nvidia-container-toolkit|NVIDIA Container Toolkit" >> "$GITHUB_OUTPUT"
+              ;;
+            nvidia-gpu-driver-container)
+              echo "source_markers=base|Makefile|README.md|centos7|vgpu" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|base|azurelinux|centos7" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
+              echo "identity_target=README.md" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=driver container" >> "$GITHUB_OUTPUT"
+              echo "external_expect=gpu driver container|NVIDIA driver" >> "$GITHUB_OUTPUT"
+              ;;
+            nvidia-gpu-operator)
+              echo "source_markers=deployments/gpu-operator|go.mod|PROJECT|README.md" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|deployments/gpu-operator/Chart.yaml|tests|go.mod" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=chart_name" >> "$GITHUB_OUTPUT"
+              echo "identity_target=deployments/gpu-operator/Chart.yaml" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=gpu-operator" >> "$GITHUB_OUTPUT"
+              echo "external_expect=gpu-operator|GPU Operator" >> "$GITHUB_OUTPUT"
+              ;;
+            nvimagecodec)
+              echo "source_markers=CMakeLists.txt|README.md|example|cmake" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|CMakeLists.txt|example" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
+              echo "identity_target=README.md" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=nvImageCodec" >> "$GITHUB_OUTPUT"
+              echo "external_expect=nvImageCodec|nvimgcodec" >> "$GITHUB_OUTPUT"
+              ;;
+            nvsentinel)
+              echo "source_markers=distros/kubernetes/nvsentinel|api|commons|Makefile" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|distros/kubernetes/nvsentinel/Chart.yaml|preflight-checks|health-monitors" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=chart_name" >> "$GITHUB_OUTPUT"
+              echo "identity_target=distros/kubernetes/nvsentinel/Chart.yaml" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=nvsentinel" >> "$GITHUB_OUTPUT"
+              echo "external_expect=nvsentinel" >> "$GITHUB_OUTPUT"
+              ;;
+            nvshmem)
+              echo "source_markers=CMakeLists.txt|README.md|examples|cmake_config" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|examples|CMakeLists.txt|nvshmem4py" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
+              echo "identity_target=README.md" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=NVSHMEM" >> "$GITHUB_OUTPUT"
+              echo "external_expect=NVSHMEM|nvshmem" >> "$GITHUB_OUTPUT"
+              ;;
+            nx-cugraph)
+              echo "source_markers=_nx_cugraph|pyproject.toml|VERSION|README.md|benchmarks" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|pyproject.toml|_nx_cugraph/VERSION|VERSION" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=toml_name" >> "$GITHUB_OUTPUT"
+              echo "identity_target=pyproject.toml" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=nx-cugraph" >> "$GITHUB_OUTPUT"
+              echo "external_expect=nx-cugraph|cugraph" >> "$GITHUB_OUTPUT"
+              ;;
+            ocm)
+              echo "source_markers=go.mod|api|README.md|VERSION" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|api|VERSION|cmds" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=go_module" >> "$GITHUB_OUTPUT"
+              echo "identity_target=go.mod" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=ocm.software/ocm" >> "$GITHUB_OUTPUT"
+              echo "external_expect=Open Component Model|open component model|OCM" >> "$GITHUB_OUTPUT"
+              ;;
+            ollama)
+              echo "source_markers=go.mod|README.md|app|docs|CMakeLists.txt" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|docs|app|go.mod" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
+              echo "identity_target=README.md" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=ollama run" >> "$GITHUB_OUTPUT"
+              echo "external_expect=ollama" >> "$GITHUB_OUTPUT"
+              ;;
+            openfpgaloader)
+              echo "source_markers=CMakeLists.txt|src|scripts|70-openfpgaloader.rules|README.md" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|doc|CMakeLists.txt|scripts" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
+              echo "identity_target=CMakeLists.txt" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=openFPGALoader" >> "$GITHUB_OUTPUT"
+              echo "external_expect=openFPGALoader|openfpgaloader" >> "$GITHUB_OUTPUT"
+              ;;
+            openlane)
+              echo "source_markers=Makefile|configuration|dependencies|scripts/tcl_commands|README.md" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|configuration|dependencies|scripts/tcl_commands" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
+              echo "identity_target=README.md" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=OpenLane" >> "$GITHUB_OUTPUT"
+              echo "external_expect=OpenLane|openlane" >> "$GITHUB_OUTPUT"
+              ;;
+            opennow)
+              echo "source_markers=package.json|opennow-stable/package.json|README.md|opennow-stable" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|package.json|opennow-stable/package.json|opennow-stable" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=package_json_name" >> "$GITHUB_OUTPUT"
+              echo "identity_target=opennow-stable/package.json" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=opennow-stable" >> "$GITHUB_OUTPUT"
+              echo "external_expect=OpenNOW|opennow" >> "$GITHUB_OUTPUT"
+              ;;
+            ord-provider-server)
+              echo "source_markers=package.json|src|Dockerfile|README.md" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|package.json|Dockerfile|src" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=package_json_name" >> "$GITHUB_OUTPUT"
+              echo "identity_target=package.json" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=@open-resource-discovery/provider-server" >> "$GITHUB_OUTPUT"
+              echo "external_expect=provider-server|open-resource-discovery" >> "$GITHUB_OUTPUT"
+              ;;
+            oregano)
+              echo "source_markers=README.md|docs|data|builddeps.sh" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|data|docs" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
+              echo "identity_target=README.md" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=oregano" >> "$GITHUB_OUTPUT"
+              echo "external_expect=oregano" >> "$GITHUB_OUTPUT"
+              ;;
+            osmo)
+              echo "source_markers=BUILD|BUILD_AND_TEST.md|CHANGELOG.md|DEV.md" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=BUILD_AND_TEST.md|CHANGELOG.md|DEV.md|BUILD" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
+              echo "identity_target=BUILD_AND_TEST.md" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=OSMO" >> "$GITHUB_OUTPUT"
+              echo "external_expect=OSMO|osmo" >> "$GITHUB_OUTPUT"
+              ;;
+            owncast)
+              echo "source_markers=go.mod|web/package.json|README.md|Dockerfile|web" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|web/package.json|go.mod|Dockerfile" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=go_module" >> "$GITHUB_OUTPUT"
+              echo "identity_target=go.mod" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=github.com/owncast/owncast" >> "$GITHUB_OUTPUT"
+              echo "external_expect=owncast" >> "$GITHUB_OUTPUT"
+              ;;
+            pcb-rnd)
+              echo "source_markers=external_metadata" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=external_metadata" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
+              echo "identity_target=README" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=pcb-rnd" >> "$GITHUB_OUTPUT"
+              echo "external_expect=pcb-rnd|pcb rnd" >> "$GITHUB_OUTPUT"
+              ;;
+            physics-nemo)
+              echo "source_markers=pyproject.toml|README.md|examples|Dockerfile" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|pyproject.toml|examples|Dockerfile" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=toml_name" >> "$GITHUB_OUTPUT"
+              echo "identity_target=pyproject.toml" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=nvidia-physicsnemo" >> "$GITHUB_OUTPUT"
+              echo "external_expect=PhysicsNeMo|physicsnemo" >> "$GITHUB_OUTPUT"
+              ;;
+            playit)
+              echo "source_markers=Cargo.toml|packages/agent_cli/Cargo.toml|README.md|Dockerfile|packages" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|packages/agent_cli/Cargo.toml|Dockerfile" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=cargo_package" >> "$GITHUB_OUTPUT"
+              echo "identity_target=packages/agent_cli/Cargo.toml" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=playit-cli" >> "$GITHUB_OUTPUT"
+              echo "external_expect=playit" >> "$GITHUB_OUTPUT"
+              ;;
+            playwright)
+              echo "source_markers=package.json|packages/playwright-core|README.md|utils" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|packages/playwright-core/README.md|package.json" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=package_json_name" >> "$GITHUB_OUTPUT"
+              echo "identity_target=package.json" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=playwright-internal" >> "$GITHUB_OUTPUT"
+              echo "external_expect=playwright" >> "$GITHUB_OUTPUT"
+              ;;
+            prophet)
+              echo "source_markers=python/pyproject.toml|python/setup.py|R|docs|README.md" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|python/pyproject.toml|python/setup.py|docs" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=toml_name" >> "$GITHUB_OUTPUT"
+              echo "identity_target=python/pyproject.toml" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=prophet" >> "$GITHUB_OUTPUT"
+              echo "external_expect=prophet" >> "$GITHUB_OUTPUT"
+              ;;
+            qflow)
+              echo "source_markers=configure|VERSION|src|scripts|tech|README" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README|VERSION|scripts|tech" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
+              echo "identity_target=README" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=qflow" >> "$GITHUB_OUTPUT"
+              echo "external_expect=qflow" >> "$GITHUB_OUTPUT"
+              ;;
+            qrouter)
+              echo "source_markers=configure|VERSION|README|console.tcl" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README|VERSION|console.tcl" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
+              echo "identity_target=README" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=Qrouter|qrouter" >> "$GITHUB_OUTPUT"
+              echo "external_expect=Qrouter|qrouter" >> "$GITHUB_OUTPUT"
+              ;;
+            raft)
+              echo "source_markers=VERSION|cpp|python/libraft|README.md|pyproject.toml" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|python/libraft|cpp|VERSION" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
+              echo "identity_target=README.md" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=RAFT" >> "$GITHUB_OUTPUT"
+              echo "external_expect=RAFT|raft" >> "$GITHUB_OUTPUT"
+              ;;
+            ragflow)
+              echo "source_markers=pyproject.toml|web/package.json|helm/Chart.yaml|Dockerfile|agent" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|pyproject.toml|web/package.json|helm/Chart.yaml" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=toml_name" >> "$GITHUB_OUTPUT"
+              echo "identity_target=pyproject.toml" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=ragflow" >> "$GITHUB_OUTPUT"
+              echo "external_expect=RAGFlow|ragflow" >> "$GITHUB_OUTPUT"
+              ;;
+            rav1e)
+              echo "source_markers=Cargo.toml|README.md|doc|ivf|tools" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|doc/README.md|Cargo.toml" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=cargo_package" >> "$GITHUB_OUTPUT"
+              echo "identity_target=Cargo.toml" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=rav1e" >> "$GITHUB_OUTPUT"
+              echo "external_expect=rav1e" >> "$GITHUB_OUTPUT"
+              ;;
+            resiliency-extension)
+              echo "source_markers=pyproject.toml|services|docs|examples|README.md" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|pyproject.toml|docs|examples" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=toml_name" >> "$GITHUB_OUTPUT"
+              echo "identity_target=pyproject.toml" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=nvidia-resiliency-ext" >> "$GITHUB_OUTPUT"
+              echo "external_expect=resiliency|nvidia-resiliency-ext" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "source_markers=README.md" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md" >> "$GITHUB_OUTPUT"
+              echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
+              echo "identity_target=README.md" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=$PACKAGE_SLUG" >> "$GITHUB_OUTPUT"
+              echo "external_expect=$PACKAGE_SLUG" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Test 1 - Check package-specific baseline markers
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          SOURCE_MARKERS="${{ steps.expectations.outputs.source_markers }}"
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=Baseline source or external metadata could not be acquired." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+            FOUND=0
+            HITS=""
+            IFS='|' read -r -a MARKERS <<< "$SOURCE_MARKERS"
+            for marker in "${MARKERS[@]}"; do
+              if [ -e "$marker" ]; then
+                FOUND=$((FOUND + 1))
+                if [ -z "$HITS" ]; then
+                  HITS="$marker"
+                else
+                  HITS="$HITS, $marker"
+                fi
+              fi
+            done
+            if [ "$FOUND" -ge 2 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "note=Found package-specific baseline markers: $HITS" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=Expected at least two package-specific markers from: $SOURCE_MARKERS" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          elif [ -f baseline-external/metadata.txt ]; then
+            grep -Fx "download=$DOWNLOAD_URL" baseline-external/metadata.txt >/dev/null
+            grep -Fx "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt >/dev/null
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Validated external baseline metadata for the published source links." >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=External baseline metadata was not emitted." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check published package metadata
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
+          [ -f "$CONTENT_PAGE" ]
+          grep -Fx "download_url: $DOWNLOAD_URL" "$CONTENT_PAGE" >/dev/null
+          grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
+          grep -Fx "    version_number: $BASELINE_VERSION" "$CONTENT_PAGE" >/dev/null
+          grep -Fx "    homepage_url: $HOMEPAGE_URL" "$CONTENT_PAGE" >/dev/null
+          grep -Fx "        official_docs: $OFFICIAL_DOCS" "$CONTENT_PAGE" >/dev/null
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Validated the checked-in package page against the workflow baseline, homepage, and docs metadata." >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check package-specific docs and manifests
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          DOC_MARKERS="${{ steps.expectations.outputs.doc_markers }}"
+          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+            FOUND=0
+            HITS=""
+            IFS='|' read -r -a MARKERS <<< "$DOC_MARKERS"
+            for marker in "${MARKERS[@]}"; do
+              if [ -e "$marker" ]; then
+                FOUND=$((FOUND + 1))
+                if [ -z "$HITS" ]; then
+                  HITS="$marker"
+                else
+                  HITS="$HITS, $marker"
+                fi
+              fi
+            done
+            [ -e "$IDENTITY_TARGET" ]
+            if [ "$FOUND" -ge 1 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "note=Validated package-specific documentation or manifest markers: $HITS" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=Expected at least one package-specific documentation marker from: $DOC_MARKERS" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          elif [ -f baseline-external/metadata.txt ]; then
+            grep -Fx "docs=$OFFICIAL_DOCS" baseline-external/metadata.txt >/dev/null
+            grep -Fx "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt >/dev/null
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Validated external documentation and homepage metadata for the baseline package." >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=External documentation metadata was not emitted." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Verify Arm64 runner and lane assumptions
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
+          [ "$(uname -m)" = "aarch64" ]
+          grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          if echo "$LANE_KIND" | grep -Eiq 'gpu|specialized|manual-review'; then
+            echo "note=Validated Arm64 support metadata on a generic Arm runner; deeper runtime checks for this lane still require the package-specific environment: $LANE_KIND." >> "$GITHUB_OUTPUT"
+          else
+            echo "note=Validated Arm64 runner architecture and published Arm support metadata." >> "$GITHUB_OUTPUT"
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Run bounded package-specific smoke
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODE="${{ steps.install.outputs.install_mode || '' }}"
+          RESULT=""
+
+          compile_python_targets() {
+            FOUND=0
+            for target in "$@"; do
+              [ -z "$target" ] && continue
+              if [ -e "$target" ]; then
+                python3 -m compileall -q "$target"
+                FOUND=1
+              fi
+            done
+            [ "$FOUND" -eq 1 ]
+          }
+
+          source_contains() {
+            grep -R -I -Eiq "$1" . 2>/dev/null
+          }
+
+          github_release_has_asset() {
+            TAG="${{ steps.install.outputs.resolved_tag || '' }}"
+            [ -n "$TAG" ] && [ "$TAG" != "default_branch" ]
+            curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$TAG"               | jq -e --arg re "$1" '.assets[].name | test($re; "i")' >/dev/null
+          }
+
+          helm_or_manifest_proof() {
+            CHART="$(find . -path '*/Chart.yaml' -print -quit 2>/dev/null || true)"
+            if [ -n "$CHART" ] && command -v helm >/dev/null 2>&1; then
+              helm template smoke "$(dirname "$CHART")" >/tmp/${PACKAGE_SLUG}-helm.yaml
+              grep -Eq '^kind: (DaemonSet|Deployment|ServiceAccount|ClusterRole|CustomResourceDefinition)' /tmp/${PACKAGE_SLUG}-helm.yaml
+              return 0
+            fi
+            find . -type f \( -name '*.yaml' -o -name '*.yml' -o -name 'Chart.yaml' \) -print0               | xargs -0 grep -Eiq 'kind: (DaemonSet|Deployment|ServiceAccount|ClusterRole|CustomResourceDefinition)|apiVersion: apps/|nvidia.com/gpu|helm'
+          }
+
+          if [ "$MODE" = "github_source" ]; then
+            cd baseline-src
+            case "$PACKAGE_SLUG" in
+              amazon-vpc-cni-k8s)
+                test -f Makefile
+                find . -name '*.go' -print -quit | grep -q .
+                source_contains 'CNI|eni|ipam|amazon-vpc|kubernetes'
+                RESULT="Validated Kubernetes CNI Go source and build entry markers on Arm64; no Kubernetes cluster/runtime was claimed."
+                ;;
+              azurelinux)
+                test -d toolkit || test -d SPECS || test -f README.md
+                source_contains 'aarch64|arm64|image|ISO|toolkit'
+                RESULT="Validated Azure Linux image-build source and Arm architecture markers; OS image boot/runtime was not validated."
+                ;;
+              bionemo-framework)
+                compile_python_targets src bionemo sub-packages || source_contains 'bionemo|biomolecular|lightning|model'
+                RESULT="Compiled BioNeMo Python sources or verified package source markers on Arm64; CUDA/model training runtime remains scoped."
+                ;;
+              chiaki-ng)
+                if github_release_has_asset 'aarch64|arm64'; then
+                  RESULT="Verified a release asset advertises Arm64/aarch64 architecture; streaming runtime was not exercised."
+                else
+                  test -f CMakeLists.txt || test -f pyproject.toml || test -f package.json
+                  source_contains 'chiaki|remote play|PlayStation|Qt|CMake'
+                  RESULT="Validated Chiaki-ng source/build markers on Arm64; GUI/streaming runtime was not exercised."
+                fi
+                ;;
+              clara-viz)
+                compile_python_targets src python || source_contains 'Clara|viz|render|CUDA|CMake'
+                RESULT="Validated Clara Viz source/Python surface on Arm64; CUDA rendering runtime remains scoped."
+                ;;
+              cloud-native-stack)
+                helm_or_manifest_proof || source_contains 'helm|kubernetes|operator|gpu-operator|cloud native'
+                RESULT="Validated Kubernetes/Helm manifest evidence for Cloud Native Stack; no cluster deployment was claimed."
+                ;;
+              nvidia-gpu-driver-container)
+                cd ..
+                grep -Fq "version_number: $BASELINE_VERSION" "content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+                curl -fsSL "$HOMEPAGE_URL" | grep -Eiq 'driver container|NVIDIA|GPU'
+                RESULT="Validated NVIDIA GPU driver container source/catalog identity and Arm metadata; driver load, DKMS, and GPU runtime remain deferred."
+                ;;
+              nvidia-gpu-operator)
+                helm_or_manifest_proof || source_contains 'ClusterPolicy|gpu-operator|nvidia.com/gpu|DaemonSet'
+                RESULT="Validated GPU Operator Helm/Kubernetes manifests on Arm64; no cluster reconciliation or GPU runtime was claimed."
+                ;;
+              nvimagecodec)
+                compile_python_targets python src || source_contains 'nvImageCodec|nvimgcodec|decode|encode|CUDA'
+                RESULT="Validated nvImageCodec source/Python surface on Arm64; GPU codec execution remains scoped."
+                ;;
+              nvsentinel)
+                if ! command -v helm >/dev/null 2>&1; then
+                  HELM_VERSION="v3.15.4"
+                  curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-arm64.tar.gz" -o /tmp/helm.tgz
+                  tar -xzf /tmp/helm.tgz -C /tmp
+                  export PATH="/tmp/linux-arm64:$PATH"
+                fi
+                CHART="$(find . -path '*/Chart.yaml' -print -quit 2>/dev/null || true)"
+                if [ -n "$CHART" ]; then
+                  helm dependency build "$(dirname "$CHART")" >/tmp/nvsentinel-helm-deps.txt 2>&1 || true
+                  helm template nvsentinel-smoke "$(dirname "$CHART")" --include-crds >/tmp/nvsentinel-rendered.yaml
+                else
+                  find . -type f \( -name '*.yaml' -o -name '*.yml' \) -print0 | xargs -0 cat > /tmp/nvsentinel-rendered.yaml
+                fi
+                grep -Eq 'kind: (DaemonSet|Deployment|ServiceAccount|ClusterRole|CustomResourceDefinition)|NVSentinel|nvsentinel' /tmp/nvsentinel-rendered.yaml
+                ! grep -Eiq 'nodeSelector:.*amd64|kubernetes.io/arch:[[:space:]]*amd64' /tmp/nvsentinel-rendered.yaml
+                grep -Eio 'image:[[:space:]]*[^[:space:]]+' /tmp/nvsentinel-rendered.yaml | awk '{print $2}' | sort -u >/tmp/nvsentinel-images.txt || true
+                RESULT="Rendered or assembled NVSentinel Kubernetes manifests on Arm64, validated controller/resource content, and rejected amd64-only scheduling selectors. GPU fault detection, node remediation, and live Kubernetes reconciliation remain out of scope."
+                ;;
+              nvshmem)
+                test -f CMakeLists.txt || test -f Makefile || test -d src
+                source_contains 'NVSHMEM|OpenSHMEM|PGAS|CUDA'
+                RESULT="Validated NVSHMEM source/build markers on Arm64; CUDA/NVLink/InfiniBand runtime remains scoped."
+                ;;
+              opennow)
+                if github_release_has_asset 'aarch64|arm64|linux'; then
+                  RESULT="Verified OpenNOW release asset evidence for Linux/Arm architecture; GeForce NOW session runtime was not exercised."
+                else
+                  test -f package.json || test -f Cargo.toml || test -f pyproject.toml || test -f CMakeLists.txt
+                  source_contains 'OpenNOW|GeForce NOW|gaming|client'
+                  RESULT="Validated OpenNOW source/build markers on Arm64; desktop/cloud-gaming runtime was not exercised."
+                fi
+                ;;
+              physics-nemo)
+                compile_python_targets src physicsnemo examples || source_contains 'PhysicsNeMo|physics|model|training'
+                RESULT="Compiled PhysicsNeMo Python sources or verified package markers on Arm64; CUDA/model runtime remains scoped."
+                ;;
+              raft|rmm|cudf|cugraph|cuml|cuopt|cuvs|cv-cuda|dali|dask-cuda|tensorrt|tensorrt-llm)
+                compile_python_targets python src pylibraft pylibrmm dask_cuda tensorrt_llm || source_contains 'CUDA|RAPIDS|NVIDIA|TensorRT|DALI|RAFT|RMM|cuDF|cuGraph|cuML|cuVS|cuOpt'
+                RESULT="Validated package source/Python compile surface on Arm64; CUDA/GPU runtime remains scoped."
+                ;;
+              dcgm-exporter)
+                if [ -f go.mod ]; then
+                  GOOS=linux GOARCH=arm64 go list ./... >/tmp/dcgm-exporter-go-packages.txt
+                fi
+                helm_or_manifest_proof || source_contains 'DCGM|Prometheus|metrics|exporter'
+                RESULT="Validated DCGM Exporter Go/Kubernetes source evidence on Arm64; GPU/DCGM runtime was not exercised."
+                ;;
+              dcgm)
+                test -f CMakeLists.txt || test -d dcgmlib || test -d hostengine
+                source_contains 'DCGM|diagnostics|telemetry|hostengine|GPU'
+                RESULT="Validated DCGM source/build markers on Arm64; GPU management runtime was not exercised."
+                ;;
+              garden-linux)
+                if github_release_has_asset 'arm64|aarch64'; then
+                  RESULT="Verified Garden Linux release artifact advertises Arm64/aarch64 architecture; OS boot was not validated."
+                else
+                  test -d features || test -d platforms || test -d docs
+                  source_contains 'arm64|aarch64|image|platform|Garden Linux'
+                  RESULT="Validated Garden Linux image-build source and architecture markers; OS boot was not validated."
+                fi
+                ;;
+              gdrcopy)
+                test -f Makefile || test -d src || test -d include
+                source_contains 'GDRCopy|GPUDirect|RDMA|gdrdrv|GPU memory'
+                RESULT="Validated GDRCopy source/build markers on Arm64; kernel module and GPU RDMA runtime remain scoped."
+                ;;
+              k8s-device-plugin)
+                if [ -f go.mod ]; then
+                  GOOS=linux GOARCH=arm64 go list ./... >/tmp/k8s-device-plugin-go-packages.txt
+                fi
+                helm_or_manifest_proof || grep -R -Eiq 'nvidia.com/gpu|DaemonSet|device-plugin' .
+                RESULT="Validated NVIDIA device plugin Go/Kubernetes manifests on Arm64; no cluster scheduling or GPU runtime was claimed."
+                ;;
+              llm-d)
+                compile_python_targets scripts || true
+                helm_or_manifest_proof || source_contains 'Kubernetes-native|inference|llm-d|gateway|modelservice'
+                RESULT="Validated llm-d scripts and Kubernetes/source evidence on Arm64; no cluster inference runtime was claimed."
+                ;;
+              microcloud)
+                if [ -f go.mod ]; then
+                  GOOS=linux GOARCH=arm64 go list ./cmd/... >/tmp/microcloud-go-packages.txt
+                fi
+                source_contains 'microcloud init|microcloudd|LXD|MicroCeph|MicroOVN'
+                RESULT="Validated MicroCloud Go CLI package graph and command markers on Arm64; clustered service runtime was not started."
+                ;;
+              mig-parted)
+                if [ -f go.mod ]; then
+                  GOOS=linux GOARCH=arm64 go list ./cmd/... >/tmp/mig-parted-go-packages.txt
+                fi
+                grep -R -Eiq 'mig-configs|nvidia-mig-parted|MIG' .
+                RESULT="Validated MIG-Parted Go CLI/config source on Arm64; GPU MIG mutation runtime was not exercised."
+                ;;
+              sparks-rapids)
+                test -f pom.xml || test -f build.sbt || test -d sql-plugin
+                source_contains 'spark|rapids|cuDF|GPU|plugin'
+                RESULT="Validated Spark RAPIDS build/source markers on Arm64; Spark cluster and GPU acceleration runtime remain scoped."
+                ;;
+              sunshine)
+                if github_release_has_asset 'aarch64|arm64|linux'; then
+                  RESULT="Verified Sunshine release asset evidence for Linux/Arm architecture; streaming service runtime was not exercised."
+                else
+                  test -f CMakeLists.txt || test -f package.json
+                  source_contains 'Sunshine|Moonlight|stream|encoder|CMake'
+                  RESULT="Validated Sunshine source/build markers on Arm64; game-streaming service runtime was not exercised."
+                fi
+                ;;
+              ubuntudesktop)
+                cd ..
+                grep -Fq "version_number: $BASELINE_VERSION" "content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+                curl -fsSL "$DOWNLOAD_URL" | grep -Eiq 'Ubuntu|Desktop|download'
+                RESULT="Validated Ubuntu Desktop release/download metadata on Arm64 runner; desktop OS artifact boot/runtime was not validated."
+                ;;
+              wsl)
+                if github_release_has_asset 'arm64|aarch64'; then
+                  RESULT="Verified WSL release asset advertises Arm64/aarch64 architecture; Windows/WSL runtime was not validated."
+                else
+                  source_contains 'WSL|Windows Subsystem for Linux|arm64|aarch64'
+                  RESULT="Validated WSL source/release markers on Arm64 runner; Windows/WSL runtime was not validated."
+                fi
+                ;;
+              *)
+                SLUG_RE="$(printf '%s' "$PACKAGE_SLUG" | sed 's/[-_]/[-_ ]/g')"
+                TARGET="$(find . -maxdepth 3 -type f \( -name 'README*' -o -name 'go.mod' -o -name 'pyproject.toml' -o -name 'package.json' -o -name 'Cargo.toml' -o -name 'Chart.yaml' \) -print -quit 2>/dev/null || true)"
+                [ -n "$TARGET" ]
+                grep -Eiq "$SLUG_RE" "$TARGET" || source_contains "$SLUG_RE"
+                RESULT="Verified package-specific source identity for $PACKAGE_SLUG."
+                ;;
+            esac
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=$RESULT" >> "$GITHUB_OUTPUT"
+          else
+            case "$PACKAGE_SLUG" in
+              nvidia-gpu-driver-container)
+                curl -fsSL "$HOMEPAGE_URL" | grep -Eiq 'driver container|NVIDIA|GPU'
+                grep -Fq "version_number: $BASELINE_VERSION" "content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+                RESULT="Validated NVIDIA driver-container catalog/source evidence and Arm metadata; driver load, DKMS, and GPU runtime remain deferred."
+                ;;
+              ubuntudesktop)
+                curl -fsSL "$DOWNLOAD_URL" | grep -Eiq 'Ubuntu|Desktop|download'
+                grep -Fq "version_number: $BASELINE_VERSION" "content/linux/opensource_packages/${PACKAGE_SLUG}.md"
+                RESULT="Validated Ubuntu Desktop release/download metadata; desktop OS boot/runtime was not validated."
+                ;;
+              nvshmem|nvimagecodec)
+                curl -fsSL "$DOWNLOAD_URL" | grep -Eiq 'arm64|aarch64|sbsa|NVIDIA|CUDA'
+                RESULT="Validated NVIDIA external download page for Arm/CUDA package evidence; GPU runtime remains scoped."
+                ;;
+              bionemo-framework|physics-nemo|dcgm-exporter)
+                curl -fsSL "$DOWNLOAD_URL" | grep -Eiq 'arm64|aarch64|NVIDIA|container|tag|CUDA|GPU'
+                RESULT="Validated external NVIDIA container/catalog evidence; CUDA/GPU runtime remains scoped."
+                ;;
+              *)
+                TEMP_PAGE=$(mktemp)
+                trap 'rm -f "$TEMP_PAGE"' EXIT
+                if curl -fsSL "$OFFICIAL_DOCS" -o "$TEMP_PAGE" || curl -fsSL "$HOMEPAGE_URL" -o "$TEMP_PAGE" || curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_PAGE"; then
+                  SLUG_RE="$(printf '%s' "$PACKAGE_SLUG" | sed 's/[-_]/[-_ ]/g')"
+                  grep -Eiq "$SLUG_RE|$PACKAGE_SLUG" "$TEMP_PAGE"
+                  RESULT="Verified external package identity from published docs/homepage; no unsupported runtime claim was made."
+                else
+                  echo "status=failed" >> "$GITHUB_OUTPUT"
+                  echo "note=Could not fetch published docs or homepage content for bounded external validation." >> "$GITHUB_OUTPUT"
+                  exit 1
+                fi
+                ;;
+            esac
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=$RESULT" >> "$GITHUB_OUTPUT"
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+      - name: Test 6 - Regression Validation
+        id: test6
+        uses: ./.github/actions/generic-source-regression-check
+        with:
+          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
+          github_repo: ${{ env.GITHUB_REPO }}
+          lane_kind: ${{ env.LANE_KIND }}
+          limited_cpu_probe: |
+            cd next-src
+            if ! command -v helm >/dev/null 2>&1; then
+              HELM_VERSION="v3.15.4"
+              curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-arm64.tar.gz" -o /tmp/helm.tgz
+              tar -xzf /tmp/helm.tgz -C /tmp
+              export PATH="/tmp/linux-arm64:$PATH"
+            fi
+            CHART="$(find . -path '*/Chart.yaml' -print -quit 2>/dev/null || true)"
+            if [ -n "$CHART" ]; then
+              helm dependency build "$(dirname "$CHART")" >/tmp/nvsentinel-next-helm-deps.txt 2>&1 || true
+              helm template nvsentinel-next-smoke "$(dirname "$CHART")" --include-crds >/tmp/nvsentinel-next-rendered.yaml
+            else
+              find . -type f \( -name '*.yaml' -o -name '*.yml' \) -print0 | xargs -0 cat > /tmp/nvsentinel-next-rendered.yaml
+            fi
+            grep -Eq 'kind: (DaemonSet|Deployment|ServiceAccount|ClusterRole|CustomResourceDefinition)|NVSentinel|nvsentinel' /tmp/nvsentinel-next-rendered.yaml
+            ! grep -Eiq 'nodeSelector:.*amd64|kubernetes.io/arch:[[:space:]]*amd64' /tmp/nvsentinel-next-rendered.yaml
+          limited_cpu_description: "Test 6 reran the scoped NVSentinel Arm preflight against the next stable source tag: chart/manifest rendering, controller/resource validation, and amd64-only scheduling guard. GPU fault detection, node remediation, and live Kubernetes reconciliation remain out of scope."
+          next_version_override: "1.1.0"
+          candidate_tag_override: "v1.1.0"
+
+      - name: Calculate test summary
+        id: summary
+        if: always()
+        run: |
+          T1="${{ steps.test1.outputs.status || '' }}"
+          T2="${{ steps.test2.outputs.status || '' }}"
+          T3="${{ steps.test3.outputs.status || '' }}"
+          T4="${{ steps.test4.outputs.status || '' }}"
+          T5="${{ steps.test5.outputs.status || '' }}"
+          T6="${{ steps.test6.outputs.status || '' }}"
+          D1="${{ steps.test1.outputs.duration || '0' }}"
+          D2="${{ steps.test2.outputs.duration || '0' }}"
+          D3="${{ steps.test3.outputs.duration || '0' }}"
+          D4="${{ steps.test4.outputs.duration || '0' }}"
+          D5="${{ steps.test5.outputs.duration || '0' }}"
+          D6="${{ steps.test6.outputs.duration || '0' }}"
+          PASSED=0
+          FAILED=0
+          SKIPPED=0
+          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
+            if [ "$STATUS" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$STATUS" = "failed" ]; then
+              FAILED=$((FAILED + 1))
+            else
+              SKIPPED=$((SKIPPED + 1))
+            fi
+          done
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          CORE_FAILED=0
+          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
+            if [ "$STATUS" = "failed" ]; then
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          done
+          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+            OVERALL_STATUS="success"
+            BADGE_STATUS="passing"
+          else
+            OVERALL_STATUS="failure"
+            BADGE_STATUS="failing"
+          fi
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
+          echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: Create test summary
+        if: always()
+        uses: ./.github/actions/write-package-job-summary
+        with:
+          package_name: 'NVSentinel'
+          version: ${{ steps.version.outputs.version || 'unknown' }}
+          overall_status: ${{ steps.summary.outputs.overall_status || 'unknown' }}
+          tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+          tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+          tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+          duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
+          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
+          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
+          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
+          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
+          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test6_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+          regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
+          regression_details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}

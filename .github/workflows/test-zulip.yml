@@ -1,0 +1,449 @@
+name: Test Zulip on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-zulip.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-zulip.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-zulip.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-zulip.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-zulip.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-zulip.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-zulip.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-zulip.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-zulip.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-zulip.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-zulip.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-zulip.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-zulip.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-zulip.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-zulip.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-zulip.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-zulip.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-zulip.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-zulip.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-zulip.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-zulip.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-zulip.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-zulip.outputs.timestamp }}
+jobs:
+  test-zulip:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    env:
+      ZULIP_VERSION: "11.4"
+      ZULIP_NEXT_VERSION: "11.5"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Zulip'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=zulip" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/zulip" >> "$GITHUB_OUTPUT"
+          echo "current_version=${ZULIP_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Zulip baseline bundle
+        id: install
+        run: |
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "bash curl python3 tar"
+          ROOT="${RUNNER_TEMP}/zulip-smoke"
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/current/extract"
+          BASE_ARCHIVE="$ROOT/current/zulip-server-${ZULIP_VERSION}.tar.gz"
+
+          curl --fail --retry 3 --connect-timeout 15 --max-time 600 -L \
+            -o "$BASE_ARCHIVE" \
+            "https://github.com/zulip/zulip/releases/download/${ZULIP_VERSION}/zulip-server-${ZULIP_VERSION}.tar.gz"
+          tar -xzf "$BASE_ARCHIVE" -C "$ROOT/current/extract"
+
+          BASE_DIR=$(find "$ROOT/current/extract" -maxdepth 1 -type d -name 'zulip-server-*' | head -n 1)
+          if [ -z "$BASE_DIR" ]; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          test -f "$BASE_DIR/manage.py"
+          test -f "$BASE_DIR/version.py"
+          test -f "$BASE_DIR/scripts/setup/install"
+          test -f "$BASE_DIR/scripts/lib/install"
+          test -f "$BASE_DIR/zerver/lib/utils.py"
+
+          echo "base_dir=$BASE_DIR" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Get Zulip version
+        id: version
+        run: |
+          set -euo pipefail
+          BASE_DIR="${{ steps.install.outputs.base_dir }}"
+          VERSION=$(
+            BASE_DIR="$BASE_DIR" python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          text = pathlib.Path(os.environ["BASE_DIR"], "version.py").read_text()
+          match = re.search(r'ZULIP_VERSION = "([^"]+)"', text)
+          print(match.group(1) if match else "unknown")
+          PY
+          )
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=${ZULIP_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected Zulip version: $VERSION"
+
+      - name: Test 1 - Check release bundle contents
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          BASE_DIR="${{ steps.install.outputs.base_dir }}"
+          if [ -f "$BASE_DIR/manage.py" ] && \
+             [ -f "$BASE_DIR/version.py" ] && \
+             [ -f "$BASE_DIR/scripts/setup/install" ] && \
+             [ -f "$BASE_DIR/scripts/lib/install" ] && \
+             [ -f "$BASE_DIR/zerver/lib/utils.py" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check version metadata
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${{ steps.version.outputs.version }}" = "${ZULIP_VERSION}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check installer help output
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          BASE_DIR="${{ steps.install.outputs.base_dir }}"
+          bash "$BASE_DIR/scripts/lib/install" --help >/tmp/zulip-install-help.txt 2>&1 || true
+          if grep -q '^Usage:' /tmp/zulip-install-help.txt; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/zulip-install-help.txt || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture verification
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "$(uname -m)" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional release bundle validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          BASE_DIR="${{ steps.install.outputs.base_dir }}"
+
+          bash -n "$BASE_DIR/scripts/setup/install"
+          bash -n "$BASE_DIR/scripts/lib/install"
+          python3 -m py_compile \
+            "$BASE_DIR/version.py" \
+            "$BASE_DIR/zerver/lib/utils.py" \
+            "$BASE_DIR/scripts/lib/setup_path.py"
+
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          LATEST="${ZULIP_NEXT_VERSION}"
+          ROOT="${RUNNER_TEMP}/zulip-smoke"
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Release Bundle Validation) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for validation: $LATEST"
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the latest release bundle" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned baseline already matches the latest public Zulip release bundle. Repin Tests 1-5 to an older version so Test 6 validates a real Arm64 upgrade step." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_ROOT="$ROOT/regression"
+          rm -rf "$NEXT_ROOT"
+          mkdir -p "$NEXT_ROOT/extract"
+          NEXT_ARCHIVE="$NEXT_ROOT/zulip-server-${LATEST}.tar.gz"
+
+          if ! curl --fail --retry 3 --connect-timeout 15 --max-time 600 -L \
+              -o "$NEXT_ARCHIVE" \
+              "https://github.com/zulip/zulip/releases/download/${LATEST}/zulip-server-${LATEST}.tar.gz"; then
+            echo "next_installed_version=not_validated" >> "$GITHUB_OUTPUT"
+            echo "decision=next_bundle_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next release bundle validation failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Zulip release bundle ${CURRENT} passed smoke tests in this run, but the candidate release bundle ${LATEST} could not be downloaded for Arm64 validation." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          tar -xzf "$NEXT_ARCHIVE" -C "$NEXT_ROOT/extract"
+          NEXT_DIR=$(find "$NEXT_ROOT/extract" -maxdepth 1 -type d -name 'zulip-server-*' | head -n 1)
+          if [ -z "$NEXT_DIR" ]; then
+            echo "next_installed_version=not_validated" >> "$GITHUB_OUTPUT"
+            echo "decision=next_bundle_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next release bundle validation failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Zulip release bundle ${CURRENT} passed smoke tests in this run, but the candidate release bundle ${LATEST} did not extract correctly on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_VERSION=$(
+            NEXT_DIR="$NEXT_DIR" python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          text = pathlib.Path(os.environ["NEXT_DIR"], "version.py").read_text()
+          match = re.search(r'ZULIP_VERSION = "([^"]+)"', text)
+          print(match.group(1) if match else "unknown")
+          PY
+          )
+
+          bash "$NEXT_DIR/scripts/lib/install" --help >/tmp/zulip-next-help.txt 2>&1 || true
+          bash -n "$NEXT_DIR/scripts/setup/install"
+          bash -n "$NEXT_DIR/scripts/lib/install"
+          python3 -m py_compile \
+            "$NEXT_DIR/version.py" \
+            "$NEXT_DIR/zerver/lib/utils.py" \
+            "$NEXT_DIR/scripts/lib/setup_path.py"
+
+          if [ "$NEXT_VERSION" = "$LATEST" ] && grep -q '^Usage:' /tmp/zulip-next-help.txt; then
+            echo "next_installed_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "decision=next_bundle_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next release bundle validated successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Zulip release bundle ${CURRENT} passed smoke tests in this run. Regression validation downloaded candidate release bundle ${LATEST}, confirmed its installer help path, and revalidated the extracted Python entrypoints on Arm64." >> "$GITHUB_OUTPUT"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "next_installed_version=${NEXT_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_bundle_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next release bundle validation failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Zulip release bundle ${CURRENT} passed smoke tests in this run, but the candidate release bundle ${LATEST} did not complete the expected Arm64 validation path." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Release Bundle Validation) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version validated on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_validated' }}"
+          echo "Regression validation result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          set -euo pipefail
+          PASSED=0
+          FAILED=0
+          CORE_FAILED=0
+          TOTAL_DURATION=0
+
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          if [ "$TEST6_STATUS" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$TEST6_STATUS" = "failed" ]; then
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$FAILED" -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## Zulip Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Test 1 - Check release bundle contents: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Test 2 - Check version metadata: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Test 3 - Check installer help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Test 4 - Architecture verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Test 5 - Functional release bundle validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Release Bundle Validation)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version validated on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_validated' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression validation result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

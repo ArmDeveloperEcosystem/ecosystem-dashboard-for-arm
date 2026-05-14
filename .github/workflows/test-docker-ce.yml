@@ -1,0 +1,429 @@
+name: Test Docker CE on Arm64
+
+on:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-docker-ce.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-docker-ce.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-docker-ce.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-docker-ce.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-docker-ce.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-docker-ce.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-docker-ce.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-docker-ce.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-docker-ce.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-docker-ce.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-docker-ce.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-docker-ce.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-docker-ce.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-docker-ce.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-docker-ce.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-docker-ce.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-docker-ce.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-docker-ce.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-docker-ce.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-docker-ce.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-docker-ce.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-docker-ce.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-docker-ce.outputs.timestamp }}
+jobs:
+  test-docker-ce:
+    runs-on: ubuntu-24.04-arm
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Docker CE'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=docker-ce" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/docker-ce" >> "$GITHUB_OUTPUT"
+      - name: Install Docker CE
+        id: install
+        run: |
+          set -euo pipefail
+          BASELINE_VERSION="24.0.3"
+          BASELINE_URL="https://download.docker.com/linux/static/stable/aarch64/docker-${BASELINE_VERSION}.tgz"
+          WORKDIR=$(mktemp -d)
+
+          echo "baseline_version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+          curl -fsSL -o "$WORKDIR/docker.tgz" "$BASELINE_URL"
+          tar -xzf "$WORKDIR/docker.tgz" -C "$WORKDIR"
+
+          sudo install -m 0755 "$WORKDIR/docker/docker" /usr/local/bin/docker
+          sudo install -m 0755 "$WORKDIR/docker/dockerd" /usr/local/bin/dockerd
+          sudo install -m 0755 "$WORKDIR/docker/containerd" /usr/local/bin/containerd
+          sudo install -m 0755 "$WORKDIR/docker/ctr" /usr/local/bin/ctr
+          sudo install -m 0755 "$WORKDIR/docker/runc" /usr/local/bin/runc
+
+          if command -v docker >/dev/null 2>&1 && command -v dockerd >/dev/null 2>&1; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Get Docker CE version
+        id: version
+        run: |
+          set -euo pipefail
+          RAW_VERSION=$(timeout 10s docker --version 2>&1 || true)
+          VERSION=$(printf '%s\n' "$RAW_VERSION" | awk '{print $3}' | tr -d ',\r\n')
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected Docker CE version: $VERSION"
+
+      - name: Test 1 - Check docker and dockerd binaries exist
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          if command -v docker >/dev/null 2>&1 && command -v dockerd >/dev/null 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check docker client version output
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          VERSION=$(timeout 10s docker --version 2>&1 | awk '{print $3}' | tr -d ',\r\n' || true)
+          if [ "$VERSION" = "${{ steps.install.outputs.baseline_version }}" ]; then
+            docker --version
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "Expected docker version ${{ steps.install.outputs.baseline_version }}, got ${VERSION:-unknown}"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check dockerd version output
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          VERSION=$(timeout 10s dockerd --version 2>&1 | awk '{print $3}' | tr -d ',\r\n' || true)
+          if [ "$VERSION" = "${{ steps.install.outputs.baseline_version }}" ]; then
+            dockerd --version
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "Expected dockerd version ${{ steps.install.outputs.baseline_version }}, got ${VERSION:-unknown}"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Check docker help output
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          if DOCKER_CLI_HINTS=false timeout 20s docker version --help > /tmp/docker-help.log 2>&1 && grep -qiE 'usage|options|show the docker version' /tmp/docker-help.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/docker-help.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Verify Arm64 binaries
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          if [ "$(uname -m)" = "aarch64" ] && \
+             file -L /usr/local/bin/docker | grep -qi 'ARM aarch64' && \
+             file -L /usr/local/bin/dockerd | grep -qi 'ARM aarch64'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            file -L /usr/local/bin/docker /usr/local/bin/dockerd || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          RELEASE_INDEX="https://download.docker.com/linux/static/stable/aarch64/"
+          LATEST_VERSION=$(curl -fsSL "$RELEASE_INDEX" | grep -oE 'docker-[0-9]+\.[0-9]+\.[0-9]+\.tgz' | sed 's/^docker-//' | sed 's/\.tgz$//' | sort -V | tail -n 1 || true)
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: ${LATEST_VERSION:-unknown}"
+
+          if [ -z "$LATEST_VERSION" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Docker CE version ${CURRENT} passed smoke tests in this run, but the next regression candidate could not be resolved from the official Arm64 static release index." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version lookup failed on Arm64"
+            echo "Details: Current pinned Docker CE version ${CURRENT} passed smoke tests in this run, but the next regression candidate could not be resolved from the official Arm64 static release index."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ "$CURRENT" = "$LATEST_VERSION" ]; then
+            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Docker CE version ${CURRENT} already matches the latest official Arm64 static release. There is no newer stable Arm64 release available to validate in Test 6." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $CURRENT"
+            echo "Regression install result: No newer stable release available for Test 6"
+            echo "Details: Current pinned Docker CE version ${CURRENT} passed smoke tests in this run and already matches the latest official Arm64 static release."
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_DIR=$(mktemp -d)
+          NEXT_TAR="$NEXT_DIR/docker.tgz"
+          NEXT_URL="https://download.docker.com/linux/static/stable/aarch64/docker-${LATEST_VERSION}.tgz"
+          if curl -fsSL -o "$NEXT_TAR" "$NEXT_URL"; then
+            echo "Next version download status: passed"
+            tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
+            NEXT_DOCKER="$NEXT_DIR/docker/docker"
+            NEXT_DOCKERD="$NEXT_DIR/docker/dockerd"
+            NEXT_DOCKER_VERSION=$(timeout 10s "$NEXT_DOCKER" --version 2>&1 | awk '{print $3}' | tr -d ',\r\n' || true)
+            NEXT_DOCKERD_VERSION=$(timeout 10s "$NEXT_DOCKERD" --version 2>&1 | awk '{print $3}' | tr -d ',\r\n' || true)
+            if [ "$NEXT_DOCKER_VERSION" = "$LATEST_VERSION" ] && \
+               [ "$NEXT_DOCKERD_VERSION" = "$LATEST_VERSION" ] && \
+               file -L "$NEXT_DOCKER" | grep -qi 'ARM aarch64' && \
+               file -L "$NEXT_DOCKERD" | grep -qi 'ARM aarch64'; then
+              echo "next_installed_version=$NEXT_DOCKER_VERSION" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Docker CE version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the next official Arm64 static release ${LATEST_VERSION}, and both the docker client and dockerd binaries reported version ${NEXT_DOCKER_VERSION} on Arm64." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: $NEXT_DOCKER_VERSION"
+              echo "Regression install result: Next version installed successfully on Arm64"
+              echo "Details: Current pinned Docker CE version ${CURRENT} passed smoke tests in this run. Regression validation downloaded the next official Arm64 static release ${LATEST_VERSION}, and both the docker client and dockerd binaries reported version ${NEXT_DOCKER_VERSION} on Arm64."
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "next_installed_version=${NEXT_DOCKER_VERSION:-install_failed}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Docker CE version ${CURRENT} passed smoke tests in this run, but the next official Arm64 static release ${LATEST_VERSION} did not complete bounded version and architecture validation." >> "$GITHUB_OUTPUT"
+              echo "Next version installed on Arm64: ${NEXT_DOCKER_VERSION:-install_failed}"
+              echo "Regression install result: Next version install failed on Arm64"
+              echo "Details: Current pinned Docker CE version ${CURRENT} passed smoke tests in this run, but the next official Arm64 static release ${LATEST_VERSION} did not complete bounded version and architecture validation."
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Docker CE version ${CURRENT} passed smoke tests in this run, but the next official Arm64 static release ${LATEST_VERSION} could not be downloaded." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned Docker CE version ${CURRENT} passed smoke tests in this run, but the next official Arm64 static release ${LATEST_VERSION} could not be downloaded."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              no_newer_stable_available)
+                REGRESSION_RESULT="No newer stable release available for Test 6"
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+              *)
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                  REGRESSION_RESULT="Regression validation passed"
+                else
+                  REGRESSION_RESULT="Regression validation failed"
+                fi
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+
+      - name: Emit package result
+        if: always()
+        id: summary
+        uses: ./.github/actions/emit-package-result
+        with:
+          package_name: "Docker CE"
+          version: ${{ steps.version.outputs.version }}
+          install_status: ${{ steps.install.outputs.install_status || 'success' }}
+          test1_label: "Test 1 - Check docker and dockerd binaries exist"
+          test2_label: "Test 2 - Check docker client version output"
+          test3_label: "Test 3 - Check dockerd version output"
+          test4_label: "Test 4 - Check docker help output"
+          test5_label: "Test 5 - Verify Arm64 binaries"
+          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
+          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
+          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
+          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
+          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
+          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_duration: ${{ steps.test1.outputs.duration || 0 }}
+          test2_duration: ${{ steps.test2.outputs.duration || 0 }}
+          test3_duration: ${{ steps.test3.outputs.duration || 0 }}
+          test4_duration: ${{ steps.test4.outputs.duration || 0 }}
+          test5_duration: ${{ steps.test5.outputs.duration || 0 }}
+          test6_duration: ${{ steps.test6.outputs.duration || 0 }}
+          regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+          regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
+          regression_details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}
+
+      - name: Finalize workflow status
+        if: always()
+        run: |
+          if [ "${{ steps.summary.outputs.should_fail }}" = "1" ]; then
+            exit 1
+          fi

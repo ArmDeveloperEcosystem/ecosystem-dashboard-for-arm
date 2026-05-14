@@ -1,0 +1,593 @@
+name: Test NiFi on Arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      prefetch_run_id:
+        description: Orchestrator run id holding prefetched heavy archives
+        required: false
+        type: string
+      prefetch_artifact_name:
+        description: Artifact name containing prefetched heavy archives
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      prefetch_run_id:
+        required: false
+        type: string
+      prefetch_artifact_name:
+        required: false
+        type: string
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-nifi.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-nifi.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-nifi.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-nifi.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-nifi.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-nifi.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-nifi.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-nifi.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-nifi.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-nifi.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-nifi.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-nifi.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-nifi.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-nifi.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-nifi.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-nifi.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-nifi.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-nifi.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-nifi.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-nifi.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-nifi.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-nifi.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-nifi.outputs.timestamp }}
+jobs:
+  test-nifi:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      NIFI_VERSION: "2.9.0"
+      NIFI_NEXT_VERSION: "2.9.0"
+      JAVA_HOME: /usr/lib/jvm/java-21-openjdk-arm64
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'NiFi'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore warm NiFi baseline cache
+        id: restore_nifi_baseline_cache
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/prefetch-heavy/nifi
+          key: heavy-baseline-nifi-2.7.2-arm64-v1
+
+      - name: Download prefetched heavy baselines
+        if: ${{ inputs.prefetch_run_id != '' && inputs.prefetch_artifact_name != '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.prefetch_run_id }}
+          github-token: ${{ github.token }}
+          name: ${{ inputs.prefetch_artifact_name }}
+          path: ${{ runner.temp }}/prefetch-heavy
+
+      - name: Resolve prefetched heavy baselines
+        if: always()
+        run: |
+          echo "PREFETCH_HEAVY_ROOT=${RUNNER_TEMP}/prefetch-heavy" >> "$GITHUB_ENV"
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=nifi" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/nifi" >> "$GITHUB_OUTPUT"
+          echo "current_version=${NIFI_VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Install NiFi baseline
+        id: install
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-21-jdk-headless curl unzip"
+          export JAVA_HOME="${JAVA_HOME}"
+          export NIFI_JAVA_HOME="${JAVA_HOME}"
+
+          download_nifi_zip() {
+            local version="$1"
+            local output="$2"
+            local dlcdn_url="https://dlcdn.apache.org/nifi/${version}/nifi-${version}-bin.zip"
+            local primary_url="https://downloads.apache.org/nifi/${version}/nifi-${version}-bin.zip"
+            local archive_url="https://archive.apache.org/dist/nifi/${version}/nifi-${version}-bin.zip"
+            local archive_http_url="http://archive.apache.org/dist/nifi/${version}/nifi-${version}-bin.zip"
+            DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=45 \
+            DOWNLOAD_MAX_TIME=480 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=90 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh "$output" "$dlcdn_url" "$primary_url" "$archive_url" "$archive_http_url"
+          }
+
+          rm -rf nifi "${BASELINE_ZIP:-}" /tmp/nifi-baseline-contents.txt
+          BASELINE_ZIP="nifi-${NIFI_VERSION}-bin.zip"
+          CACHE_FILE="${PREFETCH_HEAVY_ROOT:-${RUNNER_TEMP}/prefetch-heavy}/nifi/${BASELINE_ZIP}"
+          if [ -f "$CACHE_FILE" ]; then
+            cp "$CACHE_FILE" "${BASELINE_ZIP}"
+          else
+            if ! download_nifi_zip "${NIFI_VERSION}" "${BASELINE_ZIP}"; then
+              echo "install_status=failed" >> "$GITHUB_OUTPUT"
+              echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          mkdir -p "$(dirname "$CACHE_FILE")"
+          if [ ! -f "$CACHE_FILE" ]; then
+            cp "${BASELINE_ZIP}" "$CACHE_FILE"
+          fi
+
+          ls -lh "${BASELINE_ZIP}" || true
+          echo "Extracting NiFi baseline..."
+          if ! timeout 15m unzip -q "${BASELINE_ZIP}"; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_extract_failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ ! -d "nifi-${NIFI_VERSION}" ]; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_extract_layout_invalid" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mv "nifi-${NIFI_VERSION}" nifi
+
+          if [ -x "nifi/bin/nifi.sh" ]; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "install_blocker=baseline_layout_missing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+      - name: Save warm NiFi baseline cache
+        if: ${{ steps.install.outputs.install_status == 'success' && steps.restore_nifi_baseline_cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/prefetch-heavy/nifi
+          key: heavy-baseline-nifi-2.7.2-arm64-v1
+
+      - name: Resolve NiFi install state
+        id: install_state
+        if: always()
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/nifi"
+          STATUS="${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}"
+          BLOCKER="${{ steps.install.outputs.install_blocker || '' }}"
+          if [ -x "$ROOT/bin/nifi.sh" ] && find "$ROOT/lib" -name 'nifi-framework-api-*.jar' -print -quit | grep -q .; then
+            STATUS="success"
+            BLOCKER=""
+          fi
+          echo "NIFI_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "NIFI_INSTALL_STATUS=$STATUS" >> "$GITHUB_ENV"
+          echo "NIFI_INSTALL_BLOCKER=$BLOCKER" >> "$GITHUB_ENV"
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "install_status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "install_blocker=$BLOCKER" >> "$GITHUB_OUTPUT"
+
+      - name: Get NiFi version
+        id: version
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${NIFI_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "version=${NIFI_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "Detected NiFi version: ${NIFI_VERSION} (baseline install unavailable)"
+            exit 0
+          fi
+          VERSION=$(find nifi/lib -name 'nifi-framework-api-*.jar' -printf '%f\n' | sed -E 's/^nifi-framework-api-([0-9.]+)\.jar/\1/' | head -n 1 | tr -d '\r')
+          if [ -z "$VERSION" ]; then
+            VERSION="unknown"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected NiFi version: $VERSION"
+
+      - name: Test 1 - Check launcher script
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          if [ "${NIFI_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "duration=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -x "nifi/bin/nifi.sh" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check exact version metadata
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${NIFI_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          REPORTED=$(find nifi/lib -name 'nifi-framework-api-*.jar' -printf '%f\n' | sed -E 's/^nifi-framework-api-([0-9.]+)\.jar/\1/' | head -n 1 | tr -d '\r')
+          if [ "$REPORTED" = "${NIFI_VERSION}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check help output
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${NIFI_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          export JAVA_HOME="${JAVA_HOME}"
+          export NIFI_JAVA_HOME="${JAVA_HOME}"
+          if nifi/bin/nifi.sh 2>&1 | grep -q '^Usage nifi.sh'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture verification
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${NIFI_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$(uname -m)" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${NIFI_INSTALL_STATUS:-failed}" != "success" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          export JAVA_HOME="${JAVA_HOME}"
+          export NIFI_JAVA_HOME="${JAVA_HOME}"
+
+          cleanup() {
+            nifi/bin/nifi.sh stop >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          nifi/bin/nifi.sh start >/tmp/nifi-start.log 2>&1
+          STATUS_UP=0
+          for _ in $(seq 1 36); do
+            nifi/bin/nifi.sh status >/tmp/nifi-status.log 2>&1 || true
+            ss -tulnp >/tmp/nifi-ports.log || true
+            if grep -q 'Status: UP' /tmp/nifi-status.log || grep -Eq ':8443|:8080' /tmp/nifi-ports.log || grep -q 'Generated Username' nifi/logs/nifi-app.log; then
+              STATUS_UP=1
+              break
+            fi
+            sleep 5
+          done
+
+          if [ "$STATUS_UP" -eq 1 ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/nifi-start.log || true
+            cat /tmp/nifi-status.log || true
+            cat /tmp/nifi-ports.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          cleanup
+          trap - EXIT
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        if: always()
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST="${NIFI_NEXT_VERSION}"
+
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: $CURRENT"
+          echo "Next version targeted for install validation: $LATEST"
+
+          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation skipped because one or more baseline tests (1-5) failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Tests 1-5 did not complete successfully on Arm64, so next-version validation for NiFi was skipped for this run." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "$LATEST" ] || [ "$LATEST" = "unknown" ] || [ "$LATEST" = "$CURRENT" ]; then
+            echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+            echo "decision=current_is_latest_stable" >> "$GITHUB_OUTPUT"
+            echo "regression_result=No newer stable NiFi release available for Test 6" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NiFi version ${CURRENT} passed Tests 1-5 on Arm64. Test 6 is deferred because the configured next stable candidate is not newer than the baseline, so no version-to-version upgrade proof is claimed." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_applicable"
+            echo "Regression install result: No newer stable NiFi release available for Test 6"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEXT_DIR=$(mktemp -d)
+          trap 'rm -rf "$NEXT_DIR"' EXIT
+          NEXT_ZIP="$NEXT_DIR/nifi-next.zip"
+          NEXT_URL="https://downloads.apache.org/nifi/${LATEST}/nifi-${LATEST}-bin.zip"
+          download_nifi_zip() {
+            local version="$1"
+            local output="$2"
+            local dlcdn_url="https://dlcdn.apache.org/nifi/${version}/nifi-${version}-bin.zip"
+            local primary_url="https://downloads.apache.org/nifi/${version}/nifi-${version}-bin.zip"
+            local archive_url="https://archive.apache.org/dist/nifi/${version}/nifi-${version}-bin.zip"
+            local archive_http_url="http://archive.apache.org/dist/nifi/${version}/nifi-${version}-bin.zip"
+            DOWNLOAD_ATTEMPTS=3 \
+            DOWNLOAD_CONNECT_TIMEOUT=45 \
+            DOWNLOAD_MAX_TIME=480 \
+            DOWNLOAD_RETRY_DELAY=5 \
+            DOWNLOAD_WGET_TIMEOUT=90 \
+            DOWNLOAD_WGET_WAITRETRY=5 \
+              bash .github/scripts/download-with-fallback.sh "$output" "$dlcdn_url" "$primary_url" "$archive_url" "$archive_http_url"
+          }
+
+          echo "Downloading NiFi candidate for ${LATEST}"
+          if ! download_nifi_zip "$LATEST" "$NEXT_ZIP"; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NiFi version ${CURRENT} passed smoke tests in this run, but the candidate NiFi ${LATEST} archive could not be downloaded on Arm64 from the primary or archive mirrors." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          ls -lh "$NEXT_ZIP"
+          echo "Extracting NiFi candidate..."
+          timeout 15m unzip -q "$NEXT_ZIP" -d "$NEXT_DIR"
+          NEXT_ROOT="$NEXT_DIR/nifi-${LATEST}"
+          NEXT_SCRIPT="$NEXT_ROOT/bin/nifi.sh"
+          NEXT_REPORTED=$(find "$NEXT_ROOT/lib" -name 'nifi-framework-api-*.jar' -printf '%f\n' | sed -E 's/^nifi-framework-api-([0-9.]+)\.jar/\1/' | head -n 1 | tr -d '\r')
+          HELP_OUTPUT=$(
+            export JAVA_HOME="${JAVA_HOME}"
+            export NIFI_JAVA_HOME="${JAVA_HOME}"
+            "$NEXT_SCRIPT" 2>&1 || true
+          )
+
+          if [ -x "$NEXT_SCRIPT" ] && [ "$NEXT_REPORTED" = "$LATEST" ] && printf '%s\n' "$HELP_OUTPUT" | grep -Eq '^Usage nifi\.sh|run nifi as a service|print this usage'; then
+            echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NiFi version ${CURRENT} passed smoke tests in this run. Regression validation downloaded and unpacked the Arm64/platform-independent candidate from ${NEXT_URL}, verified the launcher script, confirmed the framework jar version ${NEXT_REPORTED}, and received usable CLI help output from the candidate install." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: $NEXT_REPORTED"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "next_installed_version=${NEXT_REPORTED:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned NiFi version ${CURRENT} passed smoke tests in this run, but the candidate archive ${NEXT_URL} did not complete the expected Arm64 install validation path. Candidate script present: $( [ -x "$NEXT_SCRIPT" ] && echo yes || echo no ); detected version: ${NEXT_REPORTED:-unknown}. Help output: ${HELP_OUTPUT:-none}" >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_REPORTED:-unknown}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              no_newer_stable_available)
+                REGRESSION_RESULT="No newer stable release available for Test 6"
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              *)
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                  REGRESSION_RESULT="Regression validation passed"
+                else
+                  REGRESSION_RESULT="Regression validation failed"
+                fi
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+
+      - name: Emit package result
+        if: always()
+        id: summary
+        uses: ./.github/actions/emit-package-result
+        with:
+          package_name: "NiFi"
+          version: ${{ steps.version.outputs.version }}
+          install_status: ${{ steps.install_state.outputs.install_status || steps.install.outputs.install_status || 'success' }}
+          test1_label: "Test 1 - Check launcher script"
+          test2_label: "Test 2 - Check exact version metadata"
+          test3_label: "Test 3 - Check help output"
+          test4_label: "Test 4 - Architecture verification"
+          test5_label: "Test 5 - Functional validation"
+          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
+          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
+          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
+          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
+          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
+          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_duration: ${{ steps.test1.outputs.duration || 0 }}
+          test2_duration: ${{ steps.test2.outputs.duration || 0 }}
+          test3_duration: ${{ steps.test3.outputs.duration || 0 }}
+          test4_duration: ${{ steps.test4.outputs.duration || 0 }}
+          test5_duration: ${{ steps.test5.outputs.duration || 0 }}
+          test6_duration: ${{ steps.test6.outputs.duration || 0 }}
+          regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}
+          regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
+          regression_details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+
+      - name: Finalize workflow status
+        if: always()
+        run: |
+          if [ "${{ steps.summary.outputs.should_fail }}" = "1" ]; then
+            exit 1
+          fi

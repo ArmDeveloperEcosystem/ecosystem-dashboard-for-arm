@@ -1,0 +1,464 @@
+name: Test TiKV on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-tikv.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-tikv.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-tikv.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-tikv.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-tikv.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-tikv.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-tikv.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-tikv.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-tikv.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-tikv.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-tikv.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-tikv.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-tikv.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-tikv.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-tikv.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-tikv.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-tikv.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-tikv.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-tikv.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-tikv.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-tikv.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-tikv.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-tikv.outputs.timestamp }}
+jobs:
+  test-tikv:
+    runs-on: ubuntu-24.04-arm
+    env:
+      TIKV_VERSION: "v7.5.5"
+      TIKV_NEXT_VERSION: "v7.5.6"
+      TIKV_IMAGE: "pingcap/tikv:v7.5.5"
+      TIKV_CONFIG: "/tmp/tikv-smoke.toml"
+      TIKV_NEXT_CONFIG: "/tmp/tikv-next-smoke.toml"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'TiKV'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=tikv" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/tikv" >> "$GITHUB_OUTPUT"
+          echo "current_version=${TIKV_VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Install TiKV
+        id: install
+        run: |
+          set -euo pipefail
+          docker pull "${TIKV_IMAGE}"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Get TiKV version
+        id: version
+        run: |
+          set -euo pipefail
+
+          RAW_VERSION_OUTPUT=$(timeout 20s docker run --rm --entrypoint /tikv-server "${TIKV_IMAGE}" --version 2>&1 || true)
+          VERSION=$(printf '%s\n' "${RAW_VERSION_OUTPUT}" | sed -n 's/^Release Version: //p' | head -1 | xargs || true)
+          if [ -z "${VERSION}" ]; then
+            VERSION="${TIKV_VERSION}"
+          fi
+
+          LATEST="${TIKV_NEXT_VERSION}"
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "Detected TiKV version: ${VERSION}"
+          echo "Detected latest TiKV release: ${LATEST}"
+
+      - name: Test 1 - Binary Existence
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          if docker image inspect "${TIKV_IMAGE}" >/dev/null 2>&1 && \
+             timeout 20s docker run --rm --entrypoint /bin/sh "${TIKV_IMAGE}" -c 'test -x /tikv-server'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Version Check
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          VERSION_OUTPUT=$(timeout 20s docker run --rm --entrypoint /tikv-server "${TIKV_IMAGE}" --version 2>&1 || true)
+          EXPECTED_VERSION="${TIKV_VERSION#v}"
+          REPORTED_VERSION=$(printf '%s\n' "${VERSION_OUTPUT}" | sed -n 's/^Release Version: //p' | head -1 | xargs || true)
+          if [ "${REPORTED_VERSION}" = "${EXPECTED_VERSION}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "${VERSION_OUTPUT}" || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Help Output Validation
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          HELP_OUTPUT=$(timeout 20s docker run --rm --entrypoint /tikv-server "${TIKV_IMAGE}" --help 2>&1 || true)
+          if printf '%s\n' "${HELP_OUTPUT}" | grep -q -- "--config" && \
+             printf '%s\n' "${HELP_OUTPUT}" | grep -q -- "--pd"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "${HELP_OUTPUT}" || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          HOST_ARCH=$(uname -m)
+          CONTAINER_ARCH=$(timeout 20s docker run --rm --entrypoint /bin/sh "${TIKV_IMAGE}" -c 'uname -m' 2>/dev/null || true)
+
+          if [ "${HOST_ARCH}" = "aarch64" ] && printf '%s\n' "${CONTAINER_ARCH}" | grep -Eq 'aarch64|arm64'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "Host architecture: ${HOST_ARCH}"
+            echo "Container architecture: ${CONTAINER_ARCH}"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+
+          cat > "${TIKV_CONFIG}" <<'EOF'
+          [storage]
+          data-dir = "/tmp/tikv-data"
+          [server]
+          addr = "127.0.0.1:20160"
+          status-addr = "127.0.0.1:20180"
+          [pd]
+          endpoints = ["127.0.0.1:2379"]
+          EOF
+
+          if timeout 30s docker run --rm \
+              -v "${TIKV_CONFIG}:${TIKV_CONFIG}:ro" \
+              --entrypoint /tikv-server \
+              "${TIKV_IMAGE}" \
+              --config-check \
+              --config "${TIKV_CONFIG}" >/tmp/tikv-config-check.log 2>&1; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/tikv-config-check.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version }}"
+          LATEST="${{ steps.version.outputs.latest }}"
+          CURRENT_NORMALIZED="${CURRENT#v}"
+          LATEST_NORMALIZED="${LATEST#v}"
+          echo "current_version=${CURRENT_NORMALIZED}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST:-lookup_failed}" >> "$GITHUB_OUTPUT"
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${CURRENT}"
+
+          if [ -z "${LATEST}" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned TiKV image ${CURRENT} passed smoke tests in this run, but the next stable TiKV release could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "Next version targeted for install validation: lookup_failed"
+            echo "Next version installed on Arm64: lookup_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned TiKV image ${CURRENT} passed smoke tests in this run, but the next stable TiKV release could not be resolved automatically."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ "${CURRENT_NORMALIZED}" = "${LATEST_NORMALIZED}" ]; then
+            echo "next_installed_version=${CURRENT_NORMALIZED}" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Current stable TiKV version already validated on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${CURRENT_NORMALIZED}"
+            echo "Regression install result: Current stable TiKV version already validated on Arm64"
+            echo "Details: Current pinned TiKV image ${CURRENT} was pulled and executed on Arm64, help/config-check smoke passed, and the validated pinned image already matches the latest stable TiKV release."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_IMAGE="pingcap/tikv:${LATEST}"
+          if ! docker pull "${NEXT_IMAGE}" >/dev/null; then
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned TiKV image ${CURRENT} passed smoke tests in this run, but candidate image ${LATEST} could not be pulled on Arm64." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: install_failed"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned TiKV image ${CURRENT} passed smoke tests in this run, but candidate image ${LATEST} could not be pulled on Arm64."
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          NEXT_VERSION_OUTPUT=$(timeout 20s docker run --rm --entrypoint /tikv-server "${NEXT_IMAGE}" --version 2>&1 || true)
+          NEXT_INSTALLED_VERSION=$(printf '%s\n' "${NEXT_VERSION_OUTPUT}" | sed -n 's/^Release Version: //p' | head -1 | xargs || true)
+          NEXT_INSTALLED_NORMALIZED="${NEXT_INSTALLED_VERSION#v}"
+          NEXT_HELP_OUTPUT=$(timeout 20s docker run --rm --entrypoint /tikv-server "${NEXT_IMAGE}" --help 2>&1 || true)
+          NEXT_CONTAINER_ARCH=$(timeout 20s docker run --rm --entrypoint /bin/sh "${NEXT_IMAGE}" -c 'uname -m' 2>/dev/null || true)
+
+          cat > "${TIKV_NEXT_CONFIG}" <<'EOF'
+          [storage]
+          data-dir = "/tmp/tikv-next-data"
+          [server]
+          addr = "127.0.0.1:21160"
+          status-addr = "127.0.0.1:21180"
+          [pd]
+          endpoints = ["127.0.0.1:2379"]
+          EOF
+
+          if [ -n "${NEXT_INSTALLED_NORMALIZED}" ] && \
+             [ "${NEXT_INSTALLED_NORMALIZED}" = "${LATEST_NORMALIZED}" ] && \
+             printf '%s\n' "${NEXT_HELP_OUTPUT}" | grep -q -- "--config" && \
+             printf '%s\n' "${NEXT_HELP_OUTPUT}" | grep -q -- "--pd" && \
+             printf '%s\n' "${NEXT_CONTAINER_ARCH}" | grep -Eq 'aarch64|arm64' && \
+             timeout 30s docker run --rm \
+               -v "${TIKV_NEXT_CONFIG}:${TIKV_NEXT_CONFIG}:ro" \
+               --entrypoint /tikv-server \
+               "${NEXT_IMAGE}" \
+               --config-check \
+               --config "${TIKV_NEXT_CONFIG}" >/tmp/tikv-next-config-check.log 2>&1; then
+            echo "next_installed_version=${NEXT_INSTALLED_NORMALIZED}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned TiKV image ${CURRENT} passed smoke tests in this run. Regression validation pulled candidate image ${LATEST} on Arm64, /tikv-server --version reported ${NEXT_INSTALLED_NORMALIZED}, and the isolated config-check smoke passed." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_INSTALLED_NORMALIZED}"
+            echo "Regression install result: Next version installed successfully on Arm64"
+            echo "Details: Current pinned TiKV image ${CURRENT} passed smoke tests in this run. Regression validation pulled candidate image ${LATEST} on Arm64, /tikv-server --version reported ${NEXT_INSTALLED_NORMALIZED}, and the isolated config-check smoke passed."
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "next_installed_version=${NEXT_INSTALLED_NORMALIZED:-install_failed}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned TiKV image ${CURRENT} passed smoke tests in this run, but candidate image ${LATEST} did not complete the expected Arm64 version/help/config-check validation." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_INSTALLED_VERSION:-install_failed}"
+            echo "Regression install result: Next version install failed on Arm64"
+            echo "Details: Current pinned TiKV image ${CURRENT} passed smoke tests in this run, but candidate image ${LATEST} did not complete the expected Arm64 version/help/config-check validation."
+            cat /tmp/tikv-next-config-check.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          CORE_FAILED=0
+          TOTAL_DURATION=0
+
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+
+          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
+
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## TiKV Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Test 1 - Binary Existence: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Test 2 - Version Check: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Test 3 - Help Output Validation: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"

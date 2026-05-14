@@ -1,0 +1,397 @@
+name: Test OpenDataPlane (ODP) on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-odp.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-odp.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-odp.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-odp.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-odp.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-odp.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-odp.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-odp.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-odp.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-odp.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-odp.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-odp.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-odp.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-odp.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-odp.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-odp.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-odp.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-odp.outputs.regression_next_installed_version }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-odp.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-odp.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-odp.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-odp.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-odp.outputs.timestamp }}
+jobs:
+  test-odp:
+    runs-on: ubuntu-24.04-arm
+    env:
+      CURRENT_ODP_VERSION: "1.46.0.0"
+      NEXT_ODP_VERSION: "1.47.0.0"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'OpenDataPlane (ODP)'
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=ODP" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/ODP" >> "$GITHUB_OUTPUT"
+          echo "current_version=${CURRENT_ODP_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${NEXT_ODP_VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Install OpenDataPlane (ODP)
+        id: install
+        run: |
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "git autoconf automake libtool pkg-config build-essential libssl-dev python3 python3-pyelftools libconfig-dev libnuma-dev libpcap-dev"
+          cd /tmp
+          rm -rf odp
+          git clone --depth 1 --branch "v${CURRENT_ODP_VERSION}" https://github.com/OpenDataPlane/odp.git
+          cd odp
+          ./bootstrap
+          ./configure --prefix=/usr/local --without-tests --disable-test-perf
+          make -j1
+          sudo make install
+          sudo ldconfig
+          if [ -x /usr/local/bin/odp_linuxgen_dumpconfig ] && [ -f /usr/local/include/odp_api.h ]; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Get OpenDataPlane (ODP) version
+        id: version
+        run: |
+          export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          VERSION=$(pkg-config --modversion libodp-linux | head -n 1 || echo "unknown")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "latest=${NEXT_ODP_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Test 1 - Check Binary Existence
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ -x /usr/local/bin/odp_linuxgen_dumpconfig ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check Version Output
+        id: test2
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          if pkg-config --modversion libodp-linux | grep -qx "${{ steps.metadata.outputs.current_version }}"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check Configuration or Linkage
+        id: test3
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          if pkg-config --exists libodp-linux && pkg-config --modversion libodp-linux | grep -qx "${{ steps.metadata.outputs.current_version }}"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Architecture Verification
+        id: test4
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "aarch64" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional Validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          cat > /tmp/odp_smoke.c <<'EOF'
+          #include <odp_api.h>
+          #include <stdio.h>
+
+          int main(void) {
+            odp_instance_t inst;
+            odp_init_t init;
+            odp_init_param_init(&init);
+            if (odp_init_global(&inst, &init, NULL))
+              return 1;
+            if (odp_init_local(inst, ODP_THREAD_CONTROL))
+              return 1;
+            puts("odp-ok");
+            odp_term_local();
+            odp_term_global(inst);
+            return 0;
+          }
+          EOF
+          cc /tmp/odp_smoke.c $(pkg-config --cflags --libs libodp-linux) -o /tmp/odp_smoke
+          if LD_LIBRARY_PATH=/usr/local/lib /tmp/odp_smoke | grep -q '^odp-ok$'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || steps.metadata.outputs.current_version }}"
+          LATEST="${{ steps.version.outputs.latest || env.NEXT_ODP_VERSION }}"
+          STATUS="failed"
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          if [ -z "$LATEST" ]; then
+            echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Candidate OpenDataPlane version could not be resolved automatically from the upstream tag list." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          elif [ "$LATEST" = "$CURRENT" ]; then
+            echo "next_installed_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Workflow metadata review required" >> "$GITHUB_OUTPUT"
+            echo "comparison=Configured OpenDataPlane Tests 1-5 baseline ${CURRENT} matches the configured Test 6 candidate ${LATEST}. Repin Tests 1-5 to an older dashboard-aligned release so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          else
+            cd /tmp
+            rm -rf odp-next odp-next-install
+            git clone --depth 1 --branch "v${LATEST}" https://github.com/OpenDataPlane/odp.git odp-next
+            cd odp-next
+            ./bootstrap
+            ./configure --prefix=/tmp/odp-next-install --without-tests --disable-test-perf
+            make -j1
+            make install
+            export PKG_CONFIG_PATH="/tmp/odp-next-install/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+            NEXT_VERSION=$(pkg-config --modversion libodp-linux | head -n 1 || true)
+            if [ "$NEXT_VERSION" = "$LATEST" ]; then
+              echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Candidate OpenDataPlane ${LATEST} built successfully on Arm64 and the isolated installation reported version ${NEXT_VERSION}." >> "$GITHUB_OUTPUT"
+              STATUS="passed"
+            else
+              echo "next_installed_version=${NEXT_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Candidate OpenDataPlane ${LATEST} did not produce a usable isolated install with a matching version on Arm64." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+          echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+          if [ "$STATUS" != "passed" ]; then
+            exit 1
+          fi
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          DECISION="${{ steps.test6.outputs.decision || 'manual_review_needed' }}"
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || '' }}"
+          if [ -z "$REGRESSION_RESULT" ]; then
+            case "$DECISION" in
+              next_install_validated|safe_to_upgrade)
+                REGRESSION_RESULT="Next version installed successfully on Arm64"
+                ;;
+              next_install_failed|next_lookup_failed)
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                ;;
+              metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                ;;
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+                REGRESSION_RESULT="Pending regression install validation"
+                ;;
+              *)
+                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                  REGRESSION_RESULT="Regression validation passed"
+                else
+                  REGRESSION_RESULT="Regression validation failed"
+                fi
+                ;;
+            esac
+          fi
+
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${REGRESSION_RESULT}"
+          echo "Details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          PASSED=0
+          FAILED=0
+          TOTAL_DURATION=0
+          check_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}"
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          REGRESSION_RESULT="${{ steps.test6.outputs.regression_result || 'Pending regression install validation' }}"
+          echo "## OpenDataPlane (ODP) Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Test 6:** ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current pinned version:** ${{ steps.test6.outputs.current_version || steps.metadata.outputs.current_version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Latest stable candidate:** ${{ steps.test6.outputs.latest_version || steps.metadata.outputs.latest_version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${REGRESSION_RESULT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Comparison:** ${{ steps.test6.outputs.comparison || 'Current pinned version was smoke-tested in this run.' }}" >> "$GITHUB_STEP_SUMMARY"

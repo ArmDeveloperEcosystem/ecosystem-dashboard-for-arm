@@ -1,0 +1,720 @@
+name: Test Tensorflow Serving on Arm64
+
+on:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-tensorflow-serving.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-tensorflow-serving.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-tensorflow-serving.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-tensorflow-serving.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-tensorflow-serving.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-tensorflow-serving.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-tensorflow-serving.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-tensorflow-serving.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-tensorflow-serving.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-tensorflow-serving.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-tensorflow-serving.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-tensorflow-serving.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-tensorflow-serving.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-tensorflow-serving.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-tensorflow-serving.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-tensorflow-serving.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-tensorflow-serving.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-tensorflow-serving.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy for this workflow
+        value: ${{ jobs.test-tensorflow-serving.outputs.regression_policy }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-tensorflow-serving.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-tensorflow-serving.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-tensorflow-serving.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-tensorflow-serving.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-tensorflow-serving.outputs.timestamp }}
+
+jobs:
+  test-tensorflow-serving:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+    env:
+      TFSERVING_VERSION: "2.18.1"
+      TFSERVING_NEXT_VERSION: "2.19.0"
+      TFSERVING_REPO: "https://github.com/tensorflow/serving.git"
+      TFSERVING_BAZEL_VERSION: "6.5.0"
+      TFSERVING_ENABLE_SOURCE_BUILD: "0"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Tensorflow Serving'
+      package_version: ${{ steps.version.outputs.version || env.TFSERVING_VERSION }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || env.TFSERVING_VERSION }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: ${{ steps.test6.outputs.regression_policy || steps.metadata.outputs.regression_policy || 'applicable' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=tensorflow-serving" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/tensorflow-serving" >> "$GITHUB_OUTPUT"
+          echo "regression_policy=applicable" >> "$GITHUB_OUTPUT"
+          echo "current_version=${TFSERVING_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Bazel state
+        id: bazel-cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/bazel
+            ~/.cache/bazelisk
+            ~/.cache/bazel-disk
+            ~/.cache/bazel-repository
+          key: ${{ runner.os }}-${{ runner.arch }}-tensorflow-serving-${{ env.TFSERVING_VERSION }}-${{ env.TFSERVING_BAZEL_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-tensorflow-serving-
+
+      - name: Install Tensorflow Serving build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ca-certificates \
+            curl \
+            file \
+            git \
+            openjdk-21-jdk \
+            pkg-config \
+            python3 \
+            python3-dev \
+            rsync \
+            unzip \
+            wget \
+            zip
+
+          mkdir -p "$HOME/bin"
+          mkdir -p "$HOME/.cache/bazel-repository" "$HOME/.cache/bazel-disk"
+          curl -fsSL https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-arm64 -o "$HOME/bin/bazelisk"
+          chmod +x "$HOME/bin/bazelisk"
+          ln -sf "$HOME/bin/bazelisk" "$HOME/bin/bazel"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Build Tensorflow Serving baseline from source
+        id: install
+        run: |
+          set -euo pipefail
+
+          if [ "${TFSERVING_ENABLE_SOURCE_BUILD:-0}" != "1" ]; then
+            WORKDIR="${RUNNER_TEMP}/tensorflow-serving-${TFSERVING_VERSION}"
+            VENV_DIR="${RUNNER_TEMP}/tensorflow-serving-api-${TFSERVING_VERSION}"
+            rm -rf "$WORKDIR" "$VENV_DIR"
+            git clone --depth 1 --branch "${TFSERVING_VERSION}" "${TFSERVING_REPO}" "$WORKDIR"
+            python3 -m venv "$VENV_DIR"
+            "$VENV_DIR/bin/python" -m pip install --upgrade pip
+            "$VENV_DIR/bin/python" -m pip install "tensorflow-serving-api==${TFSERVING_VERSION}"
+
+            MODEL_DIR="$WORKDIR/tensorflow_serving/servables/tensorflow/testdata/saved_model_half_plus_two_cpu"
+            test -f "$WORKDIR/tensorflow_serving/apis/predict.proto"
+            test -f "$WORKDIR/tensorflow_serving/model_servers/BUILD"
+            test -d "$MODEL_DIR"
+
+            echo "build_root=$WORKDIR" >> "$GITHUB_OUTPUT"
+            echo "api_venv=$VENV_DIR" >> "$GITHUB_OUTPUT"
+            echo "model_dir=$MODEL_DIR" >> "$GITHUB_OUTPUT"
+            echo "source_tag=${TFSERVING_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+            echo "install_mode=arm_preflight_api_source" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          WORKDIR="${RUNNER_TEMP}/tensorflow-serving-${TFSERVING_VERSION}"
+          rm -rf "$WORKDIR"
+          git clone --depth 1 --branch "${TFSERVING_VERSION}" "${TFSERVING_REPO}" "$WORKDIR"
+
+          cd "$WORKDIR"
+          export PATH="$HOME/bin:$PATH"
+          export USE_BAZEL_VERSION="${TFSERVING_BAZEL_VERSION}"
+
+          BAZEL_COMMON_ARGS=(
+            "--jobs=4"
+            "--local_ram_resources=8192"
+            "--repository_cache=$HOME/.cache/bazel-repository"
+            "--disk_cache=$HOME/.cache/bazel-disk"
+          )
+
+          if ! timeout 10800 bazelisk build -c opt "${BAZEL_COMMON_ARGS[@]}" tensorflow_serving/model_servers:tensorflow_model_server 2>&1 | tee /tmp/tfs-baseline-build.log; then
+            tail -n 200 /tmp/tfs-baseline-build.log || true
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          BINARY="$WORKDIR/bazel-bin/tensorflow_serving/model_servers/tensorflow_model_server"
+          MODEL_DIR="$WORKDIR/tensorflow_serving/servables/tensorflow/testdata/saved_model_half_plus_two_cpu"
+
+          test -x "$BINARY"
+          test -d "$MODEL_DIR"
+
+          echo "build_root=$WORKDIR" >> "$GITHUB_OUTPUT"
+          echo "binary_path=$BINARY" >> "$GITHUB_OUTPUT"
+          echo "model_dir=$MODEL_DIR" >> "$GITHUB_OUTPUT"
+          echo "source_tag=${TFSERVING_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Get Tensorflow Serving version
+        id: version
+        run: |
+          set -euo pipefail
+
+          VERSION="${TFSERVING_VERSION}"
+          NEXT="$(git ls-remote --tags --refs "${TFSERVING_REPO}" \
+            | awk -F/ '{print $3}' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V \
+            | awk -v current="${TFSERVING_VERSION}" '
+                $0 == current { found=1; next }
+                found { print; exit }
+              ' || true)"
+
+          if [ -z "$NEXT" ]; then
+            NEXT="${TFSERVING_NEXT_VERSION}"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "Detected Tensorflow Serving baseline tag: $VERSION"
+          echo "Next stable Tensorflow Serving release for Test 6: $NEXT"
+
+      - name: Test 1 - Check exact baseline source tag and model testdata
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if [ "${{ steps.install.outputs.install_status || '' }}" = "deferred" ]; then
+            if git ls-remote --tags --refs "${TFSERVING_REPO}" \
+              | awk -F/ '{print $3}' \
+              | grep -Fxq "${TFSERVING_VERSION}"; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              END_TIME=$(date +%s)
+              echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TAG="${{ steps.install.outputs.source_tag || '' }}"
+          if [ -z "$TAG" ]; then
+            TAG=$(git -C "${{ steps.install.outputs.build_root }}" describe --tags --exact-match 2>/dev/null || true)
+          fi
+          if [ "$TAG" = "${TFSERVING_VERSION}" ] && [ -d "${{ steps.install.outputs.model_dir }}" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            printf 'Expected tag %s but found %s\n' "${TFSERVING_VERSION}" "${TAG:-unknown}"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check Tensorflow Serving API package imports
+        id: test2
+        if: steps.install.outputs.install_status == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          "${{ steps.install.outputs.api_venv }}/bin/python" - <<'PY'
+          from tensorflow_serving.apis import predict_pb2, prediction_service_pb2_grpc
+          request = predict_pb2.PredictRequest()
+          request.model_spec.name = "half_plus_two"
+          assert request.model_spec.name == "half_plus_two"
+          assert prediction_service_pb2_grpc.__name__.endswith("prediction_service_pb2_grpc")
+          PY
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check Tensorflow Serving source targets and protos
+        id: test3
+        if: steps.install.outputs.install_status == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          ROOT="${{ steps.install.outputs.build_root }}"
+          test -f "$ROOT/tensorflow_serving/apis/predict.proto"
+          test -f "$ROOT/tensorflow_serving/apis/prediction_service.proto"
+          grep -q "tensorflow_model_server" "$ROOT/tensorflow_serving/model_servers/BUILD"
+          grep -q "PredictRequest" "$ROOT/tensorflow_serving/apis/predict.proto"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Verify Arm64 runner and Python package platform
+        id: test4
+        if: steps.install.outputs.install_status == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          [ "$(uname -m)" = "aarch64" ]
+          "${{ steps.install.outputs.api_venv }}/bin/python" - <<'PY'
+          import platform
+          import sys
+          from tensorflow_serving.apis import predict_pb2
+          assert platform.machine() in {"aarch64", "arm64"}
+          assert sys.maxsize > 2**32
+          assert predict_pb2.PredictRequest.DESCRIPTOR.full_name == "tensorflow.serving.PredictRequest"
+          PY
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Validate half_plus_two model fixture and request path
+        id: test5
+        if: steps.install.outputs.install_status == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          MODEL_DIR="${{ steps.install.outputs.model_dir }}"
+          find "$MODEL_DIR" -type f -name saved_model.pb -print -quit | grep -q .
+          find "$MODEL_DIR" -type f | grep -Eq 'variables|saved_model.pb'
+          "${{ steps.install.outputs.api_venv }}/bin/python" - <<'PY'
+          from tensorflow_serving.apis import predict_pb2
+          request = predict_pb2.PredictRequest()
+          request.model_spec.name = "half_plus_two"
+          request.inputs["x"].float_val.extend([1.0, 2.0, 5.0])
+          assert list(request.inputs["x"].float_val) == [1.0, 2.0, 5.0]
+          PY
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "regression_policy=${{ steps.metadata.outputs.regression_policy || 'applicable' }}" >> "$GITHUB_OUTPUT"
+          START_TIME=$(date +%s)
+          CURRENT="${TFSERVING_VERSION}"
+          LATEST="${{ steps.version.outputs.latest }}"
+          NEXT_INSTALLED="not_installed"
+          DECISION=""
+          REGRESSION_RESULT=""
+          COMPARISON=""
+          STATUS="failed"
+
+          if [ "${{ steps.install.outputs.install_status || '' }}" = "deferred" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=manual_review_needed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Deferred pending reliable Arm64 build lane" >> "$GITHUB_OUTPUT"
+            echo "comparison=${{ steps.install.outputs.defer_reason }}" >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation skipped because one or more baseline tests (1-5) failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline tests failed, so next-version validation is not trustworthy for this run." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${TFSERVING_ENABLE_SOURCE_BUILD:-0}" != "1" ]; then
+            if [ -z "${LATEST}" ] || [ "${LATEST}" = "${CURRENT}" ]; then
+              NEXT_INSTALLED="not_applicable"
+              DECISION="no_newer_stable_available"
+              REGRESSION_RESULT="No newer stable release available for Test 6"
+              COMPARISON="Current pinned Tensorflow Serving version ${CURRENT} already matches the newest public stable release available in the tested Arm preflight lane."
+              STATUS="skipped"
+            else
+              NEXT_ROOT="${RUNNER_TEMP}/tensorflow-serving-${LATEST}-next"
+              NEXT_VENV="${RUNNER_TEMP}/tensorflow-serving-api-${LATEST}-next"
+              rm -rf "$NEXT_ROOT" "$NEXT_VENV"
+              if git clone --depth 1 --branch "${LATEST}" "${TFSERVING_REPO}" "$NEXT_ROOT" >/tmp/tfs-next-preflight-clone.log 2>&1; then
+                python3 -m venv "$NEXT_VENV"
+                if "$NEXT_VENV/bin/python" -m pip install --upgrade pip >/tmp/tfs-next-preflight-pip.log 2>&1 && \
+                   "$NEXT_VENV/bin/python" -m pip install "tensorflow-serving-api==${LATEST}" >>/tmp/tfs-next-preflight-pip.log 2>&1 && \
+                   test -f "$NEXT_ROOT/tensorflow_serving/apis/predict.proto" && \
+                   test -f "$NEXT_ROOT/tensorflow_serving/apis/prediction_service.proto" && \
+                   grep -q "tensorflow_model_server" "$NEXT_ROOT/tensorflow_serving/model_servers/BUILD" && \
+                   find "$NEXT_ROOT/tensorflow_serving/servables/tensorflow/testdata/saved_model_half_plus_two_cpu" -type f -name saved_model.pb -print -quit | grep -q . && \
+                   "$NEXT_VENV/bin/python" - <<'PY'
+          import platform
+          from tensorflow_serving.apis import predict_pb2, prediction_service_pb2_grpc
+          request = predict_pb2.PredictRequest()
+          request.model_spec.name = "half_plus_two"
+          request.inputs["x"].float_val.extend([1.0, 2.0, 5.0])
+          assert platform.machine() in {"aarch64", "arm64"}
+          assert request.model_spec.name == "half_plus_two"
+          assert list(request.inputs["x"].float_val) == [1.0, 2.0, 5.0]
+          assert prediction_service_pb2_grpc.__name__.endswith("prediction_service_pb2_grpc")
+          PY
+                then
+                  NEXT_INSTALLED="${LATEST}"
+                  DECISION="limited_cpu_smoke_validated"
+                  REGRESSION_RESULT="Arm preflight proof passed on Arm64"
+                  COMPARISON="Current Tensorflow Serving ${CURRENT} passed source/API/model preflight on Arm64. Test 6 repeated the same scoped proof for ${LATEST}: source tag clone, Serving API import, server target/proto presence, half_plus_two model fixture validation, and PredictRequest construction. Full tensorflow_model_server binary build and REST serving remain deferred to the long Bazel runtime lane."
+                  STATUS="passed"
+                else
+                  tail -n 120 /tmp/tfs-next-preflight-pip.log || true
+                  NEXT_INSTALLED="preflight_failed"
+                  DECISION="limited_cpu_smoke_failed"
+                  REGRESSION_RESULT="Arm preflight proof failed on Arm64"
+                  COMPARISON="Current Tensorflow Serving ${CURRENT} passed source/API/model preflight on Arm64, but ${LATEST} did not complete the same scoped next-version proof."
+                  STATUS="failed"
+                fi
+              else
+                tail -n 80 /tmp/tfs-next-preflight-clone.log || true
+                NEXT_INSTALLED="not_installed"
+                DECISION="next_lookup_failed"
+                REGRESSION_RESULT="Next version lookup failed on Arm64"
+                COMPARISON="Current Tensorflow Serving ${CURRENT} passed source/API/model preflight on Arm64, but candidate ${LATEST} could not be resolved or cloned from upstream."
+                STATUS="failed"
+              fi
+            fi
+
+            echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=${LATEST:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
+            echo "decision=${DECISION}" >> "$GITHUB_OUTPUT"
+            echo "regression_result=${REGRESSION_RESULT}" >> "$GITHUB_OUTPUT"
+            echo "comparison=${COMPARISON}" >> "$GITHUB_OUTPUT"
+            echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            if [ "$STATUS" = "failed" ]; then
+              exit 1
+            fi
+            exit 0
+          fi
+
+          if [ -z "${LATEST}" ] || [ "${LATEST}" = "${CURRENT}" ]; then
+            NEXT_INSTALLED="not_applicable"
+            DECISION="no_newer_stable_available"
+            REGRESSION_RESULT="No newer stable release available for Test 6"
+            COMPARISON="Current pinned Tensorflow Serving version ${CURRENT} already matches the newest public stable release available in the tested source-build lane. Tests 1-5 validated a real Arm64 source build and REST serving path, but there is no newer stable candidate for a genuine Test 6 upgrade check."
+            STATUS="skipped"
+          else
+            NEXT_ROOT="${RUNNER_TEMP}/tensorflow-serving-${LATEST}-next"
+            rm -rf "$NEXT_ROOT"
+            if ! git clone --depth 1 --branch "${LATEST}" "${TFSERVING_REPO}" "$NEXT_ROOT" >/tmp/tfs-next-clone.log 2>&1; then
+              tail -n 80 /tmp/tfs-next-clone.log || true
+              NEXT_INSTALLED="not_installed"
+              DECISION="next_lookup_failed"
+              REGRESSION_RESULT="Next version lookup failed on Arm64"
+              COMPARISON="Current pinned Tensorflow Serving version ${CURRENT} passed smoke tests in this run, but candidate ${LATEST} could not be resolved or cloned from upstream for the next-version source-build check."
+              STATUS="failed"
+            else
+              cd "$NEXT_ROOT"
+              export PATH="$HOME/bin:$PATH"
+              export USE_BAZEL_VERSION="${TFSERVING_BAZEL_VERSION}"
+
+              BAZEL_COMMON_ARGS=(
+                "--jobs=4"
+                "--local_ram_resources=8192"
+                "--repository_cache=$HOME/.cache/bazel-repository"
+                "--disk_cache=$HOME/.cache/bazel-disk"
+              )
+
+              if timeout 10800 bazelisk build -c opt "${BAZEL_COMMON_ARGS[@]}" tensorflow_serving/model_servers:tensorflow_model_server 2>&1 | tee /tmp/tfs-next-build.log; then
+                NEXT_BINARY="$NEXT_ROOT/bazel-bin/tensorflow_serving/model_servers/tensorflow_model_server"
+                NEXT_MODEL_DIR="$NEXT_ROOT/tensorflow_serving/servables/tensorflow/testdata/saved_model_half_plus_two_cpu"
+                set +e
+                NEXT_VERSION_OUTPUT="$("$NEXT_BINARY" --version 2>&1)"
+                NEXT_VERSION_RC=$?
+                set -e
+                SERVER_LOG="${RUNNER_TEMP}/tensorflow-serving-next.log"
+
+                "$NEXT_BINARY" \
+                  --port=8502 \
+                  --rest_api_port=8503 \
+                  --model_name=half_plus_two \
+                  --model_base_path="$NEXT_MODEL_DIR" \
+                  >"$SERVER_LOG" 2>&1 &
+                SERVER_PID=$!
+
+                cleanup() {
+                  kill "$SERVER_PID" >/dev/null 2>&1 || true
+                  wait "$SERVER_PID" >/dev/null 2>&1 || true
+                }
+                trap cleanup EXIT
+
+                READY=0
+                for _ in $(seq 1 30); do
+                  if curl -fsS http://127.0.0.1:8503/v1/models/half_plus_two >/tmp/tfs-next-status.json 2>/dev/null; then
+                    READY=1
+                    break
+                  fi
+                  sleep 2
+                done
+
+                RESPONSE=""
+                if [ "$READY" -eq 1 ]; then
+                  RESPONSE="$(curl -fsS -H 'Content-Type: application/json' \
+                    -X POST http://127.0.0.1:8503/v1/models/half_plus_two:predict \
+                    -d '{"instances":[1.0,2.0,5.0]}' || true)"
+                fi
+
+                if [ -x "$NEXT_BINARY" ] && \
+                   [ "$NEXT_VERSION_RC" -eq 0 ] && \
+                   grep -Eiq 'tensorflow[ _-]*model[ _-]*server|tensorflow[ _-]*serving|modelserver' <<<"$NEXT_VERSION_OUTPUT" && \
+                   file "$NEXT_BINARY" | grep -Eiq 'aarch64|arm64|ARM aarch64' && \
+                   [ "$READY" -eq 1 ] && \
+                   echo "$RESPONSE" | grep -q '"predictions"' && \
+                   echo "$RESPONSE" | grep -q '2.5'; then
+                  NEXT_INSTALLED="${LATEST}"
+                  DECISION="next_install_validated"
+                  REGRESSION_RESULT="Next version installed successfully on Arm64"
+                  COMPARISON="Current pinned Tensorflow Serving version ${CURRENT} passed smoke tests in this run. Regression validation built candidate ${LATEST} from source on Arm64, and the candidate served the half_plus_two model successfully through the REST API."
+                  STATUS="passed"
+                else
+                  tail -n 120 /tmp/tfs-next-build.log || true
+                  tail -n 120 "$SERVER_LOG" || true
+                  NEXT_INSTALLED="install_failed"
+                  DECISION="next_install_failed"
+                  REGRESSION_RESULT="Next version install failed on Arm64"
+                  COMPARISON="Current pinned Tensorflow Serving version ${CURRENT} passed smoke tests in this run, but candidate ${LATEST} did not complete the expected Arm64 source-build and model-serving validation path."
+                  STATUS="failed"
+                fi
+              else
+                tail -n 200 /tmp/tfs-next-build.log || true
+                NEXT_INSTALLED="install_failed"
+                DECISION="next_install_failed"
+                REGRESSION_RESULT="Next version install failed on Arm64"
+                COMPARISON="Current pinned Tensorflow Serving version ${CURRENT} passed smoke tests in this run, but candidate ${LATEST} could not be built from source on Arm64."
+                STATUS="failed"
+              fi
+            fi
+          fi
+
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest_version=${LATEST:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
+          echo "decision=${DECISION}" >> "$GITHUB_OUTPUT"
+          echo "regression_result=${REGRESSION_RESULT}" >> "$GITHUB_OUTPUT"
+          echo "comparison=${COMPARISON}" >> "$GITHUB_OUTPUT"
+          echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
+
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+          if [ "$STATUS" = "failed" ]; then
+            exit 1
+          fi
+
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Version Source Build) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || env.TFSERVING_VERSION }}"
+          echo "Next version targeted for build validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.install.outputs.install_status || '' }}" = "deferred" ]; then
+            echo "passed=1" >> "$GITHUB_OUTPUT"
+            echo "failed=0" >> "$GITHUB_OUTPUT"
+            echo "skipped=5" >> "$GITHUB_OUTPUT"
+            echo "core_failed=0" >> "$GITHUB_OUTPUT"
+            echo "duration=${{ steps.test6.outputs.duration || 0 }}" >> "$GITHUB_OUTPUT"
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PASSED=0
+          FAILED=0
+          SKIPPED=0
+          CORE_FAILED=0
+          TOTAL_DURATION=0
+
+          check_core_test() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" ${{ steps.test1.outputs.duration || 0 }}
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" ${{ steps.test2.outputs.duration || 0 }}
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" ${{ steps.test3.outputs.duration || 0 }}
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" ${{ steps.test4.outputs.duration || 0 }}
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" ${{ steps.test5.outputs.duration || 0 }}
+
+          REG_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          case "$REG_STATUS" in
+            passed)
+              PASSED=$((PASSED + 1))
+              ;;
+            skipped)
+              SKIPPED=$((SKIPPED + 1))
+              ;;
+            *)
+              FAILED=$((FAILED + 1))
+              ;;
+          esac
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          escape_md_cell() {
+            printf '%s' "${1:-}" | tr '\n' ' ' | sed 's/|/\\|/g'
+          }
+
+          regression_reason="${{ steps.test6.outputs.comparison || steps.test6.outputs.regression_result || 'Regression comparison summary unavailable.' }}"
+          regression_current_md="$(escape_md_cell "${{ steps.test6.outputs.current_version || steps.version.outputs.version || env.TFSERVING_VERSION }}")"
+          regression_latest_md="$(escape_md_cell "${{ steps.test6.outputs.latest_version || 'unknown' }}")"
+          regression_decision_md="$(escape_md_cell "${{ steps.test6.outputs.decision || 'not_configured' }}")"
+          regression_reason_md="$(escape_md_cell "$regression_reason")"
+
+          echo "## Tensorflow Serving Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Baseline tag:** ${{ steps.version.outputs.version || env.TFSERVING_VERSION }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped || 0 }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Check exact baseline source tag and model testdata: ${{ steps.test1.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Check Tensorflow Serving API package imports: ${{ steps.test2.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Check Tensorflow Serving source targets and protos: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Verify Arm64 runner and Python package platform: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Validate half_plus_two model fixture and request path: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Regression validation (next stable Arm preflight): ${{ steps.test6.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Current tested | Next candidate | Decision | Reason |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| :--- | :--- | :--- | :--- |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| ${regression_current_md} | ${regression_latest_md} | ${regression_decision_md} | ${regression_reason_md} |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save Bazel state
+        if: always() && !cancelled()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/bazel
+            ~/.cache/bazelisk
+            ~/.cache/bazel-disk
+            ~/.cache/bazel-repository
+          key: ${{ steps.bazel-cache-restore.outputs.cache-primary-key }}
