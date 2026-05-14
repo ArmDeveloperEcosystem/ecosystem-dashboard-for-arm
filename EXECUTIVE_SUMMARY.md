@@ -1,219 +1,68 @@
-# Testing Infrastructure - Executive Summary
+# Smoke-Test Executive Summary
 
-**Branch**: `smoke_tests`  
-**Status**: ✅ Ready for Production  
-**Impact**: Zero Breaking Changes
+Current as of 2026-05-14.
 
----
+## Summary
 
-## What Was Built
+The Arm Ecosystem Dashboard now has a production-ready smoke-test pipeline for Open Source Linux packages. The pipeline runs package-level checks on native Arm64 GitHub runners, publishes canonical JSON results, and displays concise status badges plus detailed test rows on the dashboard.
 
-A fully automated testing system for Arm Ecosystem Dashboard packages that:
-- Runs functional tests on native Arm64 GitHub runners
-- Displays test results as badges on the dashboard
-- Scales easily from 2 to 20+ packages
-- Requires zero manual maintenance
+The current result set contains 960 active package smoke tests. All 960 are badge-passing in the local generated artifacts:
 
----
+| Status | Count | Meaning |
+|---|---:|---|
+| `6/6` | 920 | Baseline checks and Test 6 completed as counted passing checks. |
+| `5/5` | 40 | Baseline checks passed; Test 6 is explicitly skipped/deferred/not applicable and is not counted as failure. |
+| Red / failing | 0 | No current package result is publishing as failed in the local artifact set. |
 
-## Current Results
+## What We Built
 
-### ✅ nginx
-- 5 tests passing
-- Version: 1.24.0
-- Tests: binary, version, config, service, HTTP response
+- Native Arm64 package validation using `ubuntu-24.04-arm` runners.
+- Reusable package workflow contract version `2.0`.
+- 21 batch workflows to keep the full test set manageable.
+- A global summary workflow that publishes `data/test-results/*.json` and `data/test-results-index.json`.
+- Dashboard support for top-level badge counts and expandable per-test details.
+- A weekly orchestrator schedule on `main`.
+- A production promotion model where production deploys validated main results rather than rerunning the full suite.
 
-### ✅ Envoy
-- 4 tests passing  
-- Version: 1.30.0
-- Tests: binary, version, help, configuration
+## Customer-Facing Interpretation
 
----
+The dashboard is intentionally honest about validation depth.
 
-## Key Files Added
+For packages with full runtime smoke coverage, the result proves a representative Arm runtime path such as install, version, architecture check, service start, API request, CLI execution, or tiny workload.
 
-### Infrastructure (3 workflows)
-- `test-nginx.yml` - nginx testing workflow (370 lines, 5 tests)
-- `test-envoy.yml` - Envoy testing workflow (295 lines, 4 tests)
-- `template-package-test.yml` - **Template file to copy for new packages**
-- `test-all-packages.yml` - **Orchestrator** (runs all tests daily)
+For scoped Arm preflight packages, the result proves a real Arm-compatible surface but not necessarily the full production environment. Examples include GPU packages without live GPU execution, Kubernetes operators without a live cluster, GUI packages without a real desktop session, and cloud packages without authenticated cloud operations.
 
-### Data
-- `data/test-results/nginx.json` - Auto-generated test results
-- `data/test-results/envoy.json` - Auto-generated test results
+## Regression / Test 6 Policy
 
-### Documentation (3 guides)
-- `tests/README.md` - Navigation hub and quick start
-- `tests/COMPLETE_GUIDE.md` - Comprehensive documentation
-- `tests/PIPELINE_REFERENCE.md` - Advanced technical reference
+Test 6 is used to make the result future-facing when meaningful:
 
----
+- next-version install or build validation
+- next-release binary or bundle validation
+- limited CPU-side validation for accelerator-heavy packages
+- explicit no-newer-version or not-applicable decision when a real next-version check is not meaningful
 
-## How It Works
+Skipped or deferred Test 6 decisions are not treated as package failures if Tests 1-5 passed and the workflow explains the reason.
 
-```
-1. GitHub Actions (ubuntu-24.04-arm runner) runs daily at 2 AM UTC
-2. Installs package and runs tests
-3. Generates JSON results  
-4. Auto-commits to repository
-5. Hugo displays badge on dashboard
-```
+## Branch And Production Policy
 
-**Badge appears**: Package expanded view → "Arm64 Tests: X passing"
+Team-agreed operating model:
 
----
+- Run the full smoke-test orchestrator weekly on `main`.
+- Review the main/staging results.
+- Merge the validated results to `production`.
+- Production should deploy the site and point back to main-run evidence.
+- Production should not rerun the full 21-batch smoke suite unless the team intentionally changes that policy.
 
-## Adding More Packages
+## Current Cleanup State
 
-**Time required**: 15-20 minutes per package
+Before production promotion, we checked for accidental dead files and mismatches:
 
-**Steps**:
-1. Copy `template-package-test.yml` → `test-<package>.yml`
-2. Search/replace `<PACKAGE>` and `<package>` placeholders
-3. Customize: installation, version detection, tests
-4. Add to `test-all-packages.yml` orchestrator
-5. Commit and run → badge appears automatically
+- Active package workflows match batch references: 960 to 960.
+- No active orphan package workflows remain.
+- No generated result points to a missing Open Source package page.
+- Unsupported/offboarded workflows are archived outside `.github/workflows`.
+- Stale onboarding docs have been rewritten to match the current production design.
 
-**Example**: Adding Redis (simplified from template)
-```yaml
-- name: Install Redis
-  run: |
-    sudo apt-get update
-    sudo apt-get install -y redis-server
+## Package Metadata Boundary
 
-- name: Get Redis version
-  run: |
-    VERSION=$(redis-server --version | grep -oP '[0-9.]+' | head -1)
-    
-- name: Test - Check redis-server binary exists
-  run: command -v redis-server
-  
-- name: Test - Check redis-cli binary exists  
-  run: command -v redis-cli
-```
-
----
-
-## Architecture Highlights
-
-### Simple and Scalable Design
-- ✅ Template-based workflow creation
-- ✅ Copy/customize pattern - no unnecessary abstraction
-- ✅ Parallel execution of all tests
-- ✅ Auto-conflict resolution for concurrent runs
-
-### Robust Implementation  
-- ✅ 5 retry attempts with exponential backoff
-- ✅ Automatic git conflict resolution (--ours strategy)
-- ✅ Graceful failure handling
-- ✅ No breaking changes to existing code
-
-### Quality Assurance
-- ✅ Multiple refinement iterations
-- ✅ All tests passing
-- ✅ Hugo builds successfully
-- ✅ Documentation complete
-
----
-
-## Merge Impact
-
-### What Changes
-- ✅ New badge field on package pages (only when tests exist)
-- ✅ New GitHub workflows (run automatically)
-- ✅ New documentation in `tests/` directory
-
-### What Doesn't Change
-- ✅ Existing package content
-- ✅ Hugo build process
-- ✅ User experience (no breaking changes)
-- ✅ Dashboard appearance (purely additive)
-
----
-
-## Post-Merge Plan
-
-### Week 1
-- Verify automated daily runs work
-- Monitor badge display on dashboard
-- Add 3-5 high-priority packages
-
-### Month 1  
-- Expand to 10-15 packages
-- Gather feedback from team
-- Iterate on test coverage
-
-### Month 3
-- Cover 20+ packages
-- Implement advanced features (performance benchmarks, trend tracking)
-- Consider matrix testing for multiple versions
-
----
-
-## Success Metrics
-
-Current (2 packages):
-- ✅ 100% test pass rate
-- ✅ 0 manual interventions required
-- ✅ ~3 min average test duration
-- ✅ Zero Hugo build errors
-
-Projected (20 packages):
-- 🎯 95%+ test pass rate
-- 🎯 Fully automated (zero manual work)
-- 🎯 <60 min total execution time (parallel)
-- 🎯 100% package coverage for top priorities
-
----
-
-## Technical Stats
-
-- **Lines of code added**: ~1,500
-- **Documentation pages**: 8
-- **Commits**: 36
-- **Files added**: 17
-- **Files modified**: 2
-- **Test coverage**: 2 packages (nginx, envoy)
-- **Pass rate**: 100% (9/9 tests passing)
-
----
-
-## Risk Assessment
-
-### Low Risk ✅
-- No breaking changes
-- Purely additive functionality
-- Graceful degradation (missing tests = no badge)
-- Extensively tested (36 commits of refinement)
-
-### Medium Risk ⚠️
-- Concurrent workflow runs (mitigated: auto-conflict resolution)
-- Git push failures (mitigated: 5 retry attempts with backoff)
-
-### No Risk 🚫
-- Hugo build breakage (already tested)
-- User experience impact (badges optional)
-- Data loss (results stored in git)
-
----
-
-## Recommendation
-
-✅ **READY TO MERGE**
-
-This branch delivers production-ready infrastructure that:
-1. Adds significant value (automated testing + visibility)
-2. Requires zero maintenance (fully automated)
-3. Scales easily (15-20 min to add each package using template)
-4. Has zero breaking changes (purely additive)
-5. Is thoroughly documented (3 comprehensive guides)
-
-**Next steps**:
-1. Merge `smoke_tests` → `main`
-2. Trigger initial workflow run
-3. Begin adding 5-10 more packages
-4. Monitor automated daily runs
-
----
-
-*For detailed information, see `SMOKE_TESTS_BRANCH_SUMMARY.md`*
+Smoke-test workflows should not create new dashboard package entries by themselves. If a generated result points to a package page that does not exist, either the owning content team should add the package metadata, or the workflow/result should be removed from the active smoke-test set before production.
