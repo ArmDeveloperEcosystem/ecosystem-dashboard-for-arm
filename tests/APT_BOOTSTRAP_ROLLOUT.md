@@ -1,147 +1,91 @@
 # Apt Bootstrap Hardening
 
-## Why We Added This
+Current as of 2026-05-14.
 
-Recent Arm64 workflow failures in packages such as `prophet` and `dhcp` were not caused by package regressions. They failed because `apt-get update` hit transient Ubuntu mirror-sync issues on `ports.ubuntu.com`, which returned errors like:
+## Why This Exists
 
-- `File has unexpected size ... Mirror sync in progress?`
-- exit code `100`
+Some Arm64 workflow failures were not package regressions. They happened before package logic started because `apt-get update` hit transient Ubuntu mirror-sync errors on `ports.ubuntu.com`, such as:
 
-This creates false-red package failures in production:
+```text
+File has unexpected size ... Mirror sync in progress?
+```
 
-- the package itself is fine
-- the workflow goes red before package logic starts
-- the global summary becomes noisy and less trustworthy
+Those failures create false-red package results. The package may be healthy, but the workflow goes red before the actual smoke test begins.
 
-To reduce these false-reds, we introduced a shared local action:
+## Shared Helper
 
-- [apt-bootstrap/action.yml](/Users/ranman01/OneDrive%20-%20Arm/Documents/final-smoke-tests-main/.github/actions/apt-bootstrap/action.yml)
+The shared helper lives at:
 
-## What The Shared Action Does
+```text
+.github/actions/apt-bootstrap/
+```
 
-The helper centralizes the common apt bootstrap pattern:
+It provides two supported usage styles:
 
-1. `apt-get clean`
-2. remove stale apt lists
-3. retry `apt-get update` up to a configured limit
-4. exponential backoff between retries
-5. install requested packages only after a successful update
+```yaml
+- uses: ./.github/actions/apt-bootstrap
+  with:
+    packages: git curl jq
+```
 
-This keeps transient mirror problems from turning healthy packages into false failures.
+or:
 
-## Rollout Scope
+```bash
+bash .github/actions/apt-bootstrap/bootstrap.sh --packages "git curl jq"
+```
 
-### First rollout
+## What The Helper Does
 
-The first rollout was intentionally limited to the workflows that recently failed in this way or are the clearest apt-native matches:
+The helper centralizes the safe apt bootstrap pattern:
 
-- [test-prophet.yml](/Users/ranman01/OneDrive%20-%20Arm/Documents/final-smoke-tests-main/.github/workflows/test-prophet.yml)
-- [test-dhcp.yml](/Users/ranman01/OneDrive%20-%20Arm/Documents/final-smoke-tests-main/.github/workflows/test-dhcp.yml)
-- [test-cassandra.yml](/Users/ranman01/OneDrive%20-%20Arm/Documents/final-smoke-tests-main/.github/workflows/test-cassandra.yml)
-- [template-package-test.yml](/Users/ranman01/OneDrive%20-%20Arm/Documents/final-smoke-tests-main/tests/template-package-test.yml)
-
-This first pass is deliberately narrow because not all workflows use apt the same way.
-
-### Second rollout
-
-After validating the helper and confirming the first false-red cases were true apt mirror flakes, we rolled the shared helper into the repo's largest exact-duplicate bootstrap pattern:
-
-- `137` generated workflows that all used:
-  - `sudo apt-get update >/dev/null`
-  - `sudo apt-get install -y git curl jq tar unzip file ca-certificates >/dev/null`
-  - optional `EXTRA_APT_PACKAGES`
-
-That means the helper is now applied to:
-
-- the first rollout workflows (`prophet`, `dhcp`, `cassandra`)
-- plus the `137` exact-duplicate generated workflows
-- plus the package workflow template for future additions
-
-This is the largest safe centralization win because it removes a proven false-red failure class from the most repetitive apt bootstrap code without touching bespoke repo-add or multi-phase apt flows.
-
-### Third rollout
-
-After the exact-duplicate migration was stable, we completed the next broad safe codemod:
-
-- exact single raw `apt-get update` + simple `apt-get install -y ...` pairs
-- no repo-add logic
-- no repeated update phases
-- no docker-inner apt
-- no special apt state management
-- no package-list interpolation or shell control flow in the install line
-
-This broadened the rollout to another:
-
-- `447` workflows
+1. cleans stale apt metadata
+2. retries `apt-get update`
+3. backs off between retries
+4. installs requested packages only after update succeeds
+5. keeps package workflow logic focused on the actual smoke test
 
 ## Current Coverage
 
-After all completed rollout phases, the shared helper is now present in:
+Current repository scan:
 
-- `587` workflows
+| Item | Count |
+|---|---:|
+| Workflow files mentioning `apt-bootstrap` | 596 |
+| Direct composite action uses | 133 |
+| Remaining raw `apt-get update` references | 225 |
+| Remaining raw `apt-get install` references | 261 |
 
-And the remaining repo-wide raw apt surface is down to:
+The remaining raw apt usage is not automatically wrong. Many of those workflows are bespoke and should be reviewed case by case, especially when they:
 
-- `197` workflows still using raw `apt-get update`
-- `199` workflows still using raw `apt-get install`
+- add custom apt repositories
+- install inside containers
+- use multi-phase apt state
+- pin specific package versions
+- intentionally combine apt with external setup tooling
 
-Those remaining workflows are the bespoke/custom set and should be handled case by case rather than by bulk codemod.
+## Why We Did Not Bulk-Patch Everything
 
-## Why We Did Not Patch Everything At Once
+Bulk replacing every apt command would be risky. Some workflows need custom repository setup or package order. The helper is safest for common bootstrap cases and known mirror-flake false-reds.
 
-Repo-wide audit found:
+The rule is:
 
-- `784` workflows contain raw `apt-get update` / `apt update`
-- many are simple bootstrap cases
-- many others are bespoke and should stay bespoke
+- use `apt-bootstrap` for simple runner bootstrap installs
+- keep bespoke apt logic where package setup genuinely needs it
+- migrate additional workflows only after checking the workflow-specific install path
 
-Examples that should not be blindly codemodded first:
+## Production Benefit
 
-- workflows that add custom apt repositories
-- workflows that run multiple `apt-get update` phases
-- workflows that do apt inside containers
-- workflows with special noninteractive or version-pinned package behavior
+The helper reduces false-reds caused by transient apt mirror issues on Arm64 runners. That improves:
 
-So the safe strategy is:
+- batch reliability
+- global summary signal quality
+- confidence that red means package/test failure, not infrastructure flake
 
-1. shared helper
-2. patch obvious false-red apt cases first
-3. expand to common duplicate patterns
-4. leave bespoke apt flows custom
+## Maintainer Checklist
 
-## Expected Production Benefit
+When editing a package workflow:
 
-This change should reduce false-red failures caused by transient Ubuntu mirror inconsistency on Arm64 runners, without changing the package test logic itself.
-
-It improves:
-
-- workflow reliability
-- signal quality in batch runs
-- truthfulness of failed-package reporting
-
-It does **not** hide package failures. It only makes infrastructure bootstrap more resilient.
-
-## Next Rollout Candidates
-
-After the first rollout is proven, the next candidates are:
-
-- other workflows using the exact same raw apt bootstrap snippet
-- simple `apt-get update` + `apt-get install` workflows
-
-Examples of packages worth hardening next if we keep seeing this failure class:
-
-- `storm`
-- `groovy_grails`
-- other simple apt-native workflows hit by mirror sync flakes
-
-## Remaining Bespoke Apt Cases
-
-Even after the shared rollout, many workflows should still stay bespoke for now. These include:
-
-- workflows that add custom apt repositories
-- workflows with repeated `apt-get update` phases
-- workflows with package-version pinning or special install flags
-- workflows doing apt inside Docker/container contexts
-- workflows where apt is only one part of a larger archive/bootstrap path
-
-Those should be migrated only case by case, not by broad codemod.
+1. If it only needs common apt packages, prefer `apt-bootstrap`.
+2. If it has custom apt repositories or container-inner apt, leave it custom unless tested.
+3. If a workflow fails during `apt-get update`, first determine whether it is an apt mirror flake or a real package issue.
+4. Do not change package validation logic just to hide an infrastructure failure.

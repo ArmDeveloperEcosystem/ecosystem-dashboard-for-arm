@@ -1,6 +1,7 @@
 These workflows are intentionally archived outside `.github/workflows` so GitHub Actions will not discover or run them.
 
 Current offboarded packages:
+- `curve`
 - `kettle`
 - `mesos`
 
