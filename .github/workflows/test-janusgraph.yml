@@ -140,11 +140,13 @@ jobs:
         run: |
           set -euo pipefail
           export JANUSGRAPH_VERSION
+          export GITHUB_TOKEN="${{ github.token }}"
           NEXT="$(
             python3 - <<'PY'
           import json
           import os
           import re
+          import sys
           import urllib.request
 
           current = os.environ.get("JANUSGRAPH_VERSION", "")
@@ -152,12 +154,24 @@ jobs:
               print("")
               raise SystemExit(0)
 
-          releases = json.load(
-              urllib.request.urlopen(
-                  "https://api.github.com/repos/JanusGraph/janusgraph/releases?per_page=100",
-                  timeout=20,
-              )
+          request = urllib.request.Request(
+              "https://api.github.com/repos/JanusGraph/janusgraph/releases?per_page=100",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "arm-smoke-tests",
+              },
           )
+          token = os.environ.get("GITHUB_TOKEN", "").strip()
+          if token:
+              request.add_header("Authorization", f"Bearer {token}")
+
+          try:
+              releases = json.load(urllib.request.urlopen(request, timeout=20))
+          except Exception as exc:
+              print(f"JanusGraph release lookup unavailable: {exc}", file=sys.stderr)
+              print("__LOOKUP_FAILED__")
+              raise SystemExit(0)
+
           versions = []
           for rel in releases:
               if rel.get("draft") or rel.get("prerelease"):
@@ -173,12 +187,19 @@ jobs:
           PY
           )"
           echo "version=${JANUSGRAPH_VERSION}" >> "$GITHUB_OUTPUT"
-          if [ -n "${NEXT}" ]; then
+          if [ "${NEXT}" = "__LOOKUP_FAILED__" ]; then
+            echo "latest=unknown" >> "$GITHUB_OUTPUT"
+            echo "next=" >> "$GITHUB_OUTPUT"
+            echo "latest_lookup_status=failed" >> "$GITHUB_OUTPUT"
+          elif [ -n "${NEXT}" ]; then
             echo "latest=${NEXT}" >> "$GITHUB_OUTPUT"
+            echo "next=${NEXT}" >> "$GITHUB_OUTPUT"
+            echo "latest_lookup_status=ok" >> "$GITHUB_OUTPUT"
           else
             echo "latest=${JANUSGRAPH_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "next=" >> "$GITHUB_OUTPUT"
+            echo "latest_lookup_status=ok" >> "$GITHUB_OUTPUT"
           fi
-          echo "next=${NEXT}" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Artifact Existence
         id: test1
@@ -270,12 +291,26 @@ jobs:
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           NEXT="${{ steps.version.outputs.next || '' }}"
           LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+          LOOKUP_STATUS="${{ steps.version.outputs.latest_lookup_status || 'ok' }}"
           NEXT_URL="https://github.com/JanusGraph/janusgraph/releases/download/v${LATEST}/janusgraph-${LATEST}.zip"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $LATEST"
+
+          if [ "$LOOKUP_STATUS" != "ok" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_lookup_deferred" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version lookup deferred on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned JanusGraph version $CURRENT passed smoke tests in this run, but the GitHub Releases API lookup was unavailable or rate-limited, so no honest next-version install claim is made." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: not_installed"
+            echo "Regression install result: Next version lookup deferred on Arm64"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if [ -z "$NEXT" ]; then
             echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
