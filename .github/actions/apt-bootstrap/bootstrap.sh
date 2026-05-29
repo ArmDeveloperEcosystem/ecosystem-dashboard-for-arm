@@ -8,6 +8,8 @@ INITIAL_BACKOFF_SECONDS=5
 QUIET=false
 UPDATE_ONLY=false
 NO_INSTALL_RECOMMENDS=false
+APT_UPDATE_TIMEOUT_SECONDS="${APT_UPDATE_TIMEOUT_SECONDS:-600}"
+APT_INSTALL_TIMEOUT_SECONDS="${APT_INSTALL_TIMEOUT_SECONDS:-1800}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -50,6 +52,10 @@ apt_update() {
   sudo apt-get clean
   sudo rm -rf /var/lib/apt/lists/*
   local cmd=(
+    timeout
+    --signal=TERM
+    --kill-after=60s
+    "${APT_UPDATE_TIMEOUT_SECONDS}s"
     sudo apt-get
     -o Acquire::Retries=3
     -o Acquire::http::No-Cache=true
@@ -91,6 +97,10 @@ fi
 
 read -r -a package_array <<< "$FULL_PACKAGES"
 install_cmd=(
+  timeout
+  --signal=TERM
+  --kill-after=60s
+  "${APT_INSTALL_TIMEOUT_SECONDS}s"
   sudo env
   DEBIAN_FRONTEND=noninteractive
   APT_LISTCHANGES_FRONTEND=none
