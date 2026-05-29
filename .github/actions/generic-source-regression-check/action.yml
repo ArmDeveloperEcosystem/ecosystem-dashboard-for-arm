@@ -20,6 +20,10 @@ inputs:
     description: Manually pinned upstream tag/ref to clone for the next stable candidate
     required: false
     default: ""
+  pypi_package:
+    description: Optional PyPI distribution name to use for next-version resolution when the runnable artifact is published on PyPI.
+    required: false
+    default: ""
   limited_cpu_probe:
     description: Optional bounded Arm64 CPU/source/import/help proof script to run after the candidate source resolves.
     required: false
@@ -80,6 +84,7 @@ runs:
         LANE_KIND="${{ inputs.lane_kind }}"
         OVERRIDE_VERSION="${{ inputs.next_version_override }}"
         OVERRIDE_TAG="${{ inputs.candidate_tag_override }}"
+        PYPI_PACKAGE="${{ inputs.pypi_package }}"
         LIMITED_CPU_PROBE="${INPUT_LIMITED_CPU_PROBE:-}"
         LIMITED_CPU_DESCRIPTION="${INPUT_LIMITED_CPU_DESCRIPTION:-A bounded CPU-side proof completed on the Arm64 runner. This is not a full specialized runtime validation.}"
         DEFER_ON_LIMITED_CPU_PROBE_FAILURE="${INPUT_DEFER_ON_LIMITED_CPU_PROBE_FAILURE:-false}"
@@ -154,6 +159,69 @@ runs:
           STATUS_KIND="FOUND_OVERRIDE"
           LATEST_VERSION="$OVERRIDE_VERSION"
           CANDIDATE_TAG="$OVERRIDE_TAG"
+        elif [ -n "$PYPI_PACKAGE" ]; then
+          PIP_INDEX_OUTPUT=$(python3 -m pip index versions "$PYPI_PACKAGE" --only-binary=:all: 2>/tmp/pypi-index-error.log || true)
+          PYPI_RESULT=$(PIP_INDEX_OUTPUT="$PIP_INDEX_OUTPUT" python3 - "$CURRENT" "$PYPI_PACKAGE" <<'PY'
+        import os
+        import re
+        import sys
+
+        current = sys.argv[1].strip()
+        package = sys.argv[2].strip()
+        output = os.environ.get("PIP_INDEX_OUTPUT", "")
+        pre_re = re.compile(r"(?:alpha|beta|rc|preview|pre|nightly|dev)", re.I)
+
+        def normalize(value: str):
+            value = value.strip().lstrip("vV")
+            if pre_re.search(value):
+                return None
+            if not re.match(r"^\d+(?:[._-]\d+)*$", value):
+                return None
+            display = value
+            parts = tuple(int(x) for x in re.split(r"[._-]", value))
+            return parts, display
+
+        match = re.search(r"Available versions:\s*(.+)", output)
+        versions = []
+        if match:
+            versions = [item.strip() for item in match.group(1).split(",") if item.strip()]
+        else:
+            # Older pip output may only print the current latest as "package (version)".
+            latest_match = re.search(rf"^{re.escape(package)}\s+\(([^)]+)\)", output, re.M | re.I)
+            if latest_match:
+                versions = [latest_match.group(1).strip()]
+
+        current_norm = normalize(current)
+        parsed = []
+        for version in versions:
+            norm = normalize(version)
+            if norm is not None:
+                parsed.append(norm)
+
+        if not parsed:
+            print("UNRESOLVED\t\t")
+            raise SystemExit(0)
+
+        parsed.sort(key=lambda item: item[0])
+        latest = parsed[-1]
+
+        if current_norm is None:
+            print(f"METADATA_REVIEW\t{latest[1]}\t{latest[1]}")
+            raise SystemExit(0)
+
+        newer = [item for item in parsed if item[0] > current_norm[0]]
+        if not newer:
+            print(f"NONE\t{current_norm[1]}\t{current}")
+            raise SystemExit(0)
+
+        candidate = newer[-1]
+        print(f"FOUND_PYPI\t{candidate[1]}\t{candidate[1]}")
+        PY
+          )
+
+          STATUS_KIND=$(printf '%s' "$PYPI_RESULT" | awk -F '\t' '{print $1}')
+          LATEST_VERSION=$(printf '%s' "$PYPI_RESULT" | awk -F '\t' '{print $2}')
+          CANDIDATE_TAG=$(printf '%s' "$PYPI_RESULT" | awk -F '\t' '{print $3}')
         else
           mapfile -t RAW_TAGS < <(git ls-remote --tags --refs "https://github.com/${REPO}.git" 2>/dev/null | awk '{print $2}' | sed 's#refs/tags/##')
 
@@ -246,6 +314,14 @@ runs:
               "metadata_review" \
               "Automatic next-version resolution needs manual review and runtime validation is not automated" \
               "The baseline version ${CURRENT} does not parse cleanly for automatic ordering, while ${REPO} exposes newer stable-looking tags such as ${LATEST_VERSION}. This workflow also does not install and execute the package on Arm64."
+            ;;
+          FOUND_PYPI)
+            run_limited_cpu_probe "${LATEST_VERSION}" "${CANDIDATE_TAG}" || \
+              emit_runtime_not_automated \
+                "${LATEST_VERSION}" \
+                "${LATEST_VERSION}" \
+                "Next PyPI release resolved, but runtime validation is not automated" \
+                "Baseline ${CURRENT} passed bounded checks. PyPI resolved ${PYPI_PACKAGE} candidate ${LATEST_VERSION}, but this workflow does not have a package-specific runtime probe configured."
             ;;
           FOUND_OVERRIDE)
             rm -rf next-src
