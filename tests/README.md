@@ -106,7 +106,7 @@ test-all-packages-batchN.yml
        to build canonical per-package JSON artifacts for the batch
 
 test-all-packages-orchestrator.yml
-  ├─ triggers all 21 batches
+  ├─ triggers all 22 batches
   ├─ waits for them to finish
   └─ triggers test-all-packages-summary.yml
 
@@ -128,7 +128,7 @@ Hugo dashboard
 ## 🎯 Current Status
 
 - Shared result contract: `2.0`
-- Execution model: `21` batch workflows plus one orchestrator and one global summary
+- Execution model: `22` batch workflows plus one orchestrator and one global summary
 - Result publication model: centralized in the global summary workflow
 - Regression policy model:
   - real Test 6 for non-package-manager lanes

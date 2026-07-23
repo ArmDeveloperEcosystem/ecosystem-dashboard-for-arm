@@ -19,7 +19,7 @@
 This repository now uses a centralized package-testing architecture for the Arm Ecosystem Dashboard that:
 - runs package tests on native Arm64 GitHub runners
 - keeps package workflows reusable and contract-driven
-- groups packages into `19` batch workflows
+- groups packages into `22` batch workflows
 - centralizes JSON generation and publication
 - renders dashboard package state from canonical JSON files
 
@@ -43,7 +43,7 @@ Current production design:
 2. The workflow emits reusable outputs only
 3. A batch workflow collects those outputs with collect-batch-results
 4. Batch artifacts are uploaded
-5. The orchestrator waits for all 21 batches
+5. The orchestrator waits for all 22 batches
 6. The global summary downloads all batch artifacts
 7. It assembles candidate results and previous production results
 8. It normalizes statuses and resolves exact job URLs
@@ -181,7 +181,7 @@ Verify:
 - do not publish production JSON directly
 
 **Batch workflows**
-- files: `.github/workflows/test-all-packages-batch1.yml` through `batch19.yml`
+- files: `.github/workflows/test-all-packages-batch1.yml` through `batch22.yml`
 - run many package workflows in parallel
 - each batch has a `summary` job
 - `summary` calls `.github/actions/collect-batch-results`
@@ -194,9 +194,9 @@ Verify:
 
 **Orchestrator**
 - file: `.github/workflows/test-all-packages-orchestrator.yml`
-- scheduled daily at `2 AM UTC`
+- scheduled weekly at `03:00 UTC Saturday`, which is Friday at `10 PM CDT / 9 PM CST` in US Central time (`0 3 * * 6`)
 - also runs on relevant pushes to `main` and `smoke_tests`
-- dispatches all `19` batches
+- dispatches all `22` batches
 - waits for them to complete
 - triggers the global summary
 
@@ -232,7 +232,7 @@ Verify:
 │                 ├────────────────────────────────────────────────────┐      │
 │                 │                                                    │      │
 │  ┌──────────────▼───────────────┐   ┌──────────────▼───────────────┐ │      │
-│  │ test-all-packages-batch1.yml │   │ test-all-packages-batch19.yml│ │ ...  │
+│  │ test-all-packages-batch1.yml │   │ test-all-packages-batch22.yml│ │ ...  │
 │  │ - many package jobs          │   │ - many package jobs          │ │      │
 │  │ - summary job                │   │ - summary job                │ │      │
 │  │ - collect-batch-results      │   │ - collect-batch-results      │ │      │
@@ -244,7 +244,7 @@ Verify:
 │                                 │                                            │
 │  ┌──────────────────────────────▼───────────────────────────────┐            │
 │  │ test-all-packages-orchestrator.yml                           │            │
-│  │ - triggers all 21 batches                                   │            │
+│  │ - triggers all 22 batches                                   │            │
 │  │ - waits for completion                                      │            │
 │  │ - triggers global summary                                   │            │
 │  └──────────────────────────────┬───────────────────────────────┘            │
@@ -682,7 +682,7 @@ If matrix testing is introduced later, it should still collapse to one canonical
 - `workflow_call`
 
 **Orchestrator**
-- daily schedule at `0 2 * * *`
+- weekly schedule at `03:00 UTC Saturday`, which is Friday at `10 PM CDT / 9 PM CST` in US Central time (`0 3 * * 6`)
 - manual dispatch
 - push to `main` or `smoke_tests` when relevant markdown/workflow files change
 
