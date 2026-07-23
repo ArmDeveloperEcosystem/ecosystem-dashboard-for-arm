@@ -1,0 +1,86 @@
+name: Generated Data Hardening CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify generated-data controls
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            actionlint_arch: amd64
+            actionlint_sha256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          - runner: ubuntu-24.04-arm
+            actionlint_arch: arm64
+            actionlint_sha256: 325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Compile and test offline controls
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -v \
+            -s .github/actions/publish-generated-data-pr/tests \
+            -p 'test_*.py'
+          python3 -m unittest discover -v \
+            -s .github/scripts/tests \
+            -p 'test_*.py'
+          python3 .github/scripts/package_workflow_supply_chain.py
+
+      - name: Run checksum-verified Actionlint
+        env:
+          ACTIONLINT_ARCH: ${{ matrix.actionlint_arch }}
+          ACTIONLINT_SHA256: ${{ matrix.actionlint_sha256 }}
+        run: |
+          set -euo pipefail
+          version="1.7.12"
+          archive_name="actionlint_${version}_linux_${ACTIONLINT_ARCH}.tar.gz"
+          archive="$RUNNER_TEMP/$archive_name"
+          tool_dir="$RUNNER_TEMP/actionlint-${version}"
+          source_url="https://github.com/rhysd/actionlint/releases/download/v${version}/${archive_name}"
+
+          curl \
+            --disable \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --proto '=https' \
+            --proto-redir '=https' \
+            --tlsv1.2 \
+            --connect-timeout 10 \
+            --max-time 120 \
+            --max-filesize 16777216 \
+            --output "$archive" \
+            --url "$source_url"
+          [[ "$(stat -c '%s' -- "$archive")" -le 16777216 ]]
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" "$archive" |
+            sha256sum --check --strict -
+
+          mkdir -p "$tool_dir"
+          tar -xzf "$archive" -C "$tool_dir" actionlint
+          "$tool_dir/actionlint" \
+            .github/workflows/generated-data-hardening-ci.yml \
+            .github/workflows/main.yml \
+            .github/workflows/test-all-packages-orchestrator.yml \
+            .github/workflows/test-all-packages-batch{1..22}.yml
+          "$tool_dir/actionlint" -shellcheck="" \
+            .github/workflows/test-*.yml

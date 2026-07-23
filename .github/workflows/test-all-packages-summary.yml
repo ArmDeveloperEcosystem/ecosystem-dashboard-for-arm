@@ -1,131 +1,219 @@
 name: Global Test Summary (All Batches)
 
 concurrency:
-  group: global-summary
-  cancel-in-progress: true
+  group: ${{ github.repository }}-global-summary-publication
+  cancel-in-progress: false
 
 permissions:
   actions: read
   contents: write
+  pull-requests: write
 
 on:
   workflow_dispatch:
     inputs:
-      start_time:
-        description: "UTC timestamp captured by the orchestrator before dispatching batches"
+      run_manifest:
+        description: Canonical compact JSON manifest of the exact 22 batch runs
         required: true
         default: ""
+        type: string
+      expected_sha:
+        description: Exact repository commit used by every batch
+        required: true
+        default: ""
+        type: string
       triggering_batch:
         description: "Name of the workflow that triggered this summary (optional)"
         required: false
         default: ""
+        type: string
 
 jobs:
   global-summary:
     name: Generate Global Summary
     runs-on: ubuntu-24.04-arm
-    if: always()
-
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-          ref: ${{ github.ref }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
-      - name: Pull latest branch state
+      - name: Bind exact generated-data base
+        id: generated_data_base
+        env:
+          EXPECTED_BRANCH: ${{ github.ref_name }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
         run: |
-          echo "Pulling latest branch state..."
-          for i in {1..10}; do
-            if git pull --rebase origin "${{ github.ref_name }}"; then
-              echo "✅ Successfully pulled latest branch state"
-              exit 0
-            fi
-            echo "❌ Pull failed, retrying in 5s... (Attempt $i/10)"
-            sleep 5
-          done
-          echo "⚠️ Failed to pull latest branch state after 10 attempts. Proceeding with local checkout."
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          [[ "$EXPECTED_SHA" == "$WORKFLOW_SHA" ]]
+          [[ "$actual_sha" == "$WORKFLOW_SHA" ]]
+          git fetch --no-tags origin \
+            "+refs/heads/${EXPECTED_BRANCH}:refs/remotes/origin/${EXPECTED_BRANCH}"
+          remote_sha="$(git rev-parse "refs/remotes/origin/${EXPECTED_BRANCH}^{commit}")"
+          [[ "$remote_sha" == "$WORKFLOW_SHA" ]]
 
-      - name: Download batch artifacts
+          # Repository Python is trusted only after all four SHAs agree.
+          python3 .github/scripts/orchestration_contract.py validate-base \
+            --expected-sha "$EXPECTED_SHA" \
+            --workflow-sha "$WORKFLOW_SHA" \
+            --checkout-sha "$actual_sha" \
+            --remote-sha "$remote_sha"
+          printf 'sha=%s\n' "$actual_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Validate exact batch-run manifest
+        env:
+          EXPECTED_BRANCH: ${{ github.ref_name }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_MANIFEST: ${{ inputs.run_manifest }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/orchestration_contract.py validate-manifest-env \
+            --environment-variable RUN_MANIFEST \
+            --expected-sha "$EXPECTED_SHA" \
+            --branch "$EXPECTED_BRANCH" \
+            --repository "$REPOSITORY" \
+            --output .orchestration/run-manifest.json
+
+      - name: Download exact batch artifacts
         id: download
         env:
           GH_TOKEN: ${{ github.token }}
-          START_TIME: ${{ inputs.start_time }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          if [ -z "$START_TIME" ]; then
-            echo "❌ Error: start_time input is required to locate the correct batch runs."
-            exit 1
-          fi
-
+          set -euo pipefail
+          helper=".github/scripts/orchestration_contract.py"
+          attestation_helper=".github/scripts/batch_artifact_attestation.py"
+          manifest=".orchestration/run-manifest.json"
+          context="$(python3 "$helper" manifest-context --manifest "$manifest")"
+          IFS=$'\t' read -r ORCHESTRATION_ID EXPECTED_SHA BRANCH <<< "$context"
+          WORKFLOW_SHA="$(git rev-parse HEAD)"
+          [[ "$WORKFLOW_SHA" == "$EXPECTED_SHA" ]]
           mkdir -p downloaded-results
           DOWNLOADED_BATCHES=0
+          DOWNLOAD_FAILURES=0
           : > downloaded-results/.batch-runs.tsv
-
-          find_run_id() {
-            local workflow="$1"
-            gh run list \
-              --workflow "$workflow" \
-              --branch "${{ github.ref_name }}" \
-              --json databaseId,createdAt \
-              --limit 50 \
-              --jq ".[] | select(.createdAt >= \"$START_TIME\") | .databaseId" | head -n 1
-          }
 
           for i in {1..22}; do
             WORKFLOW="test-all-packages-batch${i}.yml"
             ARTIFACT="batch${i}-test-results"
+            runtime="$(python3 "$helper" record-runtime \
+              --manifest "$manifest" \
+              --batch "$i")"
+            IFS=$'\t' read -r DISPATCH_NONCE RUN_ID RUN_ATTEMPT <<< "$runtime"
+            [[ "$RUN_ATTEMPT" == "1" ]]
             DEST="downloaded-results/batch${i}"
+            registration_payload=".orchestration/summary-registration-${i}.json"
+            run_payload=".orchestration/summary-run-${i}.json"
+            artifacts_payload=".orchestration/artifacts-${i}.json"
             mkdir -p "$DEST"
 
-            RUN_ID=""
-            for attempt in {1..10}; do
-              RUN_ID=$(find_run_id "$WORKFLOW" || true)
-              if [ -n "$RUN_ID" ]; then
-                break
-              fi
-              echo "⚠️ Waiting for run registration for $WORKFLOW (attempt $attempt/10)..."
-              sleep 10
-            done
-
-            if [ -z "$RUN_ID" ]; then
-              echo "⚠️ Warning: Could not find a batch run for $WORKFLOW after $START_TIME."
+            endpoint="$(python3 "$helper" runs-endpoint \
+              --batch "$i" \
+              --branch "$BRANCH" \
+              --expected-sha "$EXPECTED_SHA" \
+              --repository "$REPOSITORY")"
+            if ! gh api --paginate --slurp "$endpoint" > "$registration_payload"; then
+              echo "Infrastructure registration lookup failed for exact run $RUN_ID."
+              DOWNLOAD_FAILURES=$((DOWNLOAD_FAILURES + 1))
+              continue
+            fi
+            if ! REGISTERED_RUN_ID="$(python3 "$helper" select-registration \
+              --payload "$registration_payload" \
+              --batch "$i" \
+              --orchestration-id "$ORCHESTRATION_ID" \
+              --dispatch-nonce "$DISPATCH_NONCE" \
+              --expected-sha "$EXPECTED_SHA" \
+              --branch "$BRANCH" \
+              --repository "$REPOSITORY")"; then
+              echo "Exact registration was duplicated or malformed for run $RUN_ID."
+              DOWNLOAD_FAILURES=$((DOWNLOAD_FAILURES + 1))
+              continue
+            fi
+            if [[ "$REGISTERED_RUN_ID" != "$RUN_ID" ]]; then
+              echo "Exact registration no longer resolves uniquely to run $RUN_ID."
+              DOWNLOAD_FAILURES=$((DOWNLOAD_FAILURES + 1))
               continue
             fi
 
-            echo "📥 Downloading $ARTIFACT from run $RUN_ID..."
-            if gh run download "$RUN_ID" -n "$ARTIFACT" -D "$DEST"; then
-              DOWNLOADED_BATCHES=$((DOWNLOADED_BATCHES + 1))
-              printf "%s\t%s\t%s\t%s\n" "$i" "$RUN_ID" "$WORKFLOW" "$ARTIFACT" >> downloaded-results/.batch-runs.tsv
-            else
-              echo "⚠️ Warning: Failed to download $ARTIFACT from run $RUN_ID."
+            if ! gh api \
+              "repos/${REPOSITORY}/actions/runs/${RUN_ID}" \
+              > "$run_payload"; then
+              echo "Infrastructure lookup failed for exact run $RUN_ID."
+              DOWNLOAD_FAILURES=$((DOWNLOAD_FAILURES + 1))
+              continue
             fi
+
+            if ! python3 "$helper" validate-run \
+              --payload "$run_payload" \
+              --batch "$i" \
+              --orchestration-id "$ORCHESTRATION_ID" \
+              --dispatch-nonce "$DISPATCH_NONCE" \
+              --expected-sha "$EXPECTED_SHA" \
+              --branch "$BRANCH" \
+              --repository "$REPOSITORY" \
+              --expected-run-id "$RUN_ID"; then
+              echo "Exact run identity or terminal state was rejected for $RUN_ID."
+              DOWNLOAD_FAILURES=$((DOWNLOAD_FAILURES + 1))
+              continue
+            fi
+
+            if ! gh api --paginate --slurp \
+              "repos/${REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+              > "$artifacts_payload"; then
+              echo "Infrastructure artifact lookup failed for exact run $RUN_ID."
+              DOWNLOAD_FAILURES=$((DOWNLOAD_FAILURES + 1))
+              continue
+            fi
+            if ! python3 "$helper" validate-artifacts \
+              --payload "$artifacts_payload" \
+              --batch "$i" \
+              --expected-run-id "$RUN_ID"; then
+              echo "Expected unique non-expired artifact was rejected for run $RUN_ID."
+              DOWNLOAD_FAILURES=$((DOWNLOAD_FAILURES + 1))
+              continue
+            fi
+
+            if ! gh run download "$RUN_ID" -n "$ARTIFACT" -D "$DEST"; then
+              echo "Exact artifact download failed for run $RUN_ID."
+              DOWNLOAD_FAILURES=$((DOWNLOAD_FAILURES + 1))
+              continue
+            fi
+            if ! python3 "$attestation_helper" verify \
+              --results-root "$DEST" \
+              --workflow-file ".github/workflows/$WORKFLOW" \
+              --batch "$i" \
+              --repository "$REPOSITORY" \
+              --expected-branch "$BRANCH" \
+              --current-branch "$BRANCH" \
+              --expected-sha "$EXPECTED_SHA" \
+              --workflow-sha "$WORKFLOW_SHA" \
+              --orchestration-id "$ORCHESTRATION_ID" \
+              --dispatch-nonce "$DISPATCH_NONCE" \
+              --run-id "$RUN_ID" \
+              --run-attempt "$RUN_ATTEMPT" \
+              --artifact-name "$ARTIFACT"; then
+              echo "Collector attestation rejected incomplete artifact for run $RUN_ID."
+              DOWNLOAD_FAILURES=$((DOWNLOAD_FAILURES + 1))
+              continue
+            fi
+
+            DOWNLOADED_BATCHES=$((DOWNLOADED_BATCHES + 1))
+            printf "%s\t%s\t%s\t%s\n" \
+              "$i" "$RUN_ID" "$WORKFLOW" "$ARTIFACT" \
+              >> downloaded-results/.batch-runs.tsv
           done
 
-          echo "downloaded_batches=$DOWNLOADED_BATCHES" >> $GITHUB_OUTPUT
-
-      - name: Build canonical package map
-        id: canonical
-        run: |
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          package_map = {}
-          package_roots = [
-              Path("content/linux/opensource_packages"),
-              Path("content/opensource_packages"),
-          ]
-          for package_root in package_roots:
-              if not package_root.exists():
-                  continue
-              for md_path in sorted(package_root.glob("*.md")):
-                  if md_path.name == "_index.md":
-                      continue
-                  package_map.setdefault(md_path.stem.lower(), md_path.stem)
-
-          Path(".summary-package-map.json").write_text(json.dumps(package_map, indent=2, sort_keys=True) + "\n")
-          print(f"Built canonical package map for {len(package_map)} package pages.")
-          PY
+          echo "downloaded_batches=$DOWNLOADED_BATCHES" >> "$GITHUB_OUTPUT"
+          echo "download_failures=$DOWNLOAD_FAILURES" >> "$GITHUB_OUTPUT"
+          if [ "$DOWNLOAD_FAILURES" -ne 0 ]; then
+            echo "❌ Refusing publication because one or more batch downloads failed."
+            exit 1
+          fi
 
       - name: Assemble candidate and previous-production staging sets
         id: assemble
@@ -137,12 +225,16 @@ jobs:
           python3 - <<'PY'
           import json
           import os
-          import subprocess
           import shutil
+          import subprocess
+          import sys
           from pathlib import Path
           import yaml
 
-          package_map = json.loads(Path(".summary-package-map.json").read_text())
+          sys.path.insert(0, str(Path(".github/scripts").resolve(strict=True)))
+          from summary_slug_policy import DestinationRegistry, PackageCatalog
+
+          catalog = PackageCatalog.load(Path.cwd())
           stage_root = Path(".summary-staging")
           candidate_dir = stage_root / "candidate-test-results"
           previous_dir = stage_root / "previous-production-test-results"
@@ -151,6 +243,8 @@ jobs:
               shutil.rmtree(stage_root)
           candidate_dir.mkdir(parents=True, exist_ok=True)
           previous_dir.mkdir(parents=True, exist_ok=True)
+          candidate_destinations = DestinationRegistry(candidate_dir)
+          previous_destinations = DestinationRegistry(previous_dir)
 
           existing_dir = Path("data/test-results")
           downloaded_dir = Path("downloaded-results")
@@ -166,17 +260,13 @@ jobs:
               "synthesized": 0,
           }
           previous_payloads = {}
+          expected_registrations = {}
 
-          def canonical_slug(raw_slug: str, fallback_stem: str) -> str:
-              for candidate in (raw_slug, fallback_stem):
-                  if candidate:
-                      value = str(candidate).strip()
-                      if value:
-                          return package_map.get(value.lower(), value)
-              return fallback_stem
-              return fallback_stem
-
-          def write_canonical(source_path: Path, target_dir: Path, counter_key: str) -> None:
+          def write_canonical(
+              source_path: Path,
+              destinations: DestinationRegistry,
+              counter_key: str,
+          ) -> None:
               try:
                   payload = json.loads(source_path.read_text())
               except Exception:
@@ -184,20 +274,35 @@ jobs:
                   counters["malformed"] += 1
                   return
 
-              metadata = payload.setdefault("metadata", {})
-              canonical = canonical_slug(metadata.get("package_slug"), source_path.stem)
+              metadata = payload.get("metadata")
+              if metadata is None:
+                  metadata = {}
+                  payload["metadata"] = metadata
+              canonical = catalog.from_metadata(
+                  metadata,
+                  fallback_stem=source_path.stem,
+                  source_label=str(source_path),
+              )
               metadata["package_slug"] = canonical
-              target_path = target_dir / f"{canonical}.json"
+              target_path = destinations.claim(
+                  canonical,
+                  source_label=str(source_path),
+              )
               target_path.write_text(json.dumps(payload, indent=2) + "\n")
               counters[counter_key] += 1
               if counter_key == "previous":
                   previous_payloads[canonical] = payload
 
           for source in sorted(existing_dir.glob("*.json")):
-              write_canonical(source, previous_dir, "previous")
+              write_canonical(source, previous_destinations, "previous")
 
           for source in sorted(downloaded_dir.rglob("*.json")):
-              write_canonical(source, candidate_dir, "candidate")
+              if (
+                  source.name == "batch-attestation.json"
+                  and source.parent.parent == downloaded_dir
+              ):
+                  continue
+              write_canonical(source, candidate_destinations, "candidate")
 
           job_cache = {}
 
@@ -264,11 +369,22 @@ jobs:
                       uses = str((job_def or {}).get("uses") or "")
                       if uses.startswith("./.github/workflows/test-") and uses.endswith(".yml"):
                           stem = Path(uses).stem.replace("test-", "", 1)
-                          slug = canonical_slug(stem, stem)
+                          slug = catalog.require(
+                              stem,
+                              label=f"{workflow_path}:{job_name} workflow slug",
+                          )
+                          registration = f"{workflow_path}:{job_name}"
+                          previous_registration = expected_registrations.get(slug)
+                          if previous_registration is not None:
+                              raise ValueError(
+                                  f"duplicate expected package_slug {slug!r} in "
+                                  f"{previous_registration!r} and {registration!r}"
+                              )
+                          expected_registrations[slug] = registration
                           expected.append((slug, job_name))
 
                   for slug, job_name in expected:
-                      target_path = candidate_dir / f"{slug}.json"
+                      target_path = candidate_destinations.destination(slug)
                       if target_path.exists():
                           continue
 
@@ -321,6 +437,10 @@ jobs:
                               "synthesis_state": "synthesized_missing_current_run_result",
                           },
                       }
+                      target_path = candidate_destinations.claim(
+                          slug,
+                          source_label=f"synthesized:{workflow_path}:{job_name}",
+                      )
                       target_path.write_text(json.dumps(payload, indent=2) + "\n")
                       counters["candidate"] += 1
                       counters["synthesized"] += 1
@@ -354,7 +474,7 @@ jobs:
           echo "✅ Prepared ${candidate_count:-0} candidate staged result files and ${previous_count:-0} previous-production files."
 
       - name: Validate candidate exact job URLs
-        if: always() && steps.assemble.outputs.json_count != '0'
+        if: steps.assemble.outcome == 'success' && steps.assemble.outputs.json_count != '0'
         id: normalize
         env:
           GH_TOKEN: ${{ github.token }}
@@ -562,8 +682,8 @@ jobs:
           cat .summary-staging/normalize-metrics.env >> "$GITHUB_OUTPUT"
 
       - name: Promote validated candidate results into production data
-        if: always()
-        id: publish
+        if: steps.normalize.outcome == 'success' && steps.assemble.outputs.json_count != '0'
+        id: promote
         run: |
           python3 - <<'PY'
           import json
@@ -782,8 +902,8 @@ jobs:
           echo "| Malformed JSON artifacts skipped | ${{ steps.assemble.outputs.malformed_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Exact candidate job URLs resolved | ${{ steps.normalize.outputs.exact_url_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Candidate rows with weak URLs | ${{ steps.normalize.outputs.weak_url_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Candidate rows promoted to production | ${{ steps.publish.outputs.promoted_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Candidate rows published with warnings | ${{ steps.publish.outputs.warning_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Candidate rows promoted to production | ${{ steps.promote.outputs.promoted_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Candidate rows published with warnings | ${{ steps.promote.outputs.warning_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           TOTAL=0
@@ -1082,39 +1202,66 @@ jobs:
             echo "⚠️ **Warning:** No test results found. Check whether the batch artifacts completed and uploaded successfully." >> $GITHUB_STEP_SUMMARY
           fi
 
-      - name: Commit aggregated test results
-        if: always() && steps.assemble.outputs.json_count != '0'
+      - name: Remove generated-data scratch paths
+        if: always()
         run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          rm -rf -- \
+            downloaded-results \
+            .orchestration \
+            .summary-package-map.json \
+            .summary-staging \
+            test-results
 
-          git add -A data/test-results data/test-results-index.json
+      - name: Revalidate exact publication base
+        if: >-
+          ${{
+            success() &&
+            steps.download.outcome == 'success' &&
+            steps.assemble.outcome == 'success' &&
+            steps.normalize.outcome == 'success' &&
+            steps.promote.outcome == 'success' &&
+            steps.assemble.outputs.json_count != '0'
+          }}
+        id: publication_base
+        env:
+          EXPECTED_BRANCH: ${{ github.ref_name }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          git fetch --no-tags origin \
+            "+refs/heads/${EXPECTED_BRANCH}:refs/remotes/origin/${EXPECTED_BRANCH}"
+          remote_sha="$(git rev-parse "refs/remotes/origin/${EXPECTED_BRANCH}^{commit}")"
+          python3 .github/scripts/orchestration_contract.py validate-base \
+            --expected-sha "$EXPECTED_SHA" \
+            --workflow-sha "$WORKFLOW_SHA" \
+            --checkout-sha "$actual_sha" \
+            --remote-sha "$remote_sha"
 
-          if ! git diff --staged --quiet; then
-            git commit -m "Update aggregated test results [skip ci]"
-
-            PUSH_SUCCESS=false
-            for i in {1..10}; do
-              if git push origin HEAD:${{ github.ref_name }}; then
-                echo "✅ Successfully pushed aggregated test results"
-                PUSH_SUCCESS=true
-                break
-              fi
-
-              echo "⚠️ Push failed; fetching latest branch state and retrying..."
-              if git fetch origin "${{ github.ref_name }}" && git rebase "origin/${{ github.ref_name }}"; then
-                echo "✅ Rebased onto latest branch state"
-              else
-                echo "⚠️ Rebase failed; aborting and retrying..."
-                git rebase --abort || true
-              fi
-              sleep $((i * 5))
-            done
-
-            if [ "$PUSH_SUCCESS" = false ]; then
-              echo "❌ Error: Failed to push aggregated test results after 10 attempts."
-              exit 1
-            fi
-          else
-            echo "No aggregated test-result changes to commit"
-          fi
+      - name: Open or update aggregated test-results review PR
+        if: >-
+          ${{
+            success() &&
+            steps.download.outcome == 'success' &&
+            steps.assemble.outcome == 'success' &&
+            steps.normalize.outcome == 'success' &&
+            steps.promote.outcome == 'success' &&
+            steps.publication_base.outcome == 'success' &&
+            steps.assemble.outputs.json_count != '0'
+          }}
+        id: generated_data_review
+        uses: ./.github/actions/publish-generated-data-pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          producer: global-test-results
+          base-branch: ${{ github.ref_name }}
+          expected-base-sha: ${{ steps.generated_data_base.outputs.sha }}
+          head-branch: automation/generated-data/global-test-results/${{ github.ref_name }}
+          title: Update generated Arm64 test results
+          commit-message: Update generated Arm64 test results
+          paths: |
+            data/test-results-index.json
+            data/test-results/
+          required-tracked-paths: data/test-results-index.json

@@ -9,50 +9,60 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+# Serializes production candidates across every run in this repository. Live required
+# reviews/checks with admin enforcement and a protected production environment remain
+# external activation blockers; this workflow does not configure repository settings.
+concurrency:
+  group: ${{ github.repository }}-production-deployment
+  cancel-in-progress: false
+
 jobs:
-  # This workflow contains a single job called "build"
-  build_and_deploy_s3:
-    # The type of runner that the job will run on
+  build_and_review:
+    name: Build and review generated data
     runs-on: ubuntu-24.04-arm
 
-    # Required so the workflow can push changes back to the repo
     permissions:
       contents: write
+      pull-requests: write
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
+    outputs:
+      generated_data_status: ${{ steps.generated_data_review.outputs.status }}
+      reviewed_sha: ${{ steps.generated_data_base.outputs.sha }}
+      current_base: ${{ steps.deployment_candidate.outputs.current_base }}
+
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: true  # Fetch Hugo Themes
-          fetch-depth: 0 
+          submodules: true
+          fetch-depth: 0
+          persist-credentials: false
 
-      # Sets up Git author so commits from Actions are attributed correctly
-      - name: Set up Git author
+      - name: Bind exact generated-data base
+        id: generated_data_base
+        env:
+          EXPECTED_REF: refs/heads/main
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "$EXPECTED_REF" ]]
+          actual_sha="$(git rev-parse HEAD)"
+          [[ "$actual_sha" == "$EXPECTED_SHA" ]]
+          printf 'sha=%s\n' "$actual_sha" >> "$GITHUB_OUTPUT"
 
-      # Sets Up Hugo
       - name: Setup Hugo
-        uses: peaceiris/actions-hugo@v3
+        uses: peaceiris/actions-hugo@2752ce1d29631191ea3f27c23495fa06139a5b78
         with:
           hugo-version: '0.130.0'
           extended: true
 
-      # Runs pre-processing Python scripts to ensure:
-      # (1) date accuracy,
-      # (2) category descriptions are always up-to-date,
-      # (3) the packages have valid categories
       - name: Python pre-processing
         run: |
+          set -euo pipefail
           python --version
           python ./build_steps/update_category_mappings.py
           python ./build_steps/update_recently_added_json.py
           python ./build_steps/validate_package_catagories.py
 
-      # Debug step to confirm Windows category data is generated correctly
       - name: Debug Windows file after generation
         run: |
           echo "---- ls data ----"
@@ -64,23 +74,108 @@ jobs:
           echo "---- git diff for windows file ----"
           git diff -- data/category_data_windows.yml || true
 
-      # Builds arm-software-developer repo
-      - name: Build
+      - name: Open or update preprocessing data review PR
+        id: generated_data_review
+        uses: ./.github/actions/publish-generated-data-pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          producer: site-preprocessing
+          base-branch: ${{ github.ref_name }}
+          expected-base-sha: ${{ steps.generated_data_base.outputs.sha }}
+          head-branch: automation/generated-data/site-preprocessing/${{ github.ref_name }}
+          title: Update generated dashboard preprocessing data
+          commit-message: Update generated dashboard preprocessing data
+          paths: |
+            data/category_data.yml
+            data/category_data_windows.yml
+            data/recently_added_packages.yaml
+          required-tracked-paths: |
+            data/category_data.yml
+            data/category_data_windows.yml
+            data/recently_added_packages.yaml
+
+      - name: Build reviewed candidate
+        if: steps.generated_data_review.outputs.status == 'no_changes'
         run: hugo --minify --config config.toml,config.cloudfront.toml
 
-      # Deploys website to AWS S3
-      - name: Deploy to S3
-        run: hugo deploy --force --maxDeletes -1 --invalidateCDN --config config.toml,config.cloudfront.toml
+      - name: Verify deployment candidate is still current
+        id: deployment_candidate
+        if: steps.generated_data_review.outputs.status == 'no_changes'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "+refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
+          actual_base_sha="$(git rev-parse "refs/remotes/origin/${BASE_BRANCH}^{commit}")"
+          [[ "$actual_base_sha" == "$EXPECTED_BASE_SHA" ]]
+          [[ -z "$(git status --porcelain --untracked-files=all)" ]]
+          printf 'current_base=true\n' >> "$GITHUB_OUTPUT"
         env:
+          BASE_BRANCH: ${{ github.ref_name }}
+          EXPECTED_BASE_SHA: ${{ steps.generated_data_base.outputs.sha }}
+
+  deploy_production:
+    name: Deploy exact reviewed SHA
+    needs: build_and_review
+    if: >-
+      ${{
+        needs.build_and_review.result == 'success' &&
+        needs.build_and_review.outputs.generated_data_status == 'no_changes' &&
+        needs.build_and_review.outputs.current_base == 'true'
+      }}
+    runs-on: ubuntu-24.04-arm
+
+    # Merging or activating this workflow remains blocked until repository owners create and
+    # protect this environment with required reviewers and restrict its deployment credentials.
+    environment:
+      name: production
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout exact reviewed SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.build_and_review.outputs.reviewed_sha }}
+          submodules: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind clean deployment worktree
+        env:
+          BASE_BRANCH: main
+          EXPECTED_SHA: ${{ needs.build_and_review.outputs.reviewed_sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          [[ "$actual_sha" == "$EXPECTED_SHA" ]]
+          git fetch --no-tags origin \
+            "+refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
+          remote_sha="$(git rev-parse "refs/remotes/origin/${BASE_BRANCH}^{commit}")"
+          [[ "$remote_sha" == "$EXPECTED_SHA" ]]
+          [[ -z "$(git status --porcelain --untracked-files=all)" ]]
+
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@2752ce1d29631191ea3f27c23495fa06139a5b78
+        with:
+          hugo-version: '0.130.0'
+          extended: true
+
+      - name: Build exact reviewed site
+        run: hugo --minify --config config.toml,config.cloudfront.toml
+
+      - name: Deploy to S3
+        env:
+          BASE_BRANCH: main
+          EXPECTED_SHA: ${{ needs.build_and_review.outputs.reviewed_sha }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
-      # Commits only the Windows category data file back to the repository if it has changed
-      - name: Commit Windows category data only
         run: |
-          git add data/category_data_windows.yml
-
-          git diff --cached --quiet && echo "No changes to commit" && exit 0
-
-          git commit -m "Update Windows category data [skip ci]"
-          git push
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "+refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
+          remote_sha="$(git rev-parse "refs/remotes/origin/${BASE_BRANCH}^{commit}")"
+          [[ "$remote_sha" == "$EXPECTED_SHA" ]]
+          hugo deploy --force --maxDeletes -1 --invalidateCDN \
+            --config config.toml,config.cloudfront.toml
