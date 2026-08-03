@@ -9,7 +9,7 @@ This document is the high-level map for the Arm Ecosystem Dashboard smoke-test p
 ```text
 main branch
   |
-  | manual dispatch, workflow-path push, or weekly schedule
+  | manual dispatch or weekly schedule
   v
 .github/workflows/test-all-packages-orchestrator.yml
   |
