@@ -68,7 +68,7 @@ jobs:
           declare -A BATCH_RUN_IDS
           declare -A BATCH_RETRIES
           MISSING_WORKFLOWS=()
-          MAX_STARTUP_RETRIES=3
+          MAX_STARTUP_RETRIES=5
           sleep 15
 
           find_run_id() {
@@ -95,6 +95,41 @@ jobs:
               sleep 5
             done
             return 1
+          }
+
+          retry_startup_batch() {
+            local batch_number="$1"
+            local workflow="test-all-packages-batch${batch_number}.yml"
+            local rid="${BATCH_RUN_IDS[$batch_number]}"
+            local next_retry=$((BATCH_RETRIES[$batch_number] + 1))
+            local retry_start
+            local new_run_id=""
+
+            retry_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            echo "Batch $batch_number hit startup_failure in run $rid. Re-dispatching $workflow (retry $next_retry/$MAX_STARTUP_RETRIES)..."
+
+            if ! dispatch_batch "$workflow"; then
+              FAILED_BATCHES+=("$workflow run $rid concluded startup_failure; retry dispatch failed")
+              return 1
+            fi
+
+            for attempt in {1..12}; do
+              new_run_id=$(find_run_id "$workflow" "$retry_start")
+              if [ -n "$new_run_id" ]; then
+                break
+              fi
+              echo "Waiting for retry run registration for $workflow (attempt $attempt/12)..."
+              sleep 10
+            done
+
+            if [ -z "$new_run_id" ]; then
+              FAILED_BATCHES+=("$workflow run $rid concluded startup_failure; retry run was not registered")
+              return 1
+            fi
+
+            BATCH_RUN_IDS[$batch_number]="$new_run_id"
+            BATCH_RETRIES[$batch_number]="$next_retry"
+            echo "Tracking retry for $workflow (Run ID: $new_run_id)"
           }
 
           for i in {1..21}; do
@@ -129,8 +164,10 @@ jobs:
           fi
 
           while true; do
+            ACTIVE_RUNNING=0
             STILL_RUNNING=0
             FAILED_BATCHES=()
+            STARTUP_RETRY_BATCHES=()
 
             for i in {1..21}; do
               WORKFLOW="test-all-packages-batch${i}.yml"
@@ -139,39 +176,12 @@ jobs:
               read -r STATUS CONCLUSION <<< "$RUN_STATE"
 
               if [[ "$STATUS" != "completed" ]]; then
-                STILL_RUNNING=$((STILL_RUNNING + 1))
+                ACTIVE_RUNNING=$((ACTIVE_RUNNING + 1))
                 continue
               fi
 
               if [[ "$CONCLUSION" == "startup_failure" && "${BATCH_RETRIES[$i]}" -lt "$MAX_STARTUP_RETRIES" ]]; then
-                NEXT_RETRY=$((BATCH_RETRIES[$i] + 1))
-                RETRY_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-                echo "Batch $i hit startup_failure in run $RID. Re-dispatching $WORKFLOW (retry $NEXT_RETRY/$MAX_STARTUP_RETRIES)..."
-
-                if ! dispatch_batch "$WORKFLOW"; then
-                  FAILED_BATCHES+=("$WORKFLOW run $RID concluded startup_failure; retry dispatch failed")
-                  continue
-                fi
-
-                NEW_RUN_ID=""
-                for attempt in {1..12}; do
-                  NEW_RUN_ID=$(find_run_id "$WORKFLOW" "$RETRY_START")
-                  if [ -n "$NEW_RUN_ID" ]; then
-                    break
-                  fi
-                  echo "Waiting for retry run registration for $WORKFLOW (attempt $attempt/12)..."
-                  sleep 10
-                done
-
-                if [ -z "$NEW_RUN_ID" ]; then
-                  FAILED_BATCHES+=("$WORKFLOW run $RID concluded startup_failure; retry run was not registered")
-                  continue
-                fi
-
-                BATCH_RUN_IDS[$i]="$NEW_RUN_ID"
-                BATCH_RETRIES[$i]="$NEXT_RETRY"
-                STILL_RUNNING=$((STILL_RUNNING + 1))
-                echo "Tracking retry for $WORKFLOW (Run ID: $NEW_RUN_ID)"
+                STARTUP_RETRY_BATCHES+=("$i")
                 continue
               fi
 
@@ -179,6 +189,20 @@ jobs:
                 FAILED_BATCHES+=("$WORKFLOW run $RID concluded ${CONCLUSION:-unknown}")
               fi
             done
+
+            if [ "$ACTIVE_RUNNING" -gt 0 ]; then
+              STILL_RUNNING="$ACTIVE_RUNNING"
+              if [ "${#STARTUP_RETRY_BATCHES[@]}" -gt 0 ]; then
+                echo "${#STARTUP_RETRY_BATCHES[@]} startup-failed batches are waiting to retry after active batches drain."
+                STILL_RUNNING=$((STILL_RUNNING + ${#STARTUP_RETRY_BATCHES[@]}))
+              fi
+            elif [ "${#STARTUP_RETRY_BATCHES[@]}" -gt 0 ]; then
+              for batch_number in "${STARTUP_RETRY_BATCHES[@]}"; do
+                if retry_startup_batch "$batch_number"; then
+                  STILL_RUNNING=$((STILL_RUNNING + 1))
+                fi
+              done
+            fi
 
             if [ "$STILL_RUNNING" -eq 0 ]; then
               if [ "${#FAILED_BATCHES[@]}" -gt 0 ]; then
