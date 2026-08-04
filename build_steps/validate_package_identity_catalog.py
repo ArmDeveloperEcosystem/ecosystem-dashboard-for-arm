@@ -14,10 +14,17 @@ import hashlib
 import json
 import os
 import re
+import selectors
+import shutil
 import stat
+import subprocess
 import sys
+import tarfile
+import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -29,6 +36,11 @@ SCHEMA_VERSION = "1.1"
 MAX_CATALOG_BYTES = 20_000_000
 MAX_PACKAGE_BYTES = 2_000_000
 MAX_WORKFLOW_BYTES = 2_000_000
+MAX_PACKAGE_PAGES = 10_000
+MAX_DIRECTORY_DEPTH = 16
+MAX_DIRECTORY_ENTRIES = 20_000
+MAX_REVISION_ARCHIVE_BYTES = 512 * 1024 * 1024
+MAX_REVISION_ARCHIVE_MEMBERS = 30_050
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -39,6 +51,14 @@ _WORKFLOW_RE = re.compile(
 )
 _CONTROL_WORKFLOW_RE = re.compile(
     r"^test-all-packages-(?:batch[1-9][0-9]*|orchestrator|summary)\.yml$"
+)
+_CONTROL_SLUG_RE = re.compile(
+    r"^all-packages-(?:batch[1-9][0-9]*|orchestrator|summary)$"
+)
+_RFC3339_TIMESTAMP_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+    r"[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
 )
 _PIP_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _NPM_NAME_RE = re.compile(
@@ -67,6 +87,31 @@ _APPROVED_EVIDENCE_HOSTS = {
     "npm_api": {"registry.npmjs.org"},
 }
 _READ_CHUNK_BYTES = 64 * 1024
+_GIT_OUTPUT_BYTES = 8_192
+_GIT_TIMEOUT_SECONDS = 30
+_GIT_BINARY = shutil.which("git")
+_ARCHIVE_ROOTS = (
+    CATALOG_REPOSITORY_PATH,
+    CONTENT_ROOT,
+    ".github/workflows",
+)
+_ARCHIVE_ANCESTORS = frozenset(
+    {
+        ".github",
+        "content",
+        "content/linux",
+    }
+)
+_GIT_ENVIRONMENT = {
+    "PATH": os.environ.get("PATH", os.defpath),
+    "HOME": os.environ.get("HOME", "/"),
+    "TMPDIR": os.environ.get("TMPDIR", tempfile.gettempdir()),
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "LC_ALL": "C",
+}
 _REQUIRED_OPEN_FLAGS = (
     "O_NOFOLLOW",
     "O_CLOEXEC",
@@ -85,6 +130,18 @@ class _RepositoryPathMissing(FileNotFoundError):
     def __init__(self, repository_path: str) -> None:
         self.repository_path = repository_path
         super().__init__(repository_path)
+
+
+@dataclass
+class _TraversalBudget:
+    entries: int = 0
+
+    def consume(self, amount: int, context: str) -> None:
+        self.entries += amount
+        if self.entries > MAX_DIRECTORY_ENTRIES:
+            raise CatalogValidationError(
+                f"repository traversal exceeds {MAX_DIRECTORY_ENTRIES} entries: {context}"
+            )
 
 
 class _FilesystemSnapshot:
@@ -131,12 +188,10 @@ class _FilesystemSnapshot:
         previous = self._directories.get(repository_path)
         current = (state, names)
         if previous is not None and (
-            not _same_snapshot_state(previous[0], state)
-            or previous[1] != names
+            not _same_snapshot_state(previous[0], state) or previous[1] != names
         ):
             raise CatalogValidationError(
-                f"protected directory changed during validation: "
-                f"{display_name}"
+                f"protected directory changed during validation: {display_name}"
             )
         self._directories.setdefault(repository_path, current)
 
@@ -175,8 +230,7 @@ class _FilesystemSnapshot:
                         )
                 except (_RepositoryPathMissing, OSError) as exc:
                     raise CatalogValidationError(
-                        f"protected directory became unavailable: "
-                        f"{repository_path}"
+                        f"protected directory became unavailable: {repository_path}"
                     ) from exc
             else:
                 try:
@@ -222,6 +276,29 @@ def calculate_corpus_sha256(path_digests: list[tuple[str, str | None]]) -> str:
     return digest.hexdigest()
 
 
+def validate_catalog_revision(
+    repository_root: Path,
+    *,
+    revision: str = "HEAD",
+    catalog_relative_path: str = CATALOG_REPOSITORY_PATH,
+) -> tuple[int, str]:
+    """Validate a private snapshot of one exact Git commit."""
+
+    root = _require_git_repository_root(repository_root)
+    resolved_revision = _resolve_git_revision(root, revision)
+    with tempfile.TemporaryDirectory(prefix="package-catalog-revision-") as temporary:
+        private_root = Path(temporary)
+        private_root.chmod(0o700)
+        archive_path = private_root / "revision.tar"
+        snapshot_root = private_root / "snapshot"
+        snapshot_root.mkdir(mode=0o700)
+        _write_revision_archive(root, resolved_revision, archive_path)
+        _extract_revision_archive(archive_path, snapshot_root)
+        archive_path.unlink()
+        count = validate_catalog(snapshot_root, catalog_relative_path)
+    return count, resolved_revision
+
+
 def validate_catalog(
     repository_root: Path,
     catalog_relative_path: str = CATALOG_REPOSITORY_PATH,
@@ -237,6 +314,252 @@ def validate_catalog(
     with _open_repository_root(root_path) as root_fd:
         snapshot = _FilesystemSnapshot(root_fd)
         return _validate_catalog_from_fd(root_fd, catalog_path, snapshot)
+
+
+def _require_git_repository_root(repository_root: Path) -> Path:
+    root_path = repository_root.expanduser().absolute()
+    try:
+        state = os.lstat(root_path)
+    except OSError as exc:
+        raise CatalogValidationError("Git repository root is missing") from exc
+    if stat.S_ISLNK(state.st_mode) or not stat.S_ISDIR(state.st_mode):
+        raise CatalogValidationError("Git repository root must be a real directory")
+    root = root_path.resolve(strict=True)
+    top_level = _run_git_text(root, "rev-parse", "--show-toplevel")
+    try:
+        discovered = Path(top_level).resolve(strict=True)
+    except OSError as exc:
+        raise CatalogValidationError(
+            "Git repository root could not be resolved"
+        ) from exc
+    if discovered != root:
+        raise CatalogValidationError("repository-root must identify the Git top level")
+    return root
+
+
+def _resolve_git_revision(repository_root: Path, revision: str) -> str:
+    if revision != "HEAD" and not _GIT_OBJECT_ID_RE.fullmatch(revision):
+        raise CatalogValidationError(
+            "revision must be HEAD or a full lowercase Git object ID"
+        )
+    resolved = _run_git_text(
+        repository_root,
+        "rev-parse",
+        "--verify",
+        f"{revision}^{{commit}}",
+    )
+    if not _GIT_OBJECT_ID_RE.fullmatch(resolved):
+        raise CatalogValidationError("resolved revision is not a full Git commit ID")
+    if revision != "HEAD" and resolved != revision:
+        raise CatalogValidationError(
+            "revision did not resolve to the requested exact commit"
+        )
+    return resolved
+
+
+def _run_git_text(repository_root: Path, *arguments: str) -> str:
+    if _GIT_BINARY is None:
+        raise CatalogValidationError("Git is required for immutable catalog validation")
+    try:
+        result = subprocess.run(
+            [_GIT_BINARY, "-C", str(repository_root), *arguments],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=_GIT_TIMEOUT_SECONDS,
+            env=_GIT_ENVIRONMENT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CatalogValidationError("Git revision inspection failed") from exc
+    if (
+        result.returncode != 0
+        or len(result.stdout) > _GIT_OUTPUT_BYTES
+        or len(result.stderr) > _GIT_OUTPUT_BYTES
+    ):
+        raise CatalogValidationError("Git revision inspection failed")
+    try:
+        output = result.stdout.decode("ascii", errors="strict").strip()
+    except UnicodeDecodeError as exc:
+        raise CatalogValidationError("Git revision output was not ASCII") from exc
+    if not output or "\n" in output or "\r" in output:
+        raise CatalogValidationError("Git revision output was malformed")
+    return output
+
+
+def _write_revision_archive(
+    repository_root: Path,
+    revision: str,
+    archive_path: Path,
+) -> None:
+    if _GIT_BINARY is None:
+        raise CatalogValidationError("Git is required for immutable catalog validation")
+    command = [
+        _GIT_BINARY,
+        "-C",
+        str(repository_root),
+        "archive",
+        "--format=tar",
+        revision,
+        "--",
+        *_ARCHIVE_ROOTS,
+    ]
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=_GIT_ENVIRONMENT,
+        )
+    except OSError as exc:
+        raise CatalogValidationError(
+            "Git revision archive could not be started"
+        ) from exc
+    assert process.stdout is not None
+    assert process.stderr is not None
+    total = 0
+    stderr = bytearray()
+    deadline = time.monotonic() + _GIT_TIMEOUT_SECONDS
+    try:
+        with (
+            archive_path.open("xb") as archive,
+            selectors.DefaultSelector() as selector,
+        ):
+            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CatalogValidationError("Git revision archive timed out")
+                events = selector.select(remaining)
+                if not events:
+                    raise CatalogValidationError("Git revision archive timed out")
+                for key, _mask in events:
+                    chunk = os.read(key.fileobj.fileno(), _READ_CHUNK_BYTES)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    if key.data == "stdout":
+                        total += len(chunk)
+                        if total > MAX_REVISION_ARCHIVE_BYTES:
+                            raise CatalogValidationError(
+                                "Git revision archive exceeds the bounded size limit"
+                            )
+                        archive.write(chunk)
+                    else:
+                        stderr.extend(chunk)
+                        if len(stderr) > _GIT_OUTPUT_BYTES:
+                            raise CatalogValidationError(
+                                "Git revision archive error output exceeds its limit"
+                            )
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            returncode = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            raise CatalogValidationError("Git revision archive timed out") from exc
+    except Exception:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        raise
+    finally:
+        process.stdout.close()
+        process.stderr.close()
+    if returncode != 0 or total == 0:
+        raise CatalogValidationError("Git revision archive failed")
+
+
+def _extract_revision_archive(archive_path: Path, snapshot_root: Path) -> None:
+    seen: set[str] = set()
+    total_file_bytes = 0
+    try:
+        with tarfile.open(archive_path, mode="r|") as archive:
+            member_count = 0
+            for member in archive:
+                member_count += 1
+                if member_count > MAX_REVISION_ARCHIVE_MEMBERS:
+                    raise CatalogValidationError(
+                        "Git revision archive has an invalid member count"
+                    )
+                relative = _validate_archive_member(member, seen)
+                destination = snapshot_root.joinpath(*PurePosixPath(relative).parts)
+                if member.isdir():
+                    destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    continue
+                total_file_bytes += member.size
+                if total_file_bytes > MAX_REVISION_ARCHIVE_BYTES:
+                    raise CatalogValidationError(
+                        "Git revision archive payload exceeds the bounded size limit"
+                    )
+                destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                source = archive.extractfile(member)
+                if source is None:
+                    raise CatalogValidationError(
+                        "Git revision archive file has no payload"
+                    )
+                written = 0
+                try:
+                    with destination.open("xb") as output:
+                        while True:
+                            chunk = source.read(_READ_CHUNK_BYTES)
+                            if not chunk:
+                                break
+                            written += len(chunk)
+                            if written > member.size:
+                                raise CatalogValidationError(
+                                    "Git revision archive member exceeded its declared size"
+                                )
+                            output.write(chunk)
+                finally:
+                    source.close()
+                if written != member.size:
+                    raise CatalogValidationError(
+                        "Git revision archive member did not match its declared size"
+                    )
+            if member_count == 0:
+                raise CatalogValidationError(
+                    "Git revision archive has an invalid member count"
+                )
+    except CatalogValidationError:
+        raise
+    except (OSError, tarfile.TarError) as exc:
+        raise CatalogValidationError("Git revision archive is invalid") from exc
+
+
+def _validate_archive_member(member: tarfile.TarInfo, seen: set[str]) -> str:
+    raw_name = (
+        member.name[:-1]
+        if member.isdir() and member.name.endswith("/")
+        else member.name
+    )
+    path = PurePosixPath(raw_name)
+    if (
+        not raw_name
+        or "\\" in raw_name
+        or "\x00" in raw_name
+        or path.is_absolute()
+        or path.as_posix() != raw_name
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or len(path.parts) > MAX_DIRECTORY_DEPTH + 4
+    ):
+        raise CatalogValidationError("Git revision archive contains an unsafe path")
+    if raw_name in seen:
+        raise CatalogValidationError("Git revision archive contains a duplicate path")
+    seen.add(raw_name)
+    if not _archive_path_is_allowed(raw_name):
+        raise CatalogValidationError("Git revision archive contains an unexpected path")
+    if not (member.isdir() or member.isreg()):
+        raise CatalogValidationError(
+            "Git revision archive contains a link or special file"
+        )
+    if member.size < 0 or (member.isdir() and member.size != 0):
+        raise CatalogValidationError("Git revision archive member size is invalid")
+    return raw_name
+
+
+def _archive_path_is_allowed(path: str) -> bool:
+    if path in _ARCHIVE_ANCESTORS:
+        return True
+    return any(path == root or path.startswith(f"{root}/") for root in _ARCHIVE_ROOTS)
 
 
 def _validate_catalog_from_fd(
@@ -262,8 +585,10 @@ def _validate_catalog_from_fd(
             f"catalog.corpus.content_root must be {CONTENT_ROOT!r}"
         )
     entry_count = _require_int(corpus["entry_count"], "catalog.corpus.entry_count")
-    if entry_count < 0:
-        raise CatalogValidationError("catalog.corpus.entry_count must not be negative")
+    if not 0 <= entry_count <= MAX_PACKAGE_PAGES:
+        raise CatalogValidationError(
+            f"catalog.corpus.entry_count must be between 0 and {MAX_PACKAGE_PAGES}"
+        )
     corpus_sha256 = _require_sha256(
         corpus["corpus_sha256"],
         "catalog.corpus.corpus_sha256",
@@ -279,10 +604,7 @@ def _validate_catalog_from_fd(
     expected_content_paths = set(content_files)
     workflow_identities = _reject_orphan_package_workflows(
         root_fd,
-        {
-            PurePosixPath(content_path).stem
-            for content_path in expected_content_paths
-        },
+        {PurePosixPath(content_path).stem for content_path in expected_content_paths},
         snapshot,
     )
     if entry_count != len(expected_content_paths):
@@ -313,6 +635,10 @@ def _validate_catalog_from_fd(
         slug = _require_string(record["slug"], f"{context}.slug", maximum=200)
         if not _SLUG_RE.fullmatch(slug):
             raise CatalogValidationError(f"{context}.slug is not a safe package slug")
+        if _CONTROL_SLUG_RE.fullmatch(slug.casefold()):
+            raise CatalogValidationError(
+                f"{context}.slug is reserved for a dashboard control workflow"
+            )
         content_path = _require_repository_path(
             record["content_path"],
             f"{context}.content_path",
@@ -364,14 +690,14 @@ def _validate_catalog_from_fd(
         _validate_registries(
             record["registries"],
             content_path=content_path,
+            workflow_path=workflow_path,
+            workflow_sha256=workflow_sha256,
             registry_owners=registry_owners,
             context=f"{context}.registries",
         )
 
     if record_paths != sorted(record_paths):
-        raise CatalogValidationError(
-            "catalog records must be sorted by content_path"
-        )
+        raise CatalogValidationError("catalog records must be sorted by content_path")
     if len(record_paths) != len(set(record_paths)):
         raise CatalogValidationError("catalog content paths must be unique")
     if len(slugs) != len(set(slugs)):
@@ -441,6 +767,7 @@ def _scan_package_pages(
     snapshot: _FilesystemSnapshot,
 ) -> dict[str, str]:
     pages: dict[str, str] = {}
+    budget = _TraversalBudget()
     try:
         with _open_repository_directory(
             root_fd,
@@ -451,6 +778,7 @@ def _scan_package_pages(
                 content_fd,
                 relative_parts=(),
                 pages=pages,
+                budget=budget,
                 snapshot=snapshot,
             )
     except _RepositoryPathMissing as exc:
@@ -465,10 +793,16 @@ def _scan_package_directory(
     *,
     relative_parts: tuple[str, ...],
     pages: dict[str, str],
+    budget: _TraversalBudget,
     snapshot: _FilesystemSnapshot,
 ) -> None:
+    if len(relative_parts) > MAX_DIRECTORY_DEPTH:
+        raise CatalogValidationError(
+            f"package directory depth exceeds {MAX_DIRECTORY_DEPTH}"
+        )
     display_directory = PurePosixPath(CONTENT_ROOT, *relative_parts).as_posix()
     names_before = _list_directory(directory_fd, display_directory)
+    budget.consume(len(names_before), display_directory)
     for name in names_before:
         entry_parts = (*relative_parts, name)
         repository_path = PurePosixPath(CONTENT_ROOT, *entry_parts).as_posix()
@@ -479,8 +813,7 @@ def _scan_package_directory(
         )
         if stat.S_ISLNK(entry_state.st_mode):
             raise CatalogValidationError(
-                f"package content path must not be a symbolic link: "
-                f"{repository_path}"
+                f"package content path must not be a symbolic link: {repository_path}"
             )
         if stat.S_ISDIR(entry_state.st_mode):
             with _open_directory_component(
@@ -494,6 +827,7 @@ def _scan_package_directory(
                     child_fd,
                     relative_parts=entry_parts,
                     pages=pages,
+                    budget=budget,
                     snapshot=snapshot,
                 )
             continue
@@ -513,13 +847,16 @@ def _scan_package_directory(
             expected_identity=entry_state,
         )
         snapshot.protect_file(repository_path, page_state)
+        if len(pages) >= MAX_PACKAGE_PAGES:
+            raise CatalogValidationError(
+                f"package corpus exceeds {MAX_PACKAGE_PAGES} pages"
+            )
         pages[repository_path] = hashlib.sha256(payload).hexdigest()
 
     names_after = _list_directory(directory_fd, display_directory)
     if names_before != names_after:
         raise CatalogValidationError(
-            f"package directory entries changed during validation: "
-            f"{display_directory}"
+            f"package directory entries changed during validation: {display_directory}"
         )
 
 
@@ -539,6 +876,10 @@ def _reject_orphan_package_workflows(
                 workflows_fd,
                 ".github/workflows",
             )
+            if len(names_before) > MAX_DIRECTORY_ENTRIES:
+                raise CatalogValidationError(
+                    "workflow directory exceeds the bounded entry limit"
+                )
             expected_names = {f"test-{slug}.yml" for slug in package_slugs}
             orphans: list[str] = []
             candidate_states: dict[str, os.stat_result] = {}
@@ -553,8 +894,7 @@ def _reject_orphan_package_workflows(
                 )
                 if stat.S_ISLNK(workflow_state.st_mode):
                     raise CatalogValidationError(
-                        f"workflow must not be a symbolic link: "
-                        f"{repository_path}"
+                        f"workflow must not be a symbolic link: {repository_path}"
                     )
                 if not stat.S_ISREG(workflow_state.st_mode):
                     raise CatalogValidationError(
@@ -594,12 +934,10 @@ def _reject_orphan_package_workflows(
 
     if orphans:
         raise CatalogValidationError(
-            "orphan package workflows have no exact package page: "
-            f"{orphans[:3]!r}"
+            f"orphan package workflows have no exact package page: {orphans[:3]!r}"
         )
     return {
-        f".github/workflows/{name}": state
-        for name, state in candidate_states.items()
+        f".github/workflows/{name}": state for name, state in candidate_states.items()
     }
 
 
@@ -677,6 +1015,8 @@ def _validate_registries(
     raw_registries: object,
     *,
     content_path: str,
+    workflow_path: str,
+    workflow_sha256: str | None,
     registry_owners: dict[tuple[str, str], str],
     context: str,
 ) -> None:
@@ -696,9 +1036,7 @@ def _validate_registries(
             maximum=32,
         )
         if status not in _DIMENSION_STATUSES:
-            raise CatalogValidationError(
-                f"{dimension_context}.status is not supported"
-            )
+            raise CatalogValidationError(f"{dimension_context}.status is not supported")
         exhaustive = _require_bool(
             dimension["exhaustive"],
             f"{dimension_context}.exhaustive",
@@ -713,9 +1051,7 @@ def _validate_registries(
             )
         normalized_identities: list[str] = []
         for identity_index, raw_identity in enumerate(identities):
-            identity_context = (
-                f"{dimension_context}.identities[{identity_index}]"
-            )
+            identity_context = f"{dimension_context}.identities[{identity_index}]"
             identity = _require_string(
                 raw_identity,
                 identity_context,
@@ -744,12 +1080,12 @@ def _validate_registries(
         evidence_rationales: list[str] = []
         canonical_evidence: list[str] = []
         for evidence_index, raw_evidence in enumerate(evidence):
-            evidence_context = (
-                f"{dimension_context}.evidence[{evidence_index}]"
-            )
+            evidence_context = f"{dimension_context}.evidence[{evidence_index}]"
             source_kind, rationale = _validate_evidence(
                 raw_evidence,
                 context=evidence_context,
+                workflow_path=workflow_path,
+                workflow_sha256=workflow_sha256,
             )
             evidence_kinds.add(source_kind)
             if rationale is not None:
@@ -813,6 +1149,8 @@ def _validate_evidence(
     raw_evidence: object,
     *,
     context: str,
+    workflow_path: str,
+    workflow_sha256: str | None,
 ) -> tuple[str, str | None]:
     evidence = _require_dict(raw_evidence, context)
     _require_exact_keys(
@@ -889,6 +1227,10 @@ def _validate_evidence(
                 f"{context}.source_revision must be an immutable 40-character "
                 "lowercase Git commit ID"
             )
+        if source_locator != workflow_path or evidence_sha256 != workflow_sha256:
+            raise CatalogValidationError(
+                f"{context} must match the record workflow path and SHA-256"
+            )
     elif source_kind == "manual_review":
         _validate_manual_locator(source_locator, f"{context}.source_locator")
         if not _GIT_OBJECT_ID_RE.fullmatch(source_revision):
@@ -962,6 +1304,10 @@ def _validate_https_locator(
 
 
 def _validate_timestamp(value: str, context: str) -> None:
+    if not _RFC3339_TIMESTAMP_RE.fullmatch(value):
+        raise CatalogValidationError(
+            f"{context} must use canonical RFC3339 timestamp text"
+        )
     candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
     try:
         timestamp = datetime.fromisoformat(candidate)
@@ -991,9 +1337,7 @@ def _normalize_registry_identity(registry_kind: str, value: str) -> str:
 
 
 def _require_descriptor_platform() -> None:
-    missing_flags = [
-        name for name in _REQUIRED_OPEN_FLAGS if not hasattr(os, name)
-    ]
+    missing_flags = [name for name in _REQUIRED_OPEN_FLAGS if not hasattr(os, name)]
     unsupported_functions = (
         os.open not in os.supports_dir_fd
         or os.stat not in os.supports_dir_fd
@@ -1007,12 +1351,7 @@ def _require_descriptor_platform() -> None:
 
 
 def _directory_open_flags() -> int:
-    return (
-        os.O_RDONLY
-        | os.O_DIRECTORY
-        | os.O_NOFOLLOW
-        | os.O_CLOEXEC
-    )
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
 def _file_open_flags() -> int:
@@ -1029,9 +1368,7 @@ def _open_repository_root(root_path: Path) -> Iterator[int]:
             "repository root is missing or inaccessible"
         ) from exc
     if stat.S_ISLNK(path_state.st_mode):
-        raise CatalogValidationError(
-            "repository root must not be a symbolic link"
-        )
+        raise CatalogValidationError("repository root must not be a symbolic link")
     if not stat.S_ISDIR(path_state.st_mode):
         raise CatalogValidationError("repository root is not a directory")
 
@@ -1062,9 +1399,8 @@ def _open_repository_root(root_path: Path) -> Iterator[int]:
             raise CatalogValidationError(
                 "repository root pathname changed during validation"
             ) from exc
-        if (
-            stat.S_ISLNK(current_state.st_mode)
-            or not _same_object_identity(opened_state, current_state)
+        if stat.S_ISLNK(current_state.st_mode) or not _same_object_identity(
+            opened_state, current_state
         ):
             raise CatalogValidationError(
                 "repository root pathname changed during validation"
@@ -1117,8 +1453,7 @@ def _open_directory_component(
         raise _RepositoryPathMissing(display_name) from exc
     except OSError as exc:
         raise CatalogValidationError(
-            f"directory path has a symbolic-link or unsafe component: "
-            f"{display_name}"
+            f"directory path has a symbolic-link or unsafe component: {display_name}"
         ) from exc
 
     try:
@@ -1133,9 +1468,8 @@ def _open_directory_component(
             raise CatalogValidationError(
                 f"repository directory is not a directory: {display_name}"
             )
-        if (
-            expected_identity is not None
-            and not _same_object_identity(expected_identity, opened_state)
+        if expected_identity is not None and not _same_object_identity(
+            expected_identity, opened_state
         ):
             raise CatalogValidationError(
                 f"{display_name} pathname was replaced before traversal"
@@ -1212,13 +1546,10 @@ def _read_regular_payload_at(
                 f"{display_name} descriptor could not be inspected"
             ) from exc
         if not stat.S_ISREG(before.st_mode):
-            raise CatalogValidationError(
-                f"{display_name} is not a regular file"
-            )
+            raise CatalogValidationError(f"{display_name} is not a regular file")
         _require_single_link(before, display_name)
-        if (
-            expected_identity is not None
-            and not _same_object_identity(expected_identity, before)
+        if expected_identity is not None and not _same_object_identity(
+            expected_identity, before
         ):
             raise CatalogValidationError(
                 f"{display_name} pathname was replaced before it was read"
@@ -1272,13 +1603,8 @@ def _read_regular_payload_at(
             display_name=display_name,
             operation="while being read",
         )
-        if (
-            not _same_file_state(before, after)
-            or total != after.st_size
-        ):
-            raise CatalogValidationError(
-                f"{display_name} changed while being read"
-            )
+        if not _same_file_state(before, after) or total != after.st_size:
+            raise CatalogValidationError(f"{display_name} changed while being read")
         return b"".join(chunks), after
     finally:
         os.close(file_fd)
@@ -1303,8 +1629,7 @@ def _repository_path_exists(root_fd: int, repository_path: str) -> bool:
                 ) from exc
             if stat.S_ISLNK(state.st_mode):
                 raise CatalogValidationError(
-                    f"repository path must not be a symbolic link: "
-                    f"{repository_path}"
+                    f"repository path must not be a symbolic link: {repository_path}"
                 )
             return True
     except _RepositoryPathMissing:
@@ -1326,8 +1651,7 @@ def _repository_entry_state(
             )
     except _RepositoryPathMissing as exc:
         raise CatalogValidationError(
-            f"protected path disappeared during validation: "
-            f"{repository_path}"
+            f"protected path disappeared during validation: {repository_path}"
         ) from exc
 
 
@@ -1339,10 +1663,7 @@ def _list_directory(directory_fd: int, display_name: str) -> tuple[str, ...]:
             f"could not enumerate repository directory: {display_name}"
         ) from exc
     if any(
-        not isinstance(name, str)
-        or not name
-        or "/" in name
-        or "\x00" in name
+        not isinstance(name, str) or not name or "/" in name or "\x00" in name
         for name in names
     ):
         raise CatalogValidationError(
@@ -1535,9 +1856,7 @@ def _require_bool(value: object, context: str) -> bool:
 
 def _require_sha256(value: object, context: str) -> str:
     if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
-        raise CatalogValidationError(
-            f"{context} must be a lowercase SHA-256 value"
-        )
+        raise CatalogValidationError(f"{context} must be a lowercase SHA-256 value")
     return value
 
 
@@ -1563,10 +1882,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--catalog",
         default=CATALOG_REPOSITORY_PATH,
-        help=(
-            "Repository-relative catalog path "
-            f"(default: {CATALOG_REPOSITORY_PATH})"
-        ),
+        help=(f"Repository-relative catalog path (default: {CATALOG_REPOSITORY_PATH})"),
+    )
+    parser.add_argument(
+        "--revision",
+        default="HEAD",
+        help="Exact full Git commit ID to validate, or HEAD (default: HEAD)",
     )
     return parser.parse_args(argv)
 
@@ -1574,13 +1895,17 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        count = validate_catalog(args.repository_root, args.catalog)
+        count, revision = validate_catalog_revision(
+            args.repository_root,
+            revision=args.revision,
+            catalog_relative_path=args.catalog,
+        )
     except CatalogValidationError as exc:
         print(f"package identity catalog validation failed: {exc}", file=sys.stderr)
         return 1
     print(
         f"validated {count} package identity catalog records "
-        f"against schema {SCHEMA_VERSION}"
+        f"against schema {SCHEMA_VERSION} at {revision}"
     )
     return 0
 

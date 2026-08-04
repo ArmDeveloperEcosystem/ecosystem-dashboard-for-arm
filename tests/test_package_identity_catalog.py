@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import socket
+import subprocess
 import tempfile
 import time
 import unittest
@@ -23,6 +24,7 @@ from build_steps.validate_package_identity_catalog import (
     CatalogValidationError,
     calculate_corpus_sha256,
     validate_catalog,
+    validate_catalog_revision,
 )
 
 
@@ -129,6 +131,27 @@ def _write_valid_fixture(root: Path) -> CatalogFixture:
     return fixture
 
 
+def _commit_valid_fixture(root: Path) -> str:
+    _write_valid_fixture(root)
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "catalog-tests@example.com")
+    _git(root, "config", "user.name", "Catalog tests")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "catalog fixture")
+    return _git(root, "rev-parse", "HEAD")
+
+
+def _git(root: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(root), *arguments],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
 class PackageIdentityCatalogTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -142,6 +165,53 @@ class PackageIdentityCatalogTests(unittest.TestCase):
         self.fixture()
 
         self.assertEqual(validate_catalog(self.root), 2)
+
+    def test_revision_validation_uses_an_immutable_commit_snapshot(self) -> None:
+        revision = _commit_valid_fixture(self.root)
+        page = self.root / CONTENT_ROOT / "alpha.md"
+        page.write_text(page.read_text(encoding="utf-8") + "dirty\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(CatalogValidationError, "content_sha256 is stale"):
+            validate_catalog(self.root)
+
+        count, resolved = validate_catalog_revision(
+            self.root,
+            revision=revision,
+        )
+
+        self.assertEqual((count, resolved), (2, revision))
+
+    def test_revision_validation_accepts_head_and_rejects_moving_names(self) -> None:
+        revision = _commit_valid_fixture(self.root)
+
+        self.assertEqual(
+            validate_catalog_revision(self.root, revision="HEAD"),
+            (2, revision),
+        )
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "revision must be HEAD or a full lowercase Git object ID",
+        ):
+            validate_catalog_revision(self.root, revision="main")
+
+    def test_revision_archive_is_bounded_and_rejects_links(self) -> None:
+        _commit_valid_fixture(self.root)
+        with (
+            patch.object(validator_module, "MAX_REVISION_ARCHIVE_BYTES", 1),
+            self.assertRaisesRegex(CatalogValidationError, "archive exceeds"),
+        ):
+            validate_catalog_revision(self.root)
+
+        workflow = self.root / ".github/workflows/test-alpha.yml"
+        workflow.unlink()
+        workflow.symlink_to("test-beta.yml")
+        _git(self.root, "add", ".github/workflows/test-alpha.yml")
+        _git(self.root, "commit", "-qm", "replace workflow with a link")
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "link or special file",
+        ):
+            validate_catalog_revision(self.root)
 
     def test_missing_catalog_fails_closed(self) -> None:
         (self.root / CONTENT_ROOT).mkdir(parents=True)
@@ -519,9 +589,7 @@ class PackageIdentityCatalogTests(unittest.TestCase):
         payload = fixture.payload()
         evidence = payload["records"][0]["registries"]["pip"]["evidence"][0]
         evidence["source_kind"] = "github_api"
-        evidence["source_locator"] = (
-            "https://api.github.com/repos/example/alpha"
-        )
+        evidence["source_locator"] = "https://api.github.com/repos/example/alpha"
         for revision in (
             "main",
             "master",
@@ -580,9 +648,7 @@ class PackageIdentityCatalogTests(unittest.TestCase):
                     root = Path(repository_directory)
                     fixture = _write_valid_fixture(root)
                     payload = fixture.payload()
-                    evidence = payload["records"][0]["registries"]["pip"][
-                        "evidence"
-                    ][0]
+                    evidence = payload["records"][0]["registries"]["pip"]["evidence"][0]
                     evidence["source_kind"] = source_kind
                     evidence["source_locator"] = source_locator
                     evidence["source_revision"] = source_revision
@@ -648,8 +714,106 @@ class PackageIdentityCatalogTests(unittest.TestCase):
 
         self.assertEqual(validate_catalog(self.root), 2)
 
+    def test_dashboard_control_workflow_slugs_are_reserved(self) -> None:
+        for slug in (
+            "all-packages-batch1",
+            "all-packages-orchestrator",
+            "all-packages-summary",
+            "All-Packages-Summary",
+        ):
+            with self.subTest(slug=slug):
+                with tempfile.TemporaryDirectory() as repository_directory:
+                    root = Path(repository_directory)
+                    fixture = CatalogFixture(root)
+                    fixture.add_package(slug, workflow_present=False)
+                    fixture.write()
+
+                    with self.assertRaisesRegex(
+                        CatalogValidationError,
+                        "reserved for a dashboard control workflow",
+                    ):
+                        validate_catalog(root)
+
+    def test_generated_workflow_evidence_must_match_record_binding(self) -> None:
+        cases = (
+            (".github/workflows/test-other.yml", None),
+            (None, "f" * 64),
+        )
+        for source_locator, evidence_sha256 in cases:
+            with self.subTest(
+                source_locator=source_locator,
+                evidence_sha256=evidence_sha256,
+            ):
+                with tempfile.TemporaryDirectory() as repository_directory:
+                    root = Path(repository_directory)
+                    fixture = _write_valid_fixture(root)
+                    payload = fixture.payload()
+                    record = payload["records"][0]
+                    evidence = record["registries"]["pip"]["evidence"][0]
+                    evidence.update(
+                        {
+                            "source_kind": "generated_workflow",
+                            "source_locator": (
+                                source_locator or record["workflow"]["path"]
+                            ),
+                            "source_revision": "a" * 40,
+                            "evidence_sha256": (
+                                evidence_sha256 or record["workflow"]["sha256"]
+                            ),
+                        }
+                    )
+                    fixture.write(payload)
+
+                    with self.assertRaisesRegex(
+                        CatalogValidationError,
+                        "must match the record workflow path and SHA-256",
+                    ):
+                        validate_catalog(root)
+
+    def test_evidence_timestamps_use_canonical_rfc3339_text(self) -> None:
+        invalid_values = (
+            "2025-01-01 00:00:00+00:00",
+            "2025-01-01T00:00:00+0000",
+            "2025-01-01T00:00:00.1234567+00:00",
+        )
+        for verified_at in invalid_values:
+            with self.subTest(verified_at=verified_at):
+                fixture = self.fixture()
+                payload = fixture.payload()
+                payload["records"][0]["registries"]["pip"]["evidence"][0][
+                    "verified_at"
+                ] = verified_at
+                fixture.write(payload)
+
+                with self.assertRaisesRegex(
+                    CatalogValidationError,
+                    "canonical RFC3339 timestamp text",
+                ):
+                    validate_catalog(self.root)
+
+    def test_package_count_and_traversal_are_bounded(self) -> None:
+        self.fixture()
+        with (
+            patch.object(validator_module, "MAX_PACKAGE_PAGES", 1),
+            self.assertRaisesRegex(CatalogValidationError, "between 0 and 1"),
+        ):
+            validate_catalog(self.root)
+
+        with (
+            patch.object(validator_module, "MAX_DIRECTORY_ENTRIES", 1),
+            self.assertRaisesRegex(CatalogValidationError, "traversal exceeds 1"),
+        ):
+            validate_catalog(self.root)
+
+        (self.root / CONTENT_ROOT / "nested").mkdir()
+        with (
+            patch.object(validator_module, "MAX_DIRECTORY_DEPTH", 0),
+            self.assertRaisesRegex(CatalogValidationError, "depth exceeds 0"),
+        ):
+            validate_catalog(self.root)
+
     def test_duplicate_json_object_key_is_rejected(self) -> None:
-        fixture = self.fixture()
+        self.fixture()
         catalog = self.root / CATALOG_REPOSITORY_PATH
         original = catalog.read_text(encoding="utf-8")
         catalog.write_text(

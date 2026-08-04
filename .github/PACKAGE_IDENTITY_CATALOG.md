@@ -66,7 +66,7 @@ Each record contains:
 
 | Field | Contract |
 |---|---|
-| `slug` | Safe package slug matching the Markdown filename |
+| `slug` | Safe package slug matching the Markdown filename; aggregate control-workflow names are reserved |
 | `content_path` | Repository-relative package page path |
 | `content_sha256` | SHA-256 of the exact page bytes |
 | `workflow` | Canonical workflow path, `present`/`absent`, and exact SHA-256 or `null` |
@@ -86,6 +86,12 @@ evidence SHA-256, reviewer, timezone-aware review time, and rationale where
 required. Exhaustive pip coverage requires PyPI or manual-review evidence;
 exhaustive npm coverage requires npm-registry or manual-review evidence.
 Unknown or ambiguous dimensions are never exhaustive.
+
+Evidence timestamps use canonical RFC3339 text with an uppercase `T`, seconds,
+an optional one-to-six digit fractional second, and either `Z` or a colonized
+numeric offset. `generated_workflow` evidence is accepted only when its locator
+and SHA-256 exactly match the present workflow already bound by that record.
+It cannot cite another workflow or supply an unrelated digest.
 
 Schema `1.1` source kinds use this conservative immutable-revision profile. It
 is a strict subset of values accepted by the service consumer and does not
@@ -124,6 +130,24 @@ files:
 | Package page | 1 through 2,000,000 |
 | Package workflow | 1 through 2,000,000 |
 
+The complete corpus is also bounded to 10,000 package pages, 16 nested package
+directory levels, and 20,000 traversed directory entries. Immutable revision
+archives are limited to 512 MiB and 30,050 regular-file or directory members.
+
+## Immutable Revision Boundary
+
+The production command never validates mutable working-tree bytes. It accepts
+only `HEAD` or an exact full lowercase Git commit ID, disables Git replace
+objects, and streams a size- and time-bounded `git archive` containing only the
+catalog, package corpus, and workflows. Archive paths, duplicates, links,
+special files, member counts, and aggregate bytes are checked before the exact
+regular-file payloads are written into a private temporary snapshot.
+
+The descriptor-bound validator below then evaluates only that snapshot. Dirty
+files, untracked files, branch movement after resolution, and concurrent
+working-tree edits cannot change the evidence under review. The private
+snapshot is deleted after every run.
+
 Repository reads are descriptor-bound:
 
 - The repository root itself must be a real directory, not a symbolic link.
@@ -158,8 +182,12 @@ closed. Linux CI provides the required interface.
 Run the read-only validator from the repository root:
 
 ```bash
-python3 build_steps/validate_package_identity_catalog.py
+python3 build_steps/validate_package_identity_catalog.py --revision HEAD
 ```
+
+For a caller that already possesses the reviewed commit identity, replace
+`HEAD` with that exact 40-character commit ID. Branch names, tags, abbreviated
+IDs, and other moving revision expressions are rejected.
 
 The command exits nonzero when the catalog is missing or malformed, package
 coverage is incomplete, a page or workflow hash is stale, declared workflow
@@ -179,8 +207,9 @@ python3 -m unittest -v tests.test_package_identity_catalog
 The tests cover ancestor and final-component symlinks, pathname replacement
 during and after descriptor reads, FIFO/socket/device candidates, injected
 descriptor failures and leak checks, hard links, bounded page/workflow reads,
-stale hashes, catalog coverage, duplicate identities, and immutable evidence
-revisions.
+stale hashes, catalog coverage, duplicate identities, immutable evidence
+revisions, dirty-worktree isolation, bounded Git archive extraction, control
+workflow names, canonical timestamps, and generated-workflow evidence binding.
 
 The bootstrap-only
 `.github/workflows/package-identity-bootstrap-unit-tests.yml` workflow runs
