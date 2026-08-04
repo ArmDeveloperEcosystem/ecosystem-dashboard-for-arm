@@ -19,7 +19,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 from collections.abc import Iterator
@@ -39,12 +38,17 @@ MAX_WORKFLOW_BYTES = 2_000_000
 MAX_PACKAGE_PAGES = 10_000
 MAX_DIRECTORY_DEPTH = 16
 MAX_DIRECTORY_ENTRIES = 20_000
-MAX_REVISION_ARCHIVE_BYTES = 512 * 1024 * 1024
-MAX_REVISION_ARCHIVE_MEMBERS = 30_050
+MAX_REVISION_SNAPSHOT_BYTES = 512 * 1024 * 1024
+MAX_REVISION_SNAPSHOT_ENTRIES = 30_050
+MAX_REVISION_TREE_BYTES = 64 * 1024 * 1024
+MAX_REPOSITORY_PATH_BYTES = 4_096
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _GIT_OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_GIT_TREE_ENTRY_RE = re.compile(
+    rb"^([0-7]{6}) ([a-z]+) ([0-9a-f]{40}|[0-9a-f]{64}) +([0-9]+|-)\t(.+)$"
+)
 _SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 _WORKFLOW_RE = re.compile(
     r"^\.github/workflows/test-[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.yml$"
@@ -89,13 +93,14 @@ _APPROVED_EVIDENCE_HOSTS = {
 _READ_CHUNK_BYTES = 64 * 1024
 _GIT_OUTPUT_BYTES = 8_192
 _GIT_TIMEOUT_SECONDS = 30
+_GIT_BATCH_HEADER_BYTES = 256
 _GIT_BINARY = shutil.which("git")
-_ARCHIVE_ROOTS = (
+_SNAPSHOT_ROOTS = (
     CATALOG_REPOSITORY_PATH,
     CONTENT_ROOT,
     ".github/workflows",
 )
-_ARCHIVE_ANCESTORS = frozenset(
+_SNAPSHOT_ANCESTORS = frozenset(
     {
         ".github",
         "content",
@@ -110,6 +115,8 @@ _GIT_ENVIRONMENT = {
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_NO_REPLACE_OBJECTS": "1",
     "GIT_OPTIONAL_LOCKS": "0",
+    "GIT_PAGER": "cat",
+    "GIT_TERMINAL_PROMPT": "0",
     "LC_ALL": "C",
 }
 _REQUIRED_OPEN_FLAGS = (
@@ -142,6 +149,59 @@ class _TraversalBudget:
             raise CatalogValidationError(
                 f"repository traversal exceeds {MAX_DIRECTORY_ENTRIES} entries: {context}"
             )
+
+
+class _DeadlinePipeReader:
+    """Read one subprocess pipe without allowing an unbounded block."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+        self._buffer = bytearray()
+        self._selector = selectors.DefaultSelector()
+        self._selector.register(stream, selectors.EVENT_READ)
+
+    @property
+    def buffered_bytes(self) -> int:
+        return len(self._buffer)
+
+    def close(self) -> None:
+        self._selector.close()
+
+    def read_line(self, *, maximum_bytes: int, deadline: float) -> bytes:
+        while True:
+            newline = self._buffer.find(b"\n")
+            if newline >= 0:
+                if newline > maximum_bytes:
+                    raise CatalogValidationError(
+                        "Git revision blob header exceeds its limit"
+                    )
+                result = bytes(self._buffer[:newline])
+                del self._buffer[: newline + 1]
+                return result
+            if len(self._buffer) > maximum_bytes:
+                raise CatalogValidationError(
+                    "Git revision blob header exceeds its limit"
+                )
+            self._fill(deadline)
+
+    def read_exact(self, size: int, *, deadline: float) -> bytes:
+        while len(self._buffer) < size:
+            self._fill(deadline)
+        result = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return result
+
+    def _fill(self, deadline: float) -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CatalogValidationError("Git revision blob inspection timed out")
+        events = self._selector.select(remaining)
+        if not events:
+            raise CatalogValidationError("Git revision blob inspection timed out")
+        chunk = os.read(self._stream.fileno(), _READ_CHUNK_BYTES)
+        if not chunk:
+            raise CatalogValidationError("Git revision blob output ended unexpectedly")
+        self._buffer.extend(chunk)
 
 
 class _FilesystemSnapshot:
@@ -284,17 +344,18 @@ def validate_catalog_revision(
 ) -> tuple[int, str]:
     """Validate a private snapshot of one exact Git commit."""
 
+    if catalog_relative_path != CATALOG_REPOSITORY_PATH:
+        raise CatalogValidationError(
+            "immutable revision validation requires the canonical catalog path"
+        )
     root = _require_git_repository_root(repository_root)
     resolved_revision = _resolve_git_revision(root, revision)
     with tempfile.TemporaryDirectory(prefix="package-catalog-revision-") as temporary:
         private_root = Path(temporary)
         private_root.chmod(0o700)
-        archive_path = private_root / "revision.tar"
         snapshot_root = private_root / "snapshot"
         snapshot_root.mkdir(mode=0o700)
-        _write_revision_archive(root, resolved_revision, archive_path)
-        _extract_revision_archive(archive_path, snapshot_root)
-        archive_path.unlink()
+        _materialize_revision_snapshot(root, resolved_revision, snapshot_root)
         count = validate_catalog(snapshot_root, catalog_relative_path)
     return count, resolved_revision
 
@@ -386,180 +447,289 @@ def _run_git_text(repository_root: Path, *arguments: str) -> str:
     return output
 
 
-def _write_revision_archive(
+def _materialize_revision_snapshot(
     repository_root: Path,
     revision: str,
-    archive_path: Path,
+    snapshot_root: Path,
 ) -> None:
+    """Materialize exact Git blob bytes without archive attribute filters."""
+
+    entries = _list_revision_entries(repository_root, revision)
+    if not entries:
+        raise CatalogValidationError("Git revision snapshot has no protected files")
+
+    total_bytes = sum(size for _path, _object_id, size in entries)
+    if total_bytes > MAX_REVISION_SNAPSHOT_BYTES:
+        raise CatalogValidationError(
+            "Git revision snapshot exceeds the bounded size limit"
+        )
+
+    _materialize_revision_blobs(repository_root, entries, snapshot_root)
+
+
+def _list_revision_entries(
+    repository_root: Path,
+    revision: str,
+) -> list[tuple[str, str, int]]:
     if _GIT_BINARY is None:
         raise CatalogValidationError("Git is required for immutable catalog validation")
     command = [
         _GIT_BINARY,
         "-C",
         str(repository_root),
-        "archive",
-        "--format=tar",
+        "ls-tree",
+        "-r",
+        "-z",
+        "-l",
+        "--full-tree",
         revision,
         "--",
-        *_ARCHIVE_ROOTS,
+        *_SNAPSHOT_ROOTS,
     ]
     try:
-        process = subprocess.Popen(
+        result = subprocess.run(
             command,
+            check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            timeout=_GIT_TIMEOUT_SECONDS,
             env=_GIT_ENVIRONMENT,
         )
-    except OSError as exc:
-        raise CatalogValidationError(
-            "Git revision archive could not be started"
-        ) from exc
-    assert process.stdout is not None
-    assert process.stderr is not None
-    total = 0
-    stderr = bytearray()
-    deadline = time.monotonic() + _GIT_TIMEOUT_SECONDS
-    try:
-        with (
-            archive_path.open("xb") as archive,
-            selectors.DefaultSelector() as selector,
-        ):
-            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
-            while selector.get_map():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise CatalogValidationError("Git revision archive timed out")
-                events = selector.select(remaining)
-                if not events:
-                    raise CatalogValidationError("Git revision archive timed out")
-                for key, _mask in events:
-                    chunk = os.read(key.fileobj.fileno(), _READ_CHUNK_BYTES)
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    if key.data == "stdout":
-                        total += len(chunk)
-                        if total > MAX_REVISION_ARCHIVE_BYTES:
-                            raise CatalogValidationError(
-                                "Git revision archive exceeds the bounded size limit"
-                            )
-                        archive.write(chunk)
-                    else:
-                        stderr.extend(chunk)
-                        if len(stderr) > _GIT_OUTPUT_BYTES:
-                            raise CatalogValidationError(
-                                "Git revision archive error output exceeds its limit"
-                            )
-        remaining = max(0.0, deadline - time.monotonic())
-        try:
-            returncode = process.wait(timeout=remaining)
-        except subprocess.TimeoutExpired as exc:
-            raise CatalogValidationError("Git revision archive timed out") from exc
-    except Exception:
-        if process.poll() is None:
-            process.kill()
-            process.wait()
-        raise
-    finally:
-        process.stdout.close()
-        process.stderr.close()
-    if returncode != 0 or total == 0:
-        raise CatalogValidationError("Git revision archive failed")
-
-
-def _extract_revision_archive(archive_path: Path, snapshot_root: Path) -> None:
-    seen: set[str] = set()
-    total_file_bytes = 0
-    try:
-        with tarfile.open(archive_path, mode="r|") as archive:
-            member_count = 0
-            for member in archive:
-                member_count += 1
-                if member_count > MAX_REVISION_ARCHIVE_MEMBERS:
-                    raise CatalogValidationError(
-                        "Git revision archive has an invalid member count"
-                    )
-                relative = _validate_archive_member(member, seen)
-                destination = snapshot_root.joinpath(*PurePosixPath(relative).parts)
-                if member.isdir():
-                    destination.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    continue
-                total_file_bytes += member.size
-                if total_file_bytes > MAX_REVISION_ARCHIVE_BYTES:
-                    raise CatalogValidationError(
-                        "Git revision archive payload exceeds the bounded size limit"
-                    )
-                destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                source = archive.extractfile(member)
-                if source is None:
-                    raise CatalogValidationError(
-                        "Git revision archive file has no payload"
-                    )
-                written = 0
-                try:
-                    with destination.open("xb") as output:
-                        while True:
-                            chunk = source.read(_READ_CHUNK_BYTES)
-                            if not chunk:
-                                break
-                            written += len(chunk)
-                            if written > member.size:
-                                raise CatalogValidationError(
-                                    "Git revision archive member exceeded its declared size"
-                                )
-                            output.write(chunk)
-                finally:
-                    source.close()
-                if written != member.size:
-                    raise CatalogValidationError(
-                        "Git revision archive member did not match its declared size"
-                    )
-            if member_count == 0:
-                raise CatalogValidationError(
-                    "Git revision archive has an invalid member count"
-                )
-    except CatalogValidationError:
-        raise
-    except (OSError, tarfile.TarError) as exc:
-        raise CatalogValidationError("Git revision archive is invalid") from exc
-
-
-def _validate_archive_member(member: tarfile.TarInfo, seen: set[str]) -> str:
-    raw_name = (
-        member.name[:-1]
-        if member.isdir() and member.name.endswith("/")
-        else member.name
-    )
-    path = PurePosixPath(raw_name)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CatalogValidationError("Git revision tree inspection failed") from exc
     if (
-        not raw_name
-        or "\\" in raw_name
-        or "\x00" in raw_name
+        result.returncode != 0
+        or len(result.stdout) > MAX_REVISION_TREE_BYTES
+        or len(result.stderr) > _GIT_OUTPUT_BYTES
+    ):
+        raise CatalogValidationError("Git revision tree inspection failed")
+    if not result.stdout.endswith(b"\x00"):
+        raise CatalogValidationError("Git revision tree output was malformed")
+
+    entries: list[tuple[str, str, int]] = []
+    seen: set[str] = set()
+    for raw_entry in result.stdout[:-1].split(b"\x00"):
+        match = _GIT_TREE_ENTRY_RE.fullmatch(raw_entry)
+        if match is None:
+            raise CatalogValidationError("Git revision tree entry was malformed")
+        raw_mode, raw_type, raw_object_id, raw_size, raw_path = match.groups()
+        try:
+            repository_path = raw_path.decode("utf-8", errors="strict")
+            object_id = raw_object_id.decode("ascii", errors="strict")
+            size_text = raw_size.decode("ascii", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise CatalogValidationError(
+                "Git revision tree entry was not canonically encoded"
+            ) from exc
+        _validate_revision_path(repository_path, seen)
+        if raw_mode not in {b"100644", b"100755"} or raw_type != b"blob":
+            raise CatalogValidationError(
+                "Git revision snapshot contains a link or special file"
+            )
+        if size_text == "-":
+            raise CatalogValidationError("Git revision blob size is unavailable")
+        size = int(size_text)
+        if size < 0 or size > _maximum_revision_file_bytes(repository_path):
+            raise CatalogValidationError(
+                f"Git revision blob exceeds its size limit: {repository_path}"
+            )
+        entries.append((repository_path, object_id, size))
+        if len(entries) > MAX_REVISION_SNAPSHOT_ENTRIES:
+            raise CatalogValidationError(
+                "Git revision snapshot has an invalid entry count"
+            )
+    return entries
+
+
+def _validate_revision_path(repository_path: str, seen: set[str]) -> None:
+    path = PurePosixPath(repository_path)
+    if (
+        not repository_path
+        or "\\" in repository_path
+        or any(character in repository_path for character in "\x00\r\n")
+        or len(repository_path.encode("utf-8")) > MAX_REPOSITORY_PATH_BYTES
         or path.is_absolute()
-        or path.as_posix() != raw_name
+        or path.as_posix() != repository_path
         or any(part in {"", ".", ".."} for part in path.parts)
         or len(path.parts) > MAX_DIRECTORY_DEPTH + 4
     ):
-        raise CatalogValidationError("Git revision archive contains an unsafe path")
-    if raw_name in seen:
-        raise CatalogValidationError("Git revision archive contains a duplicate path")
-    seen.add(raw_name)
-    if not _archive_path_is_allowed(raw_name):
-        raise CatalogValidationError("Git revision archive contains an unexpected path")
-    if not (member.isdir() or member.isreg()):
+        raise CatalogValidationError("Git revision snapshot contains an unsafe path")
+    if repository_path in seen:
+        raise CatalogValidationError("Git revision snapshot contains a duplicate path")
+    if not _snapshot_path_is_allowed(repository_path):
         raise CatalogValidationError(
-            "Git revision archive contains a link or special file"
+            "Git revision snapshot contains an unexpected path"
         )
-    if member.size < 0 or (member.isdir() and member.size != 0):
-        raise CatalogValidationError("Git revision archive member size is invalid")
-    return raw_name
+    seen.add(repository_path)
 
 
-def _archive_path_is_allowed(path: str) -> bool:
-    if path in _ARCHIVE_ANCESTORS:
+def _maximum_revision_file_bytes(repository_path: str) -> int:
+    if repository_path == CATALOG_REPOSITORY_PATH:
+        return MAX_CATALOG_BYTES
+    if repository_path.startswith(f"{CONTENT_ROOT}/"):
+        return MAX_PACKAGE_BYTES
+    if repository_path.startswith(".github/workflows/"):
+        return MAX_WORKFLOW_BYTES
+    raise CatalogValidationError("Git revision snapshot contains an unexpected path")
+
+
+def _materialize_revision_blobs(
+    repository_root: Path,
+    entries: list[tuple[str, str, int]],
+    snapshot_root: Path,
+) -> None:
+    if _GIT_BINARY is None:
+        raise CatalogValidationError("Git is required for immutable catalog validation")
+    deadline = time.monotonic() + _GIT_TIMEOUT_SECONDS
+    with tempfile.TemporaryFile() as error_output:
+        try:
+            process = subprocess.Popen(
+                [
+                    _GIT_BINARY,
+                    "-C",
+                    str(repository_root),
+                    "cat-file",
+                    "--batch",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=error_output,
+                bufsize=0,
+                env=_GIT_ENVIRONMENT,
+            )
+        except OSError as exc:
+            raise CatalogValidationError(
+                "Git revision blob inspection could not be started"
+            ) from exc
+
+        assert process.stdin is not None
+        assert process.stdout is not None
+        reader = _DeadlinePipeReader(process.stdout)
+        try:
+            for repository_path, object_id, expected_size in entries:
+                try:
+                    process.stdin.write(f"{object_id}\n".encode("ascii"))
+                    process.stdin.flush()
+                except (BrokenPipeError, OSError) as exc:
+                    raise CatalogValidationError(
+                        "Git revision blob inspection failed"
+                    ) from exc
+
+                header = reader.read_line(
+                    maximum_bytes=_GIT_BATCH_HEADER_BYTES,
+                    deadline=deadline,
+                )
+                parts = header.split(b" ")
+                if len(parts) != 3:
+                    raise CatalogValidationError(
+                        "Git revision blob header was malformed"
+                    )
+                raw_object_id, raw_type, raw_size = parts
+                if (
+                    raw_object_id != object_id.encode("ascii")
+                    or raw_type != b"blob"
+                    or not raw_size.isdigit()
+                    or int(raw_size) != expected_size
+                ):
+                    raise CatalogValidationError(
+                        "Git revision blob identity did not match the commit tree"
+                    )
+                payload = reader.read_exact(expected_size, deadline=deadline)
+                if reader.read_exact(1, deadline=deadline) != b"\n":
+                    raise CatalogValidationError(
+                        "Git revision blob response was malformed"
+                    )
+                if (
+                    _git_blob_object_id(payload, object_id_length=len(object_id))
+                    != object_id
+                ):
+                    raise CatalogValidationError(
+                        "Git revision blob hash did not match its object ID"
+                    )
+                _write_revision_snapshot_file(
+                    snapshot_root,
+                    repository_path,
+                    payload,
+                )
+
+            process.stdin.close()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CatalogValidationError("Git revision blob inspection timed out")
+            try:
+                returncode = process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired as exc:
+                raise CatalogValidationError(
+                    "Git revision blob inspection timed out"
+                ) from exc
+            if (
+                returncode != 0
+                or reader.buffered_bytes != 0
+                or process.stdout.read(1) != b""
+            ):
+                raise CatalogValidationError("Git revision blob inspection failed")
+            error_output.seek(0, os.SEEK_END)
+            error_size = error_output.tell()
+            if error_size > _GIT_OUTPUT_BYTES:
+                raise CatalogValidationError(
+                    "Git revision blob error output exceeds its limit"
+                )
+            if error_size:
+                raise CatalogValidationError(
+                    "Git revision blob inspection produced unexpected error output"
+                )
+        except Exception:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            raise
+        finally:
+            reader.close()
+            if not process.stdin.closed:
+                try:
+                    process.stdin.close()
+                except OSError:
+                    pass
+            try:
+                process.stdout.close()
+            except OSError:
+                pass
+
+
+def _write_revision_snapshot_file(
+    snapshot_root: Path,
+    repository_path: str,
+    payload: bytes,
+) -> None:
+    destination = snapshot_root.joinpath(*PurePosixPath(repository_path).parts)
+    try:
+        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with destination.open("xb") as output:
+            output.write(payload)
+        destination.chmod(0o600)
+    except OSError as exc:
+        raise CatalogValidationError(
+            f"Git revision snapshot could not materialize {repository_path}"
+        ) from exc
+
+
+def _git_blob_object_id(payload: bytes, *, object_id_length: int) -> str:
+    header = f"blob {len(payload)}\0".encode("ascii")
+    if object_id_length == 40:
+        digest = hashlib.sha1(usedforsecurity=False)
+    elif object_id_length == 64:
+        digest = hashlib.sha256()
+    else:
+        raise CatalogValidationError("Git revision object ID length is invalid")
+    digest.update(header)
+    digest.update(payload)
+    return digest.hexdigest()
+
+
+def _snapshot_path_is_allowed(path: str) -> bool:
+    if path in _SNAPSHOT_ANCESTORS:
         return True
-    return any(path == root or path.startswith(f"{root}/") for root in _ARCHIVE_ROOTS)
+    return any(path == root or path.startswith(f"{root}/") for root in _SNAPSHOT_ROOTS)
 
 
 def _validate_catalog_from_fd(
@@ -816,29 +986,29 @@ def _scan_package_directory(
                 f"package content path must not be a symbolic link: {repository_path}"
             )
         if stat.S_ISDIR(entry_state.st_mode):
-            with _open_directory_component(
-                directory_fd,
-                name,
-                display_name=repository_path,
-                expected_identity=entry_state,
-            ) as child_fd:
-                snapshot.protect_directory(repository_path, child_fd)
-                _scan_package_directory(
-                    child_fd,
-                    relative_parts=entry_parts,
-                    pages=pages,
-                    budget=budget,
-                    snapshot=snapshot,
-                )
-            continue
-        if not name.endswith(".md"):
-            continue
+            raise CatalogValidationError(
+                "package content root must contain only top-level Markdown files: "
+                f"{repository_path}"
+            )
         if not stat.S_ISREG(entry_state.st_mode):
             raise CatalogValidationError(
                 f"package page is not a regular file: {repository_path}"
             )
-        if name in {"_index.md", "index.md"}:
+        if name == "_index.md" and not relative_parts:
+            _payload, page_state = _read_regular_payload_at(
+                directory_fd,
+                name,
+                display_name=f"content index {repository_path}",
+                maximum_bytes=MAX_PACKAGE_BYTES,
+                expected_identity=entry_state,
+            )
+            snapshot.protect_file(repository_path, page_state)
             continue
+        if relative_parts or not name.endswith(".md"):
+            raise CatalogValidationError(
+                "package content path is not a canonical top-level .md page: "
+                f"{repository_path}"
+            )
         payload, page_state = _read_regular_payload_at(
             directory_fd,
             name,
@@ -1880,11 +2050,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Dashboard repository root (default: current directory)",
     )
     parser.add_argument(
-        "--catalog",
-        default=CATALOG_REPOSITORY_PATH,
-        help=(f"Repository-relative catalog path (default: {CATALOG_REPOSITORY_PATH})"),
-    )
-    parser.add_argument(
         "--revision",
         default="HEAD",
         help="Exact full Git commit ID to validate, or HEAD (default: HEAD)",
@@ -1898,7 +2063,6 @@ def main(argv: list[str] | None = None) -> int:
         count, revision = validate_catalog_revision(
             args.repository_root,
             revision=args.revision,
-            catalog_relative_path=args.catalog,
         )
     except CatalogValidationError as exc:
         print(f"package identity catalog validation failed: {exc}", file=sys.stderr)

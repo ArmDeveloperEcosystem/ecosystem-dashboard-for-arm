@@ -60,7 +60,7 @@ The top-level object contains:
 |---|---|
 | `schema_version` | Exactly `"1.1"` |
 | `corpus` | Content root, record count, and canonical corpus SHA-256 |
-| `records` | One record per non-index Markdown page, sorted by `content_path` |
+| `records` | One record per canonical top-level `.md` package page, sorted by `content_path` |
 
 Each record contains:
 
@@ -130,18 +130,21 @@ files:
 | Package page | 1 through 2,000,000 |
 | Package workflow | 1 through 2,000,000 |
 
-The complete corpus is also bounded to 10,000 package pages, 16 nested package
-directory levels, and 20,000 traversed directory entries. Immutable revision
-archives are limited to 512 MiB and 30,050 regular-file or directory members.
+The complete corpus is also bounded to 10,000 package pages and 20,000 directory
+entries. Only the exact root `_index.md` is exempt. Nested directories and every
+other extension or file type fail closed. Immutable revision snapshots are limited
+to 512 MiB and 30,050 regular-file entries.
 
 ## Immutable Revision Boundary
 
 The production command never validates mutable working-tree bytes. It accepts
 only `HEAD` or an exact full lowercase Git commit ID, disables Git replace
-objects, and streams a size- and time-bounded `git archive` containing only the
-catalog, package corpus, and workflows. Archive paths, duplicates, links,
-special files, member counts, and aggregate bytes are checked before the exact
-regular-file payloads are written into a private temporary snapshot.
+objects, enumerates the protected commit tree with `git ls-tree`, and reads each
+exact regular-file blob with `git cat-file`. Object type, mode, ID, recomputed Git
+blob hash, path, count, individual size, and aggregate bytes are checked before
+the payloads are written into a private temporary snapshot. Git archive export
+rules, attributes, filters, and mutable worktree bytes are therefore outside the
+evidence path.
 
 The descriptor-bound validator below then evaluates only that snapshot. Dirty
 files, untracked files, branch movement after resolution, and concurrent
@@ -208,8 +211,10 @@ The tests cover ancestor and final-component symlinks, pathname replacement
 during and after descriptor reads, FIFO/socket/device candidates, injected
 descriptor failures and leak checks, hard links, bounded page/workflow reads,
 stale hashes, catalog coverage, duplicate identities, immutable evidence
-revisions, dirty-worktree isolation, bounded Git archive extraction, control
-workflow names, canonical timestamps, and generated-workflow evidence binding.
+revisions, dirty-worktree isolation, bounded exact-object materialization,
+committed and local Git attribute bypasses, noncanonical Hugo content paths,
+control workflow names, canonical timestamps, and generated-workflow evidence
+binding.
 
 The bootstrap-only
 `.github/workflows/package-identity-bootstrap-unit-tests.yml` workflow runs
@@ -231,8 +236,9 @@ The safeguard slice contains:
 A separately reviewed bootstrap change must:
 
 1. Select and record one exact dashboard base commit.
-2. Inventory every non-index file below
-   `content/linux/opensource_packages`.
+2. Inventory every canonical top-level `.md` file below
+   `content/linux/opensource_packages`. Only the exact root `_index.md` is exempt;
+   nested directories and alternate Hugo-renderable extensions fail closed.
 3. Bind each page and canonical `.github/workflows/test-<slug>.yml` as present
    or absent with exact SHA-256 values.
 4. Review pip and npm independently for every page.

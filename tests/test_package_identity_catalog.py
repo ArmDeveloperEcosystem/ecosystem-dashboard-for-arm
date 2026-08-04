@@ -133,11 +133,15 @@ def _write_valid_fixture(root: Path) -> CatalogFixture:
 
 def _commit_valid_fixture(root: Path) -> str:
     _write_valid_fixture(root)
+    return _commit_existing_tree(root, "catalog fixture")
+
+
+def _commit_existing_tree(root: Path, message: str) -> str:
     _git(root, "init", "-q")
     _git(root, "config", "user.email", "catalog-tests@example.com")
     _git(root, "config", "user.name", "Catalog tests")
     _git(root, "add", ".")
-    _git(root, "commit", "-qm", "catalog fixture")
+    _git(root, "commit", "-qm", message)
     return _git(root, "rev-parse", "HEAD")
 
 
@@ -194,11 +198,17 @@ class PackageIdentityCatalogTests(unittest.TestCase):
         ):
             validate_catalog_revision(self.root, revision="main")
 
-    def test_revision_archive_is_bounded_and_rejects_links(self) -> None:
+    def test_revision_snapshot_is_bounded_and_rejects_links(self) -> None:
         _commit_valid_fixture(self.root)
         with (
-            patch.object(validator_module, "MAX_REVISION_ARCHIVE_BYTES", 1),
-            self.assertRaisesRegex(CatalogValidationError, "archive exceeds"),
+            patch.object(validator_module, "MAX_REVISION_SNAPSHOT_BYTES", 1),
+            self.assertRaisesRegex(CatalogValidationError, "snapshot exceeds"),
+        ):
+            validate_catalog_revision(self.root)
+
+        with (
+            patch.object(validator_module, "MAX_REVISION_SNAPSHOT_ENTRIES", 1),
+            self.assertRaisesRegex(CatalogValidationError, "invalid entry count"),
         ):
             validate_catalog_revision(self.root)
 
@@ -213,6 +223,121 @@ class PackageIdentityCatalogTests(unittest.TestCase):
         ):
             validate_catalog_revision(self.root)
 
+    def test_revision_snapshot_rejects_gitlinks(self) -> None:
+        revision = _commit_valid_fixture(self.root)
+        gitlink = f"{CONTENT_ROOT}/nested-package"
+        _git(
+            self.root,
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000",
+            revision,
+            gitlink,
+        )
+        _git(self.root, "commit", "-qm", "add package gitlink")
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "link or special file",
+        ):
+            validate_catalog_revision(self.root)
+
+    def test_committed_export_ignore_cannot_hide_an_uncataloged_page(self) -> None:
+        fixture = self.fixture()
+        payload = fixture.payload()
+        payload["records"] = [
+            record for record in payload["records"] if record["slug"] == "alpha"
+        ]
+        _refresh_corpus(payload)
+        fixture.write(payload)
+        (self.root / ".gitattributes").write_text(
+            f"{CONTENT_ROOT}/beta.md export-ignore\n",
+            encoding="utf-8",
+        )
+        _commit_existing_tree(self.root, "attempt committed export-ignore bypass")
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "exactly one record per package page",
+        ):
+            validate_catalog_revision(self.root)
+
+    def test_info_export_ignore_cannot_hide_an_uncataloged_page(self) -> None:
+        fixture = self.fixture()
+        payload = fixture.payload()
+        payload["records"] = [
+            record for record in payload["records"] if record["slug"] == "alpha"
+        ]
+        _refresh_corpus(payload)
+        fixture.write(payload)
+        _commit_existing_tree(self.root, "attempt info export-ignore bypass")
+        info_attributes = self.root / ".git/info/attributes"
+        info_attributes.write_text(
+            f"{CONTENT_ROOT}/beta.md export-ignore\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "exactly one record per package page",
+        ):
+            validate_catalog_revision(self.root)
+
+    def test_committed_export_subst_cannot_forge_reviewed_bytes(self) -> None:
+        fixture = self.fixture()
+        page = self.root / CONTENT_ROOT / "alpha.md"
+        page.write_text(
+            page.read_text(encoding="utf-8") + "author: $Format:%an$\n",
+            encoding="utf-8",
+        )
+        transformed = page.read_bytes().replace(b"$Format:%an$", b"Catalog tests")
+        payload = fixture.payload()
+        _replace_record_content_digest(payload, "alpha", _sha256(transformed))
+        fixture.write(payload)
+        (self.root / ".gitattributes").write_text(
+            f"{CONTENT_ROOT}/alpha.md export-subst\n",
+            encoding="utf-8",
+        )
+        _commit_existing_tree(self.root, "attempt committed export-subst bypass")
+
+        with self.assertRaisesRegex(CatalogValidationError, "content_sha256 is stale"):
+            validate_catalog_revision(self.root)
+
+    def test_info_export_subst_does_not_rewrite_valid_raw_bytes(self) -> None:
+        fixture = self.fixture()
+        page = self.root / CONTENT_ROOT / "alpha.md"
+        page.write_text(
+            page.read_text(encoding="utf-8") + "author: $Format:%an$\n",
+            encoding="utf-8",
+        )
+        payload = fixture.payload()
+        _replace_record_content_digest(payload, "alpha", _sha256(page.read_bytes()))
+        fixture.write(payload)
+        revision = _commit_existing_tree(self.root, "retain raw export-subst bytes")
+        info_attributes = self.root / ".git/info/attributes"
+        info_attributes.write_text(
+            f"{CONTENT_ROOT}/alpha.md export-subst\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            validate_catalog_revision(self.root),
+            (2, revision),
+        )
+
+    def test_revision_validation_rejects_custom_catalog_paths(self) -> None:
+        _commit_valid_fixture(self.root)
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "requires the canonical catalog path",
+        ):
+            validate_catalog_revision(
+                self.root,
+                catalog_relative_path="custom/catalog.json",
+            )
+
     def test_missing_catalog_fails_closed(self) -> None:
         (self.root / CONTENT_ROOT).mkdir(parents=True)
 
@@ -221,6 +346,43 @@ class PackageIdentityCatalogTests(unittest.TestCase):
             "catalog is missing",
         ):
             validate_catalog(self.root)
+
+    def test_only_the_root_content_index_is_exempt_from_catalog_coverage(self) -> None:
+        self.fixture()
+        root_index = self.root / CONTENT_ROOT / "_index.md"
+        root_index.write_text("---\ntitle: Packages\n---\n", encoding="utf-8")
+
+        self.assertEqual(validate_catalog(self.root), 2)
+
+        ordinary_index = self.root / CONTENT_ROOT / "index.md"
+        ordinary_index.write_text("---\ntitle: Published page\n---\n", encoding="utf-8")
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "exactly one record per package page",
+        ):
+            validate_catalog(self.root)
+
+    def test_noncanonical_hugo_content_paths_fail_closed(self) -> None:
+        candidates = (
+            ("package.MD", False),
+            ("package.markdown", False),
+            ("package.html", False),
+            ("package/index.md", True),
+        )
+        for relative_path, nested in candidates:
+            with self.subTest(relative_path=relative_path):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    _write_valid_fixture(root)
+                    candidate = root / CONTENT_ROOT / relative_path
+                    candidate.parent.mkdir(parents=True, exist_ok=True)
+                    candidate.write_text(
+                        "---\ntitle: Uncataloged published page\n---\n",
+                        encoding="utf-8",
+                    )
+                    error = "only top-level" if nested else "canonical top-level"
+                    with self.assertRaisesRegex(CatalogValidationError, error):
+                        validate_catalog(root)
 
     def test_duplicate_registry_identity_across_pages_is_rejected(self) -> None:
         fixture = CatalogFixture(self.root)
@@ -806,10 +968,7 @@ class PackageIdentityCatalogTests(unittest.TestCase):
             validate_catalog(self.root)
 
         (self.root / CONTENT_ROOT / "nested").mkdir()
-        with (
-            patch.object(validator_module, "MAX_DIRECTORY_DEPTH", 0),
-            self.assertRaisesRegex(CatalogValidationError, "depth exceeds 0"),
-        ):
+        with self.assertRaisesRegex(CatalogValidationError, "only top-level"):
             validate_catalog(self.root)
 
     def test_duplicate_json_object_key_is_rejected(self) -> None:
@@ -886,6 +1045,29 @@ def _write_canonical(path: Path, payload: dict[str, Any]) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+def _replace_record_content_digest(
+    payload: dict[str, Any],
+    slug: str,
+    content_sha256: str,
+) -> None:
+    record = next(record for record in payload["records"] if record["slug"] == slug)
+    record["content_sha256"] = content_sha256
+    for dimension in record["registries"].values():
+        for evidence in dimension["evidence"]:
+            evidence["source_revision"] = content_sha256
+    _refresh_corpus(payload)
+
+
+def _refresh_corpus(payload: dict[str, Any]) -> None:
+    path_digests: list[tuple[str, str | None]] = []
+    for record in payload["records"]:
+        path_digests.append((record["content_path"], record["content_sha256"]))
+        workflow = record["workflow"]
+        path_digests.append((workflow["path"], workflow["sha256"]))
+    payload["corpus"]["entry_count"] = len(payload["records"])
+    payload["corpus"]["corpus_sha256"] = calculate_corpus_sha256(path_digests)
 
 
 def _sha256(payload: bytes) -> str:
