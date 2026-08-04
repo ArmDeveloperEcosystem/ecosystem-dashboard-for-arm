@@ -132,24 +132,70 @@ files:
 
 The complete corpus is also bounded to 10,000 package pages and 20,000 directory
 entries. Only the exact root `_index.md` is exempt. Nested directories and every
-other extension or file type fail closed. Immutable revision snapshots are limited
-to 512 MiB and 30,050 regular-file entries.
+other extension or file type fail closed. The complete immutable commit snapshot
+is limited to 512 MiB, 30,050 regular-file entries, and 20 MiB per auxiliary file.
 
 ## Immutable Revision Boundary
 
 The production command never validates mutable working-tree bytes. It accepts
 only `HEAD` or an exact full lowercase Git commit ID, disables Git replace
-objects, enumerates the protected commit tree with `git ls-tree`, and reads each
+objects, enumerates the complete commit tree with `git ls-tree`, and reads each
 exact regular-file blob with `git cat-file`. Object type, mode, ID, recomputed Git
 blob hash, path, count, individual size, and aggregate bytes are checked before
 the payloads are written into a private temporary snapshot. Git archive export
-rules, attributes, filters, and mutable worktree bytes are therefore outside the
-evidence path.
+rules and mutable worktree bytes are therefore outside the evidence path.
+
+The validator also creates an isolated bare Git repository backed only by the
+reviewed object database, checks out the exact commit with a fresh index and no
+user or system Git configuration, and recomputes every checked-out file's Git
+blob ID. Any `ident`, end-of-line, text, or working-tree-encoding transformation
+that changes deployed bytes fails. Named checkout filters are rejected because
+their behavior depends on configuration outside the reviewed commit.
 
 The descriptor-bound validator below then evaluates only that snapshot. Dirty
 files, untracked files, branch movement after resolution, and concurrent
 working-tree edits cannot change the evidence under review. The private
 snapshot is deleted after every run.
+
+## Exact Hugo Boundary
+
+The catalog covers the effective production Hugo graph, not only one physical
+directory. The validator requires a checksum-pinned Hugo `0.130.0` binary and:
+
+- inspects Hugo's own `config mounts` output and permits only the current project
+  and `arm-design-system-hugo-theme` mounts;
+- blocks remote module configuration, alternate config directories, vendored
+  modules, case-insensitive `themesDir` or security overrides in either production
+  config, repository-controlled cache/build-output paths, theme config overrides,
+  and `_content*.gotmpl` adapters before page evaluation;
+- parses bounded `hugo list all` CSV and requires exactly one canonical effective
+  page and URL for every cataloged package source;
+- rejects any mounted, theme, or external page that claims a protected package
+  URL, any alias, and any project or theme static file below the protected package
+  route;
+- performs a marker render with an entirely validator-owned theme and layout graph,
+  plus an appended deny-by-default Hugo security policy for HTTP, process execution,
+  environment access, and inline shortcodes. Repository and reviewed-theme
+  templates never execute in this source-ownership probe;
+- writes a source marker into every regular rendered page, binds each marker back
+  to the exact `hugo list all` source/route pair, and requires the marker-rendered
+  protected routes to exactly match the catalog; and
+- performs a second render with the real production project layouts and reviewed
+  theme under the same deny-by-default policy. Its complete protected-route
+  inventory must remain empty because the current dashboard does not publish
+  individual package-detail pages. Any future detail-page rollout therefore needs
+  an explicit contract update, and template-generated resources cannot silently
+  publish files below a package route.
+
+Both render workspaces monitor file count, total bytes, per-file bytes, path depth,
+and runtime while Hugo executes, with an OS file-size limit applied to the child.
+Every bounded command runs in a private process group that is terminated and reaped
+on success, failure, or timeout, including any descendant processes. Build locks are
+disabled for every Hugo subcommand, and the source snapshot must remain byte-for-byte
+and path-for-path unchanged across topology validation.
+
+Hugo receives an allowlisted environment with module downloads disabled and no
+repository or organization credentials.
 
 Repository reads are descriptor-bound:
 
@@ -182,10 +228,13 @@ closed. Linux CI provides the required interface.
 
 ## Validation
 
-Run the read-only validator from the repository root:
+Run the read-only validator from the repository root with the checksum-verified
+Hugo binary used by production:
 
 ```bash
-python3 build_steps/validate_package_identity_catalog.py --revision HEAD
+python3 build_steps/validate_package_identity_catalog.py \
+  --revision HEAD \
+  --hugo-binary /trusted/tools/hugo-0.130.0/hugo
 ```
 
 For a caller that already possesses the reviewed commit identity, replace
@@ -201,10 +250,12 @@ package summary workflow are explicitly treated as control workflows rather
 than package identities.
 
 Focused tests use isolated temporary repositories and do not read or modify the
-dashboard package corpus:
+dashboard package corpus. Set `PACKAGE_CATALOG_HUGO_BINARY` to the trusted exact
+binary:
 
 ```bash
-python3 -m unittest -v tests.test_package_identity_catalog
+PACKAGE_CATALOG_HUGO_BINARY=/trusted/tools/hugo-0.130.0/hugo \
+  python3 -m unittest -v tests.test_package_identity_catalog
 ```
 
 The tests cover ancestor and final-component symlinks, pathname replacement
@@ -212,15 +263,22 @@ during and after descriptor reads, FIFO/socket/device candidates, injected
 descriptor failures and leak checks, hard links, bounded page/workflow reads,
 stale hashes, catalog coverage, duplicate identities, immutable evidence
 revisions, dirty-worktree isolation, bounded exact-object materialization,
-committed and local Git attribute bypasses, noncanonical Hugo content paths,
-control workflow names, canonical timestamps, and generated-workflow evidence
-binding.
+committed and local Git attribute bypasses, clean-checkout byte transformations,
+external filters, Hugo mounts, theme content, content adapters, URL and alias route
+claims (including aliases aimed at existing routes), project/theme static route
+collisions, case-insensitive config bypasses, marker-render template isolation,
+production-template resource publication, direct HTTP denial, rendered-output
+amplification, external type-specific cache writes, build-stat output, descendant
+process cleanup, selector cleanup, noncanonical Hugo content paths, control
+workflow names, source-snapshot non-mutation, canonical timestamps, and
+generated-workflow evidence binding.
 
 The bootstrap-only
-`.github/workflows/package-identity-bootstrap-unit-tests.yml` workflow runs
-that isolated standard-library unit-test command. It intentionally does not run
-the live validator while the reviewed catalog is absent, and it is not the
-future required trust-root check described below.
+`.github/workflows/package-identity-bootstrap-unit-tests.yml` workflow downloads
+the exact Arm64 Hugo release, verifies its pinned SHA-256 before extraction, and
+runs the isolated trust-boundary suite. It intentionally does not run the live
+validator while the reviewed catalog is absent, and it is not the future required
+trust-root check described below.
 
 The safeguard slice contains:
 
@@ -247,7 +305,8 @@ A separately reviewed bootstrap change must:
    where valid, with unknown and non-exhaustive decisions left for review.
 6. Mark coverage exhaustive only when registry or manual evidence demonstrates
    that all identities for that dimension were considered.
-7. Run the validator against the proposed merge tree.
+7. Run the exact checkout, Hugo topology, rendered-route, and catalog validator
+   gates against the proposed merge tree.
 8. Add the validator as a required pull-request check before the catalog can
    authorize any no-match decision.
 

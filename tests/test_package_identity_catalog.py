@@ -8,6 +8,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -35,6 +36,24 @@ class CatalogFixture:
         self.root = root
         self.records: list[dict[str, Any]] = []
         self.path_digests: list[tuple[str, str | None]] = []
+        (root / "config.toml").write_text(
+            'baseURL = "/"\ntheme = "arm-design-system-hugo-theme"\n',
+            encoding="utf-8",
+        )
+        (root / "config.cloudfront.toml").write_text(
+            'baseURL = "https://example.com/"\n',
+            encoding="utf-8",
+        )
+        theme = root / "themes" / "arm-design-system-hugo-theme"
+        theme.mkdir(parents=True, exist_ok=True)
+        for directory in ("archetypes", "layouts", "static"):
+            mounted = theme / directory
+            mounted.mkdir(exist_ok=True)
+            (mounted / ".keep").write_text("\n", encoding="ascii")
+        (theme / "theme.toml").write_text(
+            'name = "Catalog test theme"\n',
+            encoding="utf-8",
+        )
 
     def add_package(
         self,
@@ -344,6 +363,604 @@ class PackageIdentityCatalogTests(unittest.TestCase):
                 catalog_relative_path="custom/catalog.json",
             )
 
+    def test_blob_reader_initialization_failure_reaps_git_process(self) -> None:
+        _commit_valid_fixture(self.root)
+        original_popen = subprocess.Popen
+        processes: list[subprocess.Popen[bytes]] = []
+
+        def recording_popen(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+            process = original_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        with (
+            patch.object(
+                validator_module._DeadlinePipeReader,
+                "__init__",
+                side_effect=RuntimeError("selector initialization failed"),
+            ),
+            patch.object(
+                validator_module.subprocess, "Popen", side_effect=recording_popen
+            ),
+            self.assertRaisesRegex(RuntimeError, "selector initialization failed"),
+        ):
+            validate_catalog_revision(self.root)
+
+        self.assertTrue(processes)
+        self.assertIsNotNone(processes[-1].poll())
+
+    def test_blob_reader_registration_failure_closes_selector(self) -> None:
+        class FailingSelector:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def register(self, _stream: object, _events: int) -> None:
+                raise RuntimeError("selector registration failed")
+
+            def close(self) -> None:
+                self.closed = True
+
+        selector = FailingSelector()
+        with (
+            patch.object(
+                validator_module.selectors,
+                "DefaultSelector",
+                return_value=selector,
+            ),
+            self.assertRaisesRegex(RuntimeError, "selector registration failed"),
+        ):
+            validator_module._DeadlinePipeReader(object())
+
+        self.assertTrue(selector.closed)
+
+    def test_bounded_process_timeout_terminates_descendants(self) -> None:
+        child_pid_file = self.root / "child.pid"
+        script = (
+            "import pathlib, subprocess, sys, time; "
+            "child=subprocess.Popen([sys.executable, '-c', 'import time; "
+            "time.sleep(60)'], stdout=subprocess.DEVNULL, "
+            "stderr=subprocess.DEVNULL); "
+            f"pathlib.Path({str(child_pid_file)!r}).write_text(str(child.pid)); "
+            "time.sleep(60)"
+        )
+        with (
+            patch.object(validator_module, "_GIT_TIMEOUT_SECONDS", 0.2),
+            self.assertRaisesRegex(CatalogValidationError, "timed out"),
+        ):
+            validator_module._run_bounded_process(
+                [sys.executable, "-c", script],
+                maximum_stdout_bytes=1024,
+                context="descendant cleanup probe",
+            )
+
+        child_pid = int(child_pid_file.read_text(encoding="ascii"))
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        else:
+            self.fail("timed-out descendant process remained alive")
+
+    def test_bounded_process_success_terminates_residual_descendants(self) -> None:
+        child_pid_file = self.root / "successful-child.pid"
+        script = (
+            "import pathlib, subprocess, sys; "
+            "child=subprocess.Popen([sys.executable, '-c', 'import time; "
+            "time.sleep(60)'], stdout=subprocess.DEVNULL, "
+            "stderr=subprocess.DEVNULL); "
+            f"pathlib.Path({str(child_pid_file)!r}).write_text(str(child.pid))"
+        )
+        validator_module._run_bounded_process(
+            [sys.executable, "-c", script],
+            maximum_stdout_bytes=1024,
+            context="successful descendant cleanup probe",
+        )
+
+        child_pid = int(child_pid_file.read_text(encoding="ascii"))
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        else:
+            self.fail("successful child left a residual descendant process")
+
+    def test_clean_checkout_byte_transformations_are_rejected(self) -> None:
+        cases = {
+            "ident": "ident",
+            "forced_crlf": "text eol=crlf",
+        }
+        for name, attributes in cases.items():
+            with (
+                self.subTest(case=name),
+                tempfile.TemporaryDirectory(dir="/tmp") as repository_directory,
+            ):
+                root = Path(repository_directory)
+                fixture = _write_valid_fixture(root)
+                page = root / CONTENT_ROOT / "alpha.md"
+                if name == "ident":
+                    page.write_text(
+                        page.read_text(encoding="utf-8") + "$Id$\n",
+                        encoding="utf-8",
+                    )
+                    payload = fixture.payload()
+                    _replace_record_content_digest(
+                        payload,
+                        "alpha",
+                        _sha256(page.read_bytes()),
+                    )
+                    fixture.write(payload)
+                (root / ".gitattributes").write_text(
+                    f"{CONTENT_ROOT}/alpha.md {attributes}\n",
+                    encoding="utf-8",
+                )
+                _commit_existing_tree(root, f"attempt {name} checkout transform")
+
+                with self.assertRaisesRegex(
+                    CatalogValidationError,
+                    "clean checkout bytes differ from the reviewed Git blob",
+                ):
+                    validate_catalog_revision(root)
+
+        with tempfile.TemporaryDirectory(dir="/tmp") as repository_directory:
+            root = Path(repository_directory)
+            _write_valid_fixture(root)
+            _commit_existing_tree(root, "valid UTF-8 package corpus")
+            (root / ".gitattributes").write_text(
+                f"{CONTENT_ROOT}/alpha.md working-tree-encoding=UTF-16\n",
+                encoding="utf-8",
+            )
+            _git(root, "add", ".gitattributes")
+            _git(root, "commit", "-qm", "attempt checkout encoding transform")
+            with self.assertRaisesRegex(
+                CatalogValidationError,
+                "clean checkout bytes differ from the reviewed Git blob",
+            ):
+                validate_catalog_revision(root)
+
+    def test_external_checkout_filters_are_rejected(self) -> None:
+        _write_valid_fixture(self.root)
+        (self.root / ".gitattributes").write_text(
+            f"{CONTENT_ROOT}/alpha.md filter=unreviewed-smudge\n",
+            encoding="utf-8",
+        )
+        _commit_existing_tree(self.root, "attempt external checkout filter")
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "checkout filters are forbidden",
+        ):
+            validate_catalog_revision(self.root)
+
+    def test_hugo_alternate_content_sources_fail_closed(self) -> None:
+        for case in ("module_mount", "content_dir", "theme_content"):
+            with (
+                self.subTest(case=case),
+                tempfile.TemporaryDirectory(dir="/tmp") as repository_directory,
+            ):
+                root = Path(repository_directory)
+                _write_valid_fixture(root)
+                shadow = root / "shadow"
+                shadow.mkdir()
+                (shadow / "evil.md").write_text(
+                    "---\ntitle: Evil\n---\n",
+                    encoding="utf-8",
+                )
+                config = root / "config.toml"
+                if case == "module_mount":
+                    config.write_text(
+                        config.read_text(encoding="utf-8")
+                        + "\n[module]\n"
+                        + '[[module.mounts]]\nsource = "content"\n'
+                        + 'target = "content"\n'
+                        + '[[module.mounts]]\nsource = "shadow"\n'
+                        + f'target = "{CONTENT_ROOT}"\n',
+                        encoding="utf-8",
+                    )
+                elif case == "content_dir":
+                    config.write_text(
+                        config.read_text(encoding="utf-8")
+                        + '\ncontentDir = "shadow"\n',
+                        encoding="utf-8",
+                    )
+                else:
+                    theme_content = (
+                        root / "themes" / "arm-design-system-hugo-theme" / CONTENT_ROOT
+                    )
+                    theme_content.mkdir(parents=True)
+                    (theme_content / "evil.md").write_text(
+                        "---\ntitle: Evil\n---\n",
+                        encoding="utf-8",
+                    )
+                _commit_existing_tree(root, f"attempt {case} Hugo source")
+
+                with self.assertRaisesRegex(
+                    CatalogValidationError,
+                    "Hugo effective (?:content or resource mounts|module)",
+                ):
+                    validate_catalog_revision(root)
+
+    def test_hugo_external_url_and_alias_routes_fail_closed(self) -> None:
+        for case in ("url", "alias"):
+            with (
+                self.subTest(case=case),
+                tempfile.TemporaryDirectory(dir="/tmp") as repository_directory,
+            ):
+                root = Path(repository_directory)
+                _write_valid_fixture(root)
+                external = root / "content" / "other" / "evil.md"
+                external.parent.mkdir(parents=True)
+                route_key = "url" if case == "url" else "aliases"
+                route_value = (
+                    "/linux/opensource_packages/evil/"
+                    if case == "url"
+                    else "[/linux/opensource_packages/evil/]"
+                )
+                external.write_text(
+                    f"---\ntitle: Evil\n{route_key}: {route_value}\n---\n",
+                    encoding="utf-8",
+                )
+                _commit_existing_tree(root, f"attempt external {case} route")
+
+                expected = (
+                    "uncataloged Hugo source claims a package route"
+                    if case == "url"
+                    else "Hugo aliases are forbidden"
+                )
+                with self.assertRaisesRegex(CatalogValidationError, expected):
+                    validate_catalog_revision(root)
+
+    def test_hugo_existing_route_aliases_fail_closed(self) -> None:
+        _write_valid_fixture(self.root)
+        external = self.root / "content" / "other" / "evil.md"
+        external.parent.mkdir(parents=True)
+        external.write_text(
+            "---\ntitle: Evil\naliases: [/linux/opensource_packages/alpha/]\n---\n",
+            encoding="utf-8",
+        )
+        _commit_existing_tree(self.root, "attempt existing package route alias")
+
+        with self.assertRaisesRegex(
+            CatalogValidationError, "Hugo aliases are forbidden"
+        ):
+            validate_catalog_revision(self.root)
+
+    def test_hugo_content_adapters_are_rejected_before_execution(self) -> None:
+        _write_valid_fixture(self.root)
+        adapter = self.root / "content" / "_content.gotmpl"
+        adapter.write_text(
+            '{{ errorf "this adapter must never execute" }}\n',
+            encoding="utf-8",
+        )
+        _commit_existing_tree(self.root, "attempt content adapter execution")
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "content adapters are forbidden",
+        ):
+            validate_catalog_revision(self.root)
+
+    def test_hugo_theme_cannot_escape_the_reviewed_repository_path(self) -> None:
+        _write_valid_fixture(self.root)
+        config = self.root / "config.toml"
+        config.write_text(
+            config.read_text(encoding="utf-8").replace(
+                'theme = "arm-design-system-hugo-theme"',
+                'theme = "../../../../etc"',
+            ),
+            encoding="utf-8",
+        )
+        _commit_existing_tree(self.root, "attempt external theme path")
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "reviewed in-repository theme",
+        ):
+            validate_catalog_revision(self.root)
+
+    def test_hugo_themes_directory_overrides_are_case_insensitively_rejected(
+        self,
+    ) -> None:
+        cases = (
+            ("config.toml", 'themesdir = "/tmp/unreviewed"\n'),
+            ("config.cloudfront.toml", 'themesDir = "/tmp/unreviewed"\n'),
+        )
+        for relative_path, addition in cases:
+            with (
+                self.subTest(relative_path=relative_path),
+                tempfile.TemporaryDirectory(dir="/tmp") as repository_directory,
+            ):
+                root = Path(repository_directory)
+                _write_valid_fixture(root)
+                config = root / relative_path
+                config.write_text(
+                    config.read_text(encoding="utf-8") + addition,
+                    encoding="utf-8",
+                )
+                _commit_existing_tree(root, "attempt external themes directory")
+
+                with self.assertRaisesRegex(
+                    CatalogValidationError,
+                    "themesDir overrides are forbidden",
+                ):
+                    validate_catalog_revision(root)
+
+    def test_hugo_case_insensitive_config_duplicates_are_rejected(self) -> None:
+        _write_valid_fixture(self.root)
+        config = self.root / "config.toml"
+        config.write_text(
+            config.read_text(encoding="utf-8") + 'Theme = "other"\n',
+            encoding="utf-8",
+        )
+        _commit_existing_tree(self.root, "attempt case-insensitive config duplicate")
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "case-insensitive duplicate keys",
+        ):
+            validate_catalog_revision(self.root)
+
+    def test_repository_hugo_security_overrides_are_rejected(self) -> None:
+        _write_valid_fixture(self.root)
+        config = self.root / "config.cloudfront.toml"
+        config.write_text(
+            config.read_text(encoding="utf-8") + "[security.http]\nurls = ['.*']\n",
+            encoding="utf-8",
+        )
+        _commit_existing_tree(self.root, "attempt repository security override")
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "security overrides are forbidden",
+        ):
+            validate_catalog_revision(self.root)
+
+    def test_hugo_cache_overrides_cannot_write_outside_render_workspace(self) -> None:
+        _write_valid_fixture(self.root)
+        with tempfile.TemporaryDirectory(dir="/tmp") as external_directory:
+            external_cache = Path(external_directory)
+            config = self.root / "config.cloudfront.toml"
+            config.write_text(
+                config.read_text(encoding="utf-8")
+                + "[Caches.Images]\n"
+                + f"dir = {json.dumps(str(external_cache))}\n",
+                encoding="utf-8",
+            )
+            image = self.root / "assets" / "probe.png"
+            image.parent.mkdir(parents=True)
+            image.write_bytes(
+                bytes.fromhex(
+                    "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+                    "1f15c4890000000d4944415408d763f8cfc0f01f00050001ff89993d1d"
+                    "0000000049454e44ae426082"
+                )
+            )
+            layout = self.root / "layouts" / "_default" / "single.html"
+            layout.parent.mkdir(parents=True)
+            layout.write_text(
+                '{{ with resources.Get "probe.png" }}'
+                '{{ (.Resize "1x1").RelPermalink }}{{ end }}\n',
+                encoding="utf-8",
+            )
+            _commit_existing_tree(self.root, "attempt external Hugo image cache")
+
+            with self.assertRaisesRegex(
+                CatalogValidationError,
+                "cache and build-output overrides are forbidden",
+            ):
+                validate_catalog_revision(self.root)
+
+            self.assertEqual(list(external_cache.iterdir()), [])
+
+    def test_hugo_build_stats_output_overrides_are_rejected(self) -> None:
+        _write_valid_fixture(self.root)
+        config = self.root / "config.toml"
+        config.write_text(
+            config.read_text(encoding="utf-8") + "[BUILD.buildStats]\nenable = true\n",
+            encoding="utf-8",
+        )
+        _commit_existing_tree(self.root, "attempt Hugo build stats output")
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "cache and build-output overrides are forbidden",
+        ):
+            validate_catalog_revision(self.root)
+
+    def test_production_template_failures_fail_closed(self) -> None:
+        for layout_kind in ("project", "theme"):
+            with (
+                self.subTest(layout_kind=layout_kind),
+                tempfile.TemporaryDirectory(dir="/tmp") as repository_directory,
+            ):
+                root = Path(repository_directory)
+                _write_valid_fixture(root)
+                layouts_root = (
+                    root / "layouts"
+                    if layout_kind == "project"
+                    else root / "themes" / "arm-design-system-hugo-theme" / "layouts"
+                )
+                layout = layouts_root / "_default" / "single.html"
+                layout.parent.mkdir(parents=True, exist_ok=True)
+                layout.write_text(
+                    '{{ errorf "production template failure" }}\n',
+                    encoding="utf-8",
+                )
+                _commit_existing_tree(root, "attempt failing production template")
+
+                with self.assertRaisesRegex(
+                    CatalogValidationError,
+                    "Hugo production-render failed",
+                ):
+                    validate_catalog_revision(root)
+
+    def test_production_templates_cannot_publish_extra_package_files(self) -> None:
+        for layout_kind in ("project", "theme"):
+            with (
+                self.subTest(layout_kind=layout_kind),
+                tempfile.TemporaryDirectory(dir="/tmp") as repository_directory,
+            ):
+                root = Path(repository_directory)
+                _write_valid_fixture(root)
+                layouts_root = (
+                    root / "layouts"
+                    if layout_kind == "project"
+                    else root / "themes" / "arm-design-system-hugo-theme" / "layouts"
+                )
+                layout = layouts_root / "_default" / "single.html"
+                layout.parent.mkdir(parents=True, exist_ok=True)
+                layout.write_text(
+                    '{{ (resources.FromString "linux/opensource_packages/alpha/'
+                    'unreviewed.txt" "unreviewed").RelPermalink }}\n',
+                    encoding="utf-8",
+                )
+                _commit_existing_tree(root, "attempt production resource publication")
+
+                with self.assertRaisesRegex(
+                    CatalogValidationError,
+                    "production Hugo templates unexpectedly publish",
+                ):
+                    validate_catalog_revision(root)
+
+    def test_package_detail_layout_requires_an_explicit_contract_change(self) -> None:
+        _write_valid_fixture(self.root)
+        layout = self.root / "layouts" / "_default" / "single.html"
+        layout.parent.mkdir(parents=True)
+        layout.write_text("package detail page\n", encoding="utf-8")
+        _commit_existing_tree(self.root, "attempt package detail-page activation")
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "production Hugo templates unexpectedly publish",
+        ):
+            validate_catalog_revision(self.root)
+
+    def test_production_render_denies_hugo_http_requests(self) -> None:
+        _write_valid_fixture(self.root)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            port = listener.getsockname()[1]
+            layout = self.root / "layouts" / "_default" / "single.html"
+            layout.parent.mkdir(parents=True)
+            layout.write_text(
+                "{{ $remote := resources.GetRemote "
+                f'"http://127.0.0.1:{port}/must-not-connect"'
+                " }}{{ $remote.RelPermalink }}\n",
+                encoding="utf-8",
+            )
+            _commit_existing_tree(self.root, "attempt Hugo HTTP request")
+
+            with self.assertRaisesRegex(
+                CatalogValidationError,
+                "Hugo production-render failed",
+            ):
+                validate_catalog_revision(self.root)
+
+            listener.settimeout(0.1)
+            with self.assertRaises(TimeoutError):
+                listener.accept()
+
+    def test_static_files_cannot_claim_protected_package_routes(self) -> None:
+        for static_root in (
+            Path("static"),
+            Path("themes/arm-design-system-hugo-theme/static"),
+        ):
+            with (
+                self.subTest(static_root=static_root),
+                tempfile.TemporaryDirectory(dir="/tmp") as repository_directory,
+            ):
+                root = Path(repository_directory)
+                _write_valid_fixture(root)
+                collision = (
+                    root
+                    / static_root
+                    / "linux"
+                    / "opensource_packages"
+                    / "alpha"
+                    / "index.html"
+                )
+                collision.parent.mkdir(parents=True, exist_ok=True)
+                collision.write_text("unreviewed static route\n", encoding="utf-8")
+                _commit_existing_tree(root, "attempt static package route collision")
+
+                with self.assertRaisesRegex(
+                    CatalogValidationError,
+                    "static files must not claim protected package routes",
+                ):
+                    validate_catalog_revision(root)
+
+    def test_hugo_rendered_output_is_bounded_while_the_process_runs(self) -> None:
+        _commit_valid_fixture(self.root)
+
+        with (
+            patch.object(validator_module, "MAX_RENDERED_FILES", 1),
+            self.assertRaisesRegex(CatalogValidationError, "file-count limit"),
+        ):
+            validate_catalog_revision(self.root)
+
+    def test_hugo_topology_validation_does_not_mutate_its_source(self) -> None:
+        _write_valid_fixture(self.root)
+
+        def source_state() -> tuple[tuple[str, ...], dict[str, str]]:
+            directories = tuple(
+                sorted(
+                    path.relative_to(self.root).as_posix()
+                    for path in self.root.rglob("*")
+                    if path.is_dir()
+                )
+            )
+            files = {
+                path.relative_to(self.root).as_posix(): _sha256(path.read_bytes())
+                for path in self.root.rglob("*")
+                if path.is_file()
+            }
+            return directories, files
+
+        before = source_state()
+        with tempfile.TemporaryDirectory(dir="/tmp") as private_directory:
+            private_root = Path(private_directory)
+            hugo_binary = validator_module._resolve_hugo_binary(
+                None,
+                private_root=private_root,
+            )
+            validator_module._validate_hugo_topology(
+                self.root,
+                expected_package_count=2,
+                hugo_binary=hugo_binary,
+                private_root=private_root,
+            )
+
+        self.assertEqual(source_state(), before)
+
+    def test_rendered_output_budget_rejects_oversized_files(self) -> None:
+        output = self.root / "rendered"
+        output.mkdir()
+        (output / "oversized.html").write_bytes(b"xx")
+
+        with self.assertRaisesRegex(CatalogValidationError, "oversized file"):
+            validator_module._validate_output_directory_budget(
+                output,
+                context="test render",
+                maximum_files=10,
+                maximum_bytes=10,
+                maximum_file_bytes=1,
+            )
+
+        with self.assertRaisesRegex(CatalogValidationError, "byte limit"):
+            validator_module._validate_output_directory_budget(
+                output,
+                context="test render",
+                maximum_files=10,
+                maximum_bytes=1,
+                maximum_file_bytes=10,
+            )
+
     def test_missing_catalog_fails_closed(self) -> None:
         (self.root / CONTENT_ROOT).mkdir(parents=True)
 
@@ -621,7 +1238,7 @@ class PackageIdentityCatalogTests(unittest.TestCase):
     def test_fifo_and_socket_catalog_candidates_fail_promptly(self) -> None:
         for candidate_kind in ("fifo", "socket"):
             with self.subTest(candidate_kind=candidate_kind):
-                with tempfile.TemporaryDirectory() as repository_directory:
+                with tempfile.TemporaryDirectory(dir="/tmp") as repository_directory:
                     root = Path(repository_directory)
                     _write_valid_fixture(root)
                     catalog = root / CATALOG_REPOSITORY_PATH

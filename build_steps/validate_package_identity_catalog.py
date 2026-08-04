@@ -10,24 +10,31 @@ record to the exact package page and expected package workflow bytes.
 from __future__ import annotations
 
 import argparse
+import csv
+import functools
 import hashlib
+import io
 import json
 import os
 import re
+import resource
 import selectors
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
+
+import tomllib
 
 CATALOG_REPOSITORY_PATH = ".github/package-identity-catalog.json"
 CONTENT_ROOT = "content/linux/opensource_packages"
@@ -42,6 +49,19 @@ MAX_REVISION_SNAPSHOT_BYTES = 512 * 1024 * 1024
 MAX_REVISION_SNAPSHOT_ENTRIES = 30_050
 MAX_REVISION_TREE_BYTES = 64 * 1024 * 1024
 MAX_REPOSITORY_PATH_BYTES = 4_096
+MAX_REVISION_FILE_BYTES = 20_000_000
+MAX_HUGO_OUTPUT_BYTES = 64 * 1024 * 1024
+MAX_HUGO_ROWS = 30_000
+MAX_RENDERED_FILES = 20_000
+MAX_RENDERED_BYTES = 128 * 1024 * 1024
+MAX_RENDERED_FILE_BYTES = 20_000_000
+MAX_ROUTE_PROBE_BYTES = 16_384
+REQUIRED_HUGO_VERSION = "0.130.0"
+PRIMARY_HUGO_CONFIG = "config.toml"
+DEPLOYMENT_HUGO_CONFIG = "config.cloudfront.toml"
+HUGO_THEME = "arm-design-system-hugo-theme"
+HUGO_PACKAGE_ROUTE = "/linux/opensource_packages/"
+HUGO_ROUTE_PROBE_MARKER = b"catalog-route-probe\n"
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -95,18 +115,19 @@ _GIT_OUTPUT_BYTES = 8_192
 _GIT_TIMEOUT_SECONDS = 30
 _GIT_BATCH_HEADER_BYTES = 256
 _GIT_BINARY = shutil.which("git")
-_SNAPSHOT_ROOTS = (
-    CATALOG_REPOSITORY_PATH,
-    CONTENT_ROOT,
-    ".github/workflows",
+_HUGO_LIST_COLUMNS = (
+    "path",
+    "slug",
+    "title",
+    "date",
+    "expiryDate",
+    "publishDate",
+    "draft",
+    "permalink",
+    "kind",
+    "section",
 )
-_SNAPSHOT_ANCESTORS = frozenset(
-    {
-        ".github",
-        "content",
-        "content/linux",
-    }
-)
+_HUGO_VERSION_RE = re.compile(r"\Ahugo v([0-9]+\.[0-9]+\.[0-9]+)(?=[-+\s]|\Z)")
 _GIT_ENVIRONMENT = {
     "PATH": os.environ.get("PATH", os.defpath),
     "HOME": os.environ.get("HOME", "/"),
@@ -147,7 +168,8 @@ class _TraversalBudget:
         self.entries += amount
         if self.entries > MAX_DIRECTORY_ENTRIES:
             raise CatalogValidationError(
-                f"repository traversal exceeds {MAX_DIRECTORY_ENTRIES} entries: {context}"
+                "repository traversal exceeds "
+                f"{MAX_DIRECTORY_ENTRIES} entries: {context}"
             )
 
 
@@ -157,8 +179,13 @@ class _DeadlinePipeReader:
     def __init__(self, stream: Any) -> None:
         self._stream = stream
         self._buffer = bytearray()
-        self._selector = selectors.DefaultSelector()
-        self._selector.register(stream, selectors.EVENT_READ)
+        selector = selectors.DefaultSelector()
+        try:
+            selector.register(stream, selectors.EVENT_READ)
+        except BaseException:
+            selector.close()
+            raise
+        self._selector = selector
 
     @property
     def buffered_bytes(self) -> int:
@@ -341,6 +368,7 @@ def validate_catalog_revision(
     *,
     revision: str = "HEAD",
     catalog_relative_path: str = CATALOG_REPOSITORY_PATH,
+    hugo_binary: Path | None = None,
 ) -> tuple[int, str]:
     """Validate a private snapshot of one exact Git commit."""
 
@@ -350,13 +378,34 @@ def validate_catalog_revision(
         )
     root = _require_git_repository_root(repository_root)
     resolved_revision = _resolve_git_revision(root, revision)
-    with tempfile.TemporaryDirectory(prefix="package-catalog-revision-") as temporary:
-        private_root = Path(temporary)
-        private_root.chmod(0o700)
-        snapshot_root = private_root / "snapshot"
-        snapshot_root.mkdir(mode=0o700)
-        _materialize_revision_snapshot(root, resolved_revision, snapshot_root)
-        count = validate_catalog(snapshot_root, catalog_relative_path)
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="package-catalog-revision-"
+        ) as temporary:
+            private_root = Path(temporary)
+            private_root.chmod(0o700)
+            snapshot_root = private_root / "snapshot"
+            snapshot_root.mkdir(mode=0o700)
+            _materialize_revision_snapshot(
+                root,
+                resolved_revision,
+                snapshot_root,
+                private_root=private_root,
+            )
+            count = validate_catalog(snapshot_root, catalog_relative_path)
+            _validate_hugo_topology(
+                snapshot_root,
+                expected_package_count=count,
+                hugo_binary=_resolve_hugo_binary(
+                    hugo_binary,
+                    private_root=private_root,
+                ),
+                private_root=private_root,
+            )
+    except OSError as exc:
+        raise CatalogValidationError(
+            "immutable revision validation encountered a filesystem failure"
+        ) from exc
     return count, resolved_revision
 
 
@@ -451,8 +500,10 @@ def _materialize_revision_snapshot(
     repository_root: Path,
     revision: str,
     snapshot_root: Path,
+    *,
+    private_root: Path,
 ) -> None:
-    """Materialize exact Git blob bytes without archive attribute filters."""
+    """Materialize a complete exact commit and prove clean-checkout byte parity."""
 
     entries = _list_revision_entries(repository_root, revision)
     if not entries:
@@ -465,6 +516,12 @@ def _materialize_revision_snapshot(
         )
 
     _materialize_revision_blobs(repository_root, entries, snapshot_root)
+    _validate_checkout_parity(
+        repository_root,
+        revision,
+        entries,
+        private_root=private_root,
+    )
 
 
 def _list_revision_entries(
@@ -483,10 +540,8 @@ def _list_revision_entries(
         "-l",
         "--full-tree",
         revision,
-        "--",
-        *_SNAPSHOT_ROOTS,
     ]
-    tree_output = _run_git_bounded_output(
+    tree_output = _run_bounded_process(
         command,
         maximum_stdout_bytes=MAX_REVISION_TREE_BYTES,
         context="Git revision tree inspection",
@@ -529,28 +584,52 @@ def _list_revision_entries(
     return entries
 
 
-def _run_git_bounded_output(
+def _run_bounded_process(
     command: list[str],
     *,
     maximum_stdout_bytes: int,
     context: str,
+    stdin: Any = None,
+    environment: Mapping[str, str] | None = None,
+    output_directory: Path | None = None,
+    maximum_output_files: int | None = None,
+    maximum_output_bytes: int | None = None,
+    maximum_output_file_bytes: int | None = None,
 ) -> bytes:
+    output_limits = (
+        maximum_output_files,
+        maximum_output_bytes,
+        maximum_output_file_bytes,
+    )
+    if output_directory is None and any(limit is not None for limit in output_limits):
+        raise ValueError("output limits require an output directory")
+    if output_directory is not None and any(limit is None for limit in output_limits):
+        raise ValueError("an output directory requires all output limits")
+    preexec_fn = None
+    if maximum_output_file_bytes is not None:
+        preexec_fn = functools.partial(
+            _set_child_file_size_limit,
+            maximum_output_file_bytes,
+        )
     try:
         process = subprocess.Popen(
             command,
+            stdin=stdin,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=0,
-            env=_GIT_ENVIRONMENT,
+            env=_GIT_ENVIRONMENT if environment is None else environment,
+            preexec_fn=preexec_fn,
+            start_new_session=True,
         )
-    except OSError as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         raise CatalogValidationError(f"{context} could not be started") from exc
-    assert process.stdout is not None
-    assert process.stderr is not None
     stdout = bytearray()
     stderr = bytearray()
     deadline = time.monotonic() + _GIT_TIMEOUT_SECONDS
     try:
+        assert process.stdout is not None
+        assert process.stderr is not None
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ, stdout)
             selector.register(process.stderr, selectors.EVENT_READ, stderr)
@@ -558,8 +637,18 @@ def _run_git_bounded_output(
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise CatalogValidationError(f"{context} timed out")
-                events = selector.select(remaining)
+                wait_seconds = min(remaining, 0.1) if output_directory else remaining
+                events = selector.select(wait_seconds)
                 if not events:
+                    if output_directory is not None:
+                        _validate_output_directory_budget(
+                            output_directory,
+                            context=context,
+                            maximum_files=maximum_output_files,
+                            maximum_bytes=maximum_output_bytes,
+                            maximum_file_bytes=maximum_output_file_bytes,
+                        )
+                        continue
                     raise CatalogValidationError(f"{context} timed out")
                 for key, _mask in events:
                     chunk = os.read(key.fileobj.fileno(), _READ_CHUNK_BYTES)
@@ -575,6 +664,14 @@ def _run_git_bounded_output(
                     )
                     if len(destination) > limit:
                         raise CatalogValidationError(f"{context} exceeded its limit")
+                if output_directory is not None:
+                    _validate_output_directory_budget(
+                        output_directory,
+                        context=context,
+                        maximum_files=maximum_output_files,
+                        maximum_bytes=maximum_output_bytes,
+                        maximum_file_bytes=maximum_output_file_bytes,
+                    )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise CatalogValidationError(f"{context} timed out")
@@ -584,15 +681,1010 @@ def _run_git_bounded_output(
             raise CatalogValidationError(f"{context} timed out") from exc
         if returncode != 0 or stderr:
             raise CatalogValidationError(f"{context} failed")
+        if output_directory is not None:
+            _validate_output_directory_budget(
+                output_directory,
+                context=context,
+                maximum_files=maximum_output_files,
+                maximum_bytes=maximum_output_bytes,
+                maximum_file_bytes=maximum_output_file_bytes,
+            )
         return bytes(stdout)
-    except Exception:
+    finally:
+        _terminate_process_group(process)
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+
+
+def _set_child_file_size_limit(maximum_bytes: int) -> None:
+    """Prevent a child process from creating any single oversized file."""
+
+    _soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+    effective_limit = maximum_bytes
+    if hard_limit != resource.RLIM_INFINITY:
+        effective_limit = min(effective_limit, hard_limit)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (effective_limit, effective_limit))
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Reap the direct child and kill any descendants in its private session."""
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
         if process.poll() is None:
             process.kill()
+    if process.poll() is None:
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
             process.wait()
-        raise
-    finally:
-        process.stdout.close()
-        process.stderr.close()
+    else:
+        process.wait()
+
+
+def _validate_output_directory_budget(
+    output_directory: Path,
+    *,
+    context: str,
+    maximum_files: int | None,
+    maximum_bytes: int | None,
+    maximum_file_bytes: int | None,
+) -> tuple[int, int]:
+    """Bound files written by a child while it is still executing."""
+
+    if maximum_files is None or maximum_bytes is None or maximum_file_bytes is None:
+        raise ValueError("all output directory limits are required")
+    file_count = 0
+    total_bytes = 0
+    try:
+        root_state = output_directory.lstat()
+    except FileNotFoundError:
+        return (0, 0)
+    except OSError as exc:
+        raise CatalogValidationError(
+            f"{context} output could not be inspected"
+        ) from exc
+    if not stat.S_ISDIR(root_state.st_mode) or output_directory.is_symlink():
+        raise CatalogValidationError(f"{context} output directory is unsafe")
+
+    try:
+        for directory, directory_names, file_names in os.walk(
+            output_directory,
+            topdown=True,
+            followlinks=False,
+        ):
+            directory_path = Path(directory)
+            relative_directory = directory_path.relative_to(output_directory)
+            if len(relative_directory.parts) > MAX_DIRECTORY_DEPTH:
+                raise CatalogValidationError(f"{context} output exceeds path depth")
+            directory_names.sort()
+            file_names.sort()
+            for name in directory_names:
+                candidate = directory_path / name
+                try:
+                    state = candidate.lstat()
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISDIR(state.st_mode) or candidate.is_symlink():
+                    raise CatalogValidationError(
+                        f"{context} output contains a link or special directory"
+                    )
+            for name in file_names:
+                candidate = directory_path / name
+                try:
+                    state = candidate.lstat()
+                except FileNotFoundError:
+                    continue
+                relative_path = candidate.relative_to(output_directory).as_posix()
+                if (
+                    len(relative_path.encode("utf-8")) > MAX_REPOSITORY_PATH_BYTES
+                    or not stat.S_ISREG(state.st_mode)
+                    or candidate.is_symlink()
+                ):
+                    raise CatalogValidationError(
+                        f"{context} output contains an unsafe file"
+                    )
+                file_count += 1
+                total_bytes += state.st_size
+                if file_count > maximum_files:
+                    raise CatalogValidationError(
+                        f"{context} output exceeds its file-count limit"
+                    )
+                if state.st_size > maximum_file_bytes:
+                    raise CatalogValidationError(
+                        f"{context} output contains an oversized file"
+                    )
+                if total_bytes > maximum_bytes:
+                    raise CatalogValidationError(
+                        f"{context} output exceeds its byte limit"
+                    )
+    except OSError as exc:
+        raise CatalogValidationError(
+            f"{context} output could not be inspected"
+        ) from exc
+    return (file_count, total_bytes)
+
+
+def _validate_checkout_parity(
+    repository_root: Path,
+    revision: str,
+    entries: list[tuple[str, str, int]],
+    *,
+    private_root: Path,
+) -> None:
+    """Require a clean checkout to preserve every reviewed Git blob byte."""
+
+    if _GIT_BINARY is None:
+        raise CatalogValidationError("Git is required for checkout parity validation")
+    object_format = "sha256" if len(revision) == 64 else "sha1"
+    checkout_git = private_root / "checkout.git"
+    checkout_root = private_root / "checkout"
+    checkout_root.mkdir(mode=0o700)
+    _run_bounded_process(
+        [
+            _GIT_BINARY,
+            "init",
+            "--bare",
+            "--quiet",
+            f"--object-format={object_format}",
+            str(checkout_git),
+        ],
+        maximum_stdout_bytes=_GIT_OUTPUT_BYTES,
+        context="isolated checkout repository initialization",
+    )
+    raw_object_directory = _run_git_text(
+        repository_root,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "objects",
+    )
+    try:
+        object_directory = Path(raw_object_directory).resolve(strict=True)
+    except OSError as exc:
+        raise CatalogValidationError(
+            "Git object directory could not be resolved"
+        ) from exc
+    if not object_directory.is_dir():
+        raise CatalogValidationError("Git object directory is not a directory")
+    checkout_environment = {
+        **_GIT_ENVIRONMENT,
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(object_directory),
+    }
+    git_dir_arguments = [_GIT_BINARY, "--git-dir", str(checkout_git)]
+    _run_bounded_process(
+        [*git_dir_arguments, "read-tree", revision],
+        maximum_stdout_bytes=_GIT_OUTPUT_BYTES,
+        context="isolated checkout tree preparation",
+        environment=checkout_environment,
+    )
+    with tempfile.TemporaryFile() as path_input:
+        for repository_path, _object_id, _size in entries:
+            path_input.write(repository_path.encode("utf-8") + b"\x00")
+        path_input.seek(0)
+        attribute_output = _run_bounded_process(
+            [
+                *git_dir_arguments,
+                "check-attr",
+                "-z",
+                "--cached",
+                "--stdin",
+                "filter",
+            ],
+            maximum_stdout_bytes=MAX_REVISION_TREE_BYTES,
+            context="isolated checkout filter validation",
+            stdin=path_input,
+            environment=checkout_environment,
+        )
+    if not attribute_output.endswith(b"\x00"):
+        raise CatalogValidationError("isolated checkout filter output was malformed")
+    attribute_parts = attribute_output[:-1].split(b"\x00")
+    if len(attribute_parts) != len(entries) * 3:
+        raise CatalogValidationError("isolated checkout filter output was incomplete")
+    for index, (repository_path, _object_id, _size) in enumerate(entries):
+        raw_path, raw_attribute, raw_value = attribute_parts[index * 3 : index * 3 + 3]
+        if (
+            raw_path != repository_path.encode("utf-8")
+            or raw_attribute != b"filter"
+            or raw_value not in {b"unspecified", b"unset"}
+        ):
+            raise CatalogValidationError(
+                f"checkout filters are forbidden for reviewed files: {repository_path}"
+            )
+    _run_bounded_process(
+        [
+            *git_dir_arguments,
+            "--work-tree",
+            str(checkout_root),
+            "checkout-index",
+            "--all",
+            "--force",
+        ],
+        maximum_stdout_bytes=_GIT_OUTPUT_BYTES,
+        context="isolated checkout materialization",
+        environment=checkout_environment,
+    )
+
+    expected = {path: (object_id, size) for path, object_id, size in entries}
+    actual: set[str] = set()
+    for directory, directory_names, file_names in os.walk(
+        checkout_root,
+        topdown=True,
+        followlinks=False,
+    ):
+        directory_path = Path(directory)
+        for name in directory_names:
+            candidate = directory_path / name
+            state = candidate.lstat()
+            if not stat.S_ISDIR(state.st_mode) or candidate.is_symlink():
+                raise CatalogValidationError(
+                    "isolated checkout contains a link or special directory"
+                )
+        for name in file_names:
+            candidate = directory_path / name
+            repository_path = candidate.relative_to(checkout_root).as_posix()
+            if repository_path in actual:
+                raise CatalogValidationError(
+                    "isolated checkout contains a duplicate path"
+                )
+            actual.add(repository_path)
+            if repository_path not in expected:
+                raise CatalogValidationError(
+                    "isolated checkout contains an unexpected path"
+                )
+            state_before = candidate.lstat()
+            object_id, expected_size = expected[repository_path]
+            if (
+                candidate.is_symlink()
+                or not stat.S_ISREG(state_before.st_mode)
+                or state_before.st_size > MAX_REVISION_FILE_BYTES
+            ):
+                raise CatalogValidationError(
+                    "isolated checkout contains a link or special file"
+                )
+            try:
+                with candidate.open("rb") as stream:
+                    payload = stream.read(MAX_REVISION_FILE_BYTES + 1)
+            except OSError as exc:
+                raise CatalogValidationError(
+                    "isolated checkout file could not be read"
+                ) from exc
+            state_after = candidate.lstat()
+            if (
+                not _same_snapshot_state(state_before, state_after)
+                or len(payload) > MAX_REVISION_FILE_BYTES
+            ):
+                raise CatalogValidationError(
+                    "isolated checkout changed during parity validation"
+                )
+            if (
+                len(payload) != expected_size
+                or _git_blob_object_id(payload, object_id_length=len(object_id))
+                != object_id
+            ):
+                raise CatalogValidationError(
+                    f"clean checkout bytes differ from the reviewed Git blob: "
+                    f"{repository_path}"
+                )
+    if actual != set(expected):
+        missing = sorted(set(expected) - actual)
+        raise CatalogValidationError(
+            f"isolated checkout is missing reviewed paths: {missing[:3]!r}"
+        )
+
+
+def _resolve_hugo_binary(
+    hugo_binary: Path | None,
+    *,
+    private_root: Path,
+) -> Path:
+    candidate = hugo_binary
+    if candidate is None:
+        configured = os.environ.get("PACKAGE_CATALOG_HUGO_BINARY", "").strip()
+        if configured:
+            candidate = Path(configured)
+        else:
+            discovered = shutil.which("hugo")
+            if discovered is None:
+                raise CatalogValidationError(
+                    f"checksum-pinned Hugo {REQUIRED_HUGO_VERSION} is required"
+                )
+            candidate = Path(discovered)
+    try:
+        binary = candidate.expanduser().resolve(strict=True)
+        state = binary.stat()
+    except OSError as exc:
+        raise CatalogValidationError("Hugo binary could not be resolved") from exc
+    if not stat.S_ISREG(state.st_mode) or not os.access(binary, os.X_OK):
+        raise CatalogValidationError("Hugo binary must be an executable regular file")
+    output = _run_bounded_process(
+        [str(binary), "version"],
+        maximum_stdout_bytes=_GIT_OUTPUT_BYTES,
+        context="Hugo version validation",
+        environment=_hugo_environment(private_root),
+    )
+    try:
+        version_text = output.decode("utf-8", errors="strict").strip()
+    except UnicodeDecodeError as exc:
+        raise CatalogValidationError("Hugo version output was not UTF-8") from exc
+    match = _HUGO_VERSION_RE.match(version_text)
+    if match is None or match.group(1) != REQUIRED_HUGO_VERSION:
+        raise CatalogValidationError(
+            f"Hugo {REQUIRED_HUGO_VERSION} is required for topology validation"
+        )
+    return binary
+
+
+def _hugo_environment(private_root: Path) -> dict[str, str]:
+    home = private_root / "hugo-home"
+    cache = private_root / "hugo-cache"
+    home.mkdir(mode=0o700, exist_ok=True)
+    cache.mkdir(mode=0o700, exist_ok=True)
+    return {
+        "PATH": os.defpath,
+        "HOME": str(home),
+        "TMPDIR": str(private_root),
+        "HUGO_CACHEDIR": str(cache),
+        "HUGO_ENABLEGITINFO": "false",
+        "HUGO_NOBUILDLOCK": "true",
+        "GOPROXY": "off",
+        "GOSUMDB": "off",
+        "GONOSUMDB": "*",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "LC_ALL": "C",
+    }
+
+
+def _validate_hugo_topology(
+    snapshot_root: Path,
+    *,
+    expected_package_count: int,
+    hugo_binary: Path,
+    private_root: Path,
+) -> None:
+    _validate_hugo_source_preflight(snapshot_root)
+    hugo_environment = _hugo_environment(private_root)
+    config_argument = f"{PRIMARY_HUGO_CONFIG},{DEPLOYMENT_HUGO_CONFIG}"
+    mounts_output = _run_bounded_process(
+        [
+            str(hugo_binary),
+            "config",
+            "mounts",
+            "--source",
+            str(snapshot_root),
+            "--config",
+            config_argument,
+        ],
+        maximum_stdout_bytes=MAX_HUGO_OUTPUT_BYTES,
+        context="Hugo effective mount validation",
+        environment=hugo_environment,
+    )
+    _validate_hugo_mounts(mounts_output, snapshot_root)
+
+    list_output = _run_bounded_process(
+        [
+            str(hugo_binary),
+            "list",
+            "all",
+            "--source",
+            str(snapshot_root),
+            "--config",
+            config_argument,
+        ],
+        maximum_stdout_bytes=MAX_HUGO_OUTPUT_BYTES,
+        context="Hugo effective page inventory",
+        environment=hugo_environment,
+    )
+    expected_sources = _expected_hugo_package_sources(snapshot_root)
+    if len(expected_sources) != expected_package_count:
+        raise CatalogValidationError(
+            "Hugo package source count contradicts the validated catalog"
+        )
+    rendered_pages = _validate_hugo_page_inventory(list_output, expected_sources)
+    _validate_hugo_rendered_routes(
+        snapshot_root,
+        expected_sources,
+        rendered_pages,
+        hugo_binary=hugo_binary,
+        config_argument=config_argument,
+        private_root=private_root,
+        environment=hugo_environment,
+    )
+
+
+def _casefold_hugo_config_keys(
+    value: Mapping[str, Any],
+    *,
+    label: str,
+) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for key, item in value.items():
+        folded = key.casefold()
+        if folded in normalized:
+            raise CatalogValidationError(
+                f"{label} contains case-insensitive duplicate keys"
+            )
+        normalized[folded] = item
+    return normalized
+
+
+def _validate_hugo_source_preflight(snapshot_root: Path) -> None:
+    for relative_path in (PRIMARY_HUGO_CONFIG, DEPLOYMENT_HUGO_CONFIG):
+        path = snapshot_root / relative_path
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise CatalogValidationError(
+                f"required Hugo config is missing: {relative_path}"
+            ) from exc
+        if not raw or len(raw) > MAX_REVISION_FILE_BYTES:
+            raise CatalogValidationError(
+                f"required Hugo config has an invalid size: {relative_path}"
+            )
+        try:
+            config = tomllib.loads(raw.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            raise CatalogValidationError(
+                f"required Hugo config is invalid TOML: {relative_path}"
+            ) from exc
+        normalized = _casefold_hugo_config_keys(config, label=relative_path)
+        if "themesdir" in normalized:
+            raise CatalogValidationError(
+                "Hugo themesDir overrides are forbidden in production configs"
+            )
+        if "security" in normalized:
+            raise CatalogValidationError(
+                "repository Hugo security overrides are forbidden"
+            )
+        if set(normalized) & {"build", "caches"}:
+            raise CatalogValidationError(
+                "repository Hugo cache and build-output overrides are forbidden"
+            )
+        module_config = normalized.get("module")
+        if module_config is not None:
+            if not isinstance(module_config, dict):
+                raise CatalogValidationError(
+                    "Hugo module imports and remote module configuration are forbidden"
+                )
+            normalized_module = _casefold_hugo_config_keys(
+                module_config,
+                label=f"{relative_path}.module",
+            )
+            if set(normalized_module) - {"mounts"}:
+                raise CatalogValidationError(
+                    "Hugo module imports and remote module configuration are forbidden"
+                )
+        if relative_path == PRIMARY_HUGO_CONFIG:
+            if normalized.get("theme") != HUGO_THEME:
+                raise CatalogValidationError(
+                    "Hugo must use only the reviewed in-repository theme"
+                )
+        elif "theme" in normalized:
+            raise CatalogValidationError(
+                "deployment config must not override the reviewed Hugo theme"
+            )
+
+    forbidden_roots = (
+        "config",
+        "go.mod",
+        "go.sum",
+        "_vendor",
+        "hugo.toml",
+        "hugo.yaml",
+        "hugo.yml",
+        "hugo.json",
+    )
+    for relative_path in forbidden_roots:
+        if (snapshot_root / relative_path).exists():
+            raise CatalogValidationError(
+                f"unsupported alternate Hugo configuration source: {relative_path}"
+            )
+    theme_root = snapshot_root / "themes" / HUGO_THEME
+    if not theme_root.is_dir():
+        raise CatalogValidationError("the reviewed Hugo theme is missing")
+    forbidden_theme_paths = (
+        "config",
+        "hugo.toml",
+        "hugo.yaml",
+        "hugo.yml",
+        "hugo.json",
+        "config.toml",
+        "config.yaml",
+        "config.yml",
+        "config.json",
+    )
+    for relative_path in forbidden_theme_paths:
+        if (theme_root / relative_path).exists():
+            raise CatalogValidationError(
+                f"unsupported theme configuration source: {relative_path}"
+            )
+    for static_root in (snapshot_root / "static", theme_root / "static"):
+        protected_static = static_root.joinpath(
+            *HUGO_PACKAGE_ROUTE.strip("/").split("/")
+        )
+        if protected_static.exists() and (
+            not protected_static.is_dir()
+            or next(protected_static.rglob("*"), None) is not None
+        ):
+            raise CatalogValidationError(
+                "static files must not claim protected package routes"
+            )
+    for path in snapshot_root.rglob("*"):
+        if path.is_file() and (
+            path.name == "_content.gotmpl"
+            or (path.name.startswith("_content.") and path.name.endswith(".gotmpl"))
+        ):
+            raise CatalogValidationError(
+                "Hugo content adapters are forbidden in the catalog trust boundary"
+            )
+
+
+def _decode_concatenated_json(raw: bytes, label: str) -> list[dict[str, Any]]:
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise CatalogValidationError(f"{label} was not UTF-8") from exc
+    decoder = json.JSONDecoder(object_pairs_hook=_reject_duplicate_object_keys)
+    values: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        while offset < len(text) and text[offset].isspace():
+            offset += 1
+        if offset == len(text):
+            break
+        try:
+            value, offset = decoder.raw_decode(text, offset)
+        except (json.JSONDecodeError, CatalogValidationError) as exc:
+            raise CatalogValidationError(f"{label} was malformed") from exc
+        values.append(_require_dict(value, label))
+        if len(values) > 10:
+            raise CatalogValidationError(f"{label} contains too many modules")
+    if not values:
+        raise CatalogValidationError(f"{label} was empty")
+    return values
+
+
+def _validate_hugo_mounts(raw: bytes, snapshot_root: Path) -> None:
+    modules = _decode_concatenated_json(raw, "Hugo effective mounts")
+    if len(modules) != 2:
+        raise CatalogValidationError(
+            "Hugo effective mounts must contain only the project and reviewed theme"
+        )
+    expected = (
+        (
+            "project",
+            "",
+            snapshot_root,
+            (
+                ("content", "content"),
+                ("data", "data"),
+                ("layouts", "layouts"),
+                ("i18n", "i18n"),
+                ("archetypes", "archetypes"),
+                ("assets", "assets"),
+                ("static", "static"),
+            ),
+        ),
+        (
+            HUGO_THEME,
+            "project",
+            snapshot_root / "themes" / HUGO_THEME,
+            (
+                ("archetypes", "archetypes"),
+                ("layouts", "layouts"),
+                ("static", "static"),
+            ),
+        ),
+    )
+    for module, (path, owner, directory, expected_mounts) in zip(
+        modules, expected, strict=True
+    ):
+        if module.get("path") != path or module.get("owner") != owner:
+            raise CatalogValidationError("Hugo effective module identity is unexpected")
+        raw_directory = module.get("dir")
+        if not isinstance(raw_directory, str):
+            raise CatalogValidationError("Hugo effective module directory is invalid")
+        try:
+            resolved_directory = Path(raw_directory).resolve(strict=True)
+        except OSError as exc:
+            raise CatalogValidationError(
+                "Hugo effective module directory could not be resolved"
+            ) from exc
+        if resolved_directory != directory.resolve(strict=True):
+            raise CatalogValidationError(
+                "Hugo effective module escapes the reviewed source tree"
+            )
+        raw_mounts = module.get("mounts")
+        if not isinstance(raw_mounts, list):
+            raise CatalogValidationError("Hugo effective module mounts are invalid")
+        mounts: list[tuple[str, str]] = []
+        for raw_mount in raw_mounts:
+            mount = _require_dict(raw_mount, "Hugo effective mount")
+            if set(mount) != {"source", "target"}:
+                raise CatalogValidationError(
+                    "Hugo effective mount contains unsupported fields"
+                )
+            source = mount.get("source")
+            target = mount.get("target")
+            if not isinstance(source, str) or not isinstance(target, str):
+                raise CatalogValidationError("Hugo effective mount is invalid")
+            mounts.append((source, target))
+        if tuple(mounts) != expected_mounts:
+            raise CatalogValidationError(
+                "Hugo effective content or resource mounts differ from production"
+            )
+
+
+def _expected_hugo_package_sources(snapshot_root: Path) -> dict[str, str]:
+    content_root = snapshot_root / CONTENT_ROOT
+    expected: dict[str, str] = {}
+    for path in sorted(content_root.iterdir(), key=lambda item: item.name):
+        if path.name == "_index.md":
+            continue
+        if path.is_file() and path.suffix == ".md":
+            source = f"{CONTENT_ROOT}/{path.name}"
+            expected[source] = f"{HUGO_PACKAGE_ROUTE}{path.stem.lower()}/"
+    return expected
+
+
+def _validate_hugo_page_inventory(
+    raw: bytes,
+    expected_sources: Mapping[str, str],
+) -> dict[str, str]:
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise CatalogValidationError("Hugo page inventory was not UTF-8") from exc
+    reader = csv.DictReader(io.StringIO(text, newline=""), strict=True)
+    if tuple(reader.fieldnames or ()) != _HUGO_LIST_COLUMNS:
+        raise CatalogValidationError("Hugo page inventory header is unexpected")
+    seen: set[str] = set()
+    protected_routes: set[str] = set()
+    rendered_pages: dict[str, str] = {}
+    rendered_routes: set[str] = set()
+    try:
+        for row_number, row in enumerate(reader, start=1):
+            if row_number > MAX_HUGO_ROWS or None in row:
+                raise CatalogValidationError("Hugo page inventory exceeds its bounds")
+            source = row.get("path", "")
+            permalink = row.get("permalink", "")
+            if (
+                not source
+                or "\\" in source
+                or PurePosixPath(source).as_posix() != source
+                or len(source.encode("utf-8")) > MAX_REPOSITORY_PATH_BYTES
+            ):
+                raise CatalogValidationError("Hugo page inventory has an unsafe source")
+            parsed = urlsplit(permalink)
+            if (
+                parsed.scheme != "https"
+                or not parsed.netloc
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise CatalogValidationError(
+                    "Hugo page inventory has a noncanonical permalink"
+                )
+            route = parsed.path
+            _hugo_route_output_path(route)
+            if row.get("kind") == "page" and row.get("draft") == "false":
+                if source in rendered_pages or route in rendered_routes:
+                    raise CatalogValidationError(
+                        "multiple Hugo pages claim the same rendered route"
+                    )
+                rendered_pages[source] = route
+                rendered_routes.add(route)
+            if route.startswith(HUGO_PACKAGE_ROUTE):
+                if source not in expected_sources:
+                    raise CatalogValidationError(
+                        f"uncataloged Hugo source claims a package route: {source}"
+                    )
+                if route in protected_routes:
+                    raise CatalogValidationError(
+                        f"multiple Hugo pages claim the package route: {route}"
+                    )
+                protected_routes.add(route)
+            if source in expected_sources:
+                if source in seen:
+                    raise CatalogValidationError(
+                        f"Hugo package source is duplicated: {source}"
+                    )
+                seen.add(source)
+                if (
+                    route != expected_sources[source]
+                    or row.get("kind") != "page"
+                    or row.get("draft") != "false"
+                ):
+                    raise CatalogValidationError(
+                        f"Hugo package source has a noncanonical route: {source}"
+                    )
+    except csv.Error as exc:
+        raise CatalogValidationError("Hugo page inventory CSV was malformed") from exc
+    if seen != set(expected_sources) or protected_routes != set(
+        expected_sources.values()
+    ):
+        raise CatalogValidationError(
+            "Hugo effective package pages do not exactly match the catalog corpus"
+        )
+    return rendered_pages
+
+
+def _hugo_route_output_path(route: str) -> str:
+    if (
+        not route.startswith("/")
+        or "\\" in route
+        or "//" in route
+        or any(part in {"", ".", ".."} for part in route.split("/")[1:-1])
+        or len(route.encode("utf-8")) > MAX_REPOSITORY_PATH_BYTES
+    ):
+        raise CatalogValidationError("Hugo page inventory has an unsafe route")
+    relative = route.removeprefix("/")
+    if route.endswith("/"):
+        relative = f"{relative}index.html"
+    if not relative:
+        raise CatalogValidationError("Hugo page inventory has an unsafe route")
+    path = PurePosixPath(relative)
+    if path.is_absolute() or path.as_posix() != relative:
+        raise CatalogValidationError("Hugo page inventory has an unsafe route")
+    return relative
+
+
+def _validate_hugo_rendered_routes(
+    snapshot_root: Path,
+    expected_sources: Mapping[str, str],
+    rendered_pages: Mapping[str, str],
+    *,
+    hugo_binary: Path,
+    config_argument: str,
+    private_root: Path,
+    environment: Mapping[str, str],
+) -> None:
+    theme_root = private_root / "route-probe-themes" / "catalog-probe"
+    theme_root.mkdir(mode=0o700, parents=True)
+    theme_metadata = theme_root / "theme.toml"
+    theme_metadata.write_text('name = "Catalog route probe"\n', encoding="ascii")
+    theme_metadata.chmod(0o600)
+    layout_root = private_root / "route-probe-layouts"
+    single_layout = layout_root / "_default" / "single.html"
+    single_layout.parent.mkdir(mode=0o700, parents=True)
+    single_layout.write_text(
+        "catalog-route-probe\n"
+        '{{ dict "aliases" .Aliases "source" .File.Path | jsonify }}\n',
+        encoding="ascii",
+    )
+    single_layout.chmod(0o600)
+    security_config = private_root / "route-probe-security.toml"
+    security_config.write_text(
+        "[security]\n"
+        "enableInlineShortcodes = false\n"
+        "[security.exec]\n"
+        "allow = []\n"
+        "[security.funcs]\n"
+        "getenv = []\n"
+        "[security.http]\n"
+        "methods = []\n"
+        "urls = []\n",
+        encoding="ascii",
+    )
+    security_config.chmod(0o600)
+    marker_destination = _run_hugo_route_render(
+        snapshot_root,
+        hugo_binary=hugo_binary,
+        config_argument=f"{config_argument},{security_config}",
+        private_root=private_root,
+        environment=environment,
+        render_name="marker-render",
+        additional_arguments=(
+            "--themesDir",
+            str(theme_root.parent),
+            "--theme",
+            theme_root.name,
+            "--layoutDir",
+            str(layout_root),
+        ),
+    )
+    expected_page_outputs = {
+        _hugo_route_output_path(route): source.removeprefix("content/")
+        for source, route in rendered_pages.items()
+    }
+    expected_package_outputs = {
+        _hugo_route_output_path(route): source.removeprefix("content/")
+        for source, route in expected_sources.items()
+    }
+    actual_package_outputs: set[str] = set()
+    seen_page_outputs: set[str] = set()
+    package_prefix = HUGO_PACKAGE_ROUTE.removeprefix("/")
+    for directory, directory_names, file_names in os.walk(
+        marker_destination,
+        topdown=True,
+        followlinks=False,
+    ):
+        directory_names.sort()
+        file_names.sort()
+        directory_path = Path(directory)
+        for name in file_names:
+            path = directory_path / name
+            relative_path = path.relative_to(marker_destination).as_posix()
+            if relative_path.startswith(package_prefix):
+                actual_package_outputs.add(relative_path)
+            expected_source = expected_page_outputs.get(relative_path)
+            if expected_source is None:
+                continue
+            try:
+                state = path.lstat()
+                if state.st_size > MAX_ROUTE_PROBE_BYTES:
+                    raise CatalogValidationError(
+                        "Hugo route probe output exceeds its limit"
+                    )
+                raw = path.read_bytes()
+            except OSError as exc:
+                raise CatalogValidationError(
+                    "Hugo route probe output could not be read"
+                ) from exc
+            source = _decode_hugo_route_probe(raw)
+            if source != expected_source:
+                raise CatalogValidationError(
+                    "Hugo rendered route ownership differs from its source inventory"
+                )
+            seen_page_outputs.add(relative_path)
+
+    if seen_page_outputs != set(expected_page_outputs):
+        raise CatalogValidationError(
+            "Hugo rendered pages do not exactly match the source inventory"
+        )
+    if actual_package_outputs != set(expected_package_outputs):
+        missing = sorted(set(expected_package_outputs) - actual_package_outputs)
+        extra = sorted(actual_package_outputs - set(expected_package_outputs))
+        raise CatalogValidationError(
+            "Hugo rendered package routes differ from the catalog corpus "
+            f"(missing={missing[:3]!r}, extra={extra[:3]!r})"
+        )
+
+    production_destination = _run_hugo_route_render(
+        snapshot_root,
+        hugo_binary=hugo_binary,
+        config_argument=f"{config_argument},{security_config}",
+        private_root=private_root,
+        environment=environment,
+        render_name="production-render",
+        panic_on_warning=False,
+    )
+    production_package_outputs = _rendered_package_output_paths(production_destination)
+    if production_package_outputs:
+        raise CatalogValidationError(
+            "production Hugo templates unexpectedly publish protected package "
+            f"routes (paths={sorted(production_package_outputs)[:3]!r})"
+        )
+
+
+def _run_hugo_route_render(
+    snapshot_root: Path,
+    *,
+    hugo_binary: Path,
+    config_argument: str,
+    private_root: Path,
+    environment: Mapping[str, str],
+    render_name: str,
+    additional_arguments: tuple[str, ...] = (),
+    panic_on_warning: bool = True,
+) -> Path:
+    workspace = private_root / render_name
+    workspace.mkdir(mode=0o700)
+    destination = workspace / "site"
+    destination.mkdir(mode=0o700)
+    home = workspace / "home"
+    cache = workspace / "cache"
+    temporary = workspace / "tmp"
+    resource_directory = workspace / "resources"
+    for directory in (home, cache, temporary, resource_directory):
+        directory.mkdir(mode=0o700)
+    render_environment = {
+        **environment,
+        "HOME": str(home),
+        "HUGO_CACHEDIR": str(cache),
+        "TMPDIR": str(temporary),
+    }
+    render_config = workspace / "render-config.toml"
+    render_config.write_text(
+        f"resourceDir = {json.dumps(str(resource_directory))}\n",
+        encoding="utf-8",
+    )
+    render_config.chmod(0o600)
+    warning_arguments = ("--panicOnWarning",) if panic_on_warning else ()
+    _run_bounded_process(
+        [
+            str(hugo_binary),
+            "--source",
+            str(snapshot_root),
+            "--config",
+            f"{config_argument},{render_config}",
+            "--enableGitInfo=false",
+            *additional_arguments,
+            "--cacheDir",
+            str(cache),
+            "--destination",
+            str(destination),
+            "--cleanDestinationDir",
+            "--printPathWarnings",
+            *warning_arguments,
+            "--noBuildLock",
+            "--noChmod",
+            "--noTimes",
+            "--disableKinds",
+            "home,section,taxonomy,term,RSS,sitemap,robotsTXT,404",
+        ],
+        maximum_stdout_bytes=MAX_HUGO_OUTPUT_BYTES,
+        context=f"Hugo {render_name}",
+        environment=render_environment,
+        output_directory=workspace,
+        maximum_output_files=MAX_RENDERED_FILES,
+        maximum_output_bytes=MAX_RENDERED_BYTES,
+        maximum_output_file_bytes=MAX_RENDERED_FILE_BYTES,
+    )
+    _validate_output_directory_budget(
+        workspace,
+        context=f"Hugo {render_name}",
+        maximum_files=MAX_RENDERED_FILES,
+        maximum_bytes=MAX_RENDERED_BYTES,
+        maximum_file_bytes=MAX_RENDERED_FILE_BYTES,
+    )
+    return destination
+
+
+def _rendered_package_output_paths(destination: Path) -> set[str]:
+    package_prefix = HUGO_PACKAGE_ROUTE.removeprefix("/")
+    actual: set[str] = set()
+    for directory, directory_names, file_names in os.walk(
+        destination,
+        topdown=True,
+        followlinks=False,
+    ):
+        directory_names.sort()
+        file_names.sort()
+        directory_path = Path(directory)
+        for name in file_names:
+            path = directory_path / name
+            relative_path = path.relative_to(destination).as_posix()
+            if relative_path.startswith(package_prefix):
+                actual.add(relative_path)
+    return actual
+
+
+def _decode_hugo_route_probe(raw: bytes) -> str:
+    if len(raw) > MAX_ROUTE_PROBE_BYTES or not raw.startswith(HUGO_ROUTE_PROBE_MARKER):
+        raise CatalogValidationError("Hugo route probe marker is missing")
+    try:
+        payload = json.loads(
+            raw[len(HUGO_ROUTE_PROBE_MARKER) :].decode("utf-8", errors="strict"),
+            object_pairs_hook=_reject_duplicate_object_keys,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, CatalogValidationError) as exc:
+        raise CatalogValidationError("Hugo route probe payload is malformed") from exc
+    probe = _require_dict(payload, "Hugo route probe payload")
+    if set(probe) != {"aliases", "source"}:
+        raise CatalogValidationError("Hugo route probe payload is malformed")
+    aliases = probe.get("aliases")
+    if aliases not in (None, []):
+        raise CatalogValidationError("Hugo aliases are forbidden")
+    source = probe.get("source")
+    if (
+        not isinstance(source, str)
+        or not source
+        or "\\" in source
+        or PurePosixPath(source).is_absolute()
+        or PurePosixPath(source).as_posix() != source
+        or len(source.encode("utf-8")) > MAX_REPOSITORY_PATH_BYTES
+    ):
+        raise CatalogValidationError("Hugo route probe source is unsafe")
+    return source
 
 
 def _validate_revision_path(repository_path: str, seen: set[str]) -> None:
@@ -610,10 +1702,6 @@ def _validate_revision_path(repository_path: str, seen: set[str]) -> None:
         raise CatalogValidationError("Git revision snapshot contains an unsafe path")
     if repository_path in seen:
         raise CatalogValidationError("Git revision snapshot contains a duplicate path")
-    if not _snapshot_path_is_allowed(repository_path):
-        raise CatalogValidationError(
-            "Git revision snapshot contains an unexpected path"
-        )
     seen.add(repository_path)
 
 
@@ -624,7 +1712,7 @@ def _maximum_revision_file_bytes(repository_path: str) -> int:
         return MAX_PACKAGE_BYTES
     if repository_path.startswith(".github/workflows/"):
         return MAX_WORKFLOW_BYTES
-    raise CatalogValidationError("Git revision snapshot contains an unexpected path")
+    return MAX_REVISION_FILE_BYTES
 
 
 def _materialize_revision_blobs(
@@ -656,10 +1744,11 @@ def _materialize_revision_blobs(
                 "Git revision blob inspection could not be started"
             ) from exc
 
-        assert process.stdin is not None
-        assert process.stdout is not None
-        reader = _DeadlinePipeReader(process.stdout)
+        reader: _DeadlinePipeReader | None = None
         try:
+            assert process.stdin is not None
+            assert process.stdout is not None
+            reader = _DeadlinePipeReader(process.stdout)
             for repository_path, object_id, expected_size in entries:
                 try:
                     process.stdin.write(f"{object_id}\n".encode("ascii"))
@@ -732,22 +1821,24 @@ def _materialize_revision_blobs(
                 raise CatalogValidationError(
                     "Git revision blob inspection produced unexpected error output"
                 )
-        except Exception:
+        except BaseException:
             if process.poll() is None:
                 process.kill()
                 process.wait()
             raise
         finally:
-            reader.close()
-            if not process.stdin.closed:
+            if reader is not None:
+                reader.close()
+            if process.stdin is not None and not process.stdin.closed:
                 try:
                     process.stdin.close()
                 except OSError:
                     pass
-            try:
-                process.stdout.close()
-            except OSError:
-                pass
+            if process.stdout is not None:
+                try:
+                    process.stdout.close()
+                except OSError:
+                    pass
 
 
 def _write_revision_snapshot_file(
@@ -778,12 +1869,6 @@ def _git_blob_object_id(payload: bytes, *, object_id_length: int) -> str:
     digest.update(header)
     digest.update(payload)
     return digest.hexdigest()
-
-
-def _snapshot_path_is_allowed(path: str) -> bool:
-    if path in _SNAPSHOT_ANCESTORS:
-        return True
-    return any(path == root or path.startswith(f"{root}/") for root in _SNAPSHOT_ROOTS)
 
 
 def _validate_catalog_from_fd(
@@ -2108,6 +3193,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default="HEAD",
         help="Exact full Git commit ID to validate, or HEAD (default: HEAD)",
     )
+    parser.add_argument(
+        "--hugo-binary",
+        type=Path,
+        default=None,
+        help=(
+            "Checksum-verified Hugo 0.130.0 binary; defaults to "
+            "PACKAGE_CATALOG_HUGO_BINARY or PATH"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -2117,6 +3211,7 @@ def main(argv: list[str] | None = None) -> int:
         count, revision = validate_catalog_revision(
             args.repository_root,
             revision=args.revision,
+            hugo_binary=args.hugo_binary,
         )
     except CatalogValidationError as exc:
         print(f"package identity catalog validation failed: {exc}", file=sys.stderr)
