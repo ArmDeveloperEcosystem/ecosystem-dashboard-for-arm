@@ -201,6 +201,12 @@ class PackageIdentityCatalogTests(unittest.TestCase):
     def test_revision_snapshot_is_bounded_and_rejects_links(self) -> None:
         _commit_valid_fixture(self.root)
         with (
+            patch.object(validator_module, "MAX_REVISION_TREE_BYTES", 1),
+            self.assertRaisesRegex(CatalogValidationError, "tree inspection exceeded"),
+        ):
+            validate_catalog_revision(self.root)
+
+        with (
             patch.object(validator_module, "MAX_REVISION_SNAPSHOT_BYTES", 1),
             self.assertRaisesRegex(CatalogValidationError, "snapshot exceeds"),
         ):

@@ -486,29 +486,17 @@ def _list_revision_entries(
         "--",
         *_SNAPSHOT_ROOTS,
     ]
-    try:
-        result = subprocess.run(
-            command,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=_GIT_TIMEOUT_SECONDS,
-            env=_GIT_ENVIRONMENT,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise CatalogValidationError("Git revision tree inspection failed") from exc
-    if (
-        result.returncode != 0
-        or len(result.stdout) > MAX_REVISION_TREE_BYTES
-        or len(result.stderr) > _GIT_OUTPUT_BYTES
-    ):
-        raise CatalogValidationError("Git revision tree inspection failed")
-    if not result.stdout.endswith(b"\x00"):
+    tree_output = _run_git_bounded_output(
+        command,
+        maximum_stdout_bytes=MAX_REVISION_TREE_BYTES,
+        context="Git revision tree inspection",
+    )
+    if not tree_output.endswith(b"\x00"):
         raise CatalogValidationError("Git revision tree output was malformed")
 
     entries: list[tuple[str, str, int]] = []
     seen: set[str] = set()
-    for raw_entry in result.stdout[:-1].split(b"\x00"):
+    for raw_entry in tree_output[:-1].split(b"\x00"):
         match = _GIT_TREE_ENTRY_RE.fullmatch(raw_entry)
         if match is None:
             raise CatalogValidationError("Git revision tree entry was malformed")
@@ -539,6 +527,72 @@ def _list_revision_entries(
                 "Git revision snapshot has an invalid entry count"
             )
     return entries
+
+
+def _run_git_bounded_output(
+    command: list[str],
+    *,
+    maximum_stdout_bytes: int,
+    context: str,
+) -> bytes:
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+            env=_GIT_ENVIRONMENT,
+        )
+    except OSError as exc:
+        raise CatalogValidationError(f"{context} could not be started") from exc
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stdout = bytearray()
+    stderr = bytearray()
+    deadline = time.monotonic() + _GIT_TIMEOUT_SECONDS
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ, stdout)
+            selector.register(process.stderr, selectors.EVENT_READ, stderr)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CatalogValidationError(f"{context} timed out")
+                events = selector.select(remaining)
+                if not events:
+                    raise CatalogValidationError(f"{context} timed out")
+                for key, _mask in events:
+                    chunk = os.read(key.fileobj.fileno(), _READ_CHUNK_BYTES)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    destination = key.data
+                    destination.extend(chunk)
+                    limit = (
+                        maximum_stdout_bytes
+                        if destination is stdout
+                        else _GIT_OUTPUT_BYTES
+                    )
+                    if len(destination) > limit:
+                        raise CatalogValidationError(f"{context} exceeded its limit")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CatalogValidationError(f"{context} timed out")
+        try:
+            returncode = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            raise CatalogValidationError(f"{context} timed out") from exc
+        if returncode != 0 or stderr:
+            raise CatalogValidationError(f"{context} failed")
+        return bytes(stdout)
+    except Exception:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        raise
+    finally:
+        process.stdout.close()
+        process.stderr.close()
 
 
 def _validate_revision_path(repository_path: str, seen: set[str]) -> None:
