@@ -28,7 +28,6 @@
 1. Orchestrator trigger
    - scheduled
    - manual
-   - push to main/smoke_tests for relevant files
 
 2. Orchestrator dispatches batch1..batch22
    - each batch is a reusable workflow group

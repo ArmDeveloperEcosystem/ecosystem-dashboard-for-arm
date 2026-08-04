@@ -195,7 +195,7 @@ Verify:
 **Orchestrator**
 - file: `.github/workflows/test-all-packages-orchestrator.yml`
 - scheduled weekly at `03:00 UTC Saturday`, which is Friday at `10 PM CDT / 9 PM CST` in US Central time (`0 3 * * 6`)
-- also runs on relevant pushes to `main` and `smoke_tests`
+- can also be started manually with `workflow_dispatch`
 - dispatches all `22` batches
 - waits for them to complete
 - triggers the global summary
