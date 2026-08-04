@@ -14,14 +14,6 @@ on:
     # Weekly main-branch validation run: Friday night in US Central time.
     # 03:00 UTC Saturday is 10 PM CDT / 9 PM CST Friday.
     - cron: '0 3 * * 6'
-  push:
-    branches:
-      - main
-      - smoke_tests
-    paths:
-      - 'content/linux/opensource_packages/*.md'
-      - 'content/opensource_packages/*.md'
-      - '.github/workflows/*.yml'
 
 jobs:
   orchestrate-batches:
@@ -37,7 +29,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           START_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          echo "start_time=$START_TIME" >> $GITHUB_OUTPUT
+          echo "start_time=$START_TIME" >> "$GITHUB_OUTPUT"
 
           echo "🚀 Triggering batches 1 through 22..."
           for i in {1..22}; do
@@ -73,21 +65,79 @@ jobs:
           START_TIME="${{ steps.trigger.outputs.start_time }}"
           echo "⏳ Waiting for batches triggered after $START_TIME..."
 
-          BATCH_RUN_IDS=()
+          declare -A BATCH_RUN_IDS
+          declare -A BATCH_RETRIES
           MISSING_WORKFLOWS=()
+          MAX_STARTUP_RETRIES=5
           sleep 15
+
+          find_run_id() {
+            local workflow="$1"
+            local since="$2"
+            gh run list \
+              --workflow "$workflow" \
+              --branch "${{ github.ref_name }}" \
+              --json databaseId,createdAt \
+              --limit 100 \
+              --jq ".[] | select(.createdAt >= \"$since\") | .databaseId" | head -n 1
+          }
+
+          dispatch_batch() {
+            local workflow="$1"
+            local n=0
+            until [ $n -ge 5 ]
+            do
+              if gh workflow run "$workflow" --ref "${{ github.ref_name }}"; then
+                return 0
+              fi
+              n=$((n+1))
+              echo "Failed to trigger $workflow (attempt $n/5). Retrying in 5s..."
+              sleep 5
+            done
+            return 1
+          }
+
+          retry_startup_batch() {
+            local batch_number="$1"
+            local workflow="test-all-packages-batch${batch_number}.yml"
+            local rid="${BATCH_RUN_IDS[$batch_number]}"
+            local next_retry=$((BATCH_RETRIES[$batch_number] + 1))
+            local retry_start
+            local new_run_id=""
+
+            retry_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            echo "Batch $batch_number hit startup_failure in run $rid. Re-dispatching $workflow (retry $next_retry/$MAX_STARTUP_RETRIES)..."
+
+            if ! dispatch_batch "$workflow"; then
+              FAILED_BATCHES+=("$workflow run $rid concluded startup_failure; retry dispatch failed")
+              return 1
+            fi
+
+            for attempt in {1..12}; do
+              new_run_id=$(find_run_id "$workflow" "$retry_start")
+              if [ -n "$new_run_id" ]; then
+                break
+              fi
+              echo "Waiting for retry run registration for $workflow (attempt $attempt/12)..."
+              sleep 10
+            done
+
+            if [ -z "$new_run_id" ]; then
+              FAILED_BATCHES+=("$workflow run $rid concluded startup_failure; retry run was not registered")
+              return 1
+            fi
+
+            BATCH_RUN_IDS[$batch_number]="$new_run_id"
+            BATCH_RETRIES[$batch_number]="$next_retry"
+            echo "Tracking retry for $workflow (Run ID: $new_run_id)"
+          }
 
           for i in {1..22}; do
             WORKFLOW="test-all-packages-batch${i}.yml"
             RUN_ID=""
 
             for attempt in {1..12}; do
-              RUN_ID=$(gh run list \
-                --workflow "$WORKFLOW" \
-                --branch "${{ github.ref_name }}" \
-                --json databaseId,createdAt \
-                --limit 100 \
-                --jq ".[] | select(.createdAt >= \"$START_TIME\") | .databaseId" | head -n 1)
+              RUN_ID=$(find_run_id "$WORKFLOW" "$START_TIME")
 
               if [ -n "$RUN_ID" ]; then
                 break
@@ -102,7 +152,8 @@ jobs:
               MISSING_WORKFLOWS+=("$WORKFLOW")
             else
               echo "✅ Tracking $WORKFLOW (Run ID: $RUN_ID)"
-              BATCH_RUN_IDS+=("$RUN_ID")
+              BATCH_RUN_IDS[$i]="$RUN_ID"
+              BATCH_RETRIES[$i]=0
             fi
           done
 
@@ -113,15 +164,52 @@ jobs:
           fi
 
           while true; do
+            ACTIVE_RUNNING=0
             STILL_RUNNING=0
-            for RID in "${BATCH_RUN_IDS[@]}"; do
-              STATUS=$(gh run view "$RID" --json status --jq .status)
+            FAILED_BATCHES=()
+            STARTUP_RETRY_BATCHES=()
+
+            for i in {1..22}; do
+              WORKFLOW="test-all-packages-batch${i}.yml"
+              RID="${BATCH_RUN_IDS[$i]}"
+              RUN_STATE=$(gh run view "$RID" --json status,conclusion --jq '[.status, (.conclusion // "")] | @tsv')
+              read -r STATUS CONCLUSION <<< "$RUN_STATE"
+
               if [[ "$STATUS" != "completed" ]]; then
-                STILL_RUNNING=$((STILL_RUNNING + 1))
+                ACTIVE_RUNNING=$((ACTIVE_RUNNING + 1))
+                continue
+              fi
+
+              if [[ "$CONCLUSION" == "startup_failure" && "${BATCH_RETRIES[$i]}" -lt "$MAX_STARTUP_RETRIES" ]]; then
+                STARTUP_RETRY_BATCHES+=("$i")
+                continue
+              fi
+
+              if [[ "$CONCLUSION" != "success" ]]; then
+                FAILED_BATCHES+=("$WORKFLOW run $RID concluded ${CONCLUSION:-unknown}")
               fi
             done
 
+            if [ "$ACTIVE_RUNNING" -gt 0 ]; then
+              STILL_RUNNING="$ACTIVE_RUNNING"
+              if [ "${#STARTUP_RETRY_BATCHES[@]}" -gt 0 ]; then
+                echo "${#STARTUP_RETRY_BATCHES[@]} startup-failed batches are waiting to retry after active batches drain."
+                STILL_RUNNING=$((STILL_RUNNING + ${#STARTUP_RETRY_BATCHES[@]}))
+              fi
+            elif [ "${#STARTUP_RETRY_BATCHES[@]}" -gt 0 ]; then
+              for batch_number in "${STARTUP_RETRY_BATCHES[@]}"; do
+                if retry_startup_batch "$batch_number"; then
+                  STILL_RUNNING=$((STILL_RUNNING + 1))
+                fi
+              done
+            fi
+
             if [ "$STILL_RUNNING" -eq 0 ]; then
+              if [ "${#FAILED_BATCHES[@]}" -gt 0 ]; then
+                echo "❌ One or more batches did not complete successfully:"
+                printf ' - %s\n' "${FAILED_BATCHES[@]}"
+                exit 1
+              fi
               echo "🎉 All batches completed!"
               break
             fi
@@ -134,7 +222,48 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "🏁 All batches finished. Triggering Global Summary..."
+          SUMMARY_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           gh workflow run test-all-packages-summary.yml \
             --ref "${{ github.ref_name }}" \
             -f start_time="${{ steps.trigger.outputs.start_time }}" \
             -f triggering_batch=orchestrator
+
+          SUMMARY_RUN_ID=""
+          for attempt in {1..12}; do
+            SUMMARY_RUN_ID=$(gh run list \
+              --workflow test-all-packages-summary.yml \
+              --branch "${{ github.ref_name }}" \
+              --json databaseId,createdAt \
+              --limit 50 \
+              --jq ".[] | select(.createdAt >= \"$SUMMARY_START\") | .databaseId" | head -n 1)
+
+            if [ -n "$SUMMARY_RUN_ID" ]; then
+              break
+            fi
+
+            echo "Waiting for Global Summary run registration (attempt $attempt/12)..."
+            sleep 10
+          done
+
+          if [ -z "$SUMMARY_RUN_ID" ]; then
+            echo "❌ Error: Could not find Global Summary run after dispatch."
+            exit 1
+          fi
+
+          echo "Tracking Global Summary run $SUMMARY_RUN_ID..."
+          while true; do
+            RUN_STATE=$(gh run view "$SUMMARY_RUN_ID" --json status,conclusion --jq '[.status, (.conclusion // "")] | @tsv')
+            read -r STATUS CONCLUSION <<< "$RUN_STATE"
+
+            if [[ "$STATUS" == "completed" ]]; then
+              if [[ "$CONCLUSION" != "success" ]]; then
+                echo "❌ Global Summary run $SUMMARY_RUN_ID concluded ${CONCLUSION:-unknown}."
+                exit 1
+              fi
+              echo "✅ Global Summary completed successfully."
+              break
+            fi
+
+            echo "Global Summary is still $STATUS. Checking again in 30 seconds..."
+            sleep 30
+          done
