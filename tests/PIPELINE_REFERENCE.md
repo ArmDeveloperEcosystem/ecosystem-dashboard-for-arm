@@ -28,9 +28,8 @@
 1. Orchestrator trigger
    - scheduled
    - manual
-   - push to main/smoke_tests for relevant files
 
-2. Orchestrator dispatches batch1..batch19
+2. Orchestrator dispatches batch1..batch22
    - each batch is a reusable workflow group
    - each batch runs many package workflows in parallel
 
@@ -179,7 +178,7 @@ Examples:
 
 Parallelism now happens primarily at the batch level:
 - many package workflows in the same batch
-- 21 batches orchestrated across the whole repo
+- 22 batches orchestrated across the whole repo
 - package pages now primarily live under `content/linux/opensource_packages/`, with legacy compatibility for older `content/opensource_packages/` trees
 
 When adding a new package:

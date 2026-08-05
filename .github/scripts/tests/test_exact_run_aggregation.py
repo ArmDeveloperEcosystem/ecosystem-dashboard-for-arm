@@ -463,12 +463,13 @@ class ExactRunAggregationTests(unittest.TestCase):
                 **self.fixture.expectations(),
             )
 
-    def test_current_repository_discovers_exact_21_batch_topology(self) -> None:
+    def test_current_repository_discovers_exact_22_batch_topology(self) -> None:
         repository_root = Path(__file__).resolve().parents[3]
         topology = contract.discover_topology(repository_root)
-        self.assertEqual(len(topology), 21)
+        self.assertEqual(len(topology), 22)
         self.assertTrue(contract.topology_payload(topology)["mutable_external_actions"])
         packages = [package for batch in topology for package in batch.packages]
+        self.assertEqual(len(packages), 960)
         workflow_root = repository_root / ".github" / "workflows"
         package_files = {
             f".github/workflows/{path.name}"
@@ -477,7 +478,7 @@ class ExactRunAggregationTests(unittest.TestCase):
         }
         self.assertEqual({package.workflow_path for package in packages}, package_files)
         payload = contract.topology_payload(topology)
-        self.assertTrue(payload["over_capacity_batches"])
+        self.assertEqual(payload["over_capacity_batches"], [])
         self.assertEqual(payload["target_packages_per_batch"], 45)
         self.assertEqual(len(payload["local_actions"]), 7)
 
