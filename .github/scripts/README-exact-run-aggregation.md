@@ -89,9 +89,9 @@ any retained package failed; otherwise it records `overall_status=success`.
 - 256 KiB central directory, 512-byte member names and no ZIP64 archives;
 - 32 JSON levels and 100,000 JSON nodes.
 
-The current 21-batch catalog has legacy batches above the 45-package target. The
-foundation reports those batches without activating publication. The separate batch
-rebalance must land before 45 becomes a hard production cutover gate.
+The current 22-batch catalog contains 960 package workflows, with no batch above the
+45-package target. This topology is reviewed independently from the still-dormant
+exact-run publication path.
 
 ## Local validation
 

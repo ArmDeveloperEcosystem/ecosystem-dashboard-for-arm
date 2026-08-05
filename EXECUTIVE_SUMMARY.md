@@ -18,7 +18,7 @@ The current result set contains 960 active package smoke tests. All 960 are badg
 
 - Native Arm64 package validation using `ubuntu-24.04-arm` runners.
 - Reusable package workflow contract version `2.0`.
-- 21 batch workflows to keep the full test set manageable.
+- 22 batch workflows to keep the full test set manageable.
 - A global summary workflow that publishes `data/test-results/*.json` and `data/test-results-index.json`.
 - Dashboard support for top-level badge counts and expandable per-test details.
 - A weekly orchestrator schedule on `main`.
@@ -51,7 +51,7 @@ Team-agreed operating model:
 - Review the main/staging results.
 - Merge the validated results to `production`.
 - Production should deploy the site and point back to main-run evidence.
-- Production should not rerun the full 21-batch smoke suite unless the team intentionally changes that policy.
+- Production should not rerun the full 22-batch smoke suite unless the team intentionally changes that policy.
 
 ## Current Cleanup State
 

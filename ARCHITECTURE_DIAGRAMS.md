@@ -17,7 +17,7 @@ main branch
   v
 .github/workflows/test-all-packages-batch1.yml
 ...
-.github/workflows/test-all-packages-batch21.yml
+.github/workflows/test-all-packages-batch22.yml
   |
   | each batch runs package workflows through workflow_call
   v
@@ -56,7 +56,7 @@ main
 production
   |
   | deploys the already validated site/results
-  | does not rerun the full 21-batch smoke suite
+  | does not rerun the full 22-batch smoke suite
   v
 public production dashboard
 ```
