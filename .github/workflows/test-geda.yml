@@ -87,6 +87,8 @@ jobs:
       HOMEPAGE_URL: "https://launchpad.net/geda"
       OFFICIAL_DOCS: "https://launchpad.net/ubuntu/+source/geda-gaf"
       SOURCE_DESCRIPTOR_URL: "https://archive.ubuntu.com/ubuntu/pool/universe/g/geda-gaf/geda-gaf_1.8.2-4.dsc"
+      SOURCE_DESCRIPTOR_SHA256: "f36575e3aedba6aec018df182a452c5f3afb49cc888ed502e3b6d0c44c6f1b41"
+      LATEST_STABLE_VERSION: "1.10.2"
       GITHUB_REPO: ""
       PACKAGE_PAGE: "content/linux/opensource_packages/geda.md"
       SOURCE_GLOBS: ""
@@ -183,6 +185,7 @@ jobs:
             echo "Official Ubuntu source descriptor has an unexpected size." >&2
             exit 1
           fi
+          printf '%s  %s\n' "$SOURCE_DESCRIPTOR_SHA256" "$descriptor" | sha256sum --check --strict --status
           grep -Fxq 'Source: geda-gaf' "$descriptor"
           grep -Fxq "Version: $BASELINE_VERSION" "$descriptor"
           grep -Eq '^Architecture: (any|all)( (any|all))*$' "$descriptor"
@@ -336,8 +339,17 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
           START_TIME=$(date +%s)
+          fail_test5() {
+            local exit_code=$?
+            trap - ERR
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=The bounded gEDA package-specific validation failed before completion." >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$exit_code"
+          }
+          trap fail_test5 ERR
           if apt-cache policy geda 2>/tmp/geda-policy.err | tee /tmp/geda-policy.log | grep -Eiq 'Candidate: [^(]'; then
             sudo apt-get update
             sudo apt-get install -y geda
@@ -353,6 +365,7 @@ jobs:
           else
             cat /tmp/geda-policy.log || true
             descriptor=baseline-external/geda-gaf.dsc
+            printf '%s  %s\n' "$SOURCE_DESCRIPTOR_SHA256" "$descriptor" | sha256sum --check --strict --status
             grep -Fxq -- '-----BEGIN PGP SIGNED MESSAGE-----' "$descriptor"
             grep -Fxq 'Source: geda-gaf' "$descriptor"
             grep -Fxq "Version: $BASELINE_VERSION" "$descriptor"
@@ -361,8 +374,9 @@ jobs:
             grep -A3 '^Checksums-Sha256:' "$descriptor" | \
               grep -Eq '^[[:space:]]+[0-9a-f]{64} [1-9][0-9]* geda-gaf_1\.8\.2\.orig\.tar\.gz$'
             echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=gEDA is not available from the ubuntu-24.04-arm package repositories, so this archived/manual-review lane validates the exact signed Ubuntu source descriptor for 1:1.8.2-4 without claiming a live runtime install." >> "$GITHUB_OUTPUT"
+            echo "note=gEDA is not available from the ubuntu-24.04-arm package repositories, so this archived/manual-review lane validates the pinned clear-signed Ubuntu source descriptor structure for 1:1.8.2-4 without claiming a live runtime install or cryptographic signer verification." >> "$GITHUB_OUTPUT"
           fi
+          trap - ERR
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -373,11 +387,11 @@ jobs:
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || env.BASELINE_VERSION }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST_STABLE_VERSION" >> "$GITHUB_OUTPUT"
           echo "next_installed_version=n/a" >> "$GITHUB_OUTPUT"
-          echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-          echo "regression_result=No newer stable public release is available" >> "$GITHUB_OUTPUT"
-          echo "comparison=Tests 1-5 validate archived project metadata and Ubuntu distro-source evidence for the historical Arm64 baseline. On ubuntu-24.04-arm the geda binary package is not available, so no live runtime pass is claimed. No newer stable public release is selected for automated regression validation." >> "$GITHUB_OUTPUT"
+          echo "decision=runtime_validation_not_automated" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Upstream gEDA $LATEST_STABLE_VERSION requires manual or specialized runtime validation" >> "$GITHUB_OUTPUT"
+          echo "comparison=Tests 1-5 validate archived project metadata and pinned Ubuntu distro-source evidence for the historical Arm64 baseline. Upstream publishes stable gEDA $LATEST_STABLE_VERSION, but ubuntu-24.04-arm does not provide the geda binary package, so the workflow explicitly defers candidate runtime validation and makes no live runtime claim." >> "$GITHUB_OUTPUT"
           echo "status=skipped" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -401,23 +415,24 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
           for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+            if [ "$STATUS" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$CORE_FAILED" -eq 0 ] && [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
             BADGE_STATUS="passing"
           else
