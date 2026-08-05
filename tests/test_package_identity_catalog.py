@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import importlib.util
 import json
 import os
 import socket
@@ -16,17 +17,26 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from build_steps import validate_package_identity_catalog as validator_module
-from build_steps.validate_package_identity_catalog import (
-    CATALOG_REPOSITORY_PATH,
-    CONTENT_ROOT,
-    MAX_PACKAGE_BYTES,
-    MAX_WORKFLOW_BYTES,
-    CatalogValidationError,
-    calculate_corpus_sha256,
-    validate_catalog,
-    validate_catalog_revision,
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+VALIDATOR_PATH = REPOSITORY_ROOT / "build_steps/validate_package_identity_catalog.py"
+_VALIDATOR_SPEC = importlib.util.spec_from_file_location(
+    "package_identity_catalog_validator",
+    VALIDATOR_PATH,
 )
+if _VALIDATOR_SPEC is None or _VALIDATOR_SPEC.loader is None:
+    raise RuntimeError("could not load the package identity catalog validator")
+validator_module = importlib.util.module_from_spec(_VALIDATOR_SPEC)
+sys.modules[_VALIDATOR_SPEC.name] = validator_module
+_VALIDATOR_SPEC.loader.exec_module(validator_module)
+
+CATALOG_REPOSITORY_PATH = validator_module.CATALOG_REPOSITORY_PATH
+CONTENT_ROOT = validator_module.CONTENT_ROOT
+MAX_PACKAGE_BYTES = validator_module.MAX_PACKAGE_BYTES
+MAX_WORKFLOW_BYTES = validator_module.MAX_WORKFLOW_BYTES
+CatalogValidationError = validator_module.CatalogValidationError
+calculate_corpus_sha256 = validator_module.calculate_corpus_sha256
+validate_catalog = validator_module.validate_catalog
+validate_catalog_revision = validator_module.validate_catalog_revision
 
 
 class CatalogFixture:
@@ -188,6 +198,51 @@ class PackageIdentityCatalogTests(unittest.TestCase):
         self.fixture()
 
         self.assertEqual(validate_catalog(self.root), 2)
+
+    def test_cli_requires_isolated_mode_before_repository_imports(self) -> None:
+        _write_valid_fixture(self.root)
+        build_steps = self.root / "build_steps"
+        build_steps.mkdir()
+        validator_path = build_steps / VALIDATOR_PATH.name
+        validator_path.write_bytes(VALIDATOR_PATH.read_bytes())
+        (build_steps / "hashlib.py").write_text(
+            "raise SystemExit(0)\n",
+            encoding="ascii",
+        )
+        revision = _commit_existing_tree(self.root, "isolated CLI fixture")
+        arguments = [
+            str(validator_path),
+            "--repository-root",
+            str(self.root),
+            "--revision",
+            revision,
+        ]
+
+        nonisolated = subprocess.run(
+            [sys.executable, "-B", *arguments],
+            cwd=self.root,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(nonisolated.returncode, 1)
+        self.assertIn("Python isolated mode (-I) is required", nonisolated.stderr)
+
+        isolated = subprocess.run(
+            [sys.executable, "-I", "-B", *arguments],
+            cwd=self.root,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(isolated.returncode, 0, isolated.stderr)
+        self.assertIn(
+            "validated 2 package identity catalog records "
+            f"against schema 1.1 at {revision}",
+            isolated.stdout,
+        )
 
     def test_revision_validation_uses_an_immutable_commit_snapshot(self) -> None:
         revision = _commit_valid_fixture(self.root)
@@ -1177,8 +1232,9 @@ class PackageIdentityCatalogTests(unittest.TestCase):
                 return original_read(file_fd, count)
 
             with (
-                patch(
-                    "build_steps.validate_package_identity_catalog.os.read",
+                patch.object(
+                    validator_module.os,
+                    "read",
                     side_effect=replace_path_then_read,
                 ),
                 self.assertRaisesRegex(
@@ -1444,6 +1500,32 @@ class PackageIdentityCatalogTests(unittest.TestCase):
                         "source_revision must not be an all-zero object ID",
                     ):
                         validate_catalog(root)
+
+    def test_manual_review_evidence_is_disabled_until_authenticated(self) -> None:
+        fixture = self.fixture()
+        payload = fixture.payload()
+        dimension = payload["records"][0]["registries"]["pip"]
+        dimension["status"] = "not_applicable"
+        dimension["exhaustive"] = True
+        dimension["identities"] = []
+        dimension["evidence"] = [
+            {
+                "source_kind": "manual_review",
+                "source_locator": "reviews/does-not-exist.txt#pip-identity",
+                "source_revision": "a" * 40,
+                "evidence_sha256": "b" * 64,
+                "verified_by": "invented-reviewer",
+                "verified_at": "2025-01-01T00:00:00Z",
+                "rationale": "Fabricated manual evidence must never authorize a claim.",
+            }
+        ]
+        fixture.write(payload)
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "manual_review evidence is disabled",
+        ):
+            validate_catalog(self.root)
 
     def test_new_package_page_without_catalog_record_is_rejected(self) -> None:
         self.fixture()

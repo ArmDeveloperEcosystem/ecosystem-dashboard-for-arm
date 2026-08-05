@@ -9,6 +9,21 @@ record to the exact package page and expected package workflow bytes.
 
 from __future__ import annotations
 
+import sys
+
+_ISOLATED_MODE_ERROR = (
+    "Python isolated mode (-I) is required; invoke this validator with "
+    "'python3 -I build_steps/validate_package_identity_catalog.py'"
+)
+
+# This guard must run before imports that a repository-controlled module could shadow.
+if __name__ == "__main__" and not sys.flags.isolated:
+    print(
+        f"package identity catalog validation failed: {_ISOLATED_MODE_ERROR}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
 import argparse
 import csv
 import functools
@@ -23,7 +38,6 @@ import shutil
 import signal
 import stat
 import subprocess
-import sys
 import tempfile
 import time
 from collections.abc import Iterator, Mapping
@@ -95,7 +109,6 @@ _EVIDENCE_SOURCE_KINDS = {
     "github_api",
     "pypi_api",
     "npm_api",
-    "manual_review",
     "generated_workflow",
 }
 _APPROVED_EVIDENCE_HOSTS = {
@@ -2434,14 +2447,11 @@ def _validate_registries(
                 f"{dimension_context} {status} status cannot be exhaustive"
             )
         independent_sources = (
-            {"manual_review", "pypi_api"}
-            if registry_kind == "pip"
-            else {"manual_review", "npm_api"}
+            {"pypi_api"} if registry_kind == "pip" else {"npm_api"}
         )
         if exhaustive and not evidence_kinds.intersection(independent_sources):
             raise CatalogValidationError(
-                f"{dimension_context} exhaustive coverage requires registry or "
-                "manual-review evidence"
+                f"{dimension_context} exhaustive coverage requires registry evidence"
             )
 
         for identity in normalized_identities:
@@ -2480,6 +2490,12 @@ def _validate_evidence(
         f"{context}.source_kind",
         maximum=32,
     )
+    if source_kind == "manual_review":
+        raise CatalogValidationError(
+            f"{context}.source_kind manual_review evidence is disabled until an "
+            "authenticated external approval verifier and repository ownership "
+            "controls are configured"
+        )
     if source_kind not in _EVIDENCE_SOURCE_KINDS:
         raise CatalogValidationError(f"{context}.source_kind is not supported")
     source_locator = _require_single_line(
@@ -2540,17 +2556,6 @@ def _validate_evidence(
             raise CatalogValidationError(
                 f"{context} must match the record workflow path and SHA-256"
             )
-    elif source_kind == "manual_review":
-        _validate_manual_locator(source_locator, f"{context}.source_locator")
-        if not _GIT_OBJECT_ID_RE.fullmatch(source_revision):
-            raise CatalogValidationError(
-                f"{context}.source_revision must be an immutable 40- or "
-                "64-character lowercase Git/content ID"
-            )
-        if rationale is None:
-            raise CatalogValidationError(
-                f"{context} manual-review evidence requires a rationale"
-            )
     else:
         _validate_https_locator(
             source_locator,
@@ -2569,22 +2574,6 @@ def _validate_evidence(
                 "SHA-256 snapshot revision"
             )
     return source_kind, rationale
-
-
-def _validate_manual_locator(locator: str, context: str) -> None:
-    if locator.startswith("https://"):
-        _validate_https_locator(
-            locator,
-            approved_hosts={"github.com"},
-            context=context,
-        )
-        return
-    path_text, separator, fragment = locator.partition("#")
-    _require_repository_path(path_text, context)
-    if separator and (
-        not fragment or any(character in fragment for character in "\x00\r\n#")
-    ):
-        raise CatalogValidationError(f"{context} has an invalid fragment")
 
 
 def _validate_https_locator(
@@ -3206,6 +3195,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if not sys.flags.isolated:
+        print(
+            f"package identity catalog validation failed: {_ISOLATED_MODE_ERROR}",
+            file=sys.stderr,
+        )
+        return 1
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     try:
         count, revision = validate_catalog_revision(

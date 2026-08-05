@@ -83,8 +83,8 @@ Each registry dimension contains:
 
 Evidence records identify the source kind, locator, immutable source revision,
 evidence SHA-256, reviewer, timezone-aware review time, and rationale where
-required. Exhaustive pip coverage requires PyPI or manual-review evidence;
-exhaustive npm coverage requires npm-registry or manual-review evidence.
+required. During this dormant bootstrap phase, exhaustive pip coverage requires
+PyPI evidence and exhaustive npm coverage requires npm-registry evidence.
 Unknown or ambiguous dimensions are never exhaustive.
 
 Evidence timestamps use canonical RFC3339 text with an uppercase `T`, seconds,
@@ -101,10 +101,15 @@ broaden that contract:
 |---|---|
 | `generated_workflow` | Exactly 40 lowercase hexadecimal characters identifying the dashboard Git commit |
 | `github_api` | Exactly 40 or 64 lowercase hexadecimal characters identifying a Git object |
-| `manual_review` | Exactly 40 or 64 lowercase hexadecimal characters identifying reviewed Git or content state |
 | `frontmatter_url` | Exactly 64 lowercase hexadecimal characters identifying the source snapshot SHA-256 |
 | `pypi_api` | Exactly 64 lowercase hexadecimal characters identifying the API snapshot SHA-256 |
 | `npm_api` | Exactly 64 lowercase hexadecimal characters identifying the API snapshot SHA-256 |
+
+`manual_review` remains a reserved schema value, but this dormant bootstrap
+validator rejects every occurrence. It cannot authenticate a reviewer or an
+approval from catalog text alone. A separately reviewed change may enable it
+only after an authenticated external approval verifier, path-specific
+CODEOWNERS, required reviews, and repository rulesets are operating.
 
 Floating names and aliases such as `latest`, `main`, `master`, `HEAD`,
 `refs/heads/main`, tags, and bare version labels are not immutable revisions and
@@ -232,10 +237,15 @@ Run the read-only validator from the repository root with the checksum-verified
 Hugo binary used by production:
 
 ```bash
-python3 build_steps/validate_package_identity_catalog.py \
+python3 -I -B build_steps/validate_package_identity_catalog.py \
   --revision HEAD \
   --hugo-binary /trusted/tools/hugo-0.130.0/hugo
 ```
+
+The CLI fails closed unless Python isolated mode (`-I`) is active. The guard
+runs before imports that repository-controlled Python files could shadow. `-B`
+also prevents the validation command from writing bytecode into the reviewed
+checkout.
 
 For a caller that already possesses the reviewed commit identity, replace
 `HEAD` with that exact 40-character commit ID. Branch names, tags, abbreviated
@@ -255,7 +265,7 @@ binary:
 
 ```bash
 PACKAGE_CATALOG_HUGO_BINARY=/trusted/tools/hugo-0.130.0/hugo \
-  python3 -m unittest -v tests.test_package_identity_catalog
+  python3 -I -B tests/test_package_identity_catalog.py -v
 ```
 
 The tests cover ancestor and final-component symlinks, pathname replacement
@@ -271,7 +281,11 @@ production-template resource publication, direct HTTP denial, rendered-output
 amplification, external type-specific cache writes, build-stat output, descendant
 process cleanup, selector cleanup, noncanonical Hugo content paths, control
 workflow names, source-snapshot non-mutation, canonical timestamps, and
-generated-workflow evidence binding.
+generated-workflow evidence binding. A real subprocess regression also places a
+hostile `build_steps/hashlib.py` beside the validator: nonisolated invocation
+must fail, while the isolated invocation must complete validation. Manual-review
+evidence is rejected until external authentication and repository governance
+exist.
 
 The bootstrap-only
 `.github/workflows/package-identity-bootstrap-unit-tests.yml` workflow downloads
@@ -303,18 +317,20 @@ A separately reviewed bootstrap change must:
 5. Record immutable evidence metadata for every dimension. A generated
    worksheet may use honest `frontmatter_url` or `generated_workflow` evidence
    where valid, with unknown and non-exhaustive decisions left for review.
-6. Mark coverage exhaustive only when registry or manual evidence demonstrates
-   that all identities for that dimension were considered.
+6. Mark coverage exhaustive only when registry evidence demonstrates that all
+   identities for that dimension were considered.
 7. Run the exact checkout, Hugo topology, rendered-route, and catalog validator
    gates against the proposed merge tree.
 8. Add the validator as a required pull-request check before the catalog can
    authorize any no-match decision.
+9. Configure path-specific CODEOWNERS, required human review, and repository
+   rulesets before any authenticated manual-review verifier can be enabled.
 
-`manual_review` is reserved for a real review by the named human in
-`verified_by`. Bootstrap automation must never emit that source kind or
-fabricate a human attestation. It must also never infer `not_applicable` or
-exhaustive coverage from a missing workflow, a missing URL, an unapproved URL,
-frontmatter, or generated shell commands.
+`manual_review` is reserved for a future authenticated approval verifier and is
+rejected by this dormant validator. Bootstrap automation must never emit that
+source kind or fabricate a human attestation. It must also never infer
+`not_applicable` or exhaustive coverage from a missing workflow, a missing URL,
+an unapproved URL, frontmatter, or generated shell commands.
 
 Until that bootstrap and required check are independently reviewed, a missing
 catalog must remain a fail-closed condition.
