@@ -103,7 +103,7 @@ macOS or x64. Local validation therefore requires an existing compatible PyYAML
 ```bash
 python3 .github/scripts/exact_run_aggregation.py topology --repository-root .
 python3 .github/scripts/package_workflow_supply_chain.py \
-  --expected-source-commit 73155d0d3a3dc73da08c62bc2bb7eccf281c6008
+  --expected-base-commit 73155d0d3a3dc73da08c62bc2bb7eccf281c6008
 python3 -m unittest discover -s .github/scripts/tests -p 'test_*.py' -v
 ```
 
@@ -125,10 +125,13 @@ The lock is intentionally tied to dashboard commit
 `73155d0d3a3dc73da08c62bc2bb7eccf281c6008`. Future package onboarding must
 extend and review the lock rather than reusing mutable tags or silently changing
 the dependency inventory. Pull-request CI passes the authenticated PR base SHA to
-the validator and requires exact equality with this reviewed source commit, so merely
-retaining an older Git object cannot satisfy guarded derivation. The required check
-has no manual-dispatch path: reruns remain bound to the pull request's authenticated
-base SHA.
+the validator. The initial migration requires that base to equal the reviewed source
+commit so merely retaining an older Git object cannot satisfy guarded derivation.
+On later relevant pull requests, an advanced base is accepted only when the exact
+960-package and 22-batch byte snapshot still matches the reviewed hardened lock;
+modified, missing, or malformed base evidence fails closed. The required check has
+no manual-dispatch path: reruns remain bound to the pull request's authenticated base
+SHA.
 
 The foundation workflow intentionally uses an unfiltered `pull_request` trigger, so
 GitHub creates the stable `Exact-run contract` job on every pull request. This makes

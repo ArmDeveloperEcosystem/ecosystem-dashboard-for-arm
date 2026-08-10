@@ -3,8 +3,10 @@ from __future__ import annotations
 import copy
 import importlib.util
 import re
+import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "package_workflow_supply_chain.py"
@@ -49,14 +51,14 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         self.assertEqual("  pull_request:", events)
         self.assertNotIn("workflow_dispatch:", workflow)
         self.assertNotRegex(workflow, r"\binputs\.")
-        source_assignments = re.findall(
-            r"(?m)^\s+REVIEWED_SOURCE_COMMIT: (.+)$", workflow
+        base_assignments = re.findall(
+            r"(?m)^\s+AUTHENTICATED_BASE_COMMIT: (.+)$", workflow
         )
-        self.assertEqual(3, len(source_assignments))
+        self.assertEqual(3, len(base_assignments))
         self.assertTrue(
             all(
                 value == "${{ github.event.pull_request.base.sha }}"
-                for value in source_assignments
+                for value in base_assignments
             )
         )
 
@@ -79,21 +81,23 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         self.assertNotIn("\n        if:", scope)
         self.assertIn("        id: scope\n", scope)
         self.assertIn(
-            "REVIEWED_SOURCE_COMMIT: "
+            "AUTHENTICATED_BASE_COMMIT: "
             "${{ github.event.pull_request.base.sha }}",
             scope,
         )
         self.assertNotIn("github.event.inputs", scope)
         self.assertNotIn("github.sha", scope)
         self.assertIn("git fetch --no-tags --depth=1 origin", scope)
-        self.assertIn("git diff --quiet \"$REVIEWED_SOURCE_COMMIT\" HEAD", scope)
+        self.assertIn(
+            'git diff --quiet "$AUTHENTICATED_BASE_COMMIT" HEAD', scope
+        )
         self.assertIn("diff_status=$?", scope)
         self.assertIn('if [[ "$diff_status" -ne 1 ]]', scope)
         self.assertIn('exit "$diff_status"', scope)
         self.assertEqual(1, scope.count("'relevant=false'"))
         self.assertEqual(1, scope.count("'relevant=true'"))
         _, diff_separator, diff_tail = scope.partition(
-            'if git diff --quiet "$REVIEWED_SOURCE_COMMIT" HEAD -- \\\n'
+            'if git diff --quiet "$AUTHENTICATED_BASE_COMMIT" HEAD -- \\\n'
         )
         self.assertTrue(diff_separator, "scope must diff the authenticated base")
         path_block, then_separator, _ = diff_tail.partition("; then")
@@ -165,11 +169,47 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
 
     def test_stale_reviewed_base_is_rejected(self) -> None:
         with self.assertRaisesRegex(
-            supply_chain.ContractError, "trusted pull-request base"
+            supply_chain.ContractError, "authenticated pull-request base"
         ):
             supply_chain.validate_hardening(
-                self.root, expected_source_commit="0" * 40
+                self.root, expected_base_commit="0" * 40
             )
+
+    def test_legitimate_advanced_hardened_base_is_accepted(self) -> None:
+        head = subprocess.run(
+            ["git", "-C", str(self.root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        self.assertNotEqual(supply_chain.SOURCE_COMMIT, head)
+        result = supply_chain.validate_hardening(
+            self.root, expected_base_commit=head
+        )
+        self.assertEqual(
+            "db87133f5230f98fb16b0c53ff5c1dc05b714832ac4abaae54f3d344ecd201f1",
+            result["workflow_sha256"],
+        )
+
+    def test_modified_advanced_base_snapshot_is_rejected(self) -> None:
+        lock = supply_chain.load_lock(self.root)
+        paths = [*self.workflows, *self.batches]
+        snapshot = {
+            path.relative_to(self.root).as_posix(): path.read_bytes()
+            for path in paths
+        }
+        first = min(snapshot)
+        snapshot[first] += b"\n"
+        with mock.patch.object(
+            supply_chain, "source_snapshot", return_value=snapshot
+        ):
+            with self.assertRaisesRegex(
+                supply_chain.ContractError, "does not match the reviewed hardened"
+            ):
+                supply_chain.validate_authenticated_base(
+                    self.root, paths, lock, "f" * 40
+                )
 
     def test_foundation_check_has_an_always_on_pull_request_trigger(self) -> None:
         workflow = self.foundation_workflow()
@@ -294,7 +334,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "workflow_sha256": "db87133f5230f98fb16b0c53ff5c1dc05b714832ac4abaae54f3d344ecd201f1",
             },
             supply_chain.validate_hardening(
-                self.root, expected_source_commit=supply_chain.SOURCE_COMMIT
+                self.root, expected_base_commit=supply_chain.SOURCE_COMMIT
             ),
         )
 

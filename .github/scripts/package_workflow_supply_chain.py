@@ -996,20 +996,56 @@ def workflow_set_sha256(root: Path, paths: Iterable[Path]) -> str:
     return digest.hexdigest()
 
 
+def workflow_snapshot_sha256(snapshot: dict[str, bytes]) -> str:
+    digest = hashlib.sha256()
+    for relative in sorted(snapshot):
+        path = relative.encode("utf-8")
+        content = snapshot[relative]
+        digest.update(len(path).to_bytes(4, "big"))
+        digest.update(path)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def validate_authenticated_base(
+    root: Path,
+    hardened_paths: list[Path],
+    lock: dict[str, object],
+    expected_base_commit: str,
+) -> str:
+    if (
+        not FULL_SHA_RE.fullmatch(expected_base_commit)
+        or expected_base_commit == "0" * 40
+    ):
+        raise ContractError("authenticated pull-request base is not a canonical SHA")
+    source_commit = str(lock["source_commit"])
+    if expected_base_commit == source_commit:
+        return "migration_source"
+    try:
+        snapshot = source_snapshot(root, hardened_paths, expected_base_commit)
+    except ContractError as error:
+        raise ContractError(
+            "could not read the authenticated advanced pull-request base"
+        ) from error
+    if workflow_snapshot_sha256(snapshot) != lock["hardened_workflow_sha256"]:
+        raise ContractError(
+            "advanced pull-request base does not match the reviewed hardened "
+            "workflow snapshot"
+        )
+    return "hardened_snapshot"
+
+
 def validate_hardening(
-    root: Path, *, expected_source_commit: str
+    root: Path, *, expected_base_commit: str
 ) -> dict[str, int | str]:
     workflows = registered_workflows(root)
     batches = batch_paths(root)
     hardened_paths = [*workflows, *batches]
     lock = load_lock(root)
-    if (
-        not FULL_SHA_RE.fullmatch(expected_source_commit)
-        or expected_source_commit != lock["source_commit"]
-    ):
-        raise ContractError(
-            "reviewed source commit does not match the trusted pull-request base"
-        )
+    base_mode = validate_authenticated_base(
+        root, hardened_paths, lock, expected_base_commit
+    )
     entries = lock_by_original(lock)
     exceptions = permission_exceptions(lock)
     containers = container_lock_by_workflow(lock)
@@ -1084,15 +1120,16 @@ def validate_hardening(
             f"found {checkout_count}"
         )
 
-    validate_source_derivation(
-        root,
-        workflows,
-        batches,
-        entries,
-        exceptions,
-        containers,
-        str(lock["source_commit"]),
-    )
+    if base_mode == "migration_source":
+        validate_source_derivation(
+            root,
+            workflows,
+            batches,
+            entries,
+            exceptions,
+            containers,
+            str(lock["source_commit"]),
+        )
 
     for relative, entry in containers.items():
         path = root / relative
@@ -1159,9 +1196,9 @@ def main() -> int:
         help="apply the guarded mechanical hardening before validation",
     )
     parser.add_argument(
-        "--expected-source-commit",
+        "--expected-base-commit",
         required=True,
-        help="trusted pull-request base commit used for guarded derivation",
+        help="authenticated pull-request base commit used for guarded validation",
     )
     args = parser.parse_args()
     root = repository_root()
@@ -1172,7 +1209,7 @@ def main() -> int:
             json.dumps(
                 {
                     "validated": validate_hardening(
-                        root, expected_source_commit=args.expected_source_commit
+                        root, expected_base_commit=args.expected_base_commit
                     )
                 },
                 sort_keys=True,
