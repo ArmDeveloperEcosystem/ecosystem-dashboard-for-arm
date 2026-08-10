@@ -74,6 +74,172 @@ class ContractError(RuntimeError):
     """Raised when the package-workflow contract is not exact."""
 
 
+def container_repository(reference: str) -> str:
+    """Return the registry/repository identity without a mutable tag."""
+    value = reference.removeprefix("docker://")
+    if not value or any(character.isspace() for character in value):
+        raise ContractError(f"invalid container reference: {reference!r}")
+    value = value.split("@", 1)[0]
+    slash = value.rfind("/")
+    colon = value.rfind(":")
+    if colon > slash:
+        value = value[:colon]
+    if not value or value.endswith("/"):
+        raise ContractError(f"invalid container repository: {reference!r}")
+    return value
+
+
+def validate_action_lock_entry(entry: object) -> tuple[str, str]:
+    if not isinstance(entry, dict):
+        raise ContractError("action lock entries must be objects")
+    expected_keys = {
+        "original_ref",
+        "occurrences",
+        "repository",
+        "repository_id",
+        "action_path",
+        "action_file",
+        "requested_ref",
+        "ref_type",
+        "resolved_commit",
+        "resolution_chain",
+        "github_api_repository_confirmed",
+        "github_api_commit_confirmed",
+        "action_file_confirmed_at_commit",
+        "git_ls_remote",
+        "github_commit_verification",
+    }
+    if set(entry) != expected_keys:
+        raise ContractError("action lock entry has missing or unexpected evidence")
+    original = entry.get("original_ref")
+    if not isinstance(original, str):
+        raise ContractError(f"invalid original ref: {original!r}")
+    action, repository, action_path, requested_ref = split_github_action(original)
+    if (
+        entry.get("repository") != repository
+        or entry.get("action_path") != action_path
+        or entry.get("requested_ref") != requested_ref
+        or entry.get("action_file")
+        != (f"{action_path}/action.yml" if action_path else "action.yml")
+    ):
+        raise ContractError(f"action identity evidence contradicts {original}")
+    repository_id = entry.get("repository_id")
+    occurrences = entry.get("occurrences")
+    commit = entry.get("resolved_commit")
+    ref_type = entry.get("ref_type")
+    chain = entry.get("resolution_chain")
+    if (
+        not isinstance(repository_id, int)
+        or repository_id < 1
+        or not isinstance(occurrences, int)
+        or occurrences < 1
+        or not isinstance(commit, str)
+        or not FULL_SHA_RE.fullmatch(commit)
+        or ref_type not in {"branch", "lightweight_tag", "annotated_tag"}
+        or not isinstance(chain, list)
+    ):
+        raise ContractError(f"invalid resolution evidence for {original}")
+    if any(
+        entry.get(key) is not True
+        for key in (
+            "github_api_repository_confirmed",
+            "github_api_commit_confirmed",
+            "action_file_confirmed_at_commit",
+        )
+    ):
+        raise ContractError(f"GitHub API evidence is incomplete for {original}")
+    remote = entry.get("git_ls_remote")
+    if not isinstance(remote, dict) or set(remote) != {
+        "ref_object",
+        "peeled_commit",
+        "matches_github_api",
+    }:
+        raise ContractError(f"git ls-remote evidence is malformed for {original}")
+    if (
+        remote.get("matches_github_api") is not True
+        or remote.get("peeled_commit") != commit
+        or not isinstance(remote.get("ref_object"), str)
+        or not FULL_SHA_RE.fullmatch(str(remote["ref_object"]))
+    ):
+        raise ContractError(f"git ls-remote evidence contradicts {original}")
+    if ref_type == "annotated_tag":
+        if not chain or chain[-1] != {
+            "tag_object": remote["ref_object"],
+            "target_type": "commit",
+            "target_sha": commit,
+        }:
+            raise ContractError(f"annotated-tag evidence is incomplete for {original}")
+    elif chain or remote["ref_object"] != commit:
+        raise ContractError(f"direct ref evidence contradicts {original}")
+    verification = entry.get("github_commit_verification")
+    if (
+        not isinstance(verification, dict)
+        or set(verification)
+        != {"verified", "reason", "signature_present", "payload_present"}
+        or not isinstance(verification.get("verified"), bool)
+        or not isinstance(verification.get("reason"), str)
+        or not verification["reason"]
+        or not isinstance(verification.get("signature_present"), bool)
+        or not isinstance(verification.get("payload_present"), bool)
+    ):
+        raise ContractError(f"commit verification evidence is malformed for {original}")
+    if verification["verified"] and not (
+        verification["signature_present"] and verification["payload_present"]
+    ):
+        raise ContractError(f"verified commit evidence is incomplete for {original}")
+    return action, commit
+
+
+def validate_container_lock_entry(entry: object) -> str:
+    if not isinstance(entry, dict) or set(entry) != {
+        "workflow",
+        "original_ref",
+        "repository",
+        "resolved_ref",
+        "resolved_digest",
+        "arm64_digest",
+        "media_type",
+        "linux_arm64_confirmed",
+        "observed_at_utc",
+        "arm64_runtime_validation",
+    }:
+        raise ContractError("container lock entry has missing or unexpected evidence")
+    workflow = entry.get("workflow")
+    original = entry.get("original_ref")
+    digest = entry.get("resolved_digest")
+    arm64_digest = entry.get("arm64_digest")
+    original_repository = (
+        container_repository(original) if isinstance(original, str) else None
+    )
+    runtime = entry.get("arm64_runtime_validation")
+    if (
+        not isinstance(workflow, str)
+        or not workflow.startswith(".github/workflows/test-")
+        or not isinstance(original, str)
+        or "@sha256:" in original
+        or entry.get("repository") != original_repository
+        or not isinstance(digest, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+        or entry.get("resolved_ref") != f"{original_repository}@{digest}"
+        or not isinstance(arm64_digest, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", arm64_digest)
+        or entry.get("media_type") != "application/vnd.oci.image.index.v1+json"
+        or entry.get("linux_arm64_confirmed") is not True
+        or not isinstance(entry.get("observed_at_utc"), str)
+        or not re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+            str(entry["observed_at_utc"]),
+        )
+        or not isinstance(runtime, dict)
+        or set(runtime) != {"method", "result"}
+        or not isinstance(runtime.get("method"), str)
+        or not runtime["method"].strip()
+        or runtime.get("result") != "passed"
+    ):
+        raise ContractError(f"invalid container lock entry: {entry!r}")
+    return workflow
+
+
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -144,17 +310,10 @@ def load_lock(root: Path) -> dict[str, object]:
 
     originals: set[str] = set()
     for entry in entries:
-        if not isinstance(entry, dict):
-            raise ContractError("action lock entries must be objects")
-        original = entry.get("original_ref")
-        commit = entry.get("resolved_commit")
-        occurrences = entry.get("occurrences")
-        if not isinstance(original, str) or original in originals:
+        validate_action_lock_entry(entry)
+        original = entry["original_ref"]
+        if original in originals:
             raise ContractError(f"invalid or duplicate original ref: {original!r}")
-        if not isinstance(commit, str) or not FULL_SHA_RE.fullmatch(commit):
-            raise ContractError(f"invalid resolved commit for {original}")
-        if not isinstance(occurrences, int) or occurrences < 1:
-            raise ContractError(f"invalid occurrence count for {original}")
         originals.add(original)
     if sum(int(entry["occurrences"]) for entry in entries) != EXPECTED_EXTERNAL_USES:
         raise ContractError("action lock occurrence total is not canonical")
@@ -164,30 +323,9 @@ def load_lock(root: Path) -> dict[str, object]:
         raise ContractError("container lock must contain exactly three entries")
     locations: set[str] = set()
     for entry in containers:
-        if not isinstance(entry, dict):
-            raise ContractError("container lock entries must be objects")
-        workflow = entry.get("workflow")
-        original = entry.get("original_ref")
-        digest = entry.get("resolved_digest")
-        resolved_ref = entry.get("resolved_ref")
-        arm64_digest = entry.get("arm64_digest")
-        if (
-            not isinstance(workflow, str)
-            or not workflow.startswith(".github/workflows/test-")
-            or workflow in locations
-            or not isinstance(original, str)
-            or "@sha256:" in original
-            or not isinstance(digest, str)
-            or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
-            or not isinstance(resolved_ref, str)
-            or resolved_ref != f"{entry.get('repository')}@{digest}"
-            or not isinstance(arm64_digest, str)
-            or not re.fullmatch(r"sha256:[0-9a-f]{64}", arm64_digest)
-            or entry.get("linux_arm64_confirmed") is not True
-            or not isinstance(entry.get("arm64_runtime_validation"), dict)
-            or entry["arm64_runtime_validation"].get("result") != "passed"
-        ):
-            raise ContractError(f"invalid container lock entry: {entry!r}")
+        workflow = validate_container_lock_entry(entry)
+        if workflow in locations:
+            raise ContractError(f"duplicate container lock workflow: {workflow}")
         locations.add(workflow)
     return lock
 
@@ -858,11 +996,20 @@ def workflow_set_sha256(root: Path, paths: Iterable[Path]) -> str:
     return digest.hexdigest()
 
 
-def validate_hardening(root: Path) -> dict[str, int | str]:
+def validate_hardening(
+    root: Path, *, expected_source_commit: str
+) -> dict[str, int | str]:
     workflows = registered_workflows(root)
     batches = batch_paths(root)
     hardened_paths = [*workflows, *batches]
     lock = load_lock(root)
+    if (
+        not FULL_SHA_RE.fullmatch(expected_source_commit)
+        or expected_source_commit != lock["source_commit"]
+    ):
+        raise ContractError(
+            "reviewed source commit does not match the trusted pull-request base"
+        )
     entries = lock_by_original(lock)
     exceptions = permission_exceptions(lock)
     containers = container_lock_by_workflow(lock)
@@ -1011,12 +1158,26 @@ def main() -> int:
         action="store_true",
         help="apply the guarded mechanical hardening before validation",
     )
+    parser.add_argument(
+        "--expected-source-commit",
+        required=True,
+        help="trusted pull-request base commit used for guarded derivation",
+    )
     args = parser.parse_args()
     root = repository_root()
     try:
         if args.apply:
             print(json.dumps({"applied": dict(apply_hardening(root))}, sort_keys=True))
-        print(json.dumps({"validated": validate_hardening(root)}, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "validated": validate_hardening(
+                        root, expected_source_commit=args.expected_source_commit
+                    )
+                },
+                sort_keys=True,
+            )
+        )
     except ContractError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

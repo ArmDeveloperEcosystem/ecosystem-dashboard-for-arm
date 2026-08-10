@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import unittest
 from pathlib import Path
@@ -49,6 +50,35 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.assertTrue(entry["linux_arm64_confirmed"])
             self.assertRegex(entry["resolved_digest"], r"^sha256:[0-9a-f]{64}$")
             self.assertRegex(entry["arm64_digest"], r"^sha256:[0-9a-f]{64}$")
+
+    def test_action_identity_substitution_is_rejected(self) -> None:
+        lock = supply_chain.load_lock(self.root)
+        entry = copy.deepcopy(lock["actions"][0])
+        entry["repository"] = "attacker/substituted-action"
+        with self.assertRaisesRegex(
+            supply_chain.ContractError, "identity evidence contradicts"
+        ):
+            supply_chain.validate_action_lock_entry(entry)
+
+    def test_container_repository_substitution_is_rejected(self) -> None:
+        lock = supply_chain.load_lock(self.root)
+        entry = copy.deepcopy(lock["containers"][0])
+        entry["repository"] = "attacker/substituted-image"
+        entry["resolved_ref"] = (
+            f"{entry['repository']}@{entry['resolved_digest']}"
+        )
+        with self.assertRaisesRegex(
+            supply_chain.ContractError, "invalid container lock entry"
+        ):
+            supply_chain.validate_container_lock_entry(entry)
+
+    def test_stale_reviewed_base_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            supply_chain.ContractError, "trusted pull-request base"
+        ):
+            supply_chain.validate_hardening(
+                self.root, expected_source_commit="0" * 40
+            )
 
     def test_every_external_use_is_immutable(self) -> None:
         external = 0
@@ -126,10 +156,12 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "unique_original_refs": 16,
                 "checkout_uses": 982,
                 "permission_exceptions": 4,
-                "topology_sha256": "407306d7532e9a418588e9d74c8e554b071e73b4d9ed81658e49986767bafdc5",
-                "workflow_sha256": "0d53c9995e3cc8b6df349d46d0645becf2a2ac3f2bf094cdc754e372ceb3a813",
+                "topology_sha256": "c16f81d3e036e8fc378b634f1e54fc2fb16b960f89cde8ff430c68f6f7c7dd2e",
+                "workflow_sha256": "db87133f5230f98fb16b0c53ff5c1dc05b714832ac4abaae54f3d344ecd201f1",
             },
-            supply_chain.validate_hardening(self.root),
+            supply_chain.validate_hardening(
+                self.root, expected_source_commit=supply_chain.SOURCE_COMMIT
+            ),
         )
 
 

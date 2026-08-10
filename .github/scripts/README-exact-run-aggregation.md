@@ -102,7 +102,8 @@ macOS or x64. Local validation therefore requires an existing compatible PyYAML
 
 ```bash
 python3 .github/scripts/exact_run_aggregation.py topology --repository-root .
-python3 .github/scripts/package_workflow_supply_chain.py
+python3 .github/scripts/package_workflow_supply_chain.py \
+  --expected-source-commit 73155d0d3a3dc73da08c62bc2bb7eccf281c6008
 python3 -m unittest discover -s .github/scripts/tests -p 'test_*.py' -v
 ```
 
@@ -115,12 +116,20 @@ containers to multi-architecture OCI index digests with confirmed Linux Arm64
 manifests, disables persisted checkout credentials, and narrows workflow
 permissions. The validator also binds the resulting workflow-set and exact-run
 topology SHA-256 values, then proves that applying the transform again makes no
-change.
+change. Action entries must carry internally consistent repository, ref, commit,
+action-file, commit-verification, and independent `git ls-remote` evidence. Container
+entries must preserve the exact registry/repository identity from the original tag;
+changing both the repository and digest in the lock is rejected.
 
 The lock is intentionally tied to dashboard commit
 `73155d0d3a3dc73da08c62bc2bb7eccf281c6008`. Future package onboarding must
 extend and review the lock rather than reusing mutable tags or silently changing
-the dependency inventory.
+the dependency inventory. Pull-request CI passes the authenticated PR base SHA to
+the validator and requires exact equality with this reviewed source commit, so merely
+retaining an older Git object cannot satisfy guarded derivation. Manual CI runs must
+provide that commit explicitly. Mutable refs are resolved only to produce a reviewed
+immutable snapshot; moved refs require a fresh evidence review and lock update before
+their newer commits are adopted.
 
 `validate-manifest`, `verify-batch`, and `aggregate` require trusted launch values
 from the parent orchestration. Every nonce uses `BATCH=NONCE` syntax, must contain
