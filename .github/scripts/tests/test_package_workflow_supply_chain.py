@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import re
 import unittest
 from pathlib import Path
 
@@ -12,6 +13,23 @@ assert SPEC and SPEC.loader
 supply_chain = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(supply_chain)
 
+FOUNDATION_WORKFLOW = ".github/workflows/exact-run-aggregation-foundation-ci.yml"
+SCOPE_GUARD = "if: steps.scope.outputs.relevant == 'true'"
+RELEVANT_PATHS = (
+    ".github/scripts/package_workflow_action_lock.json",
+    ".github/scripts/verify_action_lock_online.py",
+    ".github/scripts/package_workflow_supply_chain.py",
+    ".github/scripts/exact_run_aggregation.py",
+    ".github/scripts/tests/test_package_workflow_supply_chain.py",
+    ".github/scripts/tests/test_verify_action_lock_online.py",
+    ".github/scripts/tests/test_exact_run_aggregation.py",
+    ".github/scripts/README-exact-run-aggregation.md",
+    ".github/scripts/requirements-exact-run.txt",
+    ".github/actions/**",
+    FOUNDATION_WORKFLOW,
+    ".github/workflows/test-*.yml",
+)
+
 
 class PackageWorkflowSupplyChainTests(unittest.TestCase):
     @classmethod
@@ -19,6 +37,79 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         cls.root = Path(__file__).resolve().parents[3]
         cls.workflows = supply_chain.registered_workflows(cls.root)
         cls.batches = supply_chain.batch_paths(cls.root)
+
+    def foundation_workflow(self) -> str:
+        return (self.root / FOUNDATION_WORKFLOW).read_text(encoding="utf-8")
+
+    def assert_foundation_workflow_contract(self, workflow: str) -> None:
+        trigger, separator, remainder = workflow.partition("\npermissions:\n")
+        self.assertTrue(separator, "top-level permissions must follow the trigger")
+        _, on_separator, events = trigger.partition("\non:\n")
+        self.assertTrue(on_separator, "workflow must have an event trigger")
+        self.assertEqual("  pull_request:", events)
+        self.assertNotIn("workflow_dispatch:", workflow)
+        self.assertNotRegex(workflow, r"\binputs\.")
+        source_assignments = re.findall(
+            r"(?m)^\s+REVIEWED_SOURCE_COMMIT: (.+)$", workflow
+        )
+        self.assertEqual(3, len(source_assignments))
+        self.assertTrue(
+            all(
+                value == "${{ github.event.pull_request.base.sha }}"
+                for value in source_assignments
+            )
+        )
+
+        steps = re.findall(
+            r"(?ms)^      - name: ([^\n]+)\n(.*?)(?=^      - name: |\Z)",
+            remainder,
+        )
+        self.assertGreaterEqual(len(steps), 3)
+        self.assertEqual(
+            [
+                "Check out candidate without persisted credentials",
+                "Detect exact-run scope from authenticated PR base",
+            ],
+            [name for name, _ in steps[:2]],
+        )
+
+        checkout = steps[0][1]
+        scope = steps[1][1]
+        self.assertNotIn("\n        if:", checkout)
+        self.assertNotIn("\n        if:", scope)
+        self.assertIn("        id: scope\n", scope)
+        self.assertIn(
+            "REVIEWED_SOURCE_COMMIT: "
+            "${{ github.event.pull_request.base.sha }}",
+            scope,
+        )
+        self.assertNotIn("github.event.inputs", scope)
+        self.assertNotIn("github.sha", scope)
+        self.assertIn("git fetch --no-tags --depth=1 origin", scope)
+        self.assertIn("git diff --quiet \"$REVIEWED_SOURCE_COMMIT\" HEAD", scope)
+        self.assertIn("diff_status=$?", scope)
+        self.assertIn('if [[ "$diff_status" -ne 1 ]]', scope)
+        self.assertIn('exit "$diff_status"', scope)
+        self.assertEqual(1, scope.count("'relevant=false'"))
+        self.assertEqual(1, scope.count("'relevant=true'"))
+        _, diff_separator, diff_tail = scope.partition(
+            'if git diff --quiet "$REVIEWED_SOURCE_COMMIT" HEAD -- \\\n'
+        )
+        self.assertTrue(diff_separator, "scope must diff the authenticated base")
+        path_block, then_separator, _ = diff_tail.partition("; then")
+        self.assertTrue(then_separator, "scope diff must have an explicit result branch")
+        diff_paths = tuple(
+            line.strip().removesuffix("\\").strip().strip("'")
+            for line in path_block.splitlines()
+        )
+        self.assertEqual(RELEVANT_PATHS, diff_paths)
+
+        for name, body in steps[2:]:
+            self.assertEqual(
+                1,
+                body.count(f"        {SCOPE_GUARD}\n"),
+                f"{name!r} must use the exact fail-closed scope guard",
+            )
 
     def test_registration_is_exact(self) -> None:
         relative = [path.relative_to(self.root).as_posix() for path in self.workflows]
@@ -80,19 +171,48 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 self.root, expected_source_commit="0" * 40
             )
 
-    def test_foundation_check_is_bound_only_to_pull_request_base(self) -> None:
-        workflow = (
-            self.root
-            / ".github/workflows/exact-run-aggregation-foundation-ci.yml"
-        ).read_text(encoding="utf-8")
-        self.assertNotIn("workflow_dispatch:", workflow)
-        self.assertNotIn("inputs.reviewed_source_commit", workflow)
-        self.assertIn(
-            "REVIEWED_SOURCE_COMMIT: ${{ github.event.pull_request.base.sha }}",
-            workflow,
+    def test_foundation_check_has_an_always_on_pull_request_trigger(self) -> None:
+        workflow = self.foundation_workflow()
+        self.assert_foundation_workflow_contract(workflow)
+
+        filtered = workflow.replace(
+            "  pull_request:\n",
+            "  pull_request:\n    paths:\n      - '.github/scripts/**'\n",
+            1,
         )
-        self.assertIn("git diff --quiet", workflow)
-        self.assertIn("verify_action_lock_online.py", workflow)
+        with self.assertRaises(AssertionError):
+            self.assert_foundation_workflow_contract(filtered)
+
+    def test_foundation_check_rejects_dispatch_or_input_fallback(self) -> None:
+        workflow = self.foundation_workflow()
+        self.assert_foundation_workflow_contract(workflow)
+
+        dispatch = workflow.replace(
+            "  pull_request:\n", "  pull_request:\n  workflow_dispatch:\n", 1
+        )
+        fallback = workflow.replace(
+            "${{ github.event.pull_request.base.sha }}",
+            "${{ github.event.pull_request.base.sha "
+            "|| inputs.reviewed_source_commit }}",
+            1,
+        )
+        for adversarial_workflow in (dispatch, fallback):
+            with self.subTest(workflow=adversarial_workflow):
+                with self.assertRaises(AssertionError):
+                    self.assert_foundation_workflow_contract(adversarial_workflow)
+
+    def test_foundation_expensive_steps_require_exact_scope_guard(self) -> None:
+        workflow = self.foundation_workflow()
+        self.assert_foundation_workflow_contract(workflow)
+
+        unguarded = workflow.replace(f"        {SCOPE_GUARD}\n", "", 1)
+        weakened = workflow.replace(
+            f"        {SCOPE_GUARD}\n", "        if: always()\n", 1
+        )
+        for adversarial_workflow in (unguarded, weakened):
+            with self.subTest(workflow=adversarial_workflow):
+                with self.assertRaises(AssertionError):
+                    self.assert_foundation_workflow_contract(adversarial_workflow)
 
     def test_every_external_use_is_immutable(self) -> None:
         external = 0

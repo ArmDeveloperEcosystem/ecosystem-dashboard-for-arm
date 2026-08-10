@@ -99,6 +99,7 @@ def validate_live_action_evidence(
     commit_payload: object,
     contents_payload: object,
     ls_remote_output: str,
+    tag_payload: object | None = None,
 ) -> None:
     """Validate one lock entry using supplied live-evidence payloads only."""
     try:
@@ -161,6 +162,21 @@ def validate_live_action_evidence(
         raise OnlineEvidenceError(f"live ref object contradicts {original_ref}")
     if ref_type == "annotated_tag":
         resolved_ref_commit = refs[peeled_name]
+        tag_data = _require_object(tag_payload, "annotated-tag evidence")
+        target = _require_object(tag_data.get("object"), "annotated-tag target")
+        chain = entry["resolution_chain"]
+        expected_target = chain[-1]
+        if (
+            tag_data.get("sha") != refs[tag_name]
+            or tag_data.get("tag") != entry["requested_ref"]
+            or target.get("type") != expected_target["target_type"]
+            or target.get("sha") != expected_target["target_sha"]
+            or target.get("type") != "commit"
+            or target.get("sha") != commit_sha
+        ):
+            raise OnlineEvidenceError(
+                f"live annotated-tag chain contradicts {original_ref}"
+            )
     else:
         resolved_ref_commit = refs[ref_name]
     if resolved_ref_commit != commit_sha:
@@ -239,9 +255,16 @@ def verify_lock(lock_path: Path, runner: CommandRunner = run_command) -> int:
                 head_name, tag_name, peeled_name,
             ]
         )
+        tag_payload = None
+        if entry["ref_type"] == "annotated_tag":
+            tag_object = entry["git_ls_remote"]["ref_object"]
+            tag_payload = _run_json(
+                ["gh", "api", f"repos/{repository}/git/tags/{tag_object}"],
+                runner,
+            )
         validate_live_action_evidence(
             entry, repository_payload, commit_payload, contents_payload,
-            ls_remote_output,
+            ls_remote_output, tag_payload,
         )
     return len(actions)
 

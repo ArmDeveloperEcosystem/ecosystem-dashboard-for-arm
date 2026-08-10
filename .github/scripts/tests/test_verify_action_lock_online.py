@@ -82,14 +82,24 @@ def contents_payload() -> dict[str, object]:
     return {"type": "file", "path": "action.yml", "sha": FILE_SHA}
 
 
+def annotated_tag_payload() -> dict[str, object]:
+    return {
+        "sha": TAG_OBJECT,
+        "tag": "v1",
+        "object": {"type": "commit", "sha": COMMIT},
+    }
+
+
 class VerifyActionLockOnlineTests(unittest.TestCase):
     def verify(self, entry: dict[str, object], output: str) -> None:
+        tag = annotated_tag_payload() if entry["ref_type"] == "annotated_tag" else None
         online.validate_live_action_evidence(
             entry,
             repository_payload(),
             commit_payload(),
             contents_payload(),
             output,
+            tag,
         )
 
     def test_accepts_matching_lightweight_tag_evidence(self) -> None:
@@ -173,6 +183,42 @@ class VerifyActionLockOnlineTests(unittest.TestCase):
             self.verify(
                 action_entry("annotated_tag"),
                 f"{TAG_OBJECT}\trefs/tags/v1\n",
+            )
+
+    def test_annotated_tag_without_tag_object_evidence_is_rejected(self) -> None:
+        with self.assertRaisesRegex(online.OnlineEvidenceError, "annotated-tag"):
+            online.validate_live_action_evidence(
+                action_entry("annotated_tag"),
+                repository_payload(),
+                commit_payload(),
+                contents_payload(),
+                f"{TAG_OBJECT}\trefs/tags/v1\n{COMMIT}\trefs/tags/v1^{{}}\n",
+            )
+
+    def test_nested_annotated_tag_cannot_masquerade_as_direct(self) -> None:
+        nested = annotated_tag_payload()
+        nested["object"] = {"type": "tag", "sha": "4" * 40}
+        with self.assertRaisesRegex(online.OnlineEvidenceError, "tag chain"):
+            online.validate_live_action_evidence(
+                action_entry("annotated_tag"),
+                repository_payload(),
+                commit_payload(),
+                contents_payload(),
+                f"{TAG_OBJECT}\trefs/tags/v1\n{COMMIT}\trefs/tags/v1^{{}}\n",
+                nested,
+            )
+
+    def test_annotated_tag_name_and_object_are_bound(self) -> None:
+        wrong_name = annotated_tag_payload()
+        wrong_name["tag"] = "other"
+        with self.assertRaisesRegex(online.OnlineEvidenceError, "tag chain"):
+            online.validate_live_action_evidence(
+                action_entry("annotated_tag"),
+                repository_payload(),
+                commit_payload(),
+                contents_payload(),
+                f"{TAG_OBJECT}\trefs/tags/v1\n{COMMIT}\trefs/tags/v1^{{}}\n",
+                wrong_name,
             )
 
     def test_malformed_ls_remote_evidence_is_rejected(self) -> None:
