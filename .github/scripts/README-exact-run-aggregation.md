@@ -106,7 +106,8 @@ reviewed package jobs may forward that pair: Spark and NiFi in batch 1, Pinot in
 batch 2, Hive in batch 7, Hadoop and DolphinScheduler in batch 12, Storm in
 batch 13, and Druid in batch 17. The strict contract rejects missing, altered,
 partial, or additional forwarding and rejects prefetch inputs on every other
-batch.
+batch. Other package jobs may not declare a `with` block during this migration;
+each new job input requires an explicit contract review.
 
 ## Local validation
 

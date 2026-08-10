@@ -2160,11 +2160,9 @@ def _parse_batch_workflow(path: Path, *, batch: int, root: Path) -> BatchDefinit
                         f"batch {batch} job {job} prefetch forwarding is not exact"
                     )
                 observed_prefetch_jobs.add(job)
-            elif isinstance(raw_inputs, Mapping) and set(raw_inputs).intersection(
-                _PREFETCH_INPUTS
-            ):
+            elif raw_inputs is not None:
                 raise ContractError(
-                    f"batch {batch} job {job} has unreviewed prefetch forwarding"
+                    f"batch {batch} job {job} has unreviewed inputs"
                 )
         if observed_prefetch_jobs != expected_prefetch_jobs:
             raise ContractError(

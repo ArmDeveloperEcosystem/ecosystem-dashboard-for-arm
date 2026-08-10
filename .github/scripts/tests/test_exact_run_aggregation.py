@@ -541,7 +541,8 @@ class ExactRunAggregationTests(unittest.TestCase):
         (self.fixture.workflows / "test-alpha.yml").unlink()
         self.fixture._write_package_workflow("spark")
         self.fixture._write_package_workflow("nifi")
-        self.fixture._write_batch(1, ["spark", "nifi"])
+        self.fixture._write_package_workflow("other")
+        self.fixture._write_batch(1, ["spark", "nifi", "other"])
 
         batch = self.fixture.workflows / "test-all-packages-batch1.yml"
         text = batch.read_text(encoding="utf-8")
@@ -682,6 +683,17 @@ class ExactRunAggregationTests(unittest.TestCase):
                 "${{ inputs.prefetch_run_id || '' }}",
                 "${{ inputs.dispatch_nonce }}",
                 1,
+            ),
+            text.replace(
+                "  test-other:\n"
+                "    uses: ./.github/workflows/test-other.yml\n",
+                (
+                    "  test-other:\n"
+                    "    uses: ./.github/workflows/test-other.yml\n"
+                    "    with:\n"
+                    "      source_run: ${{ inputs.prefetch_run_id }}\n"
+                    "      payload: ${{ toJson(inputs) }}\n"
+                ),
             ),
         )
         collector_start = text.index(
@@ -830,10 +842,8 @@ class ExactRunAggregationTests(unittest.TestCase):
                     "  test-charlie:\n"
                     "    uses: ./.github/workflows/test-charlie.yml\n"
                     "    with:\n"
-                    "      prefetch_run_id: "
-                    "${{ inputs.prefetch_run_id || '' }}\n"
-                    "      prefetch_artifact_name: "
-                    "${{ inputs.prefetch_artifact_name || '' }}\n"
+                    "      source_run: ${{ inputs.prefetch_run_id }}\n"
+                    "      payload: ${{ toJson(inputs) }}\n"
                 ),
             ),
         )
