@@ -80,6 +80,20 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 self.root, expected_source_commit="0" * 40
             )
 
+    def test_foundation_check_is_bound_only_to_pull_request_base(self) -> None:
+        workflow = (
+            self.root
+            / ".github/workflows/exact-run-aggregation-foundation-ci.yml"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("workflow_dispatch:", workflow)
+        self.assertNotIn("inputs.reviewed_source_commit", workflow)
+        self.assertIn(
+            "REVIEWED_SOURCE_COMMIT: ${{ github.event.pull_request.base.sha }}",
+            workflow,
+        )
+        self.assertIn("git diff --quiet", workflow)
+        self.assertIn("verify_action_lock_online.py", workflow)
+
     def test_every_external_use_is_immutable(self) -> None:
         external = 0
         for path in [*self.workflows, *self.batches]:

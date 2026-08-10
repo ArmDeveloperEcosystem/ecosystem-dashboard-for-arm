@@ -126,10 +126,14 @@ The lock is intentionally tied to dashboard commit
 extend and review the lock rather than reusing mutable tags or silently changing
 the dependency inventory. Pull-request CI passes the authenticated PR base SHA to
 the validator and requires exact equality with this reviewed source commit, so merely
-retaining an older Git object cannot satisfy guarded derivation. Manual CI runs must
-provide that commit explicitly. Mutable refs are resolved only to produce a reviewed
-immutable snapshot; moved refs require a fresh evidence review and lock update before
-their newer commits are adopted.
+retaining an older Git object cannot satisfy guarded derivation. The required check
+has no manual-dispatch path: reruns remain bound to the pull request's authenticated
+base SHA. When the lock or its live verifier changes, CI also queries the GitHub API
+and independently runs `git ls-remote` to verify every recorded repository, commit,
+action file, signature status, and mutable-ref resolution. Unrelated pull requests
+retain the reviewed immutable snapshot without failing merely because an upstream
+mutable ref later moves; adopting a newer commit requires a fresh lock update and
+evidence review.
 
 `validate-manifest`, `verify-batch`, and `aggregate` require trusted launch values
 from the parent orchestration. Every nonce uses `BATCH=NONCE` syntax, must contain
