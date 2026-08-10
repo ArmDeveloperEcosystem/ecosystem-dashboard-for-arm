@@ -28,6 +28,16 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
+from package_result_policy import (
+    BASELINE_REGRESSION_DECISIONS as _BASELINE_REGRESSION_DECISIONS,
+    DEFERRED_REGRESSION_DECISIONS as _DEFERRED_REGRESSION_DECISIONS,
+    FAILED_REGRESSION_DECISIONS as _FAILED_REGRESSION_DECISIONS,
+    NOT_APPLICABLE_REGRESSION_DECISIONS as _NOT_APPLICABLE_REGRESSION_DECISIONS,
+    PASSED_REGRESSION_DECISIONS as _PASSED_REGRESSION_DECISIONS,
+    REGRESSION_DECISION_GROUPS as _REGRESSION_DECISION_GROUPS,
+    REGRESSION_STATUSES as _REGRESSION_STATUSES,
+)
+
 MANIFEST_SCHEMA = "arm-dashboard-exact-run-manifest"
 MANIFEST_VERSION = 1
 BATCH_ATTESTATION_SCHEMA = "arm-dashboard-batch-artifact-attestation"
@@ -230,63 +240,6 @@ _DETAIL_ALLOWED_KEYS = _DETAIL_REQUIRED_KEYS | {
     "regression_result",
     "comparison",
 }
-_REGRESSION_STATUSES = {"passed", "failed", "skipped", "deferred", "not_applicable"}
-_NOT_APPLICABLE_REGRESSION_DECISIONS = {
-    "current_is_latest_stable",
-    "no_newer_stable_available",
-    "not_applicable_package_manager",
-}
-_DEFERRED_REGRESSION_DECISIONS = {
-    "arm64_desktop_artifact_unavailable",
-    "manual_review_needed",
-    "metadata_review_required",
-    "next_lookup_deferred",
-    "no_public_arm64_candidate",
-    "runtime_validation_not_automated",
-    "upgrade_candidate_available",
-}
-_BASELINE_REGRESSION_DECISIONS = {"baseline_failed", "baseline_install_failed"}
-_PASSED_REGRESSION_DECISIONS = {
-    "limited_cpu_smoke_validated",
-    "next_bundle_validated",
-    "next_image_validated",
-    "next_install_validated",
-    "next_source_preflight_validated",
-    "validated_next_release",
-    "validated_next_release_metadata",
-}
-_FAILED_REGRESSION_DECISIONS = {
-    "install_failed",
-    "limited_cpu_smoke_failed",
-    "next_artifact_validation_failed",
-    "next_bundle_failed",
-    "next_download_failed",
-    "next_image_download_failed",
-    "next_image_failed",
-    "next_image_load_failed",
-    "next_image_unknown",
-    "next_install_blocked_java_runtime",
-    "next_install_blocked_non_arm64_release_assets",
-    "next_install_failed",
-    "next_install_or_version_mismatch",
-    "next_lookup_failed",
-    "next_regression_failed",
-    "next_runtime_failed",
-    "next_source_preflight_failed",
-}
-_REGRESSION_DECISION_GROUPS = (
-    _NOT_APPLICABLE_REGRESSION_DECISIONS,
-    _DEFERRED_REGRESSION_DECISIONS,
-    _BASELINE_REGRESSION_DECISIONS,
-    _PASSED_REGRESSION_DECISIONS,
-    _FAILED_REGRESSION_DECISIONS,
-)
-if sum(len(group) for group in _REGRESSION_DECISION_GROUPS) != len(
-    set().union(*_REGRESSION_DECISION_GROUPS)
-):
-    raise RuntimeError("regression decision policy groups must be disjoint")
-
-
 class ContractError(ValueError):
     """Untrusted result data does not satisfy the aggregation contract."""
 
