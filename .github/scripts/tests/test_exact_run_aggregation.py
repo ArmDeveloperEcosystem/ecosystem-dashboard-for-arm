@@ -467,7 +467,9 @@ class ExactRunAggregationTests(unittest.TestCase):
         repository_root = Path(__file__).resolve().parents[3]
         topology = contract.discover_topology(repository_root)
         self.assertEqual(len(topology), 22)
-        self.assertTrue(contract.topology_payload(topology)["mutable_external_actions"])
+        self.assertEqual(
+            contract.topology_payload(topology)["mutable_external_actions"], []
+        )
         packages = [package for batch in topology for package in batch.packages]
         self.assertEqual(len(packages), 960)
         workflow_root = repository_root / ".github" / "workflows"
@@ -480,6 +482,7 @@ class ExactRunAggregationTests(unittest.TestCase):
         payload = contract.topology_payload(topology)
         self.assertEqual(payload["over_capacity_batches"], [])
         self.assertEqual(payload["target_packages_per_batch"], 45)
+        self.assertEqual(len(payload["external_actions"]), 18)
         self.assertEqual(len(payload["local_actions"]), 7)
 
     def test_topology_rejects_unregistered_and_commented_out_contracts(self) -> None:

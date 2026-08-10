@@ -102,8 +102,25 @@ macOS or x64. Local validation therefore requires an existing compatible PyYAML
 
 ```bash
 python3 .github/scripts/exact_run_aggregation.py topology --repository-root .
+python3 .github/scripts/package_workflow_supply_chain.py
 python3 -m unittest discover -s .github/scripts/tests -p 'test_*.py' -v
 ```
+
+## Reviewed execution lock
+
+`package_workflow_action_lock.json` binds the current 960 registered package
+workflows and all 22 batch wrappers to an offline-reviewed dependency inventory.
+The guarded migration pins 1,130 GitHub Action uses, pins the three job/service
+containers to multi-architecture OCI index digests with confirmed Linux Arm64
+manifests, disables persisted checkout credentials, and narrows workflow
+permissions. The validator also binds the resulting workflow-set and exact-run
+topology SHA-256 values, then proves that applying the transform again makes no
+change.
+
+The lock is intentionally tied to dashboard commit
+`73155d0d3a3dc73da08c62bc2bb7eccf281c6008`. Future package onboarding must
+extend and review the lock rather than reusing mutable tags or silently changing
+the dependency inventory.
 
 `validate-manifest`, `verify-batch`, and `aggregate` require trusted launch values
 from the parent orchestration. Every nonce uses `BATCH=NONCE` syntax, must contain
@@ -149,11 +166,10 @@ Until those steps are complete, the production result flow remains unchanged.
 ## Known cutover blockers
 
 The current collector does not yet emit `batch-attestation.json` or every strict
-regression metadata field. The 21 current batch workflows also lack the canonical
-run name and trusted orchestration-ID/dispatch-nonce inputs, and their reachable
-external actions and container images still include mutable tags. Some package
+regression metadata field. The 22 current batch workflows also lack the canonical
+run name and trusted orchestration-ID/dispatch-nonce inputs. Some package
 workflows use inconsistent Test 6 statuses for the same decision. Before activation,
-separate migrations must pin those execution references and normalize outputs to
+separate migrations must wire the exact-run identities and normalize outputs to
 `passed`, `failed`, `deferred`, or
 `not_applicable`; generic `skipped` is reserved only for a baseline failure. Existing
 failing decisions remain failures during that migration. This foundation
