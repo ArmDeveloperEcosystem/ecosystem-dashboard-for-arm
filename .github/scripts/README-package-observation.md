@@ -44,6 +44,20 @@ them. Parsed or normalized producer JSON is never accepted at that boundary.
   action package workflows will call during the atomic migration.
 - `tests/test_package_observation.py` covers valid lanes and adversarial
   contradictions, including compatibility with `validate_package_result()`.
+- `package_observation_migration_audit.py` inventories all registered workflows
+  without editing them and emits a canonical remediation report. It follows
+  local composite-action output bindings and counts only shell writes directed
+  to `$GITHUB_OUTPUT`; comments, stdout-only text, and declarations without a
+  producing step do not satisfy the audit. Output-writing shell functions count
+  only when reachable from a call, and literal Test 6 decisions are paired with
+  the status written by the same output transaction. Shared-smoke variable
+  decisions are paired with their Test 6 status updates, and critical action and
+  policy source digests are part of the reviewed report. The report also inventories
+  baseline skip hazards, missing Test 6 baseline guards, missing strict
+  observation steps, semantic input bindings, job and reusable-workflow output
+  bindings, unsafe placeholder fallbacks, legacy batch collectors, the absent
+  strict batch collector, and four disjoint producer-wiring cohorts whose union
+  must remain the complete registered package set.
 
 ## Activation sequence
 
@@ -58,3 +72,26 @@ them. Parsed or normalized producer JSON is never accepted at that boundary.
 
 Adding these files alone does not change any trigger, batch, package test,
 credential, deployment, or publication behavior.
+
+Run the source audit locally with:
+
+```bash
+python3 .github/scripts/package_observation_migration_audit.py \
+  --repository-root . \
+  --output /tmp/package-observation-migration-audit.json
+```
+
+Add `--require-clean` after migration to return a nonzero status while any
+remediation bucket remains. During the staged migration, the test suite pins a
+reviewed digest of the complete report so one repaired workflow cannot be
+silently replaced by a newly broken workflow.
+
+`--require-activation-ready` is a separate fail-closed gate. It returns exit 3
+unless every static remediation bucket is empty and the report explicitly
+contains independently established cutover authorization. This source-only
+auditor always emits `cutover_authorized: false`; it cannot authorize itself.
+The strict observation runtime and native Arm64 shadow run remain the authority
+for control-flow and execution evidence. The final workflow bytes must also
+reseal the reviewed supply-chain lock before cutover. Both external gates are
+recorded in every canonical audit report and must be verified by the activation
+orchestrator.

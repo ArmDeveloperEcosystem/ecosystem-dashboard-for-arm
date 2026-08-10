@@ -93,6 +93,21 @@ The current 22-batch catalog contains 960 package workflows, with no batch above
 45-package target. This topology is reviewed independently from the still-dormant
 exact-run publication path.
 
+Topology discovery accepts exactly one collector contract in each batch during
+the staged migration: either the current legacy collector or the strict
+`collect-batch-observations` collector, never both. A strict batch must bind the
+exact orchestration ID, dispatch nonce, batch number, and complete `needs`
+payload, and its uploader must consume only the collector's declared artifact
+path. Strict reusable and manual triggers must declare the two required
+orchestration inputs as explicit strings and may not add another trigger.
+Batches 1, 2, 7, 12, 13, and 17 must also retain their reviewed optional
+`prefetch_run_id` and `prefetch_artifact_name` string inputs. Only the eight
+reviewed package jobs may forward that pair: Spark and NiFi in batch 1, Pinot in
+batch 2, Hive in batch 7, Hadoop and DolphinScheduler in batch 12, Storm in
+batch 13, and Druid in batch 17. The strict contract rejects missing, altered,
+partial, or additional forwarding and rejects prefetch inputs on every other
+batch.
+
 ## Local validation
 
 The canonical CI environment is Python 3.12 on Linux Arm64 with PyYAML 6.0.3. The

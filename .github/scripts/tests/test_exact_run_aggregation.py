@@ -72,6 +72,35 @@ class ContractFixture:
             ),
             encoding="utf-8",
         )
+    def _write_strict_batch_action(self) -> Path:
+        action_root = self.actions / "collect-batch-observations"
+        action_root.mkdir(parents=True, exist_ok=True)
+        action_path = action_root / "action.yml"
+        action_path.write_text(
+            """name: collect-batch-observations
+inputs:
+  batch_number:
+    required: true
+  orchestration_id:
+    required: true
+  dispatch_nonce:
+    required: true
+  package_observations_json:
+    required: true
+outputs:
+  artifact_path:
+    value: ${{ steps.emit.outputs.artifact_path }}
+runs:
+  using: composite
+  steps:
+    - id: emit
+      shell: bash
+      run: echo "artifact_path=test-results" >> "$GITHUB_OUTPUT"
+""",
+            encoding="utf-8",
+        )
+        return action_path
+
 
     def _write_batch(self, batch: int, slugs: list[str]) -> None:
         jobs = "\n".join(
@@ -506,6 +535,321 @@ class ExactRunAggregationTests(unittest.TestCase):
         )
         with self.assertRaises(contract.ContractError):
             contract.discover_topology(self.fixture.root)
+
+    def test_topology_accepts_only_exact_strict_batch_collector(self) -> None:
+        action_path = self.fixture._write_strict_batch_action()
+        (self.fixture.workflows / "test-alpha.yml").unlink()
+        self.fixture._write_package_workflow("spark")
+        self.fixture._write_package_workflow("nifi")
+        self.fixture._write_batch(1, ["spark", "nifi"])
+
+        batch = self.fixture.workflows / "test-all-packages-batch1.yml"
+        text = batch.read_text(encoding="utf-8")
+        text = text.replace(
+            "on:\n  workflow_dispatch:\n",
+            (
+                "on:\n"
+                "  workflow_dispatch:\n"
+                "    inputs:\n"
+                "      orchestration_id:\n"
+                "        type: string\n"
+                "        required: true\n"
+                "      dispatch_nonce:\n"
+                "        type: string\n"
+                "        required: true\n"
+                "      prefetch_run_id:\n"
+                "        description: Orchestrator prefetch run id\n"
+                "        type: string\n"
+                "        required: false\n"
+                "      prefetch_artifact_name:\n"
+                "        description: Orchestrator prefetch artifact name\n"
+                "        type: string\n"
+                "        required: false\n"
+                "  workflow_call:\n"
+                "    inputs:\n"
+                "      orchestration_id:\n"
+                "        type: string\n"
+                "        required: true\n"
+                "      dispatch_nonce:\n"
+                "        type: string\n"
+                "        required: true\n"
+                "      prefetch_run_id:\n"
+                "        type: string\n"
+                "        required: false\n"
+                "      prefetch_artifact_name:\n"
+                "        type: string\n"
+                "        required: false\n"
+            ),
+        )
+        for slug in ("spark", "nifi"):
+            text = text.replace(
+                (
+                    f"  test-{slug}:\n"
+                    f"    uses: ./.github/workflows/test-{slug}.yml\n"
+                ),
+                (
+                    f"  test-{slug}:\n"
+                    f"    uses: ./.github/workflows/test-{slug}.yml\n"
+                    "    with:\n"
+                    "      prefetch_run_id: "
+                    "${{ inputs.prefetch_run_id || '' }}\n"
+                    "      prefetch_artifact_name: "
+                    "${{ inputs.prefetch_artifact_name || '' }}\n"
+                ),
+            )
+        text = text.replace(
+            (
+                "      - name: Collect batch results\n"
+                "        uses: ./.github/actions/collect-batch-results\n"
+                "        with:\n"
+                "          batch_number: \"1\"\n"
+                "          batch_title: \"Batch 1\"\n"
+            ),
+            (
+                "      - name: Collect strict batch observations\n"
+                "        id: collect\n"
+                "        uses: ./.github/actions/collect-batch-observations\n"
+                "        with:\n"
+                "          batch_number: \"1\"\n"
+                "          orchestration_id: ${{ inputs.orchestration_id }}\n"
+                "          dispatch_nonce: ${{ inputs.dispatch_nonce }}\n"
+                "          package_observations_json: ${{ toJson(needs) }}\n"
+            ),
+        )
+        text = text.replace(
+            "          path: test-results\n",
+            "          path: ${{ steps.collect.outputs.artifact_path }}\n",
+        )
+        batch.write_text(text, encoding="utf-8")
+        topology = contract.discover_topology(self.fixture.root)
+        self.assertEqual(2, len(topology))
+        self.assertEqual(
+            contract._PREFETCH_BATCHES,
+            frozenset(contract._PREFETCH_JOB_BINDINGS),
+        )
+
+        unsafe_variants = (
+            text.replace(
+                "dispatch_nonce: ${{ inputs.dispatch_nonce }}",
+                "dispatch_nonce: wrong",
+            ),
+            text.replace("        required: true", "        required: false", 1),
+            text.replace("        type: string", "        type: number", 1),
+            text.replace(
+                "        required: true\n",
+                "        required: true\n        default: unsafe\n",
+                1,
+            ),
+            text.replace(
+                "      - name: Upload batch test results\n",
+                "      - name: Upload batch test results\n        if: false\n",
+            ),
+            text.replace(
+                (
+                    "      prefetch_run_id:\n"
+                    "        description: Orchestrator prefetch run id\n"
+                    "        type: string\n"
+                    "        required: false\n"
+                ),
+                "",
+                1,
+            ),
+            text.replace("        required: false", "        required: true", 1),
+            text.replace(
+                (
+                    "      prefetch_run_id:\n"
+                    "        description: Orchestrator prefetch run id\n"
+                    "        type: string\n"
+                ),
+                (
+                    "      prefetch_run_id:\n"
+                    "        description: Orchestrator prefetch run id\n"
+                ),
+                1,
+            ),
+            text.replace("on:\n", "on:\n  push:\n", 1),
+            text.replace(
+                "      orchestration_id:\n",
+                (
+                    "      unexpected_input:\n"
+                    "        type: string\n"
+                    "        required: true\n"
+                    "      orchestration_id:\n"
+                ),
+                1,
+            ),
+            text.replace(
+                "${{ inputs.prefetch_run_id || '' }}",
+                "${{ inputs.dispatch_nonce }}",
+                1,
+            ),
+        )
+        collector_start = text.index(
+            "      - name: Collect strict batch observations\n"
+        )
+        uploader_start = text.index("      - name: Upload batch test results\n")
+        unsafe_variants += (
+            text[:collector_start]
+            + text[uploader_start:]
+            + text[collector_start:uploader_start],
+        )
+        for unsafe in unsafe_variants:
+            batch.write_text(unsafe, encoding="utf-8")
+            with self.assertRaises(contract.ContractError):
+                contract.discover_topology(self.fixture.root)
+
+        batch.write_text(text, encoding="utf-8")
+        action_text = action_path.read_text(encoding="utf-8")
+        unsafe_action_variants = (
+            action_text.replace("$GITHUB_OUTPUT", "$NOT_GITHUB_OUTPUT"),
+            action_text.replace(
+                "    - id: emit\n",
+                "    - id: emit\n      if: false\n",
+            ),
+            action_text.replace(
+                '      run: echo "artifact_path=test-results" '
+                '>> "$GITHUB_OUTPUT"\n',
+                (
+                    "      run: |\n"
+                    "        write_output() {\n"
+                    '          echo "artifact_path=test-results" '
+                    '>> "$GITHUB_OUTPUT"\n'
+                    "        }\n"
+                ),
+            ),
+            action_text.replace(
+                '      run: echo "artifact_path=test-results" '
+                '>> "$GITHUB_OUTPUT"\n',
+                (
+                    "      run: printf '%s %s\\n' prefix "
+                    'artifact_path=test-results >> "$GITHUB_OUTPUT"\n'
+                ),
+            ),
+        )
+        for unsafe_action in unsafe_action_variants:
+            action_path.write_text(unsafe_action, encoding="utf-8")
+            with self.assertRaises(contract.ContractError):
+                contract.discover_topology(self.fixture.root)
+
+        self.fixture._write_strict_batch_action()
+        for index, nested_collector in enumerate(
+            (
+                "./.github/actions/collect-batch-results",
+                "./.github/actions/collect-batch-observations",
+            ),
+            start=1,
+        ):
+            wrapper = f"collector-wrapper-{index}"
+            self.fixture._write_local_action(
+                wrapper,
+                uses=nested_collector,
+            )
+            batch.write_text(
+                text.replace(
+                    "      - name: Upload batch test results\n",
+                    (
+                        f"      - uses: ./.github/actions/{wrapper}\n"
+                        "      - name: Upload batch test results\n"
+                    ),
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(contract.ContractError):
+                contract.discover_topology(self.fixture.root)
+
+    def test_strict_non_prefetch_batch_rejects_unreviewed_inputs(self) -> None:
+        self.fixture._write_strict_batch_action()
+        self.fixture._write_package_workflow("charlie")
+        self.fixture._write_batch(3, ["charlie"])
+        batch = self.fixture.workflows / "test-all-packages-batch3.yml"
+        text = batch.read_text(encoding="utf-8")
+        text = text.replace(
+            "on:\n  workflow_dispatch:\n",
+            (
+                "on:\n"
+                "  workflow_dispatch:\n"
+                "    inputs:\n"
+                "      orchestration_id:\n"
+                "        type: string\n"
+                "        required: true\n"
+                "      dispatch_nonce:\n"
+                "        type: string\n"
+                "        required: true\n"
+                "  workflow_call:\n"
+                "    inputs:\n"
+                "      orchestration_id:\n"
+                "        type: string\n"
+                "        required: true\n"
+                "      dispatch_nonce:\n"
+                "        type: string\n"
+                "        required: true\n"
+            ),
+        )
+        text = text.replace(
+            (
+                "      - name: Collect batch results\n"
+                "        uses: ./.github/actions/collect-batch-results\n"
+                "        with:\n"
+                "          batch_number: \"3\"\n"
+                "          batch_title: \"Batch 3\"\n"
+            ),
+            (
+                "      - name: Collect strict batch observations\n"
+                "        id: collect\n"
+                "        uses: ./.github/actions/collect-batch-observations\n"
+                "        with:\n"
+                "          batch_number: \"3\"\n"
+                "          orchestration_id: ${{ inputs.orchestration_id }}\n"
+                "          dispatch_nonce: ${{ inputs.dispatch_nonce }}\n"
+                "          package_observations_json: ${{ toJson(needs) }}\n"
+            ),
+        )
+        text = text.replace(
+            "          path: test-results\n",
+            "          path: ${{ steps.collect.outputs.artifact_path }}\n",
+        )
+        batch.write_text(text, encoding="utf-8")
+        self.assertEqual(3, len(contract.discover_topology(self.fixture.root)))
+
+        unsafe_variants = (
+            text.replace("on:\n", "on:\n  schedule:\n", 1),
+            text.replace(
+                "      orchestration_id:\n",
+                (
+                    "      prefetch_run_id:\n"
+                    "        type: string\n"
+                    "        required: false\n"
+                    "      orchestration_id:\n"
+                ),
+                1,
+            ),
+            text.replace(
+                "  test-charlie:\n"
+                "    uses: ./.github/workflows/test-charlie.yml\n",
+                (
+                    "  test-charlie:\n"
+                    "    uses: ./.github/workflows/test-charlie.yml\n"
+                    "    with:\n"
+                    "      prefetch_run_id: "
+                    "${{ inputs.prefetch_run_id || '' }}\n"
+                    "      prefetch_artifact_name: "
+                    "${{ inputs.prefetch_artifact_name || '' }}\n"
+                ),
+            ),
+        )
+        for unsafe in unsafe_variants:
+            batch.write_text(unsafe, encoding="utf-8")
+            with self.assertRaises(contract.ContractError):
+                contract.discover_topology(self.fixture.root)
+
+    def test_yaml_loader_uses_github_boolean_semantics(self) -> None:
+        payload = contract._yaml_mapping(
+            b"on: {}\nyes: no\nenabled: true\n",
+            "workflow fixture",
+        )
+        self.assertEqual(payload["on"], {})
+        self.assertEqual(payload["yes"], "no")
+        self.assertIs(payload["enabled"], True)
 
     def test_manifest_rejects_mutable_external_action_references(self) -> None:
         batch = self.fixture.workflows / "test-all-packages-batch1.yml"

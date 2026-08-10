@@ -18,16 +18,19 @@ SPEC.loader.exec_module(supply_chain)
 FOUNDATION_WORKFLOW = ".github/workflows/exact-run-aggregation-foundation-ci.yml"
 SCOPE_GUARD = "if: steps.scope.outputs.relevant == 'true'"
 RELEVANT_PATHS = (
+    ".github/scripts/download-with-fallback.sh",
     ".github/scripts/package_workflow_action_lock.json",
     ".github/scripts/verify_action_lock_online.py",
     ".github/scripts/package_workflow_supply_chain.py",
     ".github/scripts/exact_run_aggregation.py",
     ".github/scripts/package_result_policy.py",
     ".github/scripts/package_observation.py",
+    ".github/scripts/package_observation_migration_audit.py",
     ".github/scripts/tests/test_package_workflow_supply_chain.py",
     ".github/scripts/tests/test_verify_action_lock_online.py",
     ".github/scripts/tests/test_exact_run_aggregation.py",
     ".github/scripts/tests/test_package_observation.py",
+    ".github/scripts/tests/test_package_observation_migration_audit.py",
     ".github/scripts/README-exact-run-aggregation.md",
     ".github/scripts/README-package-observation.md",
     ".github/scripts/requirements-exact-run.txt",
@@ -111,6 +114,19 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             for line in path_block.splitlines()
         )
         self.assertEqual(RELEVANT_PATHS, diff_paths)
+
+        step_map = dict(steps)
+        presence = step_map.get("Confirm migration audit sources are present")
+        self.assertIsNotNone(presence)
+        assert presence is not None
+        for source in (
+            ".github/scripts/package_observation_migration_audit.py",
+            ".github/scripts/tests/test_package_observation_migration_audit.py",
+        ):
+            self.assertIn(source, presence)
+        self.assertIn('test -f "$source"', presence)
+        self.assertIn('test ! -L "$source"', presence)
+
 
         for name, body in steps[2:]:
             self.assertEqual(
