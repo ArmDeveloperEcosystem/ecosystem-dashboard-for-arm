@@ -242,6 +242,37 @@ def validate_container_lock_entry(entry: object) -> str:
     return workflow
 
 
+def validate_hardened_workflow_transition(
+    lock: dict[str, object],
+) -> dict[str, str] | None:
+    transition = lock.get("hardened_workflow_transition")
+    if transition is None:
+        return None
+    expected_keys = {"from_sha256", "to_sha256", "reason"}
+    if not isinstance(transition, dict) or set(transition) != expected_keys:
+        raise ContractError("hardened workflow transition is malformed")
+    transition_from = transition.get("from_sha256")
+    transition_to = transition.get("to_sha256")
+    transition_reason = transition.get("reason")
+    if (
+        not isinstance(transition_from, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", transition_from)
+        or not isinstance(transition_to, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", transition_to)
+        or transition_from == transition_to
+        or transition_to != lock.get("hardened_workflow_sha256")
+        or not isinstance(transition_reason, str)
+        or not transition_reason.strip()
+        or len(transition_reason) > 512
+    ):
+        raise ContractError("hardened workflow transition is invalid")
+    return {
+        "from_sha256": transition_from,
+        "to_sha256": transition_to,
+        "reason": transition_reason,
+    }
+
+
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -311,26 +342,7 @@ def load_lock(root: Path) -> dict[str, object]:
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
             raise ContractError(f"action lock {key} is not a canonical SHA-256")
 
-    transition = lock.get("hardened_workflow_transition")
-    if transition is not None:
-        expected_transition_keys = {"from_sha256", "to_sha256", "reason"}
-        if not isinstance(transition, dict) or set(transition) != expected_transition_keys:
-            raise ContractError("hardened workflow transition is malformed")
-        transition_from = transition.get("from_sha256")
-        transition_to = transition.get("to_sha256")
-        transition_reason = transition.get("reason")
-        if (
-            not isinstance(transition_from, str)
-            or not re.fullmatch(r"[0-9a-f]{64}", transition_from)
-            or not isinstance(transition_to, str)
-            or not re.fullmatch(r"[0-9a-f]{64}", transition_to)
-            or transition_from == transition_to
-            or transition_to != lock["hardened_workflow_sha256"]
-            or not isinstance(transition_reason, str)
-            or not transition_reason.strip()
-            or len(transition_reason) > 512
-        ):
-            raise ContractError("hardened workflow transition is invalid")
+    validate_hardened_workflow_transition(lock)
     entries = lock.get("actions")
     if not isinstance(entries, list) or not entries:
         raise ContractError("action lock must contain a non-empty actions list")
@@ -1112,17 +1124,12 @@ def validate_authenticated_base(
     digest = workflow_snapshot_sha256(snapshot)
     if digest == lock["hardened_workflow_sha256"]:
         return "current_hardened_snapshot"
-    transition = lock.get("hardened_workflow_transition")
-    if (
-        isinstance(transition, dict)
-        and digest == transition.get("from_sha256")
-    ):
+    transition = validate_hardened_workflow_transition(lock)
+    if transition is not None and digest == transition["from_sha256"]:
         return "declared_hardened_transition_source"
-    if digest == lock["migration_parent_workflow_sha256"]:
-        return "reviewed_migration_parent"
     raise ContractError(
-        "advanced pull-request base does not match the current, declared "
-        "transition source, or reviewed migration workflow snapshot"
+        "advanced pull-request base does not match the current or declared "
+        "transition source workflow snapshot"
     )
 
 
