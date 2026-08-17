@@ -499,6 +499,27 @@ class RunIdentityTests(unittest.TestCase):
             expected_run_name(1, ORCHESTRATION_ID, nonce_for(1)),
         )
 
+    def test_static_and_dynamic_api_names_are_accepted(self) -> None:
+        for api_name in (
+            expected_workflow_name(1),
+            expected_run_name(1, ORCHESTRATION_ID, nonce_for(1)),
+        ):
+            payload = run_payload(1)
+            payload["name"] = api_name
+            with self.subTest(api_name=api_name):
+                result = validate_run(
+                    payload,
+                    batch=1,
+                    orchestration_id=ORCHESTRATION_ID,
+                    dispatch_nonce=nonce_for(1),
+                    expected_sha=EXPECTED_SHA,
+                    branch=BRANCH,
+                    repository=REPOSITORY,
+                    expected_run_id=10_001,
+                    require_completed=True,
+                )
+                self.assertEqual(result["id"], 10_001)
+
     def test_wrong_sha_branch_workflow_event_title_repo_or_id_is_rejected(self) -> None:
         mutations = {
             "head_sha": "b" * 40,
