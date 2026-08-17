@@ -238,7 +238,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "9310e5e2ce2fa237b99ec6cbc0c8d4a18562f19ce484f7bfd0d7af3b3c6bb973",
+            "baecbd2237290789d52a330cc08f30a57d3e8fb989ecdc16a4fb6727dfef31a4",
             result["workflow_sha256"],
         )
 
@@ -310,7 +310,8 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             supply_chain, "source_snapshot", return_value=snapshot
         ):
             with self.assertRaisesRegex(
-                supply_chain.ContractError, "does not match the current, declared"
+                supply_chain.ContractError,
+                "does not match the current or declared transition source",
             ):
                 supply_chain.validate_authenticated_base(
                     self.root, paths, lock, "f" * 40
@@ -484,7 +485,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "checkout_uses": 982,
                 "permission_exceptions": 4,
                 "topology_sha256": "5c6d2d7b9019fcbecdde6248ff23a8720f46802809ee0213070c8a9a9d1e9220",
-                "workflow_sha256": "5c9a30a6ec71a437880743ee8be119e580e1a5d25816275698bfc4ff9761fa0c",
+                "workflow_sha256": "baecbd2237290789d52a330cc08f30a57d3e8fb989ecdc16a4fb6727dfef31a4",
             },
             supply_chain.validate_hardening(
                 self.root,
