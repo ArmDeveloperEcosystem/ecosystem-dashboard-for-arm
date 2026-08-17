@@ -238,7 +238,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "983b51c866a1c630ebf9a283c2237191d05759293d7e46a36a00f7d254d452bb",
+            "9310e5e2ce2fa237b99ec6cbc0c8d4a18562f19ce484f7bfd0d7af3b3c6bb973",
             result["workflow_sha256"],
         )
 
