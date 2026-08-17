@@ -14,256 +14,234 @@ on:
     # Weekly main-branch validation run: Friday night in US Central time.
     # 03:00 UTC Saturday is 10 PM CDT / 9 PM CST Friday.
     - cron: '0 3 * * 6'
+  push:
+    branches:
+      - main
+      - smoke_tests
+    paths:
+      - 'content/linux/opensource_packages/*.md'
+      - 'content/opensource_packages/*.md'
+      - '.github/workflows/*.yml'
 
 jobs:
   orchestrate-batches:
     name: Trigger and Wait for All Batches
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Trigger all 22 batches
-        id: trigger
+      - name: Bind exact orchestration context
+        id: context
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_BRANCH: ${{ github.ref_name }}
+          EXPECTED_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          START_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          echo "start_time=$START_TIME" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          helper=".github/scripts/orchestration_contract.py"
+          orchestration_id="orchestration-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          actual_sha="$(git rev-parse HEAD)"
+          [[ "$actual_sha" == "$EXPECTED_SHA" ]]
+          [[ "$GITHUB_REF" == "refs/heads/${EXPECTED_BRANCH}" ]]
+          python3 "$helper" validate-context \
+            --orchestration-id "$orchestration_id" \
+            --expected-sha "$EXPECTED_SHA" \
+            --branch "$EXPECTED_BRANCH" \
+            --repository "$REPOSITORY"
+          git fetch --no-tags origin \
+            "+refs/heads/${EXPECTED_BRANCH}:refs/remotes/origin/${EXPECTED_BRANCH}"
+          remote_sha="$(git rev-parse "refs/remotes/origin/${EXPECTED_BRANCH}^{commit}")"
+          [[ "$remote_sha" == "$EXPECTED_SHA" ]]
+          python3 "$helper" init-records \
+            --output .orchestration/batch-records.json
+          {
+            printf 'orchestration_id=%s\n' "$orchestration_id"
+            printf 'expected_sha=%s\n' "$EXPECTED_SHA"
+            printf 'branch=%s\n' "$EXPECTED_BRANCH"
+          } >> "$GITHUB_OUTPUT"
 
-          echo "🚀 Triggering batches 1 through 22..."
+      - name: Dispatch and capture exact batch runs
+        env:
+          BRANCH: ${{ steps.context.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.context.outputs.expected_sha }}
+          GH_TOKEN: ${{ github.token }}
+          ORCHESTRATION_ID: ${{ steps.context.outputs.orchestration_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          helper=".github/scripts/orchestration_contract.py"
+          records=".orchestration/batch-records.json"
+
           for i in {1..22}; do
             WORKFLOW="test-all-packages-batch${i}.yml"
-            echo "Triggering $WORKFLOW..."
+            nonce_file=".orchestration/dispatch-nonce-${i}"
+            payload=".orchestration/dispatch-${i}.json"
+            runs_payload=".orchestration/registration-${i}.json"
+            endpoint="$(python3 "$helper" runs-endpoint \
+              --batch "$i" \
+              --branch "$BRANCH" \
+              --expected-sha "$EXPECTED_SHA" \
+              --repository "$REPOSITORY")"
+            python3 "$helper" generate-dispatch-nonce \
+              --output "$nonce_file"
+            python3 "$helper" prepare-record \
+              --records "$records" \
+              --batch "$i" \
+              --dispatch-nonce-file "$nonce_file"
+            python3 "$helper" batch-dispatch-payload \
+              --batch "$i" \
+              --orchestration-id "$ORCHESTRATION_ID" \
+              --dispatch-nonce-file "$nonce_file" \
+              --expected-sha "$EXPECTED_SHA" \
+              --branch "$BRANCH" \
+              --output "$payload"
 
-            n=0
-            until [ $n -ge 5 ]
-            do
-              if gh workflow run "$WORKFLOW" --ref ${{ github.ref_name }}; then
-                echo "✅ Successfully triggered $WORKFLOW"
-                break
+            dispatch_reported_success=true
+            if gh api --method POST \
+              "repos/${REPOSITORY}/actions/workflows/${WORKFLOW}/dispatches" \
+              --input "$payload"; then
+              echo "Dispatched $WORKFLOW for $ORCHESTRATION_ID."
+            else
+              dispatch_reported_success=false
+              echo "Dispatch API returned an error for $WORKFLOW; checking exact registration once visible."
+            fi
+
+            RUN_ID=""
+            api_failures=0
+            for attempt in {1..18}; do
+              if gh api --paginate --slurp "$endpoint" > "$runs_payload"; then
+                api_failures=0
+                RUN_ID="$(python3 "$helper" select-registration \
+                  --payload "$runs_payload" \
+                  --batch "$i" \
+                  --orchestration-id "$ORCHESTRATION_ID" \
+                  --dispatch-nonce-file "$nonce_file" \
+                  --expected-sha "$EXPECTED_SHA" \
+                  --branch "$BRANCH" \
+                  --repository "$REPOSITORY")"
+                if [[ -n "$RUN_ID" ]]; then
+                  break
+                fi
+              else
+                api_failures=$((api_failures + 1))
+                if [[ "$api_failures" -ge 5 ]]; then
+                  echo "Infrastructure lookup failed repeatedly for $WORKFLOW."
+                  exit 1
+                fi
               fi
-              n=$((n+1))
-              echo "⚠️ Failed to trigger $WORKFLOW (attempt $n/5). Retrying in 5s..."
-              sleep 5
+              echo "Exact run for $WORKFLOW is not visible yet (attempt $attempt/18)."
+              sleep 10
             done
 
-            if [ $n -ge 5 ]; then
-              echo "❌ Error: Failed to trigger $WORKFLOW after 5 attempts."
+            if [[ -z "$RUN_ID" ]]; then
+              echo "No unique exact run registered for $WORKFLOW."
+              if [[ "$dispatch_reported_success" != "true" ]]; then
+                echo "The dispatch API also reported failure; no automatic redispatch was attempted."
+              fi
               exit 1
             fi
-
-            sleep 3
+            python3 "$helper" bind-record-run \
+              --records "$records" \
+              --batch "$i" \
+              --dispatch-nonce-file "$nonce_file" \
+              --run-id "$RUN_ID" \
+              --run-attempt 1
+            rm -f "$nonce_file"
+            echo "Captured immutable run $RUN_ID for $WORKFLOW."
           done
 
-          echo "✅ Batches 1-22 dispatched."
+          python3 "$helper" build-manifest \
+            --records "$records" \
+            --orchestration-id "$ORCHESTRATION_ID" \
+            --expected-sha "$EXPECTED_SHA" \
+            --branch "$BRANCH" \
+            --output .orchestration/run-manifest.json
 
-      - name: Wait for batches to complete
+      - name: Wait for captured batch runs
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.context.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.context.outputs.expected_sha }}
+          GH_TOKEN: ${{ github.token }}
+          ORCHESTRATION_ID: ${{ steps.context.outputs.orchestration_id }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          START_TIME="${{ steps.trigger.outputs.start_time }}"
-          echo "⏳ Waiting for batches triggered after $START_TIME..."
-
-          declare -A BATCH_RUN_IDS
-          declare -A BATCH_RETRIES
-          MISSING_WORKFLOWS=()
-          MAX_STARTUP_RETRIES=5
-          sleep 15
-
-          find_run_id() {
-            local workflow="$1"
-            local since="$2"
-            gh run list \
-              --workflow "$workflow" \
-              --branch "${{ github.ref_name }}" \
-              --json databaseId,createdAt \
-              --limit 100 \
-              --jq ".[] | select(.createdAt >= \"$since\") | .databaseId" | head -n 1
-          }
-
-          dispatch_batch() {
-            local workflow="$1"
-            local n=0
-            until [ $n -ge 5 ]
-            do
-              if gh workflow run "$workflow" --ref "${{ github.ref_name }}"; then
-                return 0
-              fi
-              n=$((n+1))
-              echo "Failed to trigger $workflow (attempt $n/5). Retrying in 5s..."
-              sleep 5
-            done
-            return 1
-          }
-
-          retry_startup_batch() {
-            local batch_number="$1"
-            local workflow="test-all-packages-batch${batch_number}.yml"
-            local rid="${BATCH_RUN_IDS[$batch_number]}"
-            local next_retry=$((BATCH_RETRIES[$batch_number] + 1))
-            local retry_start
-            local new_run_id=""
-
-            retry_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-            echo "Batch $batch_number hit startup_failure in run $rid. Re-dispatching $workflow (retry $next_retry/$MAX_STARTUP_RETRIES)..."
-
-            if ! dispatch_batch "$workflow"; then
-              FAILED_BATCHES+=("$workflow run $rid concluded startup_failure; retry dispatch failed")
-              return 1
-            fi
-
-            for attempt in {1..12}; do
-              new_run_id=$(find_run_id "$workflow" "$retry_start")
-              if [ -n "$new_run_id" ]; then
-                break
-              fi
-              echo "Waiting for retry run registration for $workflow (attempt $attempt/12)..."
-              sleep 10
-            done
-
-            if [ -z "$new_run_id" ]; then
-              FAILED_BATCHES+=("$workflow run $rid concluded startup_failure; retry run was not registered")
-              return 1
-            fi
-
-            BATCH_RUN_IDS[$batch_number]="$new_run_id"
-            BATCH_RETRIES[$batch_number]="$next_retry"
-            echo "Tracking retry for $workflow (Run ID: $new_run_id)"
-          }
+          set -euo pipefail
+          helper=".github/scripts/orchestration_contract.py"
+          manifest=".orchestration/run-manifest.json"
 
           for i in {1..22}; do
             WORKFLOW="test-all-packages-batch${i}.yml"
-            RUN_ID=""
+            runtime="$(python3 "$helper" record-runtime \
+              --manifest "$manifest" \
+              --batch "$i")"
+            IFS=$'\t' read -r DISPATCH_NONCE RUN_ID RUN_ATTEMPT <<< "$runtime"
+            [[ "$RUN_ATTEMPT" == "1" ]]
+            run_payload=".orchestration/run-${i}.json"
+            api_failures=0
+            completed=false
 
-            for attempt in {1..12}; do
-              RUN_ID=$(find_run_id "$WORKFLOW" "$START_TIME")
-
-              if [ -n "$RUN_ID" ]; then
+            for attempt in {1..330}; do
+              if ! gh api \
+                "repos/${REPOSITORY}/actions/runs/${RUN_ID}" \
+                > "$run_payload"; then
+                api_failures=$((api_failures + 1))
+                if [[ "$api_failures" -ge 5 ]]; then
+                  echo "Infrastructure lookup failed repeatedly for run $RUN_ID."
+                  exit 1
+                fi
+                sleep 15
+                continue
+              fi
+              api_failures=0
+              state="$(python3 "$helper" validate-run \
+                --payload "$run_payload" \
+                --batch "$i" \
+                --orchestration-id "$ORCHESTRATION_ID" \
+                --dispatch-nonce "$DISPATCH_NONCE" \
+                --expected-sha "$EXPECTED_SHA" \
+                --branch "$BRANCH" \
+                --repository "$REPOSITORY" \
+                --expected-run-id "$RUN_ID" \
+                --allow-incomplete)"
+              IFS=$'\t' read -r STATUS CONCLUSION <<< "$state"
+              if [[ "$STATUS" == "completed" ]]; then
+                completed=true
+                echo "$WORKFLOW completed with conclusion $CONCLUSION; package failure remains valid batch evidence."
                 break
               fi
-
-              echo "⚠️ Run for $WORKFLOW not visible yet (attempt $attempt/12). Retrying in 10s..."
-              sleep 10
+              echo "$WORKFLOW run $RUN_ID is $STATUS (attempt $attempt/330)."
+              sleep 60
             done
 
-            if [ -z "$RUN_ID" ]; then
-              echo "❌ Error: Could not find Run ID for $WORKFLOW after waiting for registration."
-              MISSING_WORKFLOWS+=("$WORKFLOW")
-            else
-              echo "✅ Tracking $WORKFLOW (Run ID: $RUN_ID)"
-              BATCH_RUN_IDS[$i]="$RUN_ID"
-              BATCH_RETRIES[$i]=0
+            if [[ "$completed" != "true" ]]; then
+              echo "Run $RUN_ID did not complete within the bounded wait."
+              exit 1
             fi
           done
 
-          if [ "${#MISSING_WORKFLOWS[@]}" -gt 0 ]; then
-            echo "❌ Failed to discover the following dispatched batch runs:"
-            printf ' - %s\n' "${MISSING_WORKFLOWS[@]}"
-            exit 1
-          fi
-
-          while true; do
-            ACTIVE_RUNNING=0
-            STILL_RUNNING=0
-            FAILED_BATCHES=()
-            STARTUP_RETRY_BATCHES=()
-
-            for i in {1..22}; do
-              WORKFLOW="test-all-packages-batch${i}.yml"
-              RID="${BATCH_RUN_IDS[$i]}"
-              RUN_STATE=$(gh run view "$RID" --json status,conclusion --jq '[.status, (.conclusion // "")] | @tsv')
-              read -r STATUS CONCLUSION <<< "$RUN_STATE"
-
-              if [[ "$STATUS" != "completed" ]]; then
-                ACTIVE_RUNNING=$((ACTIVE_RUNNING + 1))
-                continue
-              fi
-
-              if [[ "$CONCLUSION" == "startup_failure" && "${BATCH_RETRIES[$i]}" -lt "$MAX_STARTUP_RETRIES" ]]; then
-                STARTUP_RETRY_BATCHES+=("$i")
-                continue
-              fi
-
-              if [[ "$CONCLUSION" != "success" ]]; then
-                FAILED_BATCHES+=("$WORKFLOW run $RID concluded ${CONCLUSION:-unknown}")
-              fi
-            done
-
-            if [ "$ACTIVE_RUNNING" -gt 0 ]; then
-              STILL_RUNNING="$ACTIVE_RUNNING"
-              if [ "${#STARTUP_RETRY_BATCHES[@]}" -gt 0 ]; then
-                echo "${#STARTUP_RETRY_BATCHES[@]} startup-failed batches are waiting to retry after active batches drain."
-                STILL_RUNNING=$((STILL_RUNNING + ${#STARTUP_RETRY_BATCHES[@]}))
-              fi
-            elif [ "${#STARTUP_RETRY_BATCHES[@]}" -gt 0 ]; then
-              for batch_number in "${STARTUP_RETRY_BATCHES[@]}"; do
-                if retry_startup_batch "$batch_number"; then
-                  STILL_RUNNING=$((STILL_RUNNING + 1))
-                fi
-              done
-            fi
-
-            if [ "$STILL_RUNNING" -eq 0 ]; then
-              if [ "${#FAILED_BATCHES[@]}" -gt 0 ]; then
-                echo "❌ One or more batches did not complete successfully:"
-                printf ' - %s\n' "${FAILED_BATCHES[@]}"
-                exit 1
-              fi
-              echo "🎉 All batches completed!"
-              break
-            fi
-
-            echo "⌛ $STILL_RUNNING batches still running. Checking again in 1 minute..."
-            sleep 60
-          done
-      - name: Trigger Global Summary
+      - name: Dispatch exact global summary
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.context.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.context.outputs.expected_sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          echo "🏁 All batches finished. Triggering Global Summary..."
-          SUMMARY_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          gh workflow run test-all-packages-summary.yml \
-            --ref "${{ github.ref_name }}" \
-            -f start_time="${{ steps.trigger.outputs.start_time }}" \
-            -f triggering_batch=orchestrator
-
-          SUMMARY_RUN_ID=""
-          for attempt in {1..12}; do
-            SUMMARY_RUN_ID=$(gh run list \
-              --workflow test-all-packages-summary.yml \
-              --branch "${{ github.ref_name }}" \
-              --json databaseId,createdAt \
-              --limit 50 \
-              --jq ".[] | select(.createdAt >= \"$SUMMARY_START\") | .databaseId" | head -n 1)
-
-            if [ -n "$SUMMARY_RUN_ID" ]; then
-              break
-            fi
-
-            echo "Waiting for Global Summary run registration (attempt $attempt/12)..."
-            sleep 10
-          done
-
-          if [ -z "$SUMMARY_RUN_ID" ]; then
-            echo "❌ Error: Could not find Global Summary run after dispatch."
-            exit 1
-          fi
-
-          echo "Tracking Global Summary run $SUMMARY_RUN_ID..."
-          while true; do
-            RUN_STATE=$(gh run view "$SUMMARY_RUN_ID" --json status,conclusion --jq '[.status, (.conclusion // "")] | @tsv')
-            read -r STATUS CONCLUSION <<< "$RUN_STATE"
-
-            if [[ "$STATUS" == "completed" ]]; then
-              if [[ "$CONCLUSION" != "success" ]]; then
-                echo "❌ Global Summary run $SUMMARY_RUN_ID concluded ${CONCLUSION:-unknown}."
-                exit 1
-              fi
-              echo "✅ Global Summary completed successfully."
-              break
-            fi
-
-            echo "Global Summary is still $STATUS. Checking again in 30 seconds..."
-            sleep 30
-          done
+          set -euo pipefail
+          helper=".github/scripts/orchestration_contract.py"
+          git fetch --no-tags origin \
+            "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+          remote_sha="$(git rev-parse "refs/remotes/origin/${BRANCH}^{commit}")"
+          [[ "$remote_sha" == "$EXPECTED_SHA" ]]
+          python3 "$helper" summary-dispatch-payload \
+            --manifest .orchestration/run-manifest.json \
+            --ref "$BRANCH" \
+            --output .orchestration/summary-dispatch.json
+          gh api --method POST \
+            "repos/${REPOSITORY}/actions/workflows/test-all-packages-summary.yml/dispatches" \
+            --input .orchestration/summary-dispatch.json

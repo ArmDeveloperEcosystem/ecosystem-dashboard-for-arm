@@ -290,7 +290,7 @@ def load_lock(root: Path) -> dict[str, object]:
             f"cannot read {lock_path.relative_to(root)}: {exc}"
         ) from exc
 
-    if lock.get("schema_version") != 2:
+    if lock.get("schema_version") != 3:
         raise ContractError("unsupported action lock schema")
     if lock.get("source_commit") != SOURCE_COMMIT:
         raise ContractError("action lock source commit is not the reviewed baseline")
@@ -302,7 +302,11 @@ def load_lock(root: Path) -> dict[str, object]:
         raise ContractError("action lock container-use count is not canonical")
     if lock.get("unresolved_references") != []:
         raise ContractError("action lock contains unresolved references")
-    for key in ("hardened_topology_sha256", "hardened_workflow_sha256"):
+    for key in (
+        "migration_parent_workflow_sha256",
+        "hardened_topology_sha256",
+        "hardened_workflow_sha256",
+    ):
         value = lock.get(key)
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
             raise ContractError(f"action lock {key} is not a canonical SHA-256")
@@ -552,6 +556,37 @@ def _summary_job_bounds(lines: list[str], path: Path) -> tuple[int, int]:
             break
         end += 1
     return start, end
+
+
+def _batch_permission_workflow(
+    path: Path,
+    lines: list[str],
+    permission_index: int,
+) -> str:
+    start = permission_index - 1
+    while start >= 0 and re.fullmatch(
+        r"  [A-Za-z0-9_-]+:\s*(?:\r?\n)?", lines[start]
+    ) is None:
+        start -= 1
+    if start < 0 or lines[start].strip() == "summary:":
+        raise ContractError(f"{path}: job permission block has no package job")
+    end = start + 1
+    while end < len(lines) and re.fullmatch(
+        r"  [A-Za-z0-9_-]+:\s*(?:\r?\n)?", lines[end]
+    ) is None:
+        end += 1
+    matches = [
+        re.fullmatch(
+            r"\s{4}uses:\s*(?P<workflow>\./\.github/workflows/test-[^\s#]+\.yml)"
+            r"\s*(?:#.*)?",
+            line,
+        )
+        for line in lines[start + 1 : end]
+    ]
+    workflows = [match.group("workflow") for match in matches if match is not None]
+    if len(workflows) != 1:
+        raise ContractError(f"{path}: permissioned package job must call one workflow")
+    return workflows[0].removeprefix("./")
 
 
 def _add_summary_permissions(lines: list[str], path: Path) -> int:
@@ -956,7 +991,12 @@ def _validate_permissions(
         raise ContractError(f"{path}: job permission exception does not match lock")
 
 
-def _validate_batch_permissions(path: Path, lines: list[str]) -> None:
+def _validate_batch_permissions(
+    root: Path,
+    path: Path,
+    lines: list[str],
+    exceptions: dict[str, dict[str, str]],
+) -> set[str]:
     permission_indexes = [
         index
         for index, line in enumerate(lines)
@@ -982,8 +1022,29 @@ def _validate_batch_permissions(path: Path, lines: list[str]) -> None:
         "contents: read",
     ]:
         raise ContractError(f"{path}: summary permissions are not exact")
-    if permission_indexes != [root_blocks[0], summary_blocks[0]]:
+    forwarded: set[str] = set()
+    package_blocks = [
+        index
+        for index in permission_indexes
+        if index != root_blocks[0] and index not in summary_blocks
+    ]
+    for index in package_blocks:
+        if _permission_values(lines, index) != [
+            "contents: read",
+            "packages: read",
+        ]:
+            raise ContractError(f"{path}: package call permissions are not exact")
+        workflow = _batch_permission_workflow(path, lines, index)
+        if workflow not in exceptions:
+            raise ContractError(
+                f"{path}: package call permission is absent from the reviewed lock"
+            )
+        if workflow in forwarded:
+            raise ContractError(f"{path}: duplicate package call permission forwarding")
+        forwarded.add(workflow)
+    if len(permission_indexes) != 2 + len(forwarded):
         raise ContractError(f"{path}: batch contains an unreviewed permission block")
+    return forwarded
 
 
 def workflow_set_sha256(root: Path, paths: Iterable[Path]) -> str:
@@ -1021,21 +1082,21 @@ def validate_authenticated_base(
         or expected_base_commit == "0" * 40
     ):
         raise ContractError("authenticated pull-request base is not a canonical SHA")
-    source_commit = str(lock["source_commit"])
-    if expected_base_commit == source_commit:
-        return "migration_source"
     try:
         snapshot = source_snapshot(root, hardened_paths, expected_base_commit)
     except ContractError as error:
         raise ContractError(
             "could not read the authenticated advanced pull-request base"
         ) from error
-    if workflow_snapshot_sha256(snapshot) != lock["hardened_workflow_sha256"]:
-        raise ContractError(
-            "advanced pull-request base does not match the reviewed hardened "
-            "workflow snapshot"
-        )
-    return "hardened_snapshot"
+    digest = workflow_snapshot_sha256(snapshot)
+    if digest == lock["hardened_workflow_sha256"]:
+        return "current_hardened_snapshot"
+    if digest == lock["migration_parent_workflow_sha256"]:
+        return "reviewed_migration_parent"
+    raise ContractError(
+        "advanced pull-request base does not match the reviewed hardened "
+        "workflow snapshot"
+    )
 
 
 def validate_hardening(
@@ -1045,7 +1106,7 @@ def validate_hardening(
     batches = batch_paths(root)
     hardened_paths = [*workflows, *batches]
     lock = load_lock(root)
-    base_mode = validate_authenticated_base(
+    validate_authenticated_base(
         root, hardened_paths, lock, expected_base_commit
     )
     entries = lock_by_original(lock)
@@ -1054,11 +1115,14 @@ def validate_hardening(
     actual_originals: Counter[str] = Counter()
     external_count = 0
     checkout_count = 0
+    forwarded_permission_exceptions: set[str] = set()
 
     for path in hardened_paths:
         lines = path.read_text(encoding="utf-8").splitlines()
         if path in batches:
-            _validate_batch_permissions(path, lines)
+            forwarded_permission_exceptions.update(
+                _validate_batch_permissions(root, path, lines, exceptions)
+            )
         else:
             _validate_permissions(root, path, lines, exceptions)
         lines_with_endings = path.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -1104,6 +1168,11 @@ def validate_hardening(
                         f"{path}: checkout does not disable persisted credentials"
                     )
 
+    if forwarded_permission_exceptions != set(exceptions):
+        raise ContractError(
+            "batch package-call permissions do not match the reviewed exceptions"
+        )
+
     expected_originals = Counter(
         {original: int(entry["occurrences"]) for original, entry in entries.items()}
     )
@@ -1122,16 +1191,6 @@ def validate_hardening(
             f"found {checkout_count}"
         )
 
-    if base_mode == "migration_source":
-        validate_source_derivation(
-            root,
-            workflows,
-            batches,
-            entries,
-            exceptions,
-            containers,
-            str(lock["source_commit"]),
-        )
 
     for relative, entry in containers.items():
         path = root / relative

@@ -1894,6 +1894,27 @@ def _validate_strict_batch_action_contract(root: Path) -> None:
         )
 
 
+def _expected_batch_attestation_command(batch: int) -> str:
+    return f"""set -euo pipefail
+python3 .github/scripts/batch_artifact_attestation.py create \\
+  --results-root test-results \\
+  --workflow-file ".github/workflows/test-all-packages-batch{batch}.yml" \\
+  --batch "$BATCH_NUMBER" \\
+  --repository "$REPOSITORY" \\
+  --expected-branch "$EXPECTED_BRANCH" \\
+  --current-branch "$CURRENT_BRANCH" \\
+  --expected-sha "$EXPECTED_SHA" \\
+  --workflow-sha "$WORKFLOW_SHA" \\
+  --orchestration-id "$ORCHESTRATION_ID" \\
+  --dispatch-nonce "$DISPATCH_NONCE" \\
+  --run-id "$RUN_ID" \\
+  --run-attempt "$RUN_ATTEMPT" \\
+  --artifact-name "$ARTIFACT_NAME" \\
+  --collector-json-count "$COLLECTOR_JSON_COUNT" \\
+  --needs-environment-variable NEEDS_JSON
+"""
+
+
 def _parse_batch_workflow(path: Path, *, batch: int, root: Path) -> BatchDefinition:
     raw = _read_regular_file(
         path,
@@ -1999,6 +2020,12 @@ def _parse_batch_workflow(path: Path, *, batch: int, root: Path) -> BatchDefinit
         and isinstance(step.get("uses"), str)
         and str(step["uses"]).startswith("actions/upload-artifact@")
     ]
+    attesters = [
+        step
+        for step in steps
+        if isinstance(step, Mapping)
+        and step.get("name") == "Attest complete batch results"
+    ]
     if len(legacy_collectors) + len(strict_collectors) != 1 or len(uploaders) != 1:
         raise ContractError(
             f"batch {batch} summary collector/upload contract is incomplete"
@@ -2040,13 +2067,56 @@ def _parse_batch_workflow(path: Path, *, batch: int, root: Path) -> BatchDefinit
             )
 
     uploader = uploaders[0]
+    if len(attesters) > 1:
+        raise ContractError(f"batch {batch} contains multiple attestation steps")
     if (
         steps.index(uploader) <= steps.index(direct_collector)
-        or uploader.get("if")
-        not in {None, "always()", "${{ always() }}"}
         or uploader.get("continue-on-error") not in {None, False}
         or direct_collector.get("continue-on-error") not in {None, False}
     ):
+        raise ContractError(
+            f"batch {batch} collector/upload execution order is unsafe"
+        )
+    if attesters:
+        attester = attesters[0]
+        expected_environment = {
+            "ARTIFACT_NAME": artifact_name,
+            "BATCH_NUMBER": str(batch),
+            "COLLECTOR_JSON_COUNT": "${{ steps.collect.outputs.json_count }}",
+            "CURRENT_BRANCH": "${{ github.ref_name }}",
+            "DISPATCH_NONCE": "${{ inputs.dispatch_nonce }}",
+            "EXPECTED_BRANCH": "${{ inputs.expected_branch }}",
+            "EXPECTED_SHA": "${{ inputs.expected_sha }}",
+            "NEEDS_JSON": "${{ toJson(needs) }}",
+            "ORCHESTRATION_ID": "${{ inputs.orchestration_id }}",
+            "REPOSITORY": "${{ github.repository }}",
+            "RUN_ATTEMPT": "${{ github.run_attempt }}",
+            "RUN_ID": "${{ github.run_id }}",
+            "WORKFLOW_SHA": "${{ github.sha }}",
+        }
+        if (
+            not legacy_collectors
+            or set(attester) != {"name", "id", "if", "env", "run"}
+            or steps.index(attester) <= steps.index(direct_collector)
+            or steps.index(uploader) <= steps.index(attester)
+            or attester.get("id") != "attest"
+            or attester.get("if") != "steps.collect.outcome == 'success'"
+            or attester.get("env") != expected_environment
+            or attester.get("run") != _expected_batch_attestation_command(batch)
+            or uploader.get("if")
+            != (
+                "steps.collect.outcome == 'success' && "
+                "steps.attest.outcome == 'success'"
+            )
+            or set(direct_collector) != {"name", "id", "uses", "env", "with"}
+            or direct_collector.get("id") != "collect"
+            or direct_collector.get("env")
+            != {"NEEDS_JSON": "${{ toJson(needs) }}"}
+        ):
+            raise ContractError(
+                f"batch {batch} attestation/upload contract is not exact"
+            )
+    elif uploader.get("if") not in {None, "always()", "${{ always() }}"}:
         raise ContractError(
             f"batch {batch} collector/upload execution order is unsafe"
         )
