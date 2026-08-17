@@ -171,6 +171,16 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             lock["migration_parent_workflow_sha256"],
             r"^[0-9a-f]{64}$",
         )
+        transition = lock["hardened_workflow_transition"]
+        self.assertEqual(
+            "5c9a30a6ec71a437880743ee8be119e580e1a5d25816275698bfc4ff9761fa0c",
+            transition["from_sha256"],
+        )
+        self.assertEqual(
+            lock["hardened_workflow_sha256"],
+            transition["to_sha256"],
+        )
+        self.assertTrue(transition["reason"].strip())
         self.assertEqual(3, len(lock["containers"]))
         for entry in lock["actions"]:
             self.assertTrue(entry["github_api_repository_confirmed"])
@@ -228,9 +238,29 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "5c9a30a6ec71a437880743ee8be119e580e1a5d25816275698bfc4ff9761fa0c",
+            "ce0ce34a0d2e5c8d44e2aa46f510658372a07ab03fe0de83d89ea30e13de9ec0",
             result["workflow_sha256"],
         )
+
+    def test_declared_hardened_transition_source_is_accepted(self) -> None:
+        lock = copy.deepcopy(supply_chain.load_lock(self.root))
+        paths = [*self.workflows, *self.batches]
+        snapshot = {"synthetic-reviewed-workflows": b"prior reviewed snapshot"}
+        transition_source = supply_chain.workflow_snapshot_sha256(snapshot)
+        lock["hardened_workflow_transition"] = {
+            "from_sha256": transition_source,
+            "to_sha256": lock["hardened_workflow_sha256"],
+            "reason": "Exercise the explicit reviewed maintenance transition.",
+        }
+        with mock.patch.object(
+            supply_chain, "source_snapshot", return_value=snapshot
+        ):
+            self.assertEqual(
+                "declared_hardened_transition_source",
+                supply_chain.validate_authenticated_base(
+                    self.root, paths, lock, "f" * 40
+                ),
+            )
 
     def test_modified_advanced_base_snapshot_is_rejected(self) -> None:
         lock = supply_chain.load_lock(self.root)
