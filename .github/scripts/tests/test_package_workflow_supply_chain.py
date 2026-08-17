@@ -275,7 +275,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             supply_chain, "source_snapshot", return_value=snapshot
         ):
             with self.assertRaisesRegex(
-                supply_chain.ContractError, "does not match the reviewed hardened"
+                supply_chain.ContractError, "does not match the current, declared"
             ):
                 supply_chain.validate_authenticated_base(
                     self.root, paths, lock, "f" * 40
