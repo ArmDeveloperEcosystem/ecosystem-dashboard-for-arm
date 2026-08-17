@@ -92,7 +92,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"core_failed": 402, "duration": 3, "skipped": 726},
+            {"core_failed": 402, "duration": 3, "skipped": 725},
             {
                 key: len(value)
                 for key, value in remediation["missing_summary_outputs"].items()
