@@ -310,6 +310,27 @@ def load_lock(root: Path) -> dict[str, object]:
         value = lock.get(key)
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
             raise ContractError(f"action lock {key} is not a canonical SHA-256")
+
+    transition = lock.get("hardened_workflow_transition")
+    if transition is not None:
+        expected_transition_keys = {"from_sha256", "to_sha256", "reason"}
+        if not isinstance(transition, dict) or set(transition) != expected_transition_keys:
+            raise ContractError("hardened workflow transition is malformed")
+        transition_from = transition.get("from_sha256")
+        transition_to = transition.get("to_sha256")
+        transition_reason = transition.get("reason")
+        if (
+            not isinstance(transition_from, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", transition_from)
+            or not isinstance(transition_to, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", transition_to)
+            or transition_from == transition_to
+            or transition_to != lock["hardened_workflow_sha256"]
+            or not isinstance(transition_reason, str)
+            or not transition_reason.strip()
+            or len(transition_reason) > 512
+        ):
+            raise ContractError("hardened workflow transition is invalid")
     entries = lock.get("actions")
     if not isinstance(entries, list) or not entries:
         raise ContractError("action lock must contain a non-empty actions list")
@@ -1091,11 +1112,17 @@ def validate_authenticated_base(
     digest = workflow_snapshot_sha256(snapshot)
     if digest == lock["hardened_workflow_sha256"]:
         return "current_hardened_snapshot"
+    transition = lock.get("hardened_workflow_transition")
+    if (
+        isinstance(transition, dict)
+        and digest == transition.get("from_sha256")
+    ):
+        return "declared_hardened_transition_source"
     if digest == lock["migration_parent_workflow_sha256"]:
         return "reviewed_migration_parent"
     raise ContractError(
-        "advanced pull-request base does not match the reviewed hardened "
-        "workflow snapshot"
+        "advanced pull-request base does not match the current, declared "
+        "transition source, or reviewed migration workflow snapshot"
     )
 
 
