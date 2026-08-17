@@ -166,7 +166,11 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         self.assertEqual(supply_chain.SOURCE_COMMIT, lock["source_commit"])
         self.assertEqual(1130, lock["external_uses"])
         self.assertEqual(3, lock["container_uses"])
-        self.assertEqual(16, len(lock["actions"]))
+        self.assertEqual(15, len(lock["actions"]))
+        self.assertRegex(
+            lock["migration_parent_workflow_sha256"],
+            r"^[0-9a-f]{64}$",
+        )
         self.assertEqual(3, len(lock["containers"]))
         for entry in lock["actions"]:
             self.assertTrue(entry["github_api_repository_confirmed"])
@@ -224,7 +228,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "db87133f5230f98fb16b0c53ff5c1dc05b714832ac4abaae54f3d344ecd201f1",
+            "5c9a30a6ec71a437880743ee8be119e580e1a5d25816275698bfc4ff9761fa0c",
             result["workflow_sha256"],
         )
 
@@ -368,9 +372,32 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                     all(value.endswith(": read") for value in values),
                     path.relative_to(self.root).as_posix(),
                 )
+        forwarded: set[str] = set()
         for path in self.batches:
             lines = path.read_text(encoding="utf-8").splitlines()
-            supply_chain._validate_batch_permissions(path, lines)
+            forwarded.update(
+                supply_chain._validate_batch_permissions(
+                    self.root,
+                    path,
+                    lines,
+                    exceptions,
+                )
+            )
+        self.assertEqual(set(exceptions), forwarded)
+
+        permissioned_batch = self.root / ".github/workflows/test-all-packages-batch21.yml"
+        unsafe = permissioned_batch.read_text(encoding="utf-8").replace(
+            "      packages: read\n",
+            "      packages: write\n",
+            1,
+        )
+        with self.assertRaises(supply_chain.ContractError):
+            supply_chain._validate_batch_permissions(
+                self.root,
+                permissioned_batch,
+                unsafe.splitlines(),
+                exceptions,
+            )
 
     def test_every_container_is_digest_pinned(self) -> None:
         lock = supply_chain.load_lock(self.root)
@@ -388,14 +415,21 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "batch_workflows": 22,
                 "external_uses": 1130,
                 "container_uses": 3,
-                "unique_original_refs": 16,
+                "unique_original_refs": 15,
                 "checkout_uses": 982,
                 "permission_exceptions": 4,
-                "topology_sha256": "c16f81d3e036e8fc378b634f1e54fc2fb16b960f89cde8ff430c68f6f7c7dd2e",
-                "workflow_sha256": "db87133f5230f98fb16b0c53ff5c1dc05b714832ac4abaae54f3d344ecd201f1",
+                "topology_sha256": "5c6d2d7b9019fcbecdde6248ff23a8720f46802809ee0213070c8a9a9d1e9220",
+                "workflow_sha256": "5c9a30a6ec71a437880743ee8be119e580e1a5d25816275698bfc4ff9761fa0c",
             },
             supply_chain.validate_hardening(
-                self.root, expected_base_commit=supply_chain.SOURCE_COMMIT
+                self.root,
+                expected_base_commit=subprocess.run(
+                    ["git", "-C", str(self.root), "rev-parse", "HEAD"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                ).stdout.strip(),
             ),
         )
 
