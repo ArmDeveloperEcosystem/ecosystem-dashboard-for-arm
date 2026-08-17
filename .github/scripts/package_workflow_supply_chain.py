@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Iterable
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+if str(SCRIPT_DIRECTORY) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIRECTORY))
 EXACT_RUN_SPEC = importlib.util.spec_from_file_location(
     "dashboard_exact_run_aggregation",
     SCRIPT_DIRECTORY / "exact_run_aggregation.py",

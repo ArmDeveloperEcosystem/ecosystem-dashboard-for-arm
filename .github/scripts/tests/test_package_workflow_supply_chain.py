@@ -18,14 +18,21 @@ SPEC.loader.exec_module(supply_chain)
 FOUNDATION_WORKFLOW = ".github/workflows/exact-run-aggregation-foundation-ci.yml"
 SCOPE_GUARD = "if: steps.scope.outputs.relevant == 'true'"
 RELEVANT_PATHS = (
+    ".github/scripts/download-with-fallback.sh",
     ".github/scripts/package_workflow_action_lock.json",
     ".github/scripts/verify_action_lock_online.py",
     ".github/scripts/package_workflow_supply_chain.py",
     ".github/scripts/exact_run_aggregation.py",
+    ".github/scripts/package_result_policy.py",
+    ".github/scripts/package_observation.py",
+    ".github/scripts/package_observation_migration_audit.py",
     ".github/scripts/tests/test_package_workflow_supply_chain.py",
     ".github/scripts/tests/test_verify_action_lock_online.py",
     ".github/scripts/tests/test_exact_run_aggregation.py",
+    ".github/scripts/tests/test_package_observation.py",
+    ".github/scripts/tests/test_package_observation_migration_audit.py",
     ".github/scripts/README-exact-run-aggregation.md",
+    ".github/scripts/README-package-observation.md",
     ".github/scripts/requirements-exact-run.txt",
     ".github/actions/**",
     FOUNDATION_WORKFLOW,
@@ -107,6 +114,35 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             for line in path_block.splitlines()
         )
         self.assertEqual(RELEVANT_PATHS, diff_paths)
+
+        step_map = dict(steps)
+        source_fetch = step_map.get("Fetch reviewed package workflow source")
+        self.assertIsNotNone(source_fetch)
+        assert source_fetch is not None
+        self.assertIn(
+            f"REVIEWED_SOURCE_COMMIT: {supply_chain.SOURCE_COMMIT}",
+            source_fetch,
+        )
+        self.assertIn(
+            'git fetch --no-tags --depth=1 origin "$REVIEWED_SOURCE_COMMIT"',
+            source_fetch,
+        )
+        step_names = [name for name, _ in steps]
+        self.assertLess(
+            step_names.index("Fetch reviewed package workflow source"),
+            step_names.index("Run adversarial contract tests"),
+        )
+
+        presence = step_map.get("Confirm migration audit sources are present")
+        self.assertIsNotNone(presence)
+        assert presence is not None
+        for source in (
+            ".github/scripts/package_observation_migration_audit.py",
+            ".github/scripts/tests/test_package_observation_migration_audit.py",
+        ):
+            self.assertIn(source, presence)
+        self.assertIn('test -f "$source"', presence)
+        self.assertIn('test ! -L "$source"', presence)
 
         for name, body in steps[2:]:
             self.assertEqual(
@@ -253,6 +289,31 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             with self.subTest(workflow=adversarial_workflow):
                 with self.assertRaises(AssertionError):
                     self.assert_foundation_workflow_contract(adversarial_workflow)
+
+    def test_publisher_ci_fetches_reviewed_source_before_full_suite(self) -> None:
+        workflow = (
+            self.root
+            / ".github/workflows/generated-data-publisher-foundation-ci.yml"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            1, workflow.count("      - name: Fetch reviewed package workflow source")
+        )
+        self.assertIn(
+            f"REVIEWED_SOURCE_COMMIT: {supply_chain.SOURCE_COMMIT}",
+            workflow,
+        )
+        self.assertIn(
+            'git fetch --no-tags --depth=1 origin "$REVIEWED_SOURCE_COMMIT"',
+            workflow,
+        )
+        self.assertLess(
+            workflow.index("      - name: Fetch reviewed package workflow source"),
+            workflow.index("      - name: Run generated site data artifact tests"),
+        )
+        self.assertIn("          fetch-depth: 2\n", workflow)
+        self.assertIn("          persist-credentials: false\n", workflow)
+        self.assertNotIn("          fetch-depth: 0\n", workflow)
+
 
     def test_every_external_use_is_immutable(self) -> None:
         external = 0

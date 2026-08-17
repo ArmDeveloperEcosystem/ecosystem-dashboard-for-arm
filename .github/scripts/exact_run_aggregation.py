@@ -13,6 +13,7 @@ import io
 import json
 import os
 import re
+import shlex
 import stat
 import struct
 import subprocess
@@ -27,6 +28,16 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 import yaml
+
+from package_result_policy import (
+    BASELINE_REGRESSION_DECISIONS as _BASELINE_REGRESSION_DECISIONS,
+    DEFERRED_REGRESSION_DECISIONS as _DEFERRED_REGRESSION_DECISIONS,
+    FAILED_REGRESSION_DECISIONS as _FAILED_REGRESSION_DECISIONS,
+    NOT_APPLICABLE_REGRESSION_DECISIONS as _NOT_APPLICABLE_REGRESSION_DECISIONS,
+    PASSED_REGRESSION_DECISIONS as _PASSED_REGRESSION_DECISIONS,
+    REGRESSION_DECISION_GROUPS as _REGRESSION_DECISION_GROUPS,
+    REGRESSION_STATUSES as _REGRESSION_STATUSES,
+)
 
 MANIFEST_SCHEMA = "arm-dashboard-exact-run-manifest"
 MANIFEST_VERSION = 1
@@ -85,6 +96,26 @@ _WORKFLOW_FILE_RE = re.compile(
     re.ASCII,
 )
 _BATCH_FILE_RE = re.compile(r"\Atest-all-packages-batch([1-9][0-9]*)\.yml\Z")
+_PREFETCH_BATCHES = frozenset({1, 2, 7, 12, 13, 17})
+_PREFETCH_INPUTS = frozenset({"prefetch_run_id", "prefetch_artifact_name"})
+_PREFETCH_JOB_BINDINGS = {
+    1: frozenset({"test-spark", "test-nifi"}),
+    2: frozenset({"test-pinot"}),
+    7: frozenset({"test-hive"}),
+    12: frozenset({"test-hadoop", "test-dolphinscheduler"}),
+    13: frozenset({"test-storm"}),
+    17: frozenset({"test-druid"}),
+}
+_PREFETCH_FORWARDING = {
+    "prefetch_run_id": "${{ inputs.prefetch_run_id || '' }}",
+    "prefetch_artifact_name": "${{ inputs.prefetch_artifact_name || '' }}",
+}
+
+_ACTION_OUTPUT_VALUE_RE = re.compile(
+    r"^\$\{\{\s*steps\.(?P<step>[A-Za-z0-9_-]+)\.outputs\."
+    r"(?P<output>[A-Za-z0-9_-]+)\s*\}\}$",
+    re.ASCII,
+)
 _RFC3339_RE = re.compile(
     r"\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
     r"(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})\Z",
@@ -230,63 +261,6 @@ _DETAIL_ALLOWED_KEYS = _DETAIL_REQUIRED_KEYS | {
     "regression_result",
     "comparison",
 }
-_REGRESSION_STATUSES = {"passed", "failed", "skipped", "deferred", "not_applicable"}
-_NOT_APPLICABLE_REGRESSION_DECISIONS = {
-    "current_is_latest_stable",
-    "no_newer_stable_available",
-    "not_applicable_package_manager",
-}
-_DEFERRED_REGRESSION_DECISIONS = {
-    "arm64_desktop_artifact_unavailable",
-    "manual_review_needed",
-    "metadata_review_required",
-    "next_lookup_deferred",
-    "no_public_arm64_candidate",
-    "runtime_validation_not_automated",
-    "upgrade_candidate_available",
-}
-_BASELINE_REGRESSION_DECISIONS = {"baseline_failed", "baseline_install_failed"}
-_PASSED_REGRESSION_DECISIONS = {
-    "limited_cpu_smoke_validated",
-    "next_bundle_validated",
-    "next_image_validated",
-    "next_install_validated",
-    "next_source_preflight_validated",
-    "validated_next_release",
-    "validated_next_release_metadata",
-}
-_FAILED_REGRESSION_DECISIONS = {
-    "install_failed",
-    "limited_cpu_smoke_failed",
-    "next_artifact_validation_failed",
-    "next_bundle_failed",
-    "next_download_failed",
-    "next_image_download_failed",
-    "next_image_failed",
-    "next_image_load_failed",
-    "next_image_unknown",
-    "next_install_blocked_java_runtime",
-    "next_install_blocked_non_arm64_release_assets",
-    "next_install_failed",
-    "next_install_or_version_mismatch",
-    "next_lookup_failed",
-    "next_regression_failed",
-    "next_runtime_failed",
-    "next_source_preflight_failed",
-}
-_REGRESSION_DECISION_GROUPS = (
-    _NOT_APPLICABLE_REGRESSION_DECISIONS,
-    _DEFERRED_REGRESSION_DECISIONS,
-    _BASELINE_REGRESSION_DECISIONS,
-    _PASSED_REGRESSION_DECISIONS,
-    _FAILED_REGRESSION_DECISIONS,
-)
-if sum(len(group) for group in _REGRESSION_DECISION_GROUPS) != len(
-    set().union(*_REGRESSION_DECISION_GROUPS)
-):
-    raise RuntimeError("regression decision policy groups must be disjoint")
-
-
 class ContractError(ValueError):
     """Untrusted result data does not satisfy the aggregation contract."""
 
@@ -316,6 +290,21 @@ class _UniqueSafeLoader(yaml.SafeLoader):
             except TypeError as exc:
                 raise ContractError("YAML mapping key must be hashable") from exc
         return result
+
+
+_UniqueSafeLoader.yaml_implicit_resolvers = {
+    key: [
+        (tag, pattern)
+        for tag, pattern in resolvers
+        if tag != "tag:yaml.org,2002:bool"
+    ]
+    for key, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_UniqueSafeLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:bool",
+    re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$", re.ASCII),
+    list("tTfF"),
+)
 
 
 @dataclass(frozen=True)
@@ -1787,6 +1776,124 @@ def _validate_manifest_jobs(
     return normalized
 
 
+def _shell_step_writes_github_output(
+    step: Mapping[str, Any], output: str
+) -> bool:
+    run = step.get("run")
+    if not isinstance(run, str):
+        return False
+    executable_lines = [
+        raw_line
+        for raw_line in run.splitlines()
+        if raw_line.strip() and not raw_line.lstrip().startswith("#")
+    ]
+    if len(executable_lines) != 1:
+        return False
+    lexer = shlex.shlex(
+        executable_lines[0],
+        posix=True,
+        punctuation_chars=";&|<>()",
+    )
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        tokens = list(lexer)
+    except ValueError as exc:
+        raise ContractError("strict action contains malformed shell") from exc
+    if tokens.count(">>") != 1:
+        return False
+    redirect = tokens.index(">>")
+    if (
+        redirect + 2 != len(tokens)
+        or tokens[redirect + 1]
+        not in {"$GITHUB_OUTPUT", "${GITHUB_OUTPUT}"}
+    ):
+        return False
+    command = tokens[:redirect]
+    prefix = f"{output}="
+    return (
+        len(command) == 2
+        and command[0] == "echo"
+        and command[1].startswith(prefix)
+        and command[1] != prefix
+    )
+
+
+def _validate_strict_batch_action_contract(root: Path) -> None:
+    reference = "./.github/actions/collect-batch-observations"
+    parts = PurePosixPath(reference.removeprefix("./")).parts
+    action_root = _real_directory(root.joinpath(*parts), f"local action {reference}")
+    candidates = [
+        candidate
+        for candidate in (action_root / "action.yml", action_root / "action.yaml")
+        if candidate.exists()
+    ]
+    if len(candidates) != 1:
+        raise ContractError(
+            "strict batch action must contain exactly one action manifest"
+        )
+    raw = _read_regular_file(
+        candidates[0],
+        root=root,
+        label="strict batch action manifest",
+        maximum_bytes=MAX_WORKFLOW_FILE_BYTES,
+    )
+    action = _yaml_mapping(raw, "strict batch action manifest")
+    expected_inputs = {
+        "batch_number",
+        "orchestration_id",
+        "dispatch_nonce",
+        "package_observations_json",
+    }
+    inputs = _mapping(action.get("inputs"), "strict batch action inputs")
+    if set(inputs) != expected_inputs:
+        raise ContractError("strict batch action inputs are not exact")
+    for name in sorted(expected_inputs):
+        declaration = _mapping(
+            inputs.get(name), f"strict batch action input {name}"
+        )
+        if declaration.get("required") is not True or "default" in declaration:
+            raise ContractError(
+                f"strict batch action input {name} must be required without a default"
+            )
+
+    outputs = _mapping(action.get("outputs"), "strict batch action outputs")
+    if set(outputs) != {"artifact_path"}:
+        raise ContractError("strict batch action outputs are not exact")
+    declaration = _mapping(
+        outputs.get("artifact_path"), "strict batch action artifact_path output"
+    )
+    value = declaration.get("value")
+    match = (
+        _ACTION_OUTPUT_VALUE_RE.fullmatch(value)
+        if isinstance(value, str)
+        else None
+    )
+    if match is None or match.group("output") != "artifact_path":
+        raise ContractError("strict batch action artifact_path binding is invalid")
+
+    runs = _mapping(action.get("runs"), "strict batch action runs")
+    steps = runs.get("steps")
+    if runs.get("using") != "composite" or not isinstance(steps, list):
+        raise ContractError("strict batch action must be composite")
+    source_steps = [
+        step
+        for step in steps
+        if isinstance(step, Mapping) and step.get("id") == match.group("step")
+    ]
+    source_step = source_steps[0] if len(source_steps) == 1 else None
+    if (
+        source_step is None
+        or source_step.get("shell") != "bash"
+        or source_step.get("if") is not None
+        or source_step.get("continue-on-error") not in {None, False}
+        or not _shell_step_writes_github_output(source_step, "artifact_path")
+    ):
+        raise ContractError(
+            "strict batch action artifact_path output is not produced"
+        )
+
+
 def _parse_batch_workflow(path: Path, *, batch: int, root: Path) -> BatchDefinition:
     raw = _read_regular_file(
         path,
@@ -1869,11 +1976,21 @@ def _parse_batch_workflow(path: Path, *, batch: int, root: Path) -> BatchDefinit
     steps = summary.get("steps")
     if not isinstance(steps, list):
         raise ContractError(f"batch {batch} summary steps are malformed")
-    collectors = [
+    collector_references = {
+        "./.github/actions/collect-batch-results",
+        "./.github/actions/collect-batch-observations",
+    }
+    legacy_collectors = [
         step
         for step in steps
         if isinstance(step, Mapping)
         and step.get("uses") == "./.github/actions/collect-batch-results"
+    ]
+    strict_collectors = [
+        step
+        for step in steps
+        if isinstance(step, Mapping)
+        and step.get("uses") == "./.github/actions/collect-batch-observations"
     ]
     uploaders = [
         step
@@ -1882,19 +1999,175 @@ def _parse_batch_workflow(path: Path, *, batch: int, root: Path) -> BatchDefinit
         and isinstance(step.get("uses"), str)
         and str(step["uses"]).startswith("actions/upload-artifact@")
     ]
-    if len(collectors) != 1 or len(uploaders) != 1:
+    if len(legacy_collectors) + len(strict_collectors) != 1 or len(uploaders) != 1:
         raise ContractError(
             f"batch {batch} summary collector/upload contract is incomplete"
         )
-    collector_inputs = _mapping(collectors[0].get("with"), "collector inputs")
-    uploader_inputs = _mapping(uploaders[0].get("with"), "uploader inputs")
+    direct_collector = (
+        legacy_collectors[0] if legacy_collectors else strict_collectors[0]
+    )
+    direct_reference = str(direct_collector["uses"])
+    action_cache: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+    _, collector_graph = _resolve_local_action_references(
+        direct_reference,
+        root=root,
+        cache=action_cache,
+        active=set(),
+    )
+    if set(collector_graph).intersection(collector_references) != {
+        direct_reference
+    }:
+        raise ContractError(
+            f"batch {batch} collector action contains another collector"
+        )
+    for step in steps:
+        if step is direct_collector or not isinstance(step, Mapping):
+            continue
+        reference = step.get("uses")
+        if not isinstance(reference, str) or not reference.startswith(
+            "./.github/actions/"
+        ):
+            continue
+        _, reachable = _resolve_local_action_references(
+            reference,
+            root=root,
+            cache=action_cache,
+            active=set(),
+        )
+        if set(reachable).intersection(collector_references):
+            raise ContractError(
+                f"batch {batch} summary contains a nested collector conflict"
+            )
+
+    uploader = uploaders[0]
     if (
-        str(collector_inputs.get("batch_number")) != str(batch)
-        or collector_inputs.get("batch_title") != f"Batch {batch}"
-        or uploader_inputs.get("name") != artifact_name
-        or uploader_inputs.get("path") != "test-results"
+        steps.index(uploader) <= steps.index(direct_collector)
+        or uploader.get("if")
+        not in {None, "always()", "${{ always() }}"}
+        or uploader.get("continue-on-error") not in {None, False}
+        or direct_collector.get("continue-on-error") not in {None, False}
     ):
-        raise ContractError(f"batch {batch} collector/upload inputs are incorrect")
+        raise ContractError(
+            f"batch {batch} collector/upload execution order is unsafe"
+        )
+    uploader_inputs = _mapping(uploader.get("with"), "uploader inputs")
+    if legacy_collectors:
+        collector_inputs = _mapping(
+            legacy_collectors[0].get("with"), "collector inputs"
+        )
+        if (
+            str(collector_inputs.get("batch_number")) != str(batch)
+            or collector_inputs.get("batch_title") != f"Batch {batch}"
+            or uploader_inputs.get("name") != artifact_name
+            or uploader_inputs.get("path") != "test-results"
+        ):
+            raise ContractError(
+                f"batch {batch} legacy collector/upload inputs are incorrect"
+            )
+    else:
+        strict_collector = strict_collectors[0]
+        collector_inputs = _mapping(
+            strict_collector.get("with"), "strict collector inputs"
+        )
+        expected_inputs = {
+            "batch_number": str(batch),
+            "orchestration_id": "${{ inputs.orchestration_id }}",
+            "dispatch_nonce": "${{ inputs.dispatch_nonce }}",
+            "package_observations_json": "${{ toJson(needs) }}",
+        }
+        if (
+            strict_collector.get("id") != "collect"
+            or strict_collector.get("if")
+            not in {None, "always()", "${{ always() }}"}
+            or dict(collector_inputs) != expected_inputs
+            or uploader_inputs.get("name") != artifact_name
+            or uploader_inputs.get("path")
+            != "${{ steps.collect.outputs.artifact_path }}"
+        ):
+            raise ContractError(
+                f"batch {batch} strict collector/upload inputs are incorrect"
+            )
+        _validate_strict_batch_action_contract(root)
+        triggers = _mapping(workflow.get("on"), f"batch {batch} triggers")
+        expected_triggers = {"workflow_call", "workflow_dispatch"}
+        if set(triggers) != expected_triggers:
+            raise ContractError(
+                f"batch {batch} strict trigger set is not exact"
+            )
+        identity_inputs = {"orchestration_id", "dispatch_nonce"}
+        prefetch_inputs = (
+            set(_PREFETCH_INPUTS) if batch in _PREFETCH_BATCHES else set()
+        )
+        expected_trigger_inputs = identity_inputs | prefetch_inputs
+        for trigger_name in sorted(expected_triggers):
+            trigger = _mapping(
+                triggers.get(trigger_name),
+                f"batch {batch} {trigger_name} trigger",
+            )
+            trigger_inputs = _mapping(
+                trigger.get("inputs"),
+                f"batch {batch} {trigger_name} inputs",
+            )
+            if set(trigger_inputs) != expected_trigger_inputs:
+                raise ContractError(
+                    f"batch {batch} strict orchestration inputs are not exact"
+                )
+            for input_name in sorted(identity_inputs):
+                declaration = _mapping(
+                    trigger_inputs.get(input_name),
+                    f"batch {batch} {trigger_name} input {input_name}",
+                )
+                if (
+                    declaration.get("required") is not True
+                    or declaration.get("type") != "string"
+                    or "default" in declaration
+                ):
+                    raise ContractError(
+                        f"batch {batch} {trigger_name} input {input_name} "
+                        "must be a required string without a default"
+                    )
+            for input_name in sorted(prefetch_inputs):
+                declaration = _mapping(
+                    trigger_inputs.get(input_name),
+                    f"batch {batch} {trigger_name} input {input_name}",
+                )
+                if (
+                    declaration.get("required") is not False
+                    or declaration.get("type") != "string"
+                    or "default" in declaration
+                ):
+                    raise ContractError(
+                        f"batch {batch} {trigger_name} input {input_name} "
+                        "must preserve the reviewed optional string contract "
+                        "without a default"
+                    )
+
+        expected_prefetch_jobs = _PREFETCH_JOB_BINDINGS.get(
+            batch, frozenset()
+        )
+        observed_prefetch_jobs: set[str] = set()
+        for job, raw_definition in package_jobs:
+            job_definition = _mapping(
+                raw_definition, f"batch {batch} job {job}"
+            )
+            raw_inputs = job_definition.get("with")
+            if job in expected_prefetch_jobs:
+                job_inputs = _mapping(
+                    raw_inputs, f"batch {batch} job {job} prefetch inputs"
+                )
+                if dict(job_inputs) != _PREFETCH_FORWARDING:
+                    raise ContractError(
+                        f"batch {batch} job {job} prefetch forwarding is not exact"
+                    )
+                observed_prefetch_jobs.add(job)
+            elif raw_inputs is not None:
+                raise ContractError(
+                    f"batch {batch} job {job} has unreviewed inputs"
+                )
+        if observed_prefetch_jobs != expected_prefetch_jobs:
+            raise ContractError(
+                f"batch {batch} prefetch job set is not exact"
+            )
     return BatchDefinition(
         batch=batch,
         workflow_path=f".github/workflows/{path.name}",
