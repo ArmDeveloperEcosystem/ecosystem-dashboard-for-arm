@@ -242,6 +242,41 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             result["workflow_sha256"],
         )
 
+    def test_malformed_hardened_transitions_are_rejected(self) -> None:
+        base_lock = supply_chain.load_lock(self.root)
+        current = base_lock["hardened_workflow_sha256"]
+        valid_from = "a" * 64
+        adversarial = (
+            {},
+            {"from_sha256": valid_from, "to_sha256": current},
+            {
+                "from_sha256": valid_from,
+                "to_sha256": "b" * 64,
+                "reason": "Target does not match the candidate digest.",
+            },
+            {
+                "from_sha256": current,
+                "to_sha256": current,
+                "reason": "A no-op transition is not valid.",
+            },
+            {
+                "from_sha256": valid_from,
+                "to_sha256": current,
+                "reason": "   ",
+            },
+            {
+                "from_sha256": valid_from,
+                "to_sha256": current,
+                "reason": "x" * 513,
+            },
+        )
+        for transition in adversarial:
+            with self.subTest(transition=transition):
+                lock = copy.deepcopy(base_lock)
+                lock["hardened_workflow_transition"] = transition
+                with self.assertRaises(supply_chain.ContractError):
+                    supply_chain.validate_hardened_workflow_transition(lock)
+
     def test_declared_hardened_transition_source_is_accepted(self) -> None:
         lock = copy.deepcopy(supply_chain.load_lock(self.root))
         paths = [*self.workflows, *self.batches]
