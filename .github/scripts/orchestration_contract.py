@@ -376,14 +376,18 @@ def validate_run(
     if run_attempt != 1:
         raise ContractError("workflow run attempt is not the original dispatch")
 
+    run_title = expected_run_name(
+        batch,
+        orchestration_id,
+        dispatch_nonce,
+    )
+    api_name = run.get("name")
+    if api_name not in {expected_workflow_name(batch), run_title}:
+        raise ContractError("workflow run has unexpected name")
+
     expected = {
-        "name": expected_workflow_name(batch),
         "path": expected_workflow_path(batch),
-        "display_title": expected_run_name(
-            batch,
-            orchestration_id,
-            dispatch_nonce,
-        ),
+        "display_title": run_title,
         "event": "workflow_dispatch",
         "head_branch": validate_branch(branch),
         "head_sha": validate_sha(expected_sha),
