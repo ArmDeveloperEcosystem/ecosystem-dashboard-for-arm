@@ -25,6 +25,7 @@ DEFERRED_REGRESSION_DECISIONS = frozenset(
         "metadata_review_required",
         "next_lookup_deferred",
         "no_public_arm64_candidate",
+        "runtime_validation_infrastructure_failure",
         "runtime_validation_not_automated",
         "upgrade_candidate_available",
     }
