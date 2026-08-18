@@ -321,6 +321,14 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             )
             self.assertNotIn("collect-batch-results-v2", batch)
 
+    def test_global_summary_disables_repository_python_bytecode(self) -> None:
+        summary = (
+            self.root / ".github/workflows/test-all-packages-summary.yml"
+        ).read_text(encoding="utf-8")
+
+        preamble = summary.split("\non:\n", maxsplit=1)[0]
+        self.assertIn('PYTHONDONTWRITEBYTECODE: "1"', preamble)
+
     def test_embedded_python_blocks_compile(self) -> None:
         workflows = (
             (".github/actions/collect-batch-results/action.yml", 1),

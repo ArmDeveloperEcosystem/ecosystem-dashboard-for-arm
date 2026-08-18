@@ -769,6 +769,25 @@ class GeneratedDataPublisherTests(unittest.TestCase):
 
         self.assertIsNone(self._remote_head_sha())
 
+    def test_rejects_python_bytecode_outside_the_allowlist(self) -> None:
+        worktree = self._clone("unexpected-python-bytecode")
+        (worktree / "data/generated.yml").write_text(
+            "value: proposed\n",
+            encoding="utf-8",
+        )
+        cache = worktree / ".github/scripts/__pycache__"
+        cache.mkdir(parents=True)
+        (cache / "orchestration_contract.cpython-312.pyc").write_bytes(b"pyc")
+
+        with self.assertRaisesRegex(PublishError, "outside the generated-data allowlist"):
+            publish_generated_data(
+                self._config(),
+                repository_root=worktree,
+                github=self.github,
+            )
+
+        self.assertIsNone(self._remote_head_sha())
+
     def test_allows_new_regular_files_only_inside_an_allowlisted_directory(self) -> None:
         worktree = self._clone("allowlisted-new-file")
         results = worktree / "data/results"
