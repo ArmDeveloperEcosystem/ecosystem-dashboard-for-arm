@@ -18,6 +18,9 @@ SPEC.loader.exec_module(online)
 COMMIT = "1" * 40
 TAG_OBJECT = "2" * 40
 FILE_SHA = "3" * 40
+CONTAINER_DIGEST = "sha256:" + "a" * 64
+ARM64_DIGEST = "sha256:" + "b" * 64
+AMD64_DIGEST = "sha256:" + "c" * 64
 
 
 def action_entry(ref_type: str = "lightweight_tag") -> dict[str, object]:
@@ -87,6 +90,49 @@ def annotated_tag_payload() -> dict[str, object]:
         "sha": TAG_OBJECT,
         "tag": "v1",
         "object": {"type": "commit", "sha": COMMIT},
+    }
+
+
+def container_entry() -> dict[str, object]:
+    return {
+        "workflow": ".github/workflows/test-example.yml",
+        "original_ref": "example:1",
+        "repository": "example",
+        "resolved_ref": f"example@{CONTAINER_DIGEST}",
+        "resolved_digest": CONTAINER_DIGEST,
+        "arm64_digest": ARM64_DIGEST,
+        "media_type": "application/vnd.oci.image.index.v1+json",
+        "linux_arm64_confirmed": True,
+        "observed_at_utc": "2026-08-18T02:18:20Z",
+        "arm64_runtime_validation": {
+            "method": "Pull exact digest on aarch64",
+            "result": "passed",
+        },
+    }
+
+
+def container_manifest_payload(
+    arm64_digest: str = ARM64_DIGEST,
+) -> dict[str, object]:
+    return {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [
+            {
+                "digest": AMD64_DIGEST,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "platform": {"os": "linux", "architecture": "amd64"},
+            },
+            {
+                "digest": arm64_digest,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "platform": {
+                    "os": "linux",
+                    "architecture": "arm64",
+                    "variant": "v8",
+                },
+            },
+        ],
     }
 
 
@@ -239,6 +285,57 @@ class VerifyActionLockOnlineTests(unittest.TestCase):
                 action_entry(), repository_payload(), payload, contents_payload(),
                 f"{COMMIT}\trefs/tags/v1\n",
             )
+
+    def test_accepts_matching_linux_arm64_container_evidence(self) -> None:
+        online.validate_live_container_evidence(
+            container_entry(), container_manifest_payload()
+        )
+
+    def test_container_media_type_mismatch_is_rejected(self) -> None:
+        payload = container_manifest_payload()
+        payload["mediaType"] = (
+            "application/vnd.docker.distribution.manifest.list.v2+json"
+        )
+        with self.assertRaisesRegex(online.OnlineEvidenceError, "media type"):
+            online.validate_live_container_evidence(container_entry(), payload)
+
+    def test_missing_or_wrong_arm64_container_digest_is_rejected(self) -> None:
+        missing = container_manifest_payload()
+        missing_manifests = missing["manifests"]
+        assert isinstance(missing_manifests, list)
+        missing["manifests"] = [missing_manifests[0]]
+        cases = (
+            container_manifest_payload("sha256:" + "d" * 64),
+            missing,
+        )
+        for payload in cases:
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(
+                    online.OnlineEvidenceError, "Arm64 manifest contradicts"
+                ):
+                    online.validate_live_container_evidence(
+                        container_entry(), payload
+                    )
+
+    def test_duplicate_or_malformed_arm64_container_evidence_is_rejected(self) -> None:
+        duplicate = container_manifest_payload()
+        duplicate_manifests = duplicate["manifests"]
+        assert isinstance(duplicate_manifests, list)
+        duplicate_manifests.append(copy.deepcopy(duplicate_manifests[1]))
+
+        malformed = container_manifest_payload()
+        malformed_manifests = malformed["manifests"]
+        assert isinstance(malformed_manifests, list)
+        malformed_platform = malformed_manifests[1]["platform"]
+        assert isinstance(malformed_platform, dict)
+        malformed_platform["variant"] = "v9"
+
+        for payload in (duplicate, malformed):
+            with self.subTest(payload=payload):
+                with self.assertRaises(online.OnlineEvidenceError):
+                    online.validate_live_container_evidence(
+                        container_entry(), payload
+                    )
 
     @mock.patch.object(online.subprocess, "run")
     def test_command_runner_is_bounded_and_noninteractive(

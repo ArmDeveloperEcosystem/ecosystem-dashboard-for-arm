@@ -537,7 +537,7 @@ def bind_trusted_job(
                     "latest_version": regression["latest_version"],
                     "next_installed_version": regression["next_installed_version"],
                     "decision": regression["decision"],
-                    "regression_result": regression["status"],
+                    "regression_result": regression["result"],
                     "comparison": regression["comparison"],
                 }
             )
