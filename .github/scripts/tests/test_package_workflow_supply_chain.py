@@ -50,6 +50,25 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
     def foundation_workflow(self) -> str:
         return (self.root / FOUNDATION_WORKFLOW).read_text(encoding="utf-8")
 
+    def test_xebium_retry_classifies_only_the_final_attempt_log(self) -> None:
+        workflow = (
+            self.root / ".github/workflows/test-xebium.yml"
+        ).read_text(encoding="utf-8")
+        match = re.search(
+            r"(?ms)^          for ATTEMPT in 1 2 3; do\n(.*?)^          done$",
+            workflow,
+        )
+        self.assertIsNotNone(match)
+        retry_body = match.group(1)
+        self.assertEqual(1, workflow.count(': > "$BUILD_LOG"'))
+        self.assertIn(': > "$BUILD_LOG"', retry_body)
+        self.assertIn('tee "$BUILD_LOG"', retry_body)
+        self.assertNotIn('tee -a "$BUILD_LOG"', retry_body)
+        self.assertLess(
+            retry_body.index(': > "$BUILD_LOG"'),
+            retry_body.index("if sudo docker run"),
+        )
+
     def assert_foundation_workflow_contract(self, workflow: str) -> None:
         trigger, separator, remainder = workflow.partition("\npermissions:\n")
         self.assertTrue(separator, "top-level permissions must follow the trigger")
@@ -238,7 +257,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "baecbd2237290789d52a330cc08f30a57d3e8fb989ecdc16a4fb6727dfef31a4",
+            "91cb767d859bd57cf83a8551834e65002140647613903ebca8af3eb99b979e59",
             result["workflow_sha256"],
         )
 
@@ -485,7 +504,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "checkout_uses": 982,
                 "permission_exceptions": 4,
                 "topology_sha256": "5c6d2d7b9019fcbecdde6248ff23a8720f46802809ee0213070c8a9a9d1e9220",
-                "workflow_sha256": "baecbd2237290789d52a330cc08f30a57d3e8fb989ecdc16a4fb6727dfef31a4",
+                "workflow_sha256": "91cb767d859bd57cf83a8551834e65002140647613903ebca8af3eb99b979e59",
             },
             supply_chain.validate_hardening(
                 self.root,
