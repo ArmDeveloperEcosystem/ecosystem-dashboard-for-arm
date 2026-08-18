@@ -42,6 +42,14 @@ them. Parsed or normalized producer JSON is never accepted at that boundary.
   binds a valid observation to trusted parent-supplied job identity.
 - `../actions/emit-package-observation/action.yml` is the dormant composite
   action package workflows will call during the atomic migration.
+- `../actions/collect-batch-results-v2/action.yml` is a dormant compatibility
+  bridge that rejects malformed legacy outputs and log-derived status repairs.
+  No batch wrapper references it.
+- `promote_package_results.py` is the dormant fail-closed promotion boundary.
+  It validates every new result and every previous row carried forward, and it
+  materializes no publication tree when any package is blocked.
+- `tests/test_promote_package_results.py` executes the publish, retain, and
+  blocked branches against real staging directories.
 - `tests/test_package_observation.py` covers valid lanes and adversarial
   contradictions, including compatibility with `validate_package_result()`.
 - `package_observation_migration_audit.py` inventories all registered workflows
@@ -72,6 +80,10 @@ them. Parsed or normalized producer JSON is never accepted at that boundary.
 
 Adding these files alone does not change any trigger, batch, package test,
 credential, deployment, or publication behavior.
+The 22 production batch wrappers continue to reference
+`collect-batch-results`; they must not be rewired to the v2 or strict
+observation collector until the canonical audit is clean and the native Arm64
+shadow run has passed.
 
 Run the source audit locally with:
 
@@ -93,5 +105,7 @@ auditor always emits `cutover_authorized: false`; it cannot authorize itself.
 The strict observation runtime and native Arm64 shadow run remain the authority
 for control-flow and execution evidence. The final workflow bytes must also
 reseal the reviewed supply-chain lock before cutover. Both external gates are
-recorded in every canonical audit report and must be verified by the activation
-orchestrator.
+recorded alongside the all-workflow observation migration and strict-collector
+shadow-validation gates in every canonical audit report. The activation
+orchestrator must verify all four gates; source code cannot approve its own
+cutover.

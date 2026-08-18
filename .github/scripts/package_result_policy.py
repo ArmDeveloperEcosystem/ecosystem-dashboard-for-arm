@@ -38,6 +38,14 @@ _MAVEN_PERMANENT_FAILURE_RE = re.compile(
     r"|maven-checkstyle-plugin)",
     re.IGNORECASE,
 )
+_MAVEN_RESOLUTION_ANCHOR_RE = re.compile(
+    r"could not transfer artifact|transfer failed for"
+    r"|failed to read artifact descriptor|could not resolve dependencies"
+    r"|could not collect dependencies"
+    r"|plugin .* (?:or one of its dependencies )?could not be resolved"
+    r"|dependencyresolutionexception|pluginresolutionexception",
+    re.IGNORECASE,
+)
 _MAVEN_NETWORK_ERROR_WRAPPER_RE = re.compile(
     r"could not transfer artifact|transfer failed for"
     r"|failed to read artifact descriptor|could not resolve dependencies"
@@ -98,6 +106,8 @@ def classify_maven_networked_build_failure(
         if line.lower().startswith(("[error]", "[fatal]")):
             error_lines.append(line.split("]", 1)[1].strip())
     if not error_lines:
+        return "package_failure"
+    if _MAVEN_RESOLUTION_ANCHOR_RE.search("\n".join(error_lines)) is None:
         return "package_failure"
 
     transient_error_seen = False

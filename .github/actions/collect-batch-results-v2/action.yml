@@ -55,10 +55,18 @@ runs:
         import os
         import re
         import subprocess
+        import sys
         import time
         import urllib.request
         from datetime import datetime
         from pathlib import Path
+
+        sys.path.insert(0, ".github/scripts")
+        from package_result_policy import (
+            expected_regression_metadata,
+            validate_publishable_result,
+            validate_six_test_result,
+        )
 
         needs = json.loads(os.environ.get("NEEDS_JSON") or "{}")
         batch_title = os.environ["BATCH_TITLE"]
@@ -89,6 +97,19 @@ runs:
                 return int(str(value))
             except Exception:
                 return default
+
+        def strict_output_int(value, label):
+            if isinstance(value, bool):
+                raise ValueError(f"{label} must be a non-negative integer")
+            if isinstance(value, int):
+                parsed = value
+            elif isinstance(value, str) and re.fullmatch(r"0|[1-9][0-9]*", value):
+                parsed = int(value)
+            else:
+                raise ValueError(f"{label} must be a non-negative integer")
+            if parsed < 0:
+                raise ValueError(f"{label} must be a non-negative integer")
+            return parsed
 
         def normalize_slug(job_name, outputs):
             slug = str(outputs.get("package_slug") or "").strip()
@@ -255,89 +276,6 @@ runs:
             lowered = str(name or "").strip().lower()
             return lowered.startswith("test 6") or "regression" in lowered
 
-        ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-
-        def strip_ansi(value):
-            return ANSI_RE.sub("", str(value or ""))
-
-        def fetch_job_log(job):
-            if not isinstance(job, dict):
-                return ""
-            job_id = str(job.get("id") or "").strip()
-            if not job_id or not github_token:
-                return ""
-            try:
-                return subprocess.check_output(
-                    ["gh", "run", "view", current_run_id, "--repo", repository, "--log", "--job", job_id],
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                    env={**os.environ, "GH_TOKEN": github_token},
-                )
-            except Exception:
-                return ""
-
-        def extract_summary_statuses_from_log(log_text):
-            statuses = {}
-            for raw_line in str(log_text or "").splitlines():
-                line = strip_ansi(raw_line)
-                match = re.search(
-                    r'echo\s+"([1-6])\.\s+[^"]*?:\s*(passed|failed|skipped)"',
-                    line,
-                    re.IGNORECASE,
-                )
-                if not match:
-                    match = re.search(
-                        r"\b([1-6])\.\s+[^:\n]*?:\s*(passed|failed|skipped)\b",
-                        line,
-                        re.IGNORECASE,
-                    )
-                if match:
-                    statuses[int(match.group(1))] = match.group(2).lower()
-            return statuses
-
-        def detail_test_number(detail, fallback_index):
-            name = str(detail.get("name") or "")
-            lowered = name.lower()
-            match = re.search(r"\btest\s*([1-6])\b", lowered)
-            if match:
-                return int(match.group(1))
-            if lowered.startswith("regression applicability") or "regression" in lowered:
-                return 6
-            return fallback_index
-
-        def apply_summary_log_statuses(details, summary_statuses):
-            if not summary_statuses:
-                return details
-            updated = []
-            test_index = 0
-            for detail in details:
-                if is_test_detail_step(detail.get("name")):
-                    test_index += 1
-                    test_number = detail_test_number(detail, test_index)
-                    if test_number in summary_statuses:
-                        detail = {**detail, "status": summary_statuses[test_number]}
-                updated.append(detail)
-            return updated
-
-        def job_has_failed_step(job, step_name):
-            target = str(step_name or "").strip().lower()
-            if not isinstance(job, dict) or not target:
-                return False
-            for step in job.get("steps") or []:
-                name = str(step.get("name") or "").strip().lower()
-                conclusion = str(step.get("conclusion") or "").strip().lower()
-                if name == target and conclusion == "failure":
-                    return True
-            return False
-
-        def mark_core_details_failed(details):
-            updated = []
-            for detail in details:
-                if is_test_detail_step(detail.get("name")) and not is_regression_detail_name(detail.get("name")):
-                    detail = {**detail, "status": "failed"}
-                updated.append(detail)
-            return updated
-
         def extract_test_details(job, regression_details):
             details = []
             if isinstance(job, dict):
@@ -392,11 +330,17 @@ runs:
                     passed += 1
                 elif status == "failed":
                     failed += 1
-                    if not is_regression_detail_name(name):
+                    if (
+                        is_test_detail_step(name)
+                        and not is_regression_detail_name(name)
+                    ):
                         core_failed += 1
                 else:
                     skipped += 1
-                    if not is_regression_detail_name(name):
+                    if (
+                        is_test_detail_step(name)
+                        and not is_regression_detail_name(name)
+                    ):
                         core_failed += 1
 
             return {
@@ -459,43 +403,6 @@ runs:
             if status in {"review", "deferred", "pending", "not_configured", "not-configured"}:
                 return "skipped"
             return "skipped"
-
-        def is_safe_regression_skip(decision):
-            return str(decision or "").strip() in {
-                "not_applicable_package_manager",
-                "package_manager_regression_safe_skip",
-                "no_newer_stable_available",
-                "current_is_latest_stable",
-                "pinned_is_latest",
-                "already_current",
-                "already_at_latest",
-                "at_latest",
-                "current_is_latest",
-                "metadata_review_required",
-                "runtime_validation_not_automated",
-                "runtime_validation_infrastructure_failure",
-                "bounded_runtime_deferred",
-                "arm64_desktop_artifact_unavailable",
-                "hold_current_arm_dependency_gap",
-            }
-
-        def normalize_run_status(raw_status, tests_passed, tests_failed, tests_skipped, core_failed, regression_decision):
-            status = str(raw_status or "").strip().lower()
-            if tests_failed > 0:
-                return "failure"
-            if core_failed > 0:
-                return "failure"
-            if tests_skipped > 0 and not (
-                tests_skipped == 1 and is_safe_regression_skip(regression_decision)
-            ):
-                return "failure"
-            if tests_passed > 0:
-                return "success"
-            if tests_skipped > 0:
-                return "failure"
-            if status in {"success", "failure"}:
-                return status
-            return "failure"
 
         def default_regression_result(status, decision):
             if decision == "not_applicable_package_manager":
@@ -646,10 +553,18 @@ runs:
             outputs = payload.get("outputs") or {}
             slug = normalize_slug(need_name, outputs)
             package_name = normalize_name(slug, outputs)
-            emitted_tests_passed = as_int(outputs.get("tests_passed"), 0)
-            emitted_tests_failed = as_int(outputs.get("tests_failed"), 0)
-            emitted_tests_skipped = as_int(outputs.get("tests_skipped"), 0)
-            emitted_core_failed = as_int(outputs.get("core_failed"), 0)
+            emitted_tests_passed = strict_output_int(
+                outputs.get("tests_passed"), f"{slug}.tests_passed"
+            )
+            emitted_tests_failed = strict_output_int(
+                outputs.get("tests_failed"), f"{slug}.tests_failed"
+            )
+            emitted_tests_skipped = strict_output_int(
+                outputs.get("tests_skipped"), f"{slug}.tests_skipped"
+            )
+            emitted_core_failed = strict_output_int(
+                outputs.get("core_failed"), f"{slug}.core_failed"
+            )
             raw_run_status = outputs.get("run_status") or ("success" if payload.get("result") == "success" else "failure")
             package_version = (
                 meaningful_version(outputs.get("package_version"))
@@ -668,6 +583,9 @@ runs:
             if not package_ready:
                 metrics["unresolved_packages"] += 1
                 unresolved.append((slug, need_name, payload.get("result") or "unknown"))
+                raise ValueError(
+                    f"{slug}: required package_slug and run_status outputs are missing"
+                )
 
             exact_run_url, resolved_job_name, url_resolution_status, resolved_job = resolve_job_url(
                 need_name,
@@ -686,9 +604,9 @@ runs:
             result_dir.mkdir(parents=True, exist_ok=True)
             result_path = result_dir / f"{slug}.json"
             regression_policy_info = regression_policy(outputs)
-            regression_details = []
-            if regression_policy_info["applicability"] == "applicable":
-                regression_details.append(regression_detail(outputs, regression_policy_info))
+            regression_details = [
+                regression_detail(outputs, regression_policy_info)
+            ]
             test_details = extract_test_details(resolved_job, regression_details)
             initial_detail_counts = summarize_detail_counts(test_details)
             initial_detail_total = (
@@ -707,17 +625,10 @@ runs:
                     or emitted_tests_skipped != initial_detail_counts["skipped"]
                 )
             ):
-                summary_statuses = extract_summary_statuses_from_log(fetch_job_log(resolved_job))
-                test_details = apply_summary_log_statuses(test_details, summary_statuses)
+                raise ValueError(
+                    f"{slug}: emitted counters contradict API step conclusions"
+                )
 
-            current_detail_counts = summarize_detail_counts(test_details)
-            if (
-                initial_detail_total > 0
-                and str((resolved_job or {}).get("conclusion") or "").strip().lower() == "failure"
-                and job_has_failed_step(resolved_job, "Calculate test summary")
-                and current_detail_counts["core_failed"] == 0
-            ):
-                test_details = mark_core_details_failed(test_details)
             regression_detail_entry = next(
                 (detail for detail in test_details if is_regression_detail_name(detail.get("name"))),
                 None,
@@ -732,123 +643,57 @@ runs:
                     "reason": "result_not_emitted",
                     "note": "The Test 6 step failed before the workflow emitted a terminal regression decision.",
                 }
-            detail_counts = summarize_detail_counts(test_details)
 
             tests_passed = emitted_tests_passed
             tests_failed = emitted_tests_failed
             tests_skipped = emitted_tests_skipped
             core_failed = emitted_core_failed
 
-            detail_total = (
-                detail_counts["passed"]
-                + detail_counts["failed"]
-                + detail_counts["skipped"]
-            )
-            emitted_total = tests_passed + tests_failed + tests_skipped
             regression_decision_for_counts = ""
             if isinstance(regression_detail_entry, dict):
                 regression_decision_for_counts = str(regression_detail_entry.get("decision") or "").strip()
             if not regression_decision_for_counts:
                 regression_decision_for_counts = str(outputs.get("regression_decision") or "").strip()
+            if (
+                not regression_decision_for_counts
+                and regression_policy_info["reason"] == "package_manager_installed"
+            ):
+                regression_decision_for_counts = "not_applicable_package_manager"
 
-            use_detail_counts = False
-            if detail_total > 0:
-                if emitted_total == 0:
-                    use_detail_counts = True
-                elif tests_failed != detail_counts["failed"]:
-                    use_detail_counts = True
-                elif tests_passed != detail_counts["passed"]:
-                    use_detail_counts = True
-                elif tests_skipped != detail_counts["skipped"]:
-                    use_detail_counts = True
-                elif emitted_total != detail_total:
-                    use_detail_counts = True
-                elif core_failed != detail_counts["core_failed"]:
-                    use_detail_counts = True
-
-            if regression_decision_for_counts in {"baseline_failed", "baseline_install_failed"} and emitted_total > 0:
-                use_detail_counts = False
-
-            if use_detail_counts:
-                tests_passed = detail_counts["passed"]
-                tests_failed = detail_counts["failed"]
-                tests_skipped = detail_counts["skipped"]
-                core_failed = detail_counts["core_failed"]
+            if contract_version != "2.0":
+                raise ValueError(
+                    f"{slug}: unsupported package result contract {contract_version!r}"
+                )
+            run_status = validate_six_test_result(
+                details=test_details,
+                passed=tests_passed,
+                failed=tests_failed,
+                skipped=tests_skipped,
+                core_failed=core_failed,
+                decision=regression_decision_for_counts,
+            )
+            regression_contract = expected_regression_metadata(
+                decision=regression_decision_for_counts,
+                core_failed=core_failed,
+            )
+            emitted_run_status = str(raw_run_status or "").strip().lower()
+            if emitted_run_status != run_status:
+                raise ValueError(
+                    f"{slug}: emitted run status contradicts six-test evidence"
+                )
 
             workflow_result = str(payload.get("result") or "").strip().lower()
             resolved_job_conclusion = str((resolved_job or {}).get("conclusion") or "").strip().lower()
-            job_failed = workflow_result == "failure" or resolved_job_conclusion == "failure"
-            failed_detail_exists = any(
-                str(detail.get("status") or "").strip().lower() == "failed"
-                for detail in test_details
-            )
-
-            if job_failed and not failed_detail_exists:
-                promoted_regression_failure = False
-                if isinstance(regression_detail_entry, dict):
-                    regression_decision = str(regression_detail_entry.get("decision") or "").strip()
-                    successful_regression_decisions = {
-                        "next_install_validated",
-                        "next_bundle_validated",
-                        "next_image_validated",
-                        "limited_cpu_smoke_validated",
-                    }
-                    if regression_decision not in {
-                        "baseline_failed",
-                        "baseline_install_failed",
-                        *successful_regression_decisions,
-                    }:
-                        regression_detail_entry["status"] = "failed"
-                    if regression_decision in {
-                        "",
-                        "applicable_deferred",
-                        "not_configured",
-                        "manual_review_needed",
-                    }:
-                        regression_detail_entry["decision"] = "result_not_emitted"
-                        regression_detail_entry["regression_result"] = "Regression validation step failed before emitting terminal outputs"
-                        regression_detail_entry["comparison"] = "The package job failed in Actions, but the workflow did not emit a terminal regression decision before exiting."
-                    promoted_regression_failure = regression_decision not in {
-                        "baseline_failed",
-                        "baseline_install_failed",
-                        *successful_regression_decisions,
-                    }
-                    if regression_policy_info["reason"] == "applicable_deferred":
-                        regression_policy_info = {
-                            "applicability": "applicable",
-                            "reason": "result_not_emitted",
-                            "note": "The Test 6 step failed before the workflow emitted a terminal regression decision.",
-                        }
-
-                if not promoted_regression_failure:
-                    test_details.append(
-                        {
-                            "name": "Workflow Finalization",
-                            "status": "failed",
-                            "duration_seconds": 0,
-                            "decision": "job_failed_without_emitted_result",
-                            "regression_result": "Package job failed before the workflow emitted a trustworthy final summary",
-                            "comparison": "Actions marked this package job as failed, but no terminal failure payload was emitted for publication.",
-                        }
-                    )
-
-                detail_counts = summarize_detail_counts(test_details)
-                tests_passed = detail_counts["passed"]
-                tests_failed = detail_counts["failed"]
-                tests_skipped = detail_counts["skipped"]
-                core_failed = detail_counts["core_failed"]
-
-            regression_decision_for_status = regression_decision_for_counts or str(outputs.get("regression_decision") or "").strip()
-            if not regression_decision_for_status and regression_policy_info["reason"] == "package_manager_installed":
-                regression_decision_for_status = "not_applicable_package_manager"
-            run_status = normalize_run_status(
-                raw_run_status,
-                tests_passed,
-                tests_failed,
-                tests_skipped,
-                core_failed,
-                regression_decision_for_status,
-            )
+            conclusions = [
+                value for value in (workflow_result, resolved_job_conclusion) if value
+            ]
+            if not conclusions:
+                raise ValueError(f"{slug}: package job conclusion is unavailable")
+            job_failed = any(value != "success" for value in conclusions)
+            if job_failed != (run_status == "failure"):
+                raise ValueError(
+                    f"{slug}: job conclusion contradicts six-test evidence"
+                )
             badge_status = "passing" if run_status == "success" else "failing"
 
             result_payload = {
@@ -884,12 +729,15 @@ runs:
                     "core_failed": core_failed,
                     "batch_title": batch_title,
                     "job_url_resolution_status": url_resolution_status,
-                    "regression_applicability": regression_policy_info["applicability"],
-                    "regression_reason": regression_policy_info["reason"],
+                    "regression_status": regression_contract["status"],
+                    "regression_decision": regression_decision_for_counts,
+                    "regression_applicability": regression_contract["applicability"],
+                    "regression_reason": regression_contract["reason"],
                     "regression_note": regression_policy_info["note"],
                 },
             }
 
+            validate_publishable_result(result_payload)
             result_path.write_text(json.dumps(result_payload, indent=2) + "\n")
             metrics["json_count"] += 1
             if run_status == "success":

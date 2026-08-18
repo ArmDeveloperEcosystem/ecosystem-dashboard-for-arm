@@ -353,13 +353,14 @@ jobs:
           sudo apt-get install -y git unzip
           sudo systemctl start docker || true
 
-          NEXT_DIR="${RUNNER_TEMP}/xebium-next"
-          rm -rf "$NEXT_DIR"
-          git init "$NEXT_DIR"
-          git -C "$NEXT_DIR" remote add origin https://github.com/xebia/Xebium
-          git -C "$NEXT_DIR" fetch --no-tags --depth=1 origin "$LATEST_COMMIT"
-          git -C "$NEXT_DIR" checkout --detach "$LATEST_COMMIT"
-          test "$(git -C "$NEXT_DIR" rev-parse HEAD)" = "$LATEST_COMMIT"
+          NEXT_REPO_DIR="${RUNNER_TEMP}/xebium-next-repository"
+          WARMUP_DIR="${RUNNER_TEMP}/xebium-next-warmup-source"
+          OFFLINE_DIR="${RUNNER_TEMP}/xebium-next-offline-source"
+          rm -rf "$NEXT_REPO_DIR" "$WARMUP_DIR" "$OFFLINE_DIR"
+          git init --bare "$NEXT_REPO_DIR"
+          git -C "$NEXT_REPO_DIR" remote add origin https://github.com/xebia/Xebium
+          git -C "$NEXT_REPO_DIR" fetch --no-tags --depth=1 origin "$LATEST_COMMIT"
+          test "$(git -C "$NEXT_REPO_DIR" rev-parse "$LATEST_COMMIT^{commit}")" = "$LATEST_COMMIT"
 
           M2_DIR="${RUNNER_TEMP}/xebium-next-m2"
           WARMUP_LOG="${RUNNER_TEMP}/xebium-next-warmup.log"
@@ -372,13 +373,17 @@ jobs:
 
           for ATTEMPT in 1 2 3; do
             echo "Xebium candidate cache-warming build attempt ${ATTEMPT}/3"
+            rm -rf "$WARMUP_DIR"
+            mkdir -p "$WARMUP_DIR"
+            git -C "$NEXT_REPO_DIR" archive --format=tar "$LATEST_COMMIT" | tar -xf - -C "$WARMUP_DIR"
+            test ! -e "$WARMUP_DIR/.git"
             : > "$WARMUP_LOG"
             set +e
             timeout --signal=TERM --kill-after=30s 10m sudo docker run --rm \
               -u "$(id -u):$(id -g)" \
               -e HOME=/tmp \
               -e MAVEN_CONFIG=/tmp/.m2 \
-              -v "$NEXT_DIR:/work" \
+              -v "$WARMUP_DIR:/work" \
               -v "$M2_DIR:/tmp/.m2" \
               -w /work \
               "$PINNED_CONTAINER_IMAGE_MAVEN" \
@@ -425,18 +430,19 @@ jobs:
           done
 
           if [ "$WARMUP_OK" = "true" ]; then
-            git -C "$NEXT_DIR" reset --hard "$LATEST_COMMIT"
-            git -C "$NEXT_DIR" clean -ffdx
-            test "$(git -C "$NEXT_DIR" rev-parse HEAD)" = "$LATEST_COMMIT"
-            test -z "$(git -C "$NEXT_DIR" status --porcelain=v1)"
+            test "$(git -C "$NEXT_REPO_DIR" rev-parse "$LATEST_COMMIT^{commit}")" = "$LATEST_COMMIT"
+            rm -rf "$OFFLINE_DIR"
+            mkdir -p "$OFFLINE_DIR"
+            git -C "$NEXT_REPO_DIR" archive --format=tar "$LATEST_COMMIT" | tar -xf - -C "$OFFLINE_DIR"
+            test ! -e "$OFFLINE_DIR/.git"
 
             echo "Xebium candidate network-disabled offline rebuild"
             : > "$BUILD_LOG"
-            if timeout --signal=TERM --kill-after=30s 10m sudo docker run --rm --network none \
+            if timeout --signal=TERM --kill-after=30s 10m sudo docker run --rm --pull=never --network none \
               -u "$(id -u):$(id -g)" \
               -e HOME=/tmp \
               -e MAVEN_CONFIG=/tmp/.m2 \
-              -v "$NEXT_DIR:/work" \
+              -v "$OFFLINE_DIR:/work" \
               -v "$M2_DIR:/tmp/.m2" \
               -w /work \
               "$PINNED_CONTAINER_IMAGE_MAVEN" \
@@ -452,9 +458,9 @@ jobs:
             CANDIDATE_POM="${RUNNER_TEMP}/xebium-candidate-pom.properties"
             CANDIDATE_JAR_LIST="${RUNNER_TEMP}/xebium-candidate-jar.list"
             CANDIDATE_IDE_LIST="${RUNNER_TEMP}/xebium-candidate-ide.list"
-            unzip -p "$NEXT_DIR/target/xebium-${LATEST}.jar" META-INF/maven/com.xebia.incubator/xebium/pom.properties > "$CANDIDATE_POM"
-            unzip -Z1 "$NEXT_DIR/target/xebium-${LATEST}.jar" > "$CANDIDATE_JAR_LIST"
-            unzip -Z1 "$NEXT_DIR/target/xebium-${LATEST}-ide.jar" > "$CANDIDATE_IDE_LIST"
+            unzip -p "$OFFLINE_DIR/target/xebium-${LATEST}.jar" META-INF/maven/com.xebia.incubator/xebium/pom.properties > "$CANDIDATE_POM"
+            unzip -Z1 "$OFFLINE_DIR/target/xebium-${LATEST}.jar" > "$CANDIDATE_JAR_LIST"
+            unzip -Z1 "$OFFLINE_DIR/target/xebium-${LATEST}-ide.jar" > "$CANDIDATE_IDE_LIST"
             NEXT_INSTALLED=$(awk -F= '/^version=/{print $2; exit}' "$CANDIDATE_POM")
 
             if [ "$NEXT_INSTALLED" = "$LATEST" ] && \

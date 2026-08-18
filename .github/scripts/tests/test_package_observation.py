@@ -84,6 +84,14 @@ class PackageObservationTests(unittest.TestCase):
                 ),
                 1,
             ),
+            (
+                (
+                    "[ERROR] Failed to execute goal example:healthcheck:verify:\n"
+                    "[ERROR] java.net.ConnectException: Connection refused\n"
+                    "[ERROR] -> [Help 1]"
+                ),
+                1,
+            ),
             ("[ERROR] Could not transfer artifact: Connection reset", 124),
             ("[ERROR] Could not transfer artifact: Connection reset", 125),
             ("[ERROR] Could not transfer artifact: Connection reset", 137),

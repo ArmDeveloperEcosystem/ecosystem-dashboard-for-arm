@@ -169,12 +169,14 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual([], remediation["invalid_strict_batch_collector"])
         self.assertEqual(
             [
+                "all_registered_workflows_emit_strict_observations",
+                "strict_collector_shadow_validation",
                 "native_arm64_shadow_validation",
                 "supply_chain_lock_reseal_after_workflow_bytes_stabilize",
             ],
             self.report["required_activation_gates"],
         )
-        self.assertEqual(10, len(self.report["audited_source_digests"]))
+        self.assertEqual(12, len(self.report["audited_source_digests"]))
         self.assertTrue(
             all(
                 len(digest) == 64
@@ -197,7 +199,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "4518ef798541c393a8bee84f018f26ff030d3bc70a47c37003c573aceb03e298",
+            "0d3c7eef15f10f0d6e4eb28d488b3d647f2ba1896b66f2151d0fbc27d57b0749",
             digest,
         )
 

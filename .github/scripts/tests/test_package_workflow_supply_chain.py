@@ -28,11 +28,13 @@ RELEVANT_PATHS = (
     ".github/scripts/package_result_policy.py",
     ".github/scripts/package_observation.py",
     ".github/scripts/package_observation_migration_audit.py",
+    ".github/scripts/promote_package_results.py",
     ".github/scripts/tests/test_package_workflow_supply_chain.py",
     ".github/scripts/tests/test_verify_action_lock_online.py",
     ".github/scripts/tests/test_exact_run_aggregation.py",
     ".github/scripts/tests/test_package_observation.py",
     ".github/scripts/tests/test_package_observation_migration_audit.py",
+    ".github/scripts/tests/test_promote_package_results.py",
     ".github/scripts/README-exact-run-aggregation.md",
     ".github/scripts/README-package-observation.md",
     ".github/scripts/requirements-exact-run.txt",
@@ -63,6 +65,12 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         self.assertIsNotNone(match)
         retry_body = match.group(1)
         self.assertIn("clean package", retry_body)
+        self.assertIn('rm -rf "$WARMUP_DIR"', retry_body)
+        self.assertIn(
+            'git -C "$NEXT_REPO_DIR" archive --format=tar "$LATEST_COMMIT"',
+            retry_body,
+        )
+        self.assertIn('-v "$WARMUP_DIR:/work"', retry_body)
         self.assertIn('tee "$WARMUP_LOG"', retry_body)
         self.assertNotIn("--network none", retry_body)
         self.assertNotIn('tee "$BUILD_LOG"', retry_body)
@@ -79,17 +87,21 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             'clean package 2>&1 | tee "$WARMUP_LOG"'
         )
         isolated_container_index = workflow.index(
-            "sudo docker run --rm --network none"
+            "sudo docker run --rm --pull=never --network none"
         )
         offline_build_index = workflow.index("mvn -o -q", isolated_container_index)
         self.assertLess(warmup_index, isolated_container_index)
         self.assertLess(isolated_container_index, offline_build_index)
         clean_source = workflow[warmup_index:isolated_container_index]
         self.assertIn(
-            'git -C "$NEXT_DIR" reset --hard "$LATEST_COMMIT"', clean_source
+            'git -C "$NEXT_REPO_DIR" archive --format=tar "$LATEST_COMMIT"',
+            clean_source,
         )
-        self.assertIn('git -C "$NEXT_DIR" clean -ffdx', clean_source)
-        self.assertIn('status --porcelain=v1', clean_source)
+        self.assertIn('test ! -e "$OFFLINE_DIR/.git"', clean_source)
+        self.assertIn('-v "$OFFLINE_DIR:/work"', workflow[isolated_container_index:])
+        self.assertNotIn('-v "$NEXT_REPO_DIR:/work"', workflow)
+        self.assertNotIn('reset --hard', clean_source)
+        self.assertNotIn('clean -ffdx', clean_source)
         self.assertIn(
             "-DskipTests clean package",
             workflow[offline_build_index:],
@@ -116,9 +128,11 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         self.assertIn('echo "latest_commit=$LATEST_COMMIT"', workflow)
         self.assertIn(
-            'git -C "$NEXT_DIR" fetch --no-tags --depth=1 origin "$LATEST_COMMIT"',
+            'git -C "$NEXT_REPO_DIR" fetch --no-tags --depth=1 '
+            'origin "$LATEST_COMMIT"',
             workflow,
         )
+        self.assertIn('git init --bare "$NEXT_REPO_DIR"', workflow)
         self.assertNotIn("git clone --depth 1 --branch", workflow)
         self.assertNotRegex(workflow, r"jar tf [^\n]+\|")
         self.assertNotRegex(workflow, r"unzip -p [^\n]+\|")
@@ -133,10 +147,13 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
     def test_infrastructure_deferral_is_wired_through_publishers(self) -> None:
         decision = "runtime_validation_infrastructure_failure"
         collector = (
+            self.root / ".github/actions/collect-batch-results-v2/action.yml"
+        ).read_text(encoding="utf-8")
+        active_collector = (
             self.root / ".github/actions/collect-batch-results/action.yml"
         ).read_text(encoding="utf-8")
-        final_summary = (
-            self.root / ".github/workflows/test-all-packages-summary.yml"
+        promoter = (
+            self.root / ".github/scripts/promote_package_results.py"
         ).read_text(encoding="utf-8")
         result_policy = (
             self.root / ".github/scripts/package_result_policy.py"
@@ -155,24 +172,36 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         self.assertIn("validate_publishable_result(result_payload)", collector)
         self.assertIn("strict_output_int(", collector)
         self.assertIn("job conclusion contradicts six-test evidence", collector)
-        self.assertIn("validate_publishable_result(payload)", final_summary)
-        self.assertNotIn("failed = max(0, failed - 1)", final_summary)
-        self.assertNotIn("published_with_warning", final_summary)
-        self.assertIn('"state": "retained_previous"', final_summary)
-        self.assertIn('"state": "blocked_no_previous"', final_summary)
+        self.assertIn("validate_publishable_result(payload)", promoter)
+        self.assertIn("validate_publishable_result(previous_payload)", promoter)
+        self.assertNotIn("published_with_warning", promoter)
+        self.assertIn('"state": "retained_previous"', promoter)
+        self.assertIn('"state": "blocked_no_previous"', promoter)
+        self.assertIn('"state": "blocked_invalid_previous"', promoter)
+        self.assertIn("if blocked_count:", promoter)
         self.assertNotIn("safe_single_regression_skip", collector)
         self.assertNotIn("safe_package_manager_skip", collector)
+        self.assertNotIn("extract_summary_statuses_from_log", collector)
+        self.assertNotIn("fetch_job_log", collector)
         self.assertIn(
-            "from package_result_policy import validate_publishable_result",
-            final_summary,
+            "required package_slug and run_status outputs are missing",
+            collector,
         )
+        self.assertNotIn("validate_publishable_result", active_collector)
         self.assertIn(f'"{decision}",', result_policy)
         self.assertIn("def expected_regression_metadata(", result_policy)
+        for batch_path in self.batches:
+            batch = batch_path.read_text(encoding="utf-8")
+            self.assertIn(
+                "uses: ./.github/actions/collect-batch-results", batch
+            )
+            self.assertNotIn("collect-batch-results-v2", batch)
 
     def test_embedded_python_blocks_compile(self) -> None:
         workflows = (
             (".github/actions/collect-batch-results/action.yml", 1),
-            (".github/workflows/test-all-packages-summary.yml", 3),
+            (".github/actions/collect-batch-results-v2/action.yml", 1),
+            (".github/workflows/test-all-packages-summary.yml", 4),
         )
 
         def runs(value):
@@ -193,11 +222,20 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             )
             blocks = []
             for run_script in runs(workflow):
-                if marker not in run_script:
-                    continue
-                body = run_script.split(marker, 1)[1].split(delimiter, 1)[0]
-                compile(body, f"{relative_path}:embedded-python", "exec")
-                blocks.append(body)
+                cursor = 0
+                while True:
+                    marker_index = run_script.find(marker, cursor)
+                    if marker_index < 0:
+                        break
+                    body_start = marker_index + len(marker)
+                    body_end = run_script.find(delimiter, body_start)
+                    self.assertGreaterEqual(
+                        body_end, 0, f"{relative_path}: unterminated heredoc"
+                    )
+                    body = run_script[body_start:body_end]
+                    compile(body, f"{relative_path}:embedded-python", "exec")
+                    blocks.append(body)
+                    cursor = body_end + len(delimiter)
             self.assertEqual(expected_count, len(blocks), relative_path)
 
     def assert_foundation_workflow_contract(self, workflow: str) -> None:
@@ -388,7 +426,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "9545d77064bf2f4d306e10f2ac55a3b83d0dc531aeab371cea0eeba05e9e175a",
+            "8e29c5376045fdc6cb2a5b4ecfd4f16a4b22aef88db6aa8d820300034cf1ec6e",
             result["workflow_sha256"],
         )
 
@@ -635,7 +673,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "checkout_uses": 982,
                 "permission_exceptions": 4,
                 "topology_sha256": "dd3b2c7547600d99769b0f8aabf4ca8057334a3ab70e473de59af21750adb69b",
-                "workflow_sha256": "9545d77064bf2f4d306e10f2ac55a3b83d0dc531aeab371cea0eeba05e9e175a",
+                "workflow_sha256": "8e29c5376045fdc6cb2a5b4ecfd4f16a4b22aef88db6aa8d820300034cf1ec6e",
             },
             supply_chain.validate_hardening(
                 self.root,
