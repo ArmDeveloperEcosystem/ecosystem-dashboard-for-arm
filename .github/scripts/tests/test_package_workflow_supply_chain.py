@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 
 SCRIPT = Path(__file__).resolve().parents[1] / "package_workflow_supply_chain.py"
 SPEC = importlib.util.spec_from_file_location("package_workflow_supply_chain", SCRIPT)
@@ -69,6 +71,10 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             "classify_maven_networked_build_failure",
             retry_body,
         )
+        self.assertIn('WARMUP_PIPE_STATUS=("${PIPESTATUS[@]}")', retry_body)
+        self.assertIn('WARMUP_TEE_EXIT="${WARMUP_PIPE_STATUS[1]}"', retry_body)
+        self.assertIn("return_code=int(sys.argv[2])", retry_body)
+        self.assertIn('if [ "$WARMUP_TEE_EXIT" -ne 0 ]', retry_body)
         warmup_index = workflow.index(
             'clean package 2>&1 | tee "$WARMUP_LOG"'
         )
@@ -78,6 +84,12 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         offline_build_index = workflow.index("mvn -o -q", isolated_container_index)
         self.assertLess(warmup_index, isolated_container_index)
         self.assertLess(isolated_container_index, offline_build_index)
+        clean_source = workflow[warmup_index:isolated_container_index]
+        self.assertIn(
+            'git -C "$NEXT_DIR" reset --hard "$LATEST_COMMIT"', clean_source
+        )
+        self.assertIn('git -C "$NEXT_DIR" clean -ffdx', clean_source)
+        self.assertIn('status --porcelain=v1', clean_source)
         self.assertIn(
             "-DskipTests clean package",
             workflow[offline_build_index:],
@@ -90,11 +102,14 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "maven:3.9-eclipse-temurin-8@sha256:"
+            "maven@sha256:"
             "0537e78bbba084ec350fcaa0dedef6efa34440e4e464bbb284f0f1e47043f629",
             workflow,
         )
-        self.assertEqual(3, workflow.count('"$MAVEN_IMAGE"'))
+        self.assertIn("# original: maven:3.9-eclipse-temurin-8", workflow)
+        self.assertEqual(
+            3, workflow.count('"$PINNED_CONTAINER_IMAGE_MAVEN"')
+        )
         self.assertEqual(
             3,
             workflow.count("timeout --signal=TERM --kill-after=30s 10m"),
@@ -123,6 +138,9 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         final_summary = (
             self.root / ".github/workflows/test-all-packages-summary.yml"
         ).read_text(encoding="utf-8")
+        result_policy = (
+            self.root / ".github/scripts/package_result_policy.py"
+        ).read_text(encoding="utf-8")
 
         self.assertIn(f'"{decision}",', collector)
         self.assertIn(f'if decision == "{decision}":', collector)
@@ -131,20 +149,56 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             "infrastructure failure",
             collector,
         )
-        self.assertIn("if job_failed and not failed_detail_exists:", collector)
+        self.assertNotIn("if job_failed and not failed_detail_exists:", collector)
+        self.assertNotIn('"name": "Workflow Finalization"', collector)
+        self.assertIn("validate_six_test_result(", collector)
+        self.assertIn("validate_publishable_result(result_payload)", collector)
+        self.assertIn("strict_output_int(", collector)
+        self.assertIn("job conclusion contradicts six-test evidence", collector)
+        self.assertIn("validate_publishable_result(payload)", final_summary)
+        self.assertNotIn("failed = max(0, failed - 1)", final_summary)
+        self.assertNotIn("published_with_warning", final_summary)
+        self.assertIn('"state": "retained_previous"', final_summary)
+        self.assertIn('"state": "blocked_no_previous"', final_summary)
         self.assertNotIn("safe_single_regression_skip", collector)
         self.assertNotIn("safe_package_manager_skip", collector)
-        self.assertIn(f'"{decision}",', final_summary)
         self.assertIn(
-            f"runtime_validation_not_automated|{decision}|bounded_runtime_deferred",
+            "from package_result_policy import validate_publishable_result",
             final_summary,
         )
-        self.assertIn(
-            f"{decision})\n"
-            "                      REGRESSION_RESULT=\"Next-version validation "
-            "deferred after a transient infrastructure failure\"",
-            final_summary,
+        self.assertIn(f'"{decision}",', result_policy)
+        self.assertIn("def expected_regression_metadata(", result_policy)
+
+    def test_embedded_python_blocks_compile(self) -> None:
+        workflows = (
+            (".github/actions/collect-batch-results/action.yml", 1),
+            (".github/workflows/test-all-packages-summary.yml", 3),
         )
+
+        def runs(value):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key == "run" and isinstance(child, str):
+                        yield child
+                    yield from runs(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from runs(child)
+
+        marker = "python3 - <<'PY'\n"
+        delimiter = "\nPY\n"
+        for relative_path, expected_count in workflows:
+            workflow = yaml.safe_load(
+                (self.root / relative_path).read_text(encoding="utf-8")
+            )
+            blocks = []
+            for run_script in runs(workflow):
+                if marker not in run_script:
+                    continue
+                body = run_script.split(marker, 1)[1].split(delimiter, 1)[0]
+                compile(body, f"{relative_path}:embedded-python", "exec")
+                blocks.append(body)
+            self.assertEqual(expected_count, len(blocks), relative_path)
 
     def assert_foundation_workflow_contract(self, workflow: str) -> None:
         trigger, separator, remainder = workflow.partition("\npermissions:\n")
@@ -261,7 +315,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         self.assertEqual([], lock["unresolved_references"])
         self.assertEqual(supply_chain.SOURCE_COMMIT, lock["source_commit"])
         self.assertEqual(1130, lock["external_uses"])
-        self.assertEqual(3, lock["container_uses"])
+        self.assertEqual(4, lock["container_uses"])
         self.assertEqual(15, len(lock["actions"]))
         self.assertRegex(
             lock["migration_parent_workflow_sha256"],
@@ -277,7 +331,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             transition["to_sha256"],
         )
         self.assertTrue(transition["reason"].strip())
-        self.assertEqual(3, len(lock["containers"]))
+        self.assertEqual(4, len(lock["containers"]))
         for entry in lock["actions"]:
             self.assertTrue(entry["github_api_repository_confirmed"])
             self.assertTrue(entry["github_api_commit_confirmed"])
@@ -334,7 +388,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "d3e095c0a59a6bade74972eaddd7f1296627764fb68a2106b718b3e836aaeb70",
+            "9545d77064bf2f4d306e10f2ac55a3b83d0dc531aeab371cea0eeba05e9e175a",
             result["workflow_sha256"],
         )
 
@@ -564,7 +618,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
     def test_every_container_is_digest_pinned(self) -> None:
         lock = supply_chain.load_lock(self.root)
         containers = supply_chain.container_lock_by_workflow(lock)
-        self.assertEqual(3, len(containers))
+        self.assertEqual(4, len(containers))
         for relative, entry in containers.items():
             text = (self.root / relative).read_text(encoding="utf-8")
             self.assertIn(entry["resolved_ref"], text)
@@ -576,12 +630,12 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "registered_workflows": 960,
                 "batch_workflows": 22,
                 "external_uses": 1130,
-                "container_uses": 3,
+                "container_uses": 4,
                 "unique_original_refs": 15,
                 "checkout_uses": 982,
                 "permission_exceptions": 4,
-                "topology_sha256": "5c6d2d7b9019fcbecdde6248ff23a8720f46802809ee0213070c8a9a9d1e9220",
-                "workflow_sha256": "d3e095c0a59a6bade74972eaddd7f1296627764fb68a2106b718b3e836aaeb70",
+                "topology_sha256": "dd3b2c7547600d99769b0f8aabf4ca8057334a3ab70e473de59af21750adb69b",
+                "workflow_sha256": "9545d77064bf2f4d306e10f2ac55a3b83d0dc531aeab371cea0eeba05e9e175a",
             },
             supply_chain.validate_hardening(
                 self.root,

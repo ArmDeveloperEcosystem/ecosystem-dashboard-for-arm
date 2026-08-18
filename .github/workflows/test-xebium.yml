@@ -85,7 +85,7 @@ jobs:
     env:
       XEBIUM_VERSION: "0.6"
       XEBIUM_BASELINE_COMMIT: "209f4b2b854b9a2ddf66f6ac4625ce167d5c9968"
-      MAVEN_IMAGE: "maven:3.9-eclipse-temurin-8@sha256:0537e78bbba084ec350fcaa0dedef6efa34440e4e464bbb284f0f1e47043f629"
+      PINNED_CONTAINER_IMAGE_MAVEN: maven@sha256:0537e78bbba084ec350fcaa0dedef6efa34440e4e464bbb284f0f1e47043f629 # original: maven:3.9-eclipse-temurin-8
 
     outputs:
       contract_version: "2.0"
@@ -147,7 +147,7 @@ jobs:
             -e MAVEN_CONFIG=/tmp/.m2 \
             -v "$BASE_DIR:/work" \
             -w /work \
-            "$MAVEN_IMAGE" \
+            "$PINNED_CONTAINER_IMAGE_MAVEN" \
             mvn -q -Duser.home=/tmp -Dmaven.repo.local=/tmp/.m2/repository -DskipTests package
 
           test -f "$BASE_DIR/target/xebium-${XEBIUM_VERSION}.jar"
@@ -373,31 +373,46 @@ jobs:
           for ATTEMPT in 1 2 3; do
             echo "Xebium candidate cache-warming build attempt ${ATTEMPT}/3"
             : > "$WARMUP_LOG"
-            if timeout --signal=TERM --kill-after=30s 10m sudo docker run --rm \
+            set +e
+            timeout --signal=TERM --kill-after=30s 10m sudo docker run --rm \
               -u "$(id -u):$(id -g)" \
               -e HOME=/tmp \
               -e MAVEN_CONFIG=/tmp/.m2 \
               -v "$NEXT_DIR:/work" \
               -v "$M2_DIR:/tmp/.m2" \
               -w /work \
-              "$MAVEN_IMAGE" \
+              "$PINNED_CONTAINER_IMAGE_MAVEN" \
               mvn -q -Duser.home=/tmp -Dmaven.repo.local=/tmp/.m2/repository \
                 -Dmaven.wagon.http.retryHandler.count=3 -DskipTests \
                 clean package 2>&1 | tee "$WARMUP_LOG"
-            then
+            WARMUP_PIPE_STATUS=("${PIPESTATUS[@]}")
+            set -e
+            WARMUP_EXIT="${WARMUP_PIPE_STATUS[0]}"
+            WARMUP_TEE_EXIT="${WARMUP_PIPE_STATUS[1]}"
+            if [ "$WARMUP_EXIT" -eq 0 ] && [ "$WARMUP_TEE_EXIT" -eq 0 ]; then
               WARMUP_OK="true"
+              break
+            fi
+            if [ "$WARMUP_TEE_EXIT" -ne 0 ]; then
+              echo "Unable to record the complete Maven cache-warming log"
+              WARMUP_INFRA_ONLY="false"
               break
             fi
 
             WARMUP_CLASSIFICATION=$(
-              python3 - "$WARMUP_LOG" <<'PY'
+              python3 - "$WARMUP_LOG" "$WARMUP_EXIT" <<'PY'
           import sys
           from pathlib import Path
 
           sys.path.insert(0, ".github/scripts")
           from package_result_policy import classify_maven_networked_build_failure
 
-          print(classify_maven_networked_build_failure(Path(sys.argv[1]).read_bytes()))
+          print(
+              classify_maven_networked_build_failure(
+                  Path(sys.argv[1]).read_bytes(),
+                  return_code=int(sys.argv[2]),
+              )
+          )
           PY
             )
             if [ "$WARMUP_CLASSIFICATION" != "transient_infrastructure" ]; then
@@ -410,6 +425,11 @@ jobs:
           done
 
           if [ "$WARMUP_OK" = "true" ]; then
+            git -C "$NEXT_DIR" reset --hard "$LATEST_COMMIT"
+            git -C "$NEXT_DIR" clean -ffdx
+            test "$(git -C "$NEXT_DIR" rev-parse HEAD)" = "$LATEST_COMMIT"
+            test -z "$(git -C "$NEXT_DIR" status --porcelain=v1)"
+
             echo "Xebium candidate network-disabled offline rebuild"
             : > "$BUILD_LOG"
             if timeout --signal=TERM --kill-after=30s 10m sudo docker run --rm --network none \
@@ -419,7 +439,7 @@ jobs:
               -v "$NEXT_DIR:/work" \
               -v "$M2_DIR:/tmp/.m2" \
               -w /work \
-              "$MAVEN_IMAGE" \
+              "$PINNED_CONTAINER_IMAGE_MAVEN" \
               mvn -o -q -Duser.home=/tmp \
                 -Dmaven.repo.local=/tmp/.m2/repository -DskipTests clean package \
                 2>&1 | tee "$BUILD_LOG"

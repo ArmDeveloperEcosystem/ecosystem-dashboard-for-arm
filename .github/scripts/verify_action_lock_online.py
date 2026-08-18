@@ -183,6 +183,56 @@ def validate_live_action_evidence(
         raise OnlineEvidenceError(f"live mutable ref contradicts {original_ref}")
 
 
+def validate_live_container_evidence(
+    entry: object,
+    manifest_payload: object,
+) -> None:
+    """Validate one exact OCI index and its Linux Arm64 child manifest."""
+
+    try:
+        supply_chain.validate_container_lock_entry(entry)
+    except supply_chain.ContractError as error:
+        raise OnlineEvidenceError(str(error)) from error
+    assert isinstance(entry, dict)
+    manifest = _require_object(manifest_payload, "container index evidence")
+    if manifest.get("mediaType") != entry["media_type"]:
+        raise OnlineEvidenceError(
+            f"live container media type contradicts {entry['resolved_ref']}"
+        )
+    raw_manifests = manifest.get("manifests")
+    if not isinstance(raw_manifests, list) or not raw_manifests:
+        raise OnlineEvidenceError(
+            f"live container index has no manifests: {entry['resolved_ref']}"
+        )
+
+    arm64_digests: list[str] = []
+    for position, raw_manifest in enumerate(raw_manifests):
+        candidate = _require_object(
+            raw_manifest, f"container manifest {position}"
+        )
+        platform = _require_object(
+            candidate.get("platform"), f"container platform {position}"
+        )
+        if platform.get("os") != "linux" or platform.get("architecture") != "arm64":
+            continue
+        variant = platform.get("variant")
+        digest = candidate.get("digest")
+        if (
+            variant not in (None, "v8")
+            or not isinstance(digest, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+        ):
+            raise OnlineEvidenceError(
+                f"live Linux Arm64 manifest is malformed: {entry['resolved_ref']}"
+            )
+        arm64_digests.append(digest)
+
+    if arm64_digests != [entry["arm64_digest"]]:
+        raise OnlineEvidenceError(
+            f"live Linux Arm64 manifest contradicts {entry['resolved_ref']}"
+        )
+
+
 def run_command(command: Sequence[str]) -> str:
     try:
         completed = subprocess.run(
@@ -215,7 +265,9 @@ def _run_json(command: Sequence[str], runner: CommandRunner) -> object:
         ) from error
 
 
-def verify_lock(lock_path: Path, runner: CommandRunner = run_command) -> int:
+def verify_lock(
+    lock_path: Path, runner: CommandRunner = run_command
+) -> tuple[int, int]:
     try:
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -266,7 +318,28 @@ def verify_lock(lock_path: Path, runner: CommandRunner = run_command) -> int:
             entry, repository_payload, commit_payload, contents_payload,
             ls_remote_output, tag_payload,
         )
-    return len(actions)
+
+    containers = lock_data.get("containers")
+    if (
+        not isinstance(containers, list)
+        or len(containers) != supply_chain.EXPECTED_CONTAINER_USES
+    ):
+        raise OnlineEvidenceError("action lock has an invalid container inventory")
+    for entry in containers:
+        try:
+            supply_chain.validate_container_lock_entry(entry)
+        except supply_chain.ContractError as error:
+            raise OnlineEvidenceError(str(error)) from error
+        assert isinstance(entry, dict)
+        manifest_payload = _run_json(
+            [
+                "docker", "buildx", "imagetools", "inspect",
+                entry["resolved_ref"], "--raw",
+            ],
+            runner,
+        )
+        validate_live_container_evidence(entry, manifest_payload)
+    return len(actions), len(containers)
 
 
 def main() -> int:
@@ -278,11 +351,14 @@ def main() -> int:
     )
     arguments = parser.parse_args()
     try:
-        count = verify_lock(arguments.lock)
+        action_count, container_count = verify_lock(arguments.lock)
     except OnlineEvidenceError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    print(f"Verified {count} action lock entries against live GitHub evidence.")
+    print(
+        f"Verified {action_count} action and {container_count} container "
+        "lock entries against live evidence."
+    )
     return 0
 
 

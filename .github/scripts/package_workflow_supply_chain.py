@@ -38,7 +38,7 @@ EXACT_RUN_SPEC.loader.exec_module(exact_run)
 EXPECTED_BATCHES = 22
 EXPECTED_WORKFLOWS = 960
 EXPECTED_EXTERNAL_USES = 1130
-EXPECTED_CONTAINER_USES = 3
+EXPECTED_CONTAINER_USES = 4
 SOURCE_COMMIT = "73155d0d3a3dc73da08c62bc2bb7eccf281c6008"
 LOCK_NAME = "package_workflow_action_lock.json"
 MAX_SOURCE_ARCHIVE_BYTES = 67_108_864
@@ -66,7 +66,7 @@ DOCKER_DIGEST_RE = re.compile(r"^docker://[^@\s]+@sha256:[0-9a-f]{64}$")
 ORIGINAL_COMMENT_RE = re.compile(r"^\s+# original: (?P<ref>[^\s#]+)\s*$")
 VERSION_COMMENT_RE = re.compile(r"^\s+# (?P<ref>v[^\s#]+)\s*$")
 CONTAINER_RE = re.compile(
-    r"^(?P<space>\s*)(?P<key>image|container):\s*"
+    r"^(?P<space>\s*)(?P<key>image|container|PINNED_CONTAINER_IMAGE_[A-Z0-9_]+):\s*"
     r"(?P<spec>[^\s#]+)(?P<tail>[ \t]*(?:#.*)?)"
     r"(?P<eol>\r?\n?)$"
 )
@@ -359,7 +359,9 @@ def load_lock(root: Path) -> dict[str, object]:
 
     containers = lock.get("containers")
     if not isinstance(containers, list) or len(containers) != EXPECTED_CONTAINER_USES:
-        raise ContractError("container lock must contain exactly three entries")
+        raise ContractError(
+            f"container lock must contain exactly {EXPECTED_CONTAINER_USES} entries"
+        )
     locations: set[str] = set()
     for entry in containers:
         workflow = validate_container_lock_entry(entry)

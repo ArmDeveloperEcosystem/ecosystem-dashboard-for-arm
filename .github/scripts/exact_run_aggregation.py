@@ -2306,6 +2306,20 @@ def _collect_workflow_container_references(payload: object, label: str) -> set[s
                     job["container"], f"{label} job {job_name} container"
                 )
             )
+        if "env" in job:
+            environment = _mapping(job["env"], f"{label} job {job_name} env")
+            for variable_name, value in environment.items():
+                if not isinstance(variable_name, str):
+                    raise ContractError(
+                        f"{label} job {job_name} env has a non-string key"
+                    )
+                if variable_name.startswith("PINNED_CONTAINER_IMAGE_"):
+                    references.add(
+                        _normalize_container_reference(
+                            value,
+                            f"{label} job {job_name} env {variable_name}",
+                        )
+                    )
         if "services" not in job:
             continue
         services = _mapping(job["services"], f"{label} job {job_name} services")
