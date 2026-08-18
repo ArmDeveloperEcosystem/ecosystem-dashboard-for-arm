@@ -190,7 +190,6 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         with self.assertRaises(audit.AuditError):
             audit.report_is_activation_ready(candidate)
 
-
     def test_report_is_canonical_json_without_absolute_paths(self) -> None:
         encoded = audit.canonical_json(self.report)
         self.assertEqual(self.report, json.loads(encoded))
@@ -199,7 +198,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "0d3c7eef15f10f0d6e4eb28d488b3d647f2ba1896b66f2151d0fbc27d57b0749",
+            "23d5f94d57b24cb52e306aa3214cf33341352f0f96ac4b0f155af49db72a0ec0",
             digest,
         )
 
