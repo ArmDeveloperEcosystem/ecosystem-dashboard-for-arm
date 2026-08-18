@@ -197,7 +197,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "d33ed60ce20b882b71ef42f0a6eb04d5234f70aa466d24b22ad5467b78736205",
+            "55d126a89b629102a1dbc65d0f563c68508269a3f293d125866bca3953348a44",
             digest,
         )
 

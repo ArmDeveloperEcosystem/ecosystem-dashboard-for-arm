@@ -50,7 +50,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
     def foundation_workflow(self) -> str:
         return (self.root / FOUNDATION_WORKFLOW).read_text(encoding="utf-8")
 
-    def test_xebium_retry_classifies_only_the_final_attempt_log(self) -> None:
+    def test_xebium_uses_networked_warmup_then_offline_rebuild(self) -> None:
         workflow = (
             self.root / ".github/workflows/test-xebium.yml"
         ).read_text(encoding="utf-8")
@@ -60,13 +60,90 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         self.assertIsNotNone(match)
         retry_body = match.group(1)
-        self.assertEqual(1, workflow.count(': > "$BUILD_LOG"'))
-        self.assertIn(': > "$BUILD_LOG"', retry_body)
-        self.assertIn('tee "$BUILD_LOG"', retry_body)
-        self.assertNotIn('tee -a "$BUILD_LOG"', retry_body)
-        self.assertLess(
-            retry_body.index(': > "$BUILD_LOG"'),
-            retry_body.index("if sudo docker run"),
+        self.assertIn("clean package", retry_body)
+        self.assertIn('tee "$WARMUP_LOG"', retry_body)
+        self.assertNotIn("--network none", retry_body)
+        self.assertNotIn('tee "$BUILD_LOG"', retry_body)
+        self.assertIn(
+            "from package_result_policy import "
+            "classify_maven_networked_build_failure",
+            retry_body,
+        )
+        warmup_index = workflow.index(
+            'clean package 2>&1 | tee "$WARMUP_LOG"'
+        )
+        isolated_container_index = workflow.index(
+            "sudo docker run --rm --network none"
+        )
+        offline_build_index = workflow.index("mvn -o -q", isolated_container_index)
+        self.assertLess(warmup_index, isolated_container_index)
+        self.assertLess(isolated_container_index, offline_build_index)
+        self.assertIn(
+            "-DskipTests clean package",
+            workflow[offline_build_index:],
+        )
+        self.assertIn('tee "$BUILD_LOG"', workflow[offline_build_index:])
+        self.assertNotIn("dependency:go-offline", workflow)
+        self.assertNotIn('grep -Eiq ', workflow)
+        self.assertIn(
+            'XEBIUM_BASELINE_COMMIT: "209f4b2b854b9a2ddf66f6ac4625ce167d5c9968"',
+            workflow,
+        )
+        self.assertIn(
+            "maven:3.9-eclipse-temurin-8@sha256:"
+            "0537e78bbba084ec350fcaa0dedef6efa34440e4e464bbb284f0f1e47043f629",
+            workflow,
+        )
+        self.assertEqual(3, workflow.count('"$MAVEN_IMAGE"'))
+        self.assertEqual(
+            3,
+            workflow.count("timeout --signal=TERM --kill-after=30s 10m"),
+        )
+        self.assertIn('echo "latest_commit=$LATEST_COMMIT"', workflow)
+        self.assertIn(
+            'git -C "$NEXT_DIR" fetch --no-tags --depth=1 origin "$LATEST_COMMIT"',
+            workflow,
+        )
+        self.assertNotIn("git clone --depth 1 --branch", workflow)
+        self.assertNotRegex(workflow, r"jar tf [^\n]+\|")
+        self.assertNotRegex(workflow, r"unzip -p [^\n]+\|")
+        self.assertEqual(4, workflow.count("unzip -Z1 "))
+        metadata_branch = workflow[
+            workflow.index('echo "decision=metadata_review_required"') :
+            workflow.index('echo "decision=next_install_validated"')
+        ]
+        self.assertIn('echo "status=skipped"', metadata_branch)
+        self.assertIn('STATUS="skipped"', metadata_branch)
+
+    def test_infrastructure_deferral_is_wired_through_publishers(self) -> None:
+        decision = "runtime_validation_infrastructure_failure"
+        collector = (
+            self.root / ".github/actions/collect-batch-results/action.yml"
+        ).read_text(encoding="utf-8")
+        final_summary = (
+            self.root / ".github/workflows/test-all-packages-summary.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(f'"{decision}",', collector)
+        self.assertIn(f'if decision == "{decision}":', collector)
+        self.assertIn(
+            "Next-version validation deferred after a transient "
+            "infrastructure failure",
+            collector,
+        )
+        self.assertIn("if job_failed and not failed_detail_exists:", collector)
+        self.assertNotIn("safe_single_regression_skip", collector)
+        self.assertNotIn("safe_package_manager_skip", collector)
+        self.assertIn(f'"{decision}",', final_summary)
+        self.assertIn(
+            f"runtime_validation_not_automated|{decision}|bounded_runtime_deferred",
+            final_summary,
+        )
+        self.assertIn(
+            f"{decision})\n"
+            "                      REGRESSION_RESULT=\"Next-version validation "
+            "deferred after a transient infrastructure failure\"",
+            final_summary,
         )
 
     def assert_foundation_workflow_contract(self, workflow: str) -> None:
@@ -257,7 +334,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "91cb767d859bd57cf83a8551834e65002140647613903ebca8af3eb99b979e59",
+            "d3e095c0a59a6bade74972eaddd7f1296627764fb68a2106b718b3e836aaeb70",
             result["workflow_sha256"],
         )
 
@@ -504,7 +581,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "checkout_uses": 982,
                 "permission_exceptions": 4,
                 "topology_sha256": "5c6d2d7b9019fcbecdde6248ff23a8720f46802809ee0213070c8a9a9d1e9220",
-                "workflow_sha256": "91cb767d859bd57cf83a8551834e65002140647613903ebca8af3eb99b979e59",
+                "workflow_sha256": "d3e095c0a59a6bade74972eaddd7f1296627764fb68a2106b718b3e836aaeb70",
             },
             supply_chain.validate_hardening(
                 self.root,

@@ -353,6 +353,7 @@ jobs:
             }
             if index == 6:
                 detail["decision"] = regression_decision
+                detail["regression_result"] = "Exact Test 6 outcome recorded with explicit evidence."
             details.append(detail)
         return {
             "schema_version": "2.0",
@@ -1546,6 +1547,13 @@ class ExactRunAggregationTests(unittest.TestCase):
         )
         cases.append(not_applicable_but_applicable)
 
+        missing_regression_result = self.fixture.result(1)
+        missing_regression_result["tests"]["details"][5].pop("regression_result")
+        cases.append(missing_regression_result)
+
+        placeholder_regression_result = self.fixture.result(1)
+        placeholder_regression_result["tests"]["details"][5]["regression_result"] = "passed"
+        cases.append(placeholder_regression_result)
         missing_detail_decision = self.fixture.result(1)
         missing_detail_decision["tests"]["details"][5].pop("decision")
         cases.append(missing_detail_decision)

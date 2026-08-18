@@ -1415,8 +1415,13 @@ def validate_package_result(
         raise ContractError("Test 6 detail decision contradicts regression metadata")
     if details[5].get("current_version", version) != version:
         raise ContractError("Test 6 current_version contradicts package version")
-    if details[5].get("regression_result", regression_status) != regression_status:
-        raise ContractError("Test 6 regression_result contradicts regression metadata")
+    regression_result = _bounded_text(
+        details[5].get("regression_result"),
+        "Test 6 regression_result",
+        MAX_DETAIL_TEXT,
+    )
+    if len(regression_result.strip()) < 20:
+        raise ContractError("Test 6 regression_result must contain actual evidence")
     expected_regression_detail = {
         "passed": "passed",
         "failed": "failed",

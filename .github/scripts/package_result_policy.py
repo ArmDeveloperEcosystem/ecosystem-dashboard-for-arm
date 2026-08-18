@@ -6,9 +6,89 @@ workflows can import it on a clean GitHub-hosted runner.
 
 from __future__ import annotations
 
+import re
+
 REGRESSION_STATUSES = frozenset(
     {"passed", "failed", "skipped", "deferred", "not_applicable"}
 )
+
+_MAX_MAVEN_BUILD_LOG_BYTES = 2_000_000
+_MAVEN_TRANSIENT_INFRASTRUCTURE_RE = re.compile(
+    r"connection reset(?: by peer)?|connection timed out|read timed out"
+    r"|temporary failure in name resolution|name or service not known"
+    r"|could not resolve host|unknown host|network is unreachable"
+    r"|no route to host|connection refused|remote host terminated the handshake"
+    r"|ssl peer shut down incorrectly|premature end of content-length"
+    r"|unexpected end of file from server"
+    r"|status code:\s*(?:429|500|502|503|504)\b",
+    re.IGNORECASE,
+)
+_MAVEN_PERMANENT_FAILURE_RE = re.compile(
+    r"could not find artifact|failure to find .* was cached"
+    r"|status code:\s*(?:400|401|403|404)\b"
+    r"|unauthorized|forbidden|non-resolvable parent pom|malformed pom"
+    r"|unknown lifecycle phase|no plugin found for prefix"
+    r"|checksum validation failed|compilation error|cannot find symbol"
+    r"|package [^\n]+ does not exist|invalid target release"
+    r"|release version [^\n]+ not supported|there are test failures"
+    r"|tests run:.*failures:\s*[1-9]"
+    r"|failed to execute goal [^\n]*(?:maven-compiler-plugin"
+    r"|maven-surefire-plugin|maven-failsafe-plugin|maven-enforcer-plugin"
+    r"|maven-checkstyle-plugin)",
+    re.IGNORECASE,
+)
+_MAVEN_NETWORK_ERROR_WRAPPER_RE = re.compile(
+    r"could not transfer artifact|transfer failed for"
+    r"|failed to read artifact descriptor|could not resolve dependencies"
+    r"|could not collect dependencies"
+    r"|plugin .* (?:or one of its dependencies )?could not be resolved"
+    r"|dependencyresolutionexception|pluginresolutionexception"
+    r"|->\s*\[help \d+\]"
+    r"|to see the full stack trace|re-run maven|for more information"
+    r"|https?://cwiki\.apache\.org/",
+    re.IGNORECASE,
+)
+
+
+def classify_maven_networked_build_failure(payload: bytes | str) -> str:
+    """Classify a failed Maven cache-warming build, failing closed."""
+
+    if isinstance(payload, str):
+        encoded = payload.encode("utf-8")
+        text = payload
+    elif isinstance(payload, bytes):
+        encoded = payload
+        try:
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return "package_failure"
+    else:
+        return "package_failure"
+    if not encoded or len(encoded) > _MAX_MAVEN_BUILD_LOG_BYTES or "\x00" in text:
+        return "package_failure"
+    if _MAVEN_PERMANENT_FAILURE_RE.search(text):
+        return "package_failure"
+    if _MAVEN_TRANSIENT_INFRASTRUCTURE_RE.search(text) is None:
+        return "package_failure"
+
+    error_lines = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.lower().startswith(("[error]", "[fatal]")):
+            error_lines.append(line.split("]", 1)[1].strip())
+    transient_error_seen = not error_lines
+    for line in error_lines:
+        if not line:
+            continue
+        if _MAVEN_TRANSIENT_INFRASTRUCTURE_RE.search(line):
+            transient_error_seen = True
+            continue
+        if _MAVEN_NETWORK_ERROR_WRAPPER_RE.search(line):
+            continue
+        return "package_failure"
+    if transient_error_seen:
+        return "transient_infrastructure"
+    return "package_failure"
 
 NOT_APPLICABLE_REGRESSION_DECISIONS = frozenset(
     {

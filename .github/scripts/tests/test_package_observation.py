@@ -16,9 +16,73 @@ sys.path.insert(0, str(SCRIPT_ROOT))
 
 import exact_run_aggregation as exact  # noqa: E402
 import package_observation as observation  # noqa: E402
+import package_result_policy as result_policy  # noqa: E402
 
 
 class PackageObservationTests(unittest.TestCase):
+    def test_maven_networked_build_transient_failures_are_explicit(self) -> None:
+        transient_logs = (
+            "Could not transfer artifact: Connection reset",
+            "Temporary failure in name resolution while resolving Maven Central",
+            "Repository returned status code: 503",
+            (
+                "[ERROR] Failed to execute goal example:plugin:goal on project alpha: "
+                "Could not resolve dependencies\n"
+                "[ERROR] Could not transfer artifact example:dep:jar:1.0: "
+                "status code: 503\n"
+                "[ERROR] -> [Help 1]"
+            ),
+        )
+        for log in transient_logs:
+            with self.subTest(log=log):
+                self.assertEqual(
+                    "transient_infrastructure",
+                    result_policy.classify_maven_networked_build_failure(log),
+                )
+
+    def test_maven_networked_build_mixed_or_permanent_failures_stay_red(self) -> None:
+        package_failures = (
+            "Connection reset\nCould not find artifact com.example:missing:jar:1.0",
+            "Repository returned status code: 503\nstatus code: 404",
+            "Connection reset\nCOMPILATION ERROR: cannot find symbol",
+            (
+                "Connection reset\n"
+                "[ERROR] Failed to execute goal example:plugin:goal\n"
+                "[ERROR] Unexpected package build defect"
+            ),
+            (
+                "Repository returned status code: 503\n"
+                "[ERROR] Failed to execute goal example:plugin:goal"
+            ),
+            "PKIX path building failed",
+            "No space left on device",
+            "java.lang.OutOfMemoryError",
+            "Command timed out after 600 seconds",
+            b"contains-nul\x00data",
+            "Non-resolvable parent POM",
+            "COMPILATION ERROR: cannot find symbol",
+            "",
+            b"not-utf8-\xff",
+        )
+        for log in package_failures:
+            with self.subTest(log=log):
+                self.assertEqual(
+                    "package_failure",
+                    result_policy.classify_maven_networked_build_failure(log),
+                )
+
+    def test_infrastructure_decision_normalizes_to_deferred(self) -> None:
+        payload = self._build(lane="deferred")
+        payload["regression"]["decision"] = (
+            "runtime_validation_infrastructure_failure"
+        )
+        payload["regression"]["reason"] = (
+            "runtime_validation_infrastructure_failure"
+        )
+        normalized = observation.validate_observation(payload)
+        self.assertEqual("deferred", normalized["regression"]["status"])
+        self.assertEqual("success", normalized["outcome"]["run_status"])
+
     def _build(self, *, lane: str = "passed") -> dict[str, object]:
         statuses = ["passed"] * 6
         decision = "next_install_validated"
@@ -281,6 +345,10 @@ class PackageObservationTests(unittest.TestCase):
             },
         )
         self.assertEqual(bound, normalized)
+        self.assertEqual(
+            payload["regression"]["result"],
+            bound["tests"]["details"][5]["regression_result"],
+        )
 
     def test_trusted_binding_rejects_noncanonical_timestamp(self) -> None:
         with self.assertRaisesRegex(observation.ObservationError, "canonical RFC3339"):
