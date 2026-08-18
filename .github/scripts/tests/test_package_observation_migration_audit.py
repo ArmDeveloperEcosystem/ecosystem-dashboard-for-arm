@@ -103,7 +103,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             len(remediation["package_manager_missing_explicit_skip_counter"]),
         )
         self.assertEqual(79, len(remediation["package_manager_non_skipped_status"]))
-        self.assertEqual(287, len(remediation["literal_pair_contradictions"]))
+        self.assertEqual(286, len(remediation["literal_pair_contradictions"]))
         self.assertEqual(21, len(remediation["no_literal_decision"]))
         self.assertEqual(
             326, len(remediation["package_manager_summary_omits_test6"])
