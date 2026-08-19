@@ -321,6 +321,14 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             )
             self.assertNotIn("collect-batch-results-v2", batch)
 
+    def test_global_summary_disables_repository_python_bytecode(self) -> None:
+        summary = (
+            self.root / ".github/workflows/test-all-packages-summary.yml"
+        ).read_text(encoding="utf-8")
+
+        preamble = summary.split("\non:\n", maxsplit=1)[0]
+        self.assertIn('PYTHONDONTWRITEBYTECODE: "1"', preamble)
+
     def test_embedded_python_blocks_compile(self) -> None:
         workflows = (
             (".github/actions/collect-batch-results/action.yml", 1),
@@ -798,7 +806,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         transition = lock["hardened_workflow_transition"]
         self.assertEqual(
-            "5c9a30a6ec71a437880743ee8be119e580e1a5d25816275698bfc4ff9761fa0c",
+            "8e29c5376045fdc6cb2a5b4ecfd4f16a4b22aef88db6aa8d820300034cf1ec6e",
             transition["from_sha256"],
         )
         self.assertEqual(
@@ -863,7 +871,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "8e29c5376045fdc6cb2a5b4ecfd4f16a4b22aef88db6aa8d820300034cf1ec6e",
+            "eed6e1721086e52a920243a9ceb2fde4760b9158f16eb273a87467499649a7b1",
             result["workflow_sha256"],
         )
 
@@ -1110,7 +1118,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "checkout_uses": 982,
                 "permission_exceptions": 4,
                 "topology_sha256": "dd3b2c7547600d99769b0f8aabf4ca8057334a3ab70e473de59af21750adb69b",
-                "workflow_sha256": "8e29c5376045fdc6cb2a5b4ecfd4f16a4b22aef88db6aa8d820300034cf1ec6e",
+                "workflow_sha256": "eed6e1721086e52a920243a9ceb2fde4760b9158f16eb273a87467499649a7b1",
             },
             supply_chain.validate_hardening(
                 self.root,
