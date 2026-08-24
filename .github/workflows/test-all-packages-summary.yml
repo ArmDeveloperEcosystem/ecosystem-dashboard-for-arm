@@ -6,8 +6,7 @@ concurrency:
 
 permissions:
   actions: read
-  contents: write
-  pull-requests: write
+  contents: read
 
 env:
   PYTHONDONTWRITEBYTECODE: "1"
@@ -36,6 +35,13 @@ jobs:
   global-summary:
     name: Generate Global Summary
     runs-on: ubuntu-24.04-arm
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.package_generated_data.outputs.artifact_name }}
+      artifact_sha256: ${{ steps.package_generated_data.outputs.artifact_sha256 }}
+      base_sha: ${{ steps.generated_data_base.outputs.sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -49,9 +55,14 @@ jobs:
         env:
           EXPECTED_BRANCH: ${{ env.TRUSTED_PUBLICATION_BRANCH }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_REF_NAME: ${{ github.ref_name }}
           WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          [[ "$EXPECTED_BRANCH" == "main" ]]
+          [[ "$WORKFLOW_REF" == "refs/heads/${EXPECTED_BRANCH}" ]]
+          [[ "$WORKFLOW_REF_NAME" == "$EXPECTED_BRANCH" ]]
           actual_sha="$(git rev-parse HEAD)"
           [[ "$EXPECTED_SHA" == "$WORKFLOW_SHA" ]]
           [[ "$actual_sha" == "$WORKFLOW_SHA" ]]
@@ -1291,22 +1302,30 @@ jobs:
           }}
         id: publication_base
         env:
-          EXPECTED_BRANCH: ${{ github.ref_name }}
+          EXPECTED_BRANCH: ${{ env.TRUSTED_PUBLICATION_BRANCH }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_REF_NAME: ${{ github.ref_name }}
           WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          [[ "$EXPECTED_BRANCH" == "main" ]]
+          [[ "$WORKFLOW_REF" == "refs/heads/${EXPECTED_BRANCH}" ]]
+          [[ "$WORKFLOW_REF_NAME" == "$EXPECTED_BRANCH" ]]
           actual_sha="$(git rev-parse HEAD)"
+          [[ "$EXPECTED_SHA" == "$WORKFLOW_SHA" ]]
+          [[ "$actual_sha" == "$WORKFLOW_SHA" ]]
           git fetch --no-tags origin \
             "+refs/heads/${EXPECTED_BRANCH}:refs/remotes/origin/${EXPECTED_BRANCH}"
           remote_sha="$(git rev-parse "refs/remotes/origin/${EXPECTED_BRANCH}^{commit}")"
+          [[ "$remote_sha" == "$WORKFLOW_SHA" ]]
           python3 .github/scripts/orchestration_contract.py validate-base \
             --expected-sha "$EXPECTED_SHA" \
             --workflow-sha "$WORKFLOW_SHA" \
             --checkout-sha "$actual_sha" \
             --remote-sha "$remote_sha"
 
-      - name: Open or update aggregated test-results review PR
+      - name: Package exact generated test-results artifact
         if: >-
           ${{
             success() &&
@@ -1317,18 +1336,165 @@ jobs:
             steps.publication_base.outcome == 'success' &&
             steps.assemble.outputs.json_count != '0'
           }}
+        id: package_generated_data
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$RUNNER_TEMP/generated-test-results"
+          python3 .github/scripts/generated_test_results_artifact.py pack \
+            --repository "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/generated-test-results/generated-test-results.json" \
+            --base-sha "${{ steps.generated_data_base.outputs.sha }}" \
+            >> "$GITHUB_OUTPUT"
+          artifact_name="generated-test-results-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'artifact_name=%s\n' "$artifact_name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload exact generated test-results artifact
+        if: >-
+          ${{
+            steps.package_generated_data.outcome == 'success' &&
+            steps.package_generated_data.outputs.artifact_name != '' &&
+            steps.package_generated_data.outputs.artifact_sha256 != ''
+          }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.package_generated_data.outputs.artifact_name }}
+          path: ${{ runner.temp }}/generated-test-results/generated-test-results.json
+          if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 0
+          retention-days: 1
+
+  publish-generated-data:
+    name: Open generated test-results draft PR
+    needs: global-summary
+    if: >-
+      ${{
+        needs.global-summary.result == 'success' &&
+        needs.global-summary.outputs.artifact_name != '' &&
+        needs.global-summary.outputs.artifact_sha256 != ''
+      }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    environment: generated-data-delivery
+    permissions:
+      contents: read
+    steps:
+      - name: Reject an untrusted publication ref
+        env:
+          EXPECTED_BRANCH: ${{ env.TRUSTED_PUBLICATION_BRANCH }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_REF_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_BRANCH" == "main" ]]
+          [[ "$WORKFLOW_REF" == "refs/heads/${EXPECTED_BRANCH}" ]]
+          [[ "$WORKFLOW_REF_NAME" == "$EXPECTED_BRANCH" ]]
+
+      - name: Reject a missing or malformed App bot login
+        env:
+          DASHBOARD_DELIVERY_APP_BOT_LOGIN: ${{ vars.DASHBOARD_DELIVERY_APP_BOT_LOGIN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+
+          login = os.environ.get("DASHBOARD_DELIVERY_APP_BOT_LOGIN", "")
+          pattern = re.compile(
+              r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,98}[A-Za-z0-9])?\[bot\]$"
+          )
+          if not pattern.fullmatch(login) or login.casefold() == "github-actions[bot]":
+              raise SystemExit("DASHBOARD_DELIVERY_APP_BOT_LOGIN is missing or malformed")
+          PY
+
+      - name: Check out the exact generated-data base without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.global-summary.outputs.base_sha }}
+
+      - name: Download the exact generated test-results artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.global-summary.outputs.artifact_name }}
+          path: ${{ runner.temp }}/generated-test-results-download
+          digest-mismatch: error
+
+      - name: Validate and restore only generated test-results data
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/generated_test_results_artifact.py restore \
+            --repository "$GITHUB_WORKSPACE" \
+            --artifact-directory "$RUNNER_TEMP/generated-test-results-download" \
+            --expected-base-sha "${{ needs.global-summary.outputs.base_sha }}" \
+            --expected-artifact-sha256 \
+              "${{ needs.global-summary.outputs.artifact_sha256 }}"
+
+      - name: Mint short-lived Dashboard Delivery App token
+        id: delivery_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.DASHBOARD_DELIVERY_APP_ID }}
+          private-key: ${{ secrets.DASHBOARD_DELIVERY_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-metadata: read
+          permission-pull-requests: write
+
+      - name: Bind configured bot login to minted App identity
+        env:
+          CONFIGURED_BOT_LOGIN: ${{ vars.DASHBOARD_DELIVERY_APP_BOT_LOGIN }}
+          MINTED_APP_SLUG: ${{ steps.delivery_token.outputs.app-slug }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+
+          configured = os.environ.get("CONFIGURED_BOT_LOGIN", "")
+          app_slug = os.environ.get("MINTED_APP_SLUG", "")
+          if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?", app_slug):
+              raise SystemExit("minted Dashboard Delivery App slug is missing or malformed")
+          minted_bot_login = f"{app_slug}[bot]"
+          if configured.casefold() != minted_bot_login.casefold():
+              raise SystemExit(
+                  "configured Dashboard Delivery App bot login does not match minted App"
+              )
+          PY
+
+      - name: Reverify exact generated bytes after credential minting
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/generated_test_results_artifact.py verify-restored \
+            --repository "$GITHUB_WORKSPACE" \
+            --artifact-directory "$RUNNER_TEMP/generated-test-results-download" \
+            --expected-base-sha "${{ needs.global-summary.outputs.base_sha }}" \
+            --expected-artifact-sha256 \
+              "${{ needs.global-summary.outputs.artifact_sha256 }}"
+
+      - name: Open or update aggregated test-results review PR
         id: generated_data_review
         uses: ./.github/actions/publish-generated-data-pr
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.delivery_token.outputs.token }}
         with:
           producer: global-test-results
-          base-branch: ${{ github.ref_name }}
-          expected-base-sha: ${{ steps.generated_data_base.outputs.sha }}
-          head-branch: automation/generated-data/global-test-results/${{ github.ref_name }}
+          base-branch: ${{ env.TRUSTED_PUBLICATION_BRANCH }}
+          expected-base-sha: ${{ needs.global-summary.outputs.base_sha }}
+          head-branch: automation/generated-data/global-test-results/${{ env.TRUSTED_PUBLICATION_BRANCH }}
           title: Update generated Arm64 test results
           commit-message: Update generated Arm64 test results
           paths: |
             data/test-results-index.json
             data/test-results/
           required-tracked-paths: data/test-results-index.json
+          expected-pr-author-login: ${{ vars.DASHBOARD_DELIVERY_APP_BOT_LOGIN }}
+          credential-source: github-app

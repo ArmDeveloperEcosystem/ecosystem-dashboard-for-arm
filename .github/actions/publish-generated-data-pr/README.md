@@ -4,13 +4,14 @@ This composite action publishes allowlisted generated files to one
 automation-owned draft pull request. It never writes the reviewed base branch
 directly, approves a workflow, merges a pull request, or deploys content.
 
-## Foundation status
+## Integration status
 
-This directory is a behavior-neutral publisher foundation. No existing
-production workflow invokes it, and adding it does not change repository
-permissions, rules, environments, secrets, or deployment behavior. A later,
-separately reviewed integration must supply credentials and wire the action into
-an isolated publisher job.
+This action is a shared publisher foundation. Each caller must isolate
+generation from publication, provide its own bounded artifact contract, and
+enter the protected delivery environment before supplying a write credential.
+The generated-site-data review workflow and Global Test Summary workflow use
+that pattern. The action cannot change repository permissions, rules,
+environments, secrets, or deployment behavior by itself.
 
 ## Candidate boundary
 
