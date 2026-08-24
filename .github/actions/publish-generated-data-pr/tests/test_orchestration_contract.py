@@ -1243,6 +1243,17 @@ class WorkflowExactRunBindingTests(unittest.TestCase):
         )
         self.assertIn("steps.publication_base.outcome == 'success'", summary)
         self.assertIn(".orchestration", summary)
+        self.assertIn(
+            "head-branch: automation/generated-data/global-test-results/"
+            "${{ env.TRUSTED_PUBLICATION_BRANCH }}/"
+            "${{ needs.global-summary.outputs.base_sha }}",
+            summary,
+        )
+        self.assertNotIn(
+            "head-branch: automation/generated-data/global-test-results/"
+            "${{ env.TRUSTED_PUBLICATION_BRANCH }}\n",
+            summary,
+        )
 
         checkout_step = summary.split("- name: Checkout repository", 1)[1].split(
             "- name: Bind exact generated-data base", 1
@@ -1386,7 +1397,8 @@ class WorkflowExactRunBindingTests(unittest.TestCase):
         )
         self.assertIn(
             "head-branch: automation/generated-data/global-test-results/"
-            "${{ env.TRUSTED_PUBLICATION_BRANCH }}",
+            "${{ env.TRUSTED_PUBLICATION_BRANCH }}/"
+            "${{ needs.global-summary.outputs.base_sha }}",
             delivery,
         )
 
@@ -1543,9 +1555,11 @@ class WorkflowExactRunBindingTests(unittest.TestCase):
             ),
             summary.replace(
                 "head-branch: automation/generated-data/global-test-results/"
-                "${{ env.TRUSTED_PUBLICATION_BRANCH }}",
+                "${{ env.TRUSTED_PUBLICATION_BRANCH }}/"
+                "${{ needs.global-summary.outputs.base_sha }}",
                 "head-branch: automation/generated-data/global-test-results/"
-                "${{ github.ref_name }}",
+                "${{ github.ref_name }}/"
+                "${{ needs.global-summary.outputs.base_sha }}",
                 1,
             ),
         )
