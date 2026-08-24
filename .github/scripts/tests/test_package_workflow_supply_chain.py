@@ -42,6 +42,7 @@ RELEVANT_PATHS = (
     ".github/scripts/tests/test_package_observation.py",
     ".github/scripts/tests/test_package_observation_migration_audit.py",
     ".github/scripts/tests/test_promote_package_results.py",
+    ".github/scripts/tests/test_elastic_fleet_server_workflow_contract.py",
     ".github/scripts/README-exact-run-aggregation.md",
     ".github/scripts/README-package-observation.md",
     ".github/scripts/requirements-exact-run.txt",
@@ -806,7 +807,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         transition = lock["hardened_workflow_transition"]
         self.assertEqual(
-            "eed6e1721086e52a920243a9ceb2fde4760b9158f16eb273a87467499649a7b1",
+            "b58214632e3208b42193347b53c98726581fae29d9191075e9591311c7133901",
             transition["from_sha256"],
         )
         self.assertEqual(
@@ -871,7 +872,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "b58214632e3208b42193347b53c98726581fae29d9191075e9591311c7133901",
+            "b46d27aa88c75e80c617638075ef29de5903dcb3a72af8b38247f5e66e998e9a",
             result["workflow_sha256"],
         )
 
@@ -1118,7 +1119,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "checkout_uses": 982,
                 "permission_exceptions": 4,
                 "topology_sha256": "dd3b2c7547600d99769b0f8aabf4ca8057334a3ab70e473de59af21750adb69b",
-                "workflow_sha256": "b58214632e3208b42193347b53c98726581fae29d9191075e9591311c7133901",
+                "workflow_sha256": "b46d27aa88c75e80c617638075ef29de5903dcb3a72af8b38247f5e66e998e9a",
             },
             supply_chain.validate_hardening(
                 self.root,
