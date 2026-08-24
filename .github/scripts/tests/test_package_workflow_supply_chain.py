@@ -333,7 +333,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         workflows = (
             (".github/actions/collect-batch-results/action.yml", 1),
             (".github/actions/collect-batch-results-v2/action.yml", 1),
-            (".github/workflows/test-all-packages-summary.yml", 2),
+            (".github/workflows/test-all-packages-summary.yml", 4),
         )
 
         def runs(value):
@@ -1011,7 +1011,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         self.assertLess(
             workflow.index("      - name: Fetch reviewed package workflow source"),
-            workflow.index("      - name: Run generated site data artifact tests"),
+            workflow.index("      - name: Run generated data artifact tests"),
         )
         self.assertIn("          fetch-depth: 2\n", workflow)
         self.assertIn("          persist-credentials: false\n", workflow)
