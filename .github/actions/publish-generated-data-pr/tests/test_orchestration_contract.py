@@ -22,23 +22,29 @@ from orchestration_contract import (  # noqa: E402
     canonical_json,
     expected_artifact,
     expected_run_name,
+    expected_summary_run_name,
     expected_workflow,
     expected_workflow_name,
     expected_workflow_path,
     generate_dispatch_nonce,
     select_exact_registration,
+    select_exact_summary_registration,
     validate_dispatch_nonce,
     validate_artifacts,
     validate_manifest,
     validate_manifest_text,
     validate_run,
     validate_sha_binding,
+    validate_summary_dispatch,
+    validate_summary_run,
 )
 
 ORCHESTRATION_ID = "orchestration-123456-2"
 EXPECTED_SHA = "a" * 40
 BRANCH = "main"
 REPOSITORY = "example/dashboard"
+SUMMARY_RUN_ID = 30_001
+SUMMARY_NONCE = "f" * 64
 
 
 def nonce_for(batch: int) -> str:
@@ -84,6 +90,31 @@ def run_payload(
             batch,
             ORCHESTRATION_ID,
             nonce_for(batch),
+        ),
+        "event": "workflow_dispatch",
+        "head_branch": BRANCH,
+        "head_sha": EXPECTED_SHA,
+        "status": status,
+        "conclusion": conclusion,
+        "repository": {"full_name": REPOSITORY},
+    }
+
+
+def summary_run_payload(
+    *,
+    run_id: int = SUMMARY_RUN_ID,
+    dispatch_nonce: str = SUMMARY_NONCE,
+    status: str = "completed",
+    conclusion: str | None = "success",
+) -> dict[str, object]:
+    return {
+        "id": run_id,
+        "run_attempt": 1,
+        "name": "Global Test Summary (All Batches)",
+        "path": ".github/workflows/test-all-packages-summary.yml",
+        "display_title": expected_summary_run_name(
+            ORCHESTRATION_ID,
+            dispatch_nonce,
         ),
         "event": "workflow_dispatch",
         "head_branch": BRANCH,
@@ -266,6 +297,10 @@ class ManifestContractTests(unittest.TestCase):
             records_path = root / "records.json"
             nonce_path = root / "nonce"
             dispatch_path = root / "dispatch.json"
+            manifest_path = root / "manifest.json"
+            summary_dispatch_path = root / "summary-dispatch.json"
+            summary_registration_path = root / "summary-registration.json"
+            summary_run_path = root / "summary-run.json"
 
             def run(*arguments: str) -> subprocess.CompletedProcess[str]:
                 return subprocess.run(
@@ -334,6 +369,138 @@ class ManifestContractTests(unittest.TestCase):
             bound = json.loads(records_path.read_text(encoding="utf-8"))
             self.assertEqual(bound[0]["run_id"], 10_001)
             self.assertEqual(bound[0]["run_attempt"], 1)
+
+            manifest_path.write_text(canonical_json(manifest()), encoding="utf-8")
+            summary_nonce_path = root / "summary-nonce"
+            run(
+                "generate-dispatch-nonce",
+                "--output",
+                str(summary_nonce_path),
+            )
+            summary_nonce = summary_nonce_path.read_text(encoding="ascii")
+            self.assertEqual(validate_dispatch_nonce(summary_nonce), summary_nonce)
+
+            summary_name = run(
+                "summary-run-name",
+                "--orchestration-id",
+                ORCHESTRATION_ID,
+                "--dispatch-nonce",
+                summary_nonce,
+            )
+            self.assertEqual(
+                summary_name.stdout.strip(),
+                expected_summary_run_name(ORCHESTRATION_ID, summary_nonce),
+            )
+            summary_endpoint = run(
+                "summary-runs-endpoint",
+                "--branch",
+                BRANCH,
+                "--expected-sha",
+                EXPECTED_SHA,
+                "--repository",
+                REPOSITORY,
+            )
+            self.assertIn(
+                "repos/example/dashboard/actions/workflows/"
+                "test-all-packages-summary.yml/runs?",
+                summary_endpoint.stdout,
+            )
+            self.assertIn("event=workflow_dispatch", summary_endpoint.stdout)
+            self.assertIn("branch=main", summary_endpoint.stdout)
+            self.assertIn(f"head_sha={EXPECTED_SHA}", summary_endpoint.stdout)
+
+            run(
+                "summary-dispatch-payload",
+                "--manifest",
+                str(manifest_path),
+                "--ref",
+                BRANCH,
+                "--dispatch-nonce-file",
+                str(summary_nonce_path),
+                "--output",
+                str(summary_dispatch_path),
+            )
+            summary_dispatch = json.loads(
+                summary_dispatch_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(summary_dispatch["ref"], BRANCH)
+            self.assertEqual(summary_dispatch["inputs"]["expected_sha"], EXPECTED_SHA)
+            self.assertEqual(
+                summary_dispatch["inputs"]["orchestration_id"],
+                ORCHESTRATION_ID,
+            )
+            self.assertEqual(
+                summary_dispatch["inputs"]["dispatch_nonce"],
+                summary_nonce,
+            )
+
+            run(
+                "validate-summary-dispatch",
+                "--manifest",
+                str(manifest_path),
+                "--orchestration-id",
+                ORCHESTRATION_ID,
+                "--dispatch-nonce",
+                summary_nonce,
+                "--expected-sha",
+                EXPECTED_SHA,
+                "--branch",
+                BRANCH,
+                "--repository",
+                REPOSITORY,
+            )
+            summary_registration_path.write_text(
+                json.dumps(
+                    {
+                        "workflow_runs": [
+                            summary_run_payload(
+                                dispatch_nonce=summary_nonce,
+                                status="queued",
+                                conclusion=None,
+                            )
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            selected = run(
+                "select-summary-registration",
+                "--payload",
+                str(summary_registration_path),
+                "--manifest",
+                str(manifest_path),
+                "--dispatch-nonce-file",
+                str(summary_nonce_path),
+                "--expected-sha",
+                EXPECTED_SHA,
+                "--branch",
+                BRANCH,
+                "--repository",
+                REPOSITORY,
+            )
+            self.assertEqual(selected.stdout, f"{SUMMARY_RUN_ID}\n")
+            summary_run_path.write_text(
+                json.dumps(summary_run_payload(dispatch_nonce=summary_nonce)),
+                encoding="utf-8",
+            )
+            validated = run(
+                "validate-summary-run",
+                "--payload",
+                str(summary_run_path),
+                "--manifest",
+                str(manifest_path),
+                "--dispatch-nonce-file",
+                str(summary_nonce_path),
+                "--expected-sha",
+                EXPECTED_SHA,
+                "--branch",
+                BRANCH,
+                "--repository",
+                REPOSITORY,
+                "--expected-run-id",
+                str(SUMMARY_RUN_ID),
+            )
+            self.assertEqual(validated.stdout, "completed\tsuccess\n")
 
 
 class RunIdentityTests(unittest.TestCase):
@@ -624,6 +791,240 @@ class RunIdentityTests(unittest.TestCase):
             require_completed=True,
         )
         self.assertEqual(result["conclusion"], "failure")
+
+
+class SummaryRunIdentityTests(unittest.TestCase):
+    def test_exact_summary_registration_and_dispatch_are_accepted(self) -> None:
+        summary_manifest = manifest()
+        exact = summary_run_payload(status="queued", conclusion=None)
+        unrelated = summary_run_payload(
+            run_id=99_999,
+            status="queued",
+            conclusion=None,
+        )
+        unrelated["display_title"] = "Global Summary [manual-999-1] [nonce:wrong]"
+        pages = [
+            {"workflow_runs": [unrelated]},
+            {"workflow_runs": [exact]},
+        ]
+
+        self.assertEqual(
+            select_exact_summary_registration(
+                pages,
+                manifest=summary_manifest,
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+            ),
+            SUMMARY_RUN_ID,
+        )
+        self.assertEqual(
+            validate_summary_dispatch(
+                summary_manifest,
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+            ),
+            summary_manifest,
+        )
+
+        for api_name in (
+            "Global Test Summary (All Batches)",
+            expected_summary_run_name(ORCHESTRATION_ID, SUMMARY_NONCE),
+        ):
+            payload = summary_run_payload()
+            payload["name"] = api_name
+            with self.subTest(api_name=api_name):
+                result = validate_summary_run(
+                    payload,
+                    manifest=summary_manifest,
+                    dispatch_nonce=SUMMARY_NONCE,
+                    expected_sha=EXPECTED_SHA,
+                    branch=BRANCH,
+                    repository=REPOSITORY,
+                    expected_run_id=SUMMARY_RUN_ID,
+                    require_completed=True,
+                )
+                self.assertEqual(result["id"], SUMMARY_RUN_ID)
+
+    def test_duplicate_exact_summary_registration_is_rejected(self) -> None:
+        payload = {
+            "workflow_runs": [
+                summary_run_payload(status="queued", conclusion=None),
+                summary_run_payload(
+                    run_id=77_777,
+                    status="queued",
+                    conclusion=None,
+                ),
+            ]
+        }
+        with self.assertRaisesRegex(ContractError, "multiple summary runs"):
+            select_exact_summary_registration(
+                payload,
+                manifest=manifest(),
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+            )
+
+    def test_wrong_summary_nonce_sha_branch_repo_path_and_id_are_rejected(self) -> None:
+        wrong_nonce = "e" * 64
+        self.assertIsNone(
+            select_exact_summary_registration(
+                {"workflow_runs": [summary_run_payload()]},
+                manifest=manifest(),
+                dispatch_nonce=wrong_nonce,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+            )
+        )
+        with self.assertRaises(ContractError):
+            validate_summary_run(
+                summary_run_payload(),
+                manifest=manifest(),
+                dispatch_nonce=wrong_nonce,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                expected_run_id=SUMMARY_RUN_ID,
+                require_completed=True,
+            )
+
+        mutations = {
+            "head_sha": "b" * 40,
+            "head_branch": "release",
+            "path": ".github/workflows/wrong.yml",
+            "display_title": "wrong title",
+            "id": 99_999,
+            "run_attempt": 2,
+        }
+        for field, value in mutations.items():
+            payload = summary_run_payload()
+            payload[field] = value
+            with self.subTest(field=field):
+                with self.assertRaises(ContractError):
+                    validate_summary_run(
+                        payload,
+                        manifest=manifest(),
+                        dispatch_nonce=SUMMARY_NONCE,
+                        expected_sha=EXPECTED_SHA,
+                        branch=BRANCH,
+                        repository=REPOSITORY,
+                        expected_run_id=SUMMARY_RUN_ID,
+                        require_completed=True,
+                    )
+
+        payload = summary_run_payload()
+        payload["repository"] = {"full_name": "example/other"}
+        with self.assertRaises(ContractError):
+            validate_summary_run(
+                payload,
+                manifest=manifest(),
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                expected_run_id=SUMMARY_RUN_ID,
+                require_completed=True,
+            )
+
+    def test_summary_dispatch_rejects_wrong_manifest_binding(self) -> None:
+        for field, value in (
+            ("orchestration_id", "orchestration-999-1"),
+            ("expected_sha", "b" * 40),
+            ("branch", "release"),
+        ):
+            values = {
+                "orchestration_id": ORCHESTRATION_ID,
+                "dispatch_nonce": SUMMARY_NONCE,
+                "expected_sha": EXPECTED_SHA,
+                "branch": BRANCH,
+                "repository": REPOSITORY,
+            }
+            values[field] = value
+            with self.subTest(field=field):
+                with self.assertRaises(ContractError):
+                    validate_summary_dispatch(manifest(), **values)
+
+        with self.assertRaises(ContractError):
+            validate_summary_dispatch(
+                manifest(),
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce="not-a-nonce",
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+            )
+        with self.assertRaises(ContractError):
+            validate_summary_dispatch(
+                manifest(),
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository="bad repository",
+            )
+
+    def test_summary_completion_states_are_validated(self) -> None:
+        incomplete = summary_run_payload(status="in_progress", conclusion=None)
+        with self.assertRaisesRegex(ContractError, "not completed"):
+            validate_summary_run(
+                incomplete,
+                manifest=manifest(),
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                expected_run_id=SUMMARY_RUN_ID,
+                require_completed=True,
+            )
+        self.assertEqual(
+            validate_summary_run(
+                incomplete,
+                manifest=manifest(),
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                expected_run_id=SUMMARY_RUN_ID,
+                require_completed=False,
+            )["status"],
+            "in_progress",
+        )
+
+        invalid_incomplete = summary_run_payload(
+            status="queued",
+            conclusion="success",
+        )
+        with self.assertRaisesRegex(ContractError, "invalid incomplete state"):
+            validate_summary_run(
+                invalid_incomplete,
+                manifest=manifest(),
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                expected_run_id=SUMMARY_RUN_ID,
+                require_completed=False,
+            )
+
+        canceled = summary_run_payload(conclusion="cancelled")
+        with self.assertRaisesRegex(ContractError, "rejected conclusion"):
+            validate_summary_run(
+                canceled,
+                manifest=manifest(),
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                expected_run_id=SUMMARY_RUN_ID,
+                require_completed=True,
+            )
 
 
 class ArtifactContractTests(unittest.TestCase):

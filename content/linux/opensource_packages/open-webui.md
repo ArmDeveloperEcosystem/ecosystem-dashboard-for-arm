@@ -5,8 +5,8 @@ description: Open WebUI is a self-hosted, offline-capable AI platform with an ex
 download_url: https://pypi.org/project/open-webui/#history
 works_on_arm: true
 supported_minimum_version:
-    version_number: 0.1.124
-    release_date: 2024/05/20
+    version_number: 0.11.0
+    release_date: 2026/07/27
  
  
 optional_info:
@@ -26,6 +26,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: The release notes for the initial Linux/Arm64 support isn't available. Open WebUI initial version on Pypi, 0.1.124, can be installed for Arm with pip, and python version 3.11.
+    other_info: Previous automated evidence for 0.1.124 is no longer reproducible through pip because its pinned litellm 1.35.28 dependency is unavailable on PyPI. Current Linux/Arm64 validation uses Open WebUI 0.11.0 from PyPI with Python 3.11.
  
 ---
