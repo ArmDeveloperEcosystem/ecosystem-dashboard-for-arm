@@ -19,6 +19,9 @@ SCHEMA = "arm-dashboard-batch-orchestration"
 VERSION = 2
 MAX_MANIFEST_BYTES = 16_384
 DISPATCH_NONCE_HEX_LENGTH = 64
+SUMMARY_WORKFLOW = "test-all-packages-summary.yml"
+SUMMARY_WORKFLOW_PATH = f".github/workflows/{SUMMARY_WORKFLOW}"
+SUMMARY_WORKFLOW_NAME = "Global Test Summary (All Batches)"
 
 _SHA_RE = re.compile(r"\A[0-9a-f]{40}\Z", re.ASCII)
 _ORCHESTRATION_ID_RE = re.compile(
@@ -98,6 +101,12 @@ def expected_run_name(
         f"Arm64 Batch {batch} [{orchestration_id}] "
         f"[nonce:{dispatch_nonce}]{suffix}"
     )
+
+
+def expected_summary_run_name(orchestration_id: str, dispatch_nonce: str) -> str:
+    orchestration_id = validate_orchestration_id(orchestration_id)
+    dispatch_nonce = validate_dispatch_nonce(dispatch_nonce)
+    return f"Global Summary [{orchestration_id}] [nonce:{dispatch_nonce}]"
 
 
 def validate_orchestration_id(value: object) -> str:
@@ -315,22 +324,7 @@ def select_exact_registration(
     branch: str,
     repository: str,
 ) -> int | None:
-    if isinstance(payload, Mapping):
-        responses = [payload]
-    elif isinstance(payload, list) and payload:
-        responses = payload
-    else:
-        raise ContractError("workflow-runs response is malformed")
-
-    raw_runs: list[object] = []
-    for page_number, raw_response in enumerate(responses, start=1):
-        response = _require_mapping(
-            raw_response, f"workflow-runs response page {page_number}"
-        )
-        page_runs = response.get("workflow_runs")
-        if not isinstance(page_runs, list):
-            raise ContractError("workflow-runs response is malformed")
-        raw_runs.extend(page_runs)
+    raw_runs = _workflow_runs(payload)
     title = expected_run_name(batch, orchestration_id, dispatch_nonce)
     titled_runs = [
         item
@@ -352,6 +346,67 @@ def select_exact_registration(
         require_completed=False,
     )
     return run["id"]
+
+
+def select_exact_summary_registration(
+    payload: object,
+    *,
+    manifest: Mapping[str, Any],
+    dispatch_nonce: str,
+    expected_sha: str,
+    branch: str,
+    repository: str,
+) -> int | None:
+    raw_runs = _workflow_runs(payload)
+    validated_manifest = validate_manifest(
+        manifest,
+        expected_sha=expected_sha,
+        expected_branch=branch,
+    )
+    dispatch_nonce = validate_dispatch_nonce(dispatch_nonce)
+    title = expected_summary_run_name(
+        validated_manifest["orchestration_id"],
+        dispatch_nonce,
+    )
+    titled_runs = [
+        item
+        for item in raw_runs
+        if isinstance(item, Mapping) and item.get("display_title") == title
+    ]
+    if not titled_runs:
+        return None
+    if len(titled_runs) != 1:
+        raise ContractError("multiple summary runs have the exact orchestration run-name")
+    run = validate_summary_run(
+        titled_runs[0],
+        manifest=validated_manifest,
+        dispatch_nonce=dispatch_nonce,
+        expected_sha=expected_sha,
+        branch=branch,
+        repository=repository,
+        require_completed=False,
+    )
+    return run["id"]
+
+
+def _workflow_runs(payload: object) -> list[object]:
+    if isinstance(payload, Mapping):
+        responses = [payload]
+    elif isinstance(payload, list) and payload:
+        responses = payload
+    else:
+        raise ContractError("workflow-runs response is malformed")
+
+    raw_runs: list[object] = []
+    for page_number, raw_response in enumerate(responses, start=1):
+        response = _require_mapping(
+            raw_response, f"workflow-runs response page {page_number}"
+        )
+        page_runs = response.get("workflow_runs")
+        if not isinstance(page_runs, list):
+            raise ContractError("workflow-runs response is malformed")
+        raw_runs.extend(page_runs)
+    return raw_runs
 
 
 def validate_run(
@@ -411,6 +466,100 @@ def validate_run(
         raise ContractError("workflow run is not completed")
     elif status not in _INCOMPLETE_STATUSES or conclusion is not None:
         raise ContractError("workflow run has an invalid incomplete state")
+
+    return {
+        "id": run_id,
+        "run_attempt": run_attempt,
+        "status": status,
+        "conclusion": conclusion,
+    }
+
+
+def validate_summary_dispatch(
+    manifest: Mapping[str, Any],
+    *,
+    orchestration_id: str,
+    dispatch_nonce: str,
+    expected_sha: str,
+    branch: str,
+    repository: str,
+) -> dict[str, Any]:
+    validate_repository(repository)
+    dispatch_nonce = validate_dispatch_nonce(dispatch_nonce)
+    validated_manifest = validate_manifest(
+        manifest,
+        expected_sha=expected_sha,
+        expected_branch=branch,
+    )
+    if validated_manifest["orchestration_id"] != validate_orchestration_id(
+        orchestration_id
+    ):
+        raise ContractError("summary orchestration_id does not match the manifest")
+    expected_summary_run_name(orchestration_id, dispatch_nonce)
+    return validated_manifest
+
+
+def validate_summary_run(
+    payload: object,
+    *,
+    manifest: Mapping[str, Any],
+    dispatch_nonce: str,
+    expected_sha: str,
+    branch: str,
+    repository: str,
+    expected_run_id: int | None = None,
+    require_completed: bool,
+) -> dict[str, Any]:
+    validated_manifest = validate_manifest(
+        manifest,
+        expected_sha=expected_sha,
+        expected_branch=branch,
+    )
+    dispatch_nonce = validate_dispatch_nonce(dispatch_nonce)
+    run = _require_mapping(payload, "summary workflow run")
+    run_id = _positive_int(run.get("id"), "summary workflow run id")
+    if expected_run_id is not None and run_id != _positive_int(
+        expected_run_id, "expected summary workflow run id"
+    ):
+        raise ContractError("summary workflow run id does not match the registration")
+    run_attempt = _positive_int(run.get("run_attempt"), "summary workflow run attempt")
+    if run_attempt != 1:
+        raise ContractError("summary workflow run attempt is not the original dispatch")
+
+    run_title = expected_summary_run_name(
+        validated_manifest["orchestration_id"],
+        dispatch_nonce,
+    )
+    api_name = run.get("name")
+    if api_name not in {SUMMARY_WORKFLOW_NAME, run_title}:
+        raise ContractError("summary workflow run has unexpected name")
+
+    expected = {
+        "path": SUMMARY_WORKFLOW_PATH,
+        "display_title": run_title,
+        "event": "workflow_dispatch",
+        "head_branch": validate_branch(branch),
+        "head_sha": validate_sha(expected_sha),
+    }
+    for key, value in expected.items():
+        if run.get(key) != value:
+            raise ContractError(f"summary workflow run has unexpected {key}")
+
+    repository_payload = _require_mapping(
+        run.get("repository"), "summary workflow run repository"
+    )
+    if repository_payload.get("full_name") != validate_repository(repository):
+        raise ContractError("summary workflow run belongs to an unexpected repository")
+
+    status = run.get("status")
+    conclusion = run.get("conclusion")
+    if status == "completed":
+        if conclusion not in _ALLOWED_CONCLUSIONS:
+            raise ContractError("completed summary workflow run has a rejected conclusion")
+    elif require_completed:
+        raise ContractError("summary workflow run is not completed")
+    elif status not in _INCOMPLETE_STATUSES or conclusion is not None:
+        raise ContractError("summary workflow run has an invalid incomplete state")
 
     return {
         "id": run_id,
@@ -680,6 +829,10 @@ def _build_parser() -> argparse.ArgumentParser:
     run_name.add_argument("--orchestration-id", required=True)
     run_name.add_argument("--dispatch-nonce", required=True)
 
+    summary_run_name = subparsers.add_parser("summary-run-name")
+    summary_run_name.add_argument("--orchestration-id", required=True)
+    summary_run_name.add_argument("--dispatch-nonce", required=True)
+
     nonce = subparsers.add_parser("generate-dispatch-nonce")
     nonce.add_argument("--output", type=Path, required=True)
 
@@ -697,6 +850,11 @@ def _build_parser() -> argparse.ArgumentParser:
     endpoint.add_argument("--expected-sha", required=True)
     endpoint.add_argument("--repository", required=True)
 
+    summary_endpoint = subparsers.add_parser("summary-runs-endpoint")
+    summary_endpoint.add_argument("--branch", required=True)
+    summary_endpoint.add_argument("--expected-sha", required=True)
+    summary_endpoint.add_argument("--repository", required=True)
+
     select = subparsers.add_parser("select-registration")
     select.add_argument("--payload", type=Path, required=True)
     select.add_argument("--batch", type=int, required=True)
@@ -707,6 +865,16 @@ def _build_parser() -> argparse.ArgumentParser:
     select.add_argument("--expected-sha", required=True)
     select.add_argument("--branch", required=True)
     select.add_argument("--repository", required=True)
+
+    select_summary = subparsers.add_parser("select-summary-registration")
+    select_summary.add_argument("--payload", type=Path, required=True)
+    select_summary.add_argument("--manifest", type=Path, required=True)
+    select_summary_nonce = select_summary.add_mutually_exclusive_group(required=True)
+    select_summary_nonce.add_argument("--dispatch-nonce")
+    select_summary_nonce.add_argument("--dispatch-nonce-file", type=Path)
+    select_summary.add_argument("--expected-sha", required=True)
+    select_summary.add_argument("--branch", required=True)
+    select_summary.add_argument("--repository", required=True)
 
     init = subparsers.add_parser("init-records")
     init.add_argument("--output", type=Path, required=True)
@@ -762,6 +930,26 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--expected-run-id", type=int, required=True)
     run.add_argument("--allow-incomplete", action="store_true")
 
+    summary_dispatch = subparsers.add_parser("validate-summary-dispatch")
+    summary_dispatch.add_argument("--manifest", type=Path, required=True)
+    summary_dispatch.add_argument("--orchestration-id", required=True)
+    summary_dispatch.add_argument("--dispatch-nonce", required=True)
+    summary_dispatch.add_argument("--expected-sha", required=True)
+    summary_dispatch.add_argument("--branch", required=True)
+    summary_dispatch.add_argument("--repository", required=True)
+
+    summary_run = subparsers.add_parser("validate-summary-run")
+    summary_run.add_argument("--payload", type=Path, required=True)
+    summary_run.add_argument("--manifest", type=Path, required=True)
+    summary_run_nonce = summary_run.add_mutually_exclusive_group(required=True)
+    summary_run_nonce.add_argument("--dispatch-nonce")
+    summary_run_nonce.add_argument("--dispatch-nonce-file", type=Path)
+    summary_run.add_argument("--expected-sha", required=True)
+    summary_run.add_argument("--branch", required=True)
+    summary_run.add_argument("--repository", required=True)
+    summary_run.add_argument("--expected-run-id", type=int, required=True)
+    summary_run.add_argument("--allow-incomplete", action="store_true")
+
     artifacts = subparsers.add_parser("validate-artifacts")
     artifacts.add_argument("--payload", type=Path, required=True)
     artifacts.add_argument("--batch", type=int, required=True)
@@ -770,6 +958,7 @@ def _build_parser() -> argparse.ArgumentParser:
     summary = subparsers.add_parser("summary-dispatch-payload")
     summary.add_argument("--manifest", type=Path, required=True)
     summary.add_argument("--ref", required=True)
+    summary.add_argument("--dispatch-nonce-file", type=Path, required=True)
     summary.add_argument("--output", type=Path, required=True)
 
     return parser
@@ -798,6 +987,8 @@ def _main(arguments: Sequence[str]) -> int:
                 args.dispatch_nonce,
             )
         )
+    elif args.command == "summary-run-name":
+        print(expected_summary_run_name(args.orchestration_id, args.dispatch_nonce))
     elif args.command == "generate-dispatch-nonce":
         _write_dispatch_nonce(args.output, generate_dispatch_nonce())
     elif args.command == "batch-dispatch-payload":
@@ -827,6 +1018,17 @@ def _main(arguments: Sequence[str]) -> int:
             f"repos/{repository}/actions/workflows/"
             f"{expected_workflow(args.batch)}/runs?{query}"
         )
+    elif args.command == "summary-runs-endpoint":
+        repository = validate_repository(args.repository)
+        query = urlencode(
+            {
+                "event": "workflow_dispatch",
+                "branch": validate_branch(args.branch),
+                "head_sha": validate_sha(args.expected_sha),
+                "per_page": "100",
+            }
+        )
+        print(f"repos/{repository}/actions/workflows/{SUMMARY_WORKFLOW}/runs?{query}")
     elif args.command == "select-registration":
         dispatch_nonce = (
             _load_dispatch_nonce(args.dispatch_nonce_file)
@@ -837,6 +1039,22 @@ def _main(arguments: Sequence[str]) -> int:
             _load_json(args.payload),
             batch=args.batch,
             orchestration_id=args.orchestration_id,
+            dispatch_nonce=dispatch_nonce,
+            expected_sha=args.expected_sha,
+            branch=args.branch,
+            repository=args.repository,
+        )
+        if run_id is not None:
+            print(run_id)
+    elif args.command == "select-summary-registration":
+        dispatch_nonce = (
+            _load_dispatch_nonce(args.dispatch_nonce_file)
+            if args.dispatch_nonce_file is not None
+            else validate_dispatch_nonce(args.dispatch_nonce)
+        )
+        run_id = select_exact_summary_registration(
+            _load_json(args.payload),
+            manifest=validate_manifest(_load_json(args.manifest)),
             dispatch_nonce=dispatch_nonce,
             expected_sha=args.expected_sha,
             branch=args.branch,
@@ -929,6 +1147,32 @@ def _main(arguments: Sequence[str]) -> int:
             require_completed=not args.allow_incomplete,
         )
         print(f"{result['status']}\t{result['conclusion'] or ''}")
+    elif args.command == "validate-summary-dispatch":
+        validate_summary_dispatch(
+            validate_manifest(_load_json(args.manifest)),
+            orchestration_id=args.orchestration_id,
+            dispatch_nonce=args.dispatch_nonce,
+            expected_sha=args.expected_sha,
+            branch=args.branch,
+            repository=args.repository,
+        )
+    elif args.command == "validate-summary-run":
+        dispatch_nonce = (
+            _load_dispatch_nonce(args.dispatch_nonce_file)
+            if args.dispatch_nonce_file is not None
+            else validate_dispatch_nonce(args.dispatch_nonce)
+        )
+        result = validate_summary_run(
+            _load_json(args.payload),
+            manifest=validate_manifest(_load_json(args.manifest)),
+            dispatch_nonce=dispatch_nonce,
+            expected_sha=args.expected_sha,
+            branch=args.branch,
+            repository=args.repository,
+            expected_run_id=args.expected_run_id,
+            require_completed=not args.allow_incomplete,
+        )
+        print(f"{result['status']}\t{result['conclusion'] or ''}")
     elif args.command == "validate-artifacts":
         result = validate_artifacts(
             _load_json(args.payload),
@@ -939,6 +1183,7 @@ def _main(arguments: Sequence[str]) -> int:
     elif args.command == "summary-dispatch-payload":
         manifest = validate_manifest(_load_json(args.manifest))
         ref = validate_branch(args.ref)
+        dispatch_nonce = _load_dispatch_nonce(args.dispatch_nonce_file)
         if manifest["branch"] != ref:
             raise ContractError("summary ref does not match the manifest branch")
         _write_json(
@@ -949,6 +1194,8 @@ def _main(arguments: Sequence[str]) -> int:
                     "run_manifest": canonical_json(manifest),
                     "expected_sha": manifest["expected_sha"],
                     "triggering_batch": "orchestrator",
+                    "orchestration_id": manifest["orchestration_id"],
+                    "dispatch_nonce": dispatch_nonce,
                 },
             },
         )
