@@ -1242,6 +1242,16 @@ class WorkflowExactRunBindingTests(unittest.TestCase):
         )
         self.assertIn("steps.publication_base.outcome == 'success'", summary)
         self.assertIn(".orchestration", summary)
+        self.assertIn(
+            "head-branch: automation/generated-data/global-test-results/"
+            "${{ github.ref_name }}/${{ steps.generated_data_base.outputs.sha }}",
+            summary,
+        )
+        self.assertNotIn(
+            "head-branch: automation/generated-data/global-test-results/"
+            "${{ github.ref_name }}\n",
+            summary,
+        )
 
         checkout_step = summary.split("- name: Checkout repository", 1)[1].split(
             "- name: Bind exact generated-data base", 1
