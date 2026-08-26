@@ -682,6 +682,169 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             validation_policy="strict",
         )
 
+    def test_active_collector_normalizes_package_manager_skip_candidate(self) -> None:
+        action = yaml.safe_load(
+            (
+                self.root / ".github/actions/collect-batch-results/action.yml"
+            ).read_text(encoding="utf-8")
+        )
+        run_script = action["runs"]["steps"][0]["run"]
+        marker = "python3 - <<'PY'\n"
+        python_source = run_script.split(marker, 1)[1].rsplit("\nPY", 1)[0]
+
+        needs = {
+            "test-dot-net": {
+                "result": "success",
+                "outputs": {
+                    "contract_version": "2.0",
+                    "package_slug": "dot-net",
+                    "package_name": ".NET",
+                    "package_version": "8.0.130",
+                    "run_status": "success",
+                    "tests_passed": "5",
+                    "tests_failed": "0",
+                    "tests_skipped": "0",
+                    "core_failed": "0",
+                    "duration_seconds": "5",
+                    "timestamp": "2026-08-18T04:00:00Z",
+                    "dashboard_link": "/linux/opensource_packages/dot-net",
+                    "job_name": "test-dot-net",
+                    "regression_status": "skipped",
+                    "regression_decision": "not_applicable_package_manager",
+                    "regression_current_version": "8.0.130",
+                    "regression_latest_version": "not_applicable",
+                    "regression_next_installed_version": "not_applicable",
+                    "regression_result": (
+                        "Regression validation not applicable: tested package "
+                        "installed via package manager in Tests 1-5."
+                    ),
+                    "regression_comparison": (
+                        "The tested package is installed via a package manager "
+                        "in Tests 1-5, so no newer-version runtime comparison "
+                        "is claimed."
+                    ),
+                },
+            }
+        }
+        job_url = (
+            "https://github.com/example/project/actions/runs/123/job/456"
+        )
+        steps = []
+        for ordinal in range(1, 6):
+            steps.append(
+                {
+                    "name": f"Test {ordinal} - Baseline",
+                    "number": ordinal,
+                    "conclusion": "success",
+                    "started_at": f"2026-08-18T04:00:0{ordinal - 1}Z",
+                    "completed_at": f"2026-08-18T04:00:0{ordinal}Z",
+                }
+            )
+        steps.append(
+            {
+                "name": "Regression applicability - package manager installed",
+                "number": 6,
+                "conclusion": "success",
+                "started_at": "2026-08-18T04:00:05Z",
+                "completed_at": "2026-08-18T04:00:06Z",
+            }
+        )
+        jobs = {
+            "jobs": [
+                {
+                    "id": 456,
+                    "name": "test-dot-net / test-dot-net",
+                    "html_url": job_url,
+                    "conclusion": "success",
+                    "steps": steps,
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".github").mkdir()
+            (root / ".github" / "scripts").symlink_to(
+                self.root / ".github" / "scripts",
+                target_is_directory=True,
+            )
+            output_path = root / "github-output"
+            summary_path = root / "github-summary"
+            environment = {
+                **os.environ,
+                "NEEDS_JSON": json.dumps(needs),
+                "BATCH_NUMBER": "18",
+                "BATCH_TITLE": "Batch 18",
+                "GH_TOKEN": "",
+                "GITHUB_SERVER_URL": "https://github.com",
+                "GITHUB_API_URL": "https://api.github.com",
+                "GITHUB_REPOSITORY": "example/project",
+                "GITHUB_RUN_ID": "123",
+                "GITHUB_RUN_ATTEMPT": "1",
+                "RUN_JOBS_JSON": json.dumps(jobs),
+                "GITHUB_OUTPUT": str(output_path),
+                "GITHUB_STEP_SUMMARY": str(summary_path),
+            }
+            subprocess.run(
+                [sys.executable, "-c", python_source],
+                cwd=root,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            payload = json.loads(
+                (
+                    root
+                    / "test-results"
+                    / "dot-net-test-results"
+                    / "dot-net.json"
+                ).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(5, payload["tests"]["passed"])
+        self.assertEqual(0, payload["tests"]["failed"])
+        self.assertEqual(1, payload["tests"]["skipped"])
+        self.assertEqual(
+            "skipped", payload["tests"]["details"][5]["status"]
+        )
+        self.assertEqual(
+            "not_applicable_package_manager",
+            payload["tests"]["details"][5]["decision"],
+        )
+        self.assertEqual(
+            "not_applicable", payload["metadata"]["regression_status"]
+        )
+        self.assertEqual(
+            "not_applicable",
+            payload["metadata"]["regression_applicability"],
+        )
+        self.assertEqual(
+            "not_applicable_package_manager",
+            payload["metadata"]["regression_reason"],
+        )
+        promoter.validate_persisted_result(
+            payload,
+            expected_slug="dot-net",
+            expected_repository="example/project",
+            expected_registration={
+                "batch_title": "Batch 18",
+                "workflow_path": (
+                    ".github/workflows/test-all-packages-batch18.yml"
+                ),
+                "run_id": "123",
+                "run_attempt": "1",
+                "job_name": "test-dot-net / test-dot-net",
+                "job_url": job_url,
+                "job_conclusion": "success",
+                "job_started_at": payload["run"]["timestamp"],
+                "job_completed_at": payload["run"]["timestamp"],
+                "resolution_status": "central_exact",
+            },
+            publication_role="candidate",
+            validation_policy="strict",
+        )
+
     def assert_foundation_workflow_contract(self, workflow: str) -> None:
 
         trigger, separator, remainder = workflow.partition("\npermissions:\n")
