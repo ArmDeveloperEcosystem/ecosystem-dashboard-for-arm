@@ -281,15 +281,62 @@ runs:
                 regression_entry = dict(regression_details[0])
                 for index, detail in enumerate(details):
                     if is_regression_detail_name(detail.get("name")):
-                        # The Jobs API owns name, status, duration and URL.
-                        # Structured outputs may add only Test 6 semantics.
-                        details[index] = {
+                        # The Jobs API owns name, duration and URL. A real
+                        # failed step wins, but approved semantic Test 6 skips
+                        # must remain skipped even when their explanation step
+                        # completes successfully.
+                        merged_detail = {
                             **regression_entry,
                             **detail,
                         }
+                        actual_status = str(detail.get("status") or "").strip().lower()
+                        emitted_status = str(
+                            regression_entry.get("status") or ""
+                        ).strip().lower()
+                        decision = str(
+                            regression_entry.get("decision") or ""
+                        ).strip()
+                        if actual_status == "failed" or emitted_status == "failed":
+                            merged_detail["status"] = "failed"
+                        else:
+                            try:
+                                semantic = expected_regression_metadata(
+                                    decision=decision,
+                                    core_failed=0,
+                                )
+                            except ValueError:
+                                semantic = None
+                            if semantic is not None and semantic["status"] in {
+                                "deferred",
+                                "not_applicable",
+                                "skipped",
+                            }:
+                                merged_detail["status"] = "skipped"
+                            elif emitted_status in {"passed", "skipped"}:
+                                merged_detail["status"] = emitted_status
+                        details[index] = merged_detail
                         break
 
             return details
+
+        def summarize_detail_counts(details):
+            counts = {
+                "passed": 0,
+                "failed": 0,
+                "skipped": 0,
+                "core_failed": 0,
+            }
+            for index, detail in enumerate(details, start=1):
+                status = str(detail.get("status") or "").strip().lower()
+                if status == "passed":
+                    counts["passed"] += 1
+                elif status == "failed":
+                    counts["failed"] += 1
+                    if index <= 5:
+                        counts["core_failed"] += 1
+                else:
+                    counts["skipped"] += 1
+            return counts
 
         def resolve_job_url(need_name, slug, output_job_name, fallback_url, jobs_by_name):
             need_value = str(need_name or "").strip()
@@ -571,9 +618,7 @@ runs:
             result_dir.mkdir(parents=True, exist_ok=True)
             result_path = result_dir / f"{slug}.json"
             regression_policy_info = regression_policy(outputs)
-            regression_details = []
-            if regression_policy_info["applicability"] == "applicable":
-                regression_details.append(regression_detail(outputs, regression_policy_info))
+            regression_details = [regression_detail(outputs, regression_policy_info)]
             test_details = extract_test_details(resolved_job, regression_details)
             regression_detail_entry = next(
                 (detail for detail in test_details if is_regression_detail_name(detail.get("name"))),
@@ -589,10 +634,17 @@ runs:
                     "reason": "result_not_emitted",
                     "note": "The Test 6 step failed before the workflow emitted a terminal regression decision.",
                 }
-            tests_passed = emitted_tests_passed
-            tests_failed = emitted_tests_failed
-            tests_skipped = emitted_tests_skipped
-            core_failed = emitted_core_failed
+            if len(test_details) == 6:
+                detail_counts = summarize_detail_counts(test_details)
+                tests_passed = detail_counts["passed"]
+                tests_failed = detail_counts["failed"]
+                tests_skipped = detail_counts["skipped"]
+                core_failed = detail_counts["core_failed"]
+            else:
+                tests_passed = emitted_tests_passed
+                tests_failed = emitted_tests_failed
+                tests_skipped = emitted_tests_skipped
+                core_failed = emitted_core_failed
             regression_decision_for_counts = ""
             if isinstance(regression_detail_entry, dict):
                 regression_decision_for_counts = str(regression_detail_entry.get("decision") or "").strip()
