@@ -1,5 +1,8 @@
 name: Test Albumentations on Arm64
 
+permissions:
+  contents: read
+
 on:
   workflow_call:
     outputs:
@@ -82,6 +85,8 @@ jobs:
     env:
       BASELINE_VERSION: "0.0.2"
       DIST_NAME: "albumentations"
+      NUMPY_CONSTRAINT: "numpy<2"
+      OPENCV_CONSTRAINT: "opencv-python<4.12"
 
     outputs:
       contract_version: "2.0"
@@ -111,7 +116,9 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # original: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set test metadata
         id: metadata
@@ -121,7 +128,7 @@ jobs:
           echo "dashboard_link=/linux/opensource_packages/albumentations" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # original: actions/setup-python@v5
         with:
           python-version: '3.12'
 
@@ -132,9 +139,18 @@ jobs:
           python -m venv .venv-current
           . .venv-current/bin/activate
           python -m pip install --upgrade "pip<24.1" packaging >/dev/null
-          python -m pip install "$DIST_NAME==$BASELINE_VERSION"
+          # Resolve the package and compatibility bounds in one transaction.
+          # Otherwise its loose metadata lets pip replace NumPy 1.x with NumPy 2.
+          python -m pip install \
+            "$DIST_NAME==$BASELINE_VERSION" \
+            "$NUMPY_CONSTRAINT" \
+            "$OPENCV_CONSTRAINT"
           python - <<'PY2'
           import importlib.metadata as im, json, os
+          from packaging.version import Version
+          import numpy as np
+          if Version(np.__version__) >= Version("2"):
+              raise SystemExit(f"unsupported NumPy resolved: {np.__version__}")
           dist_name = os.environ['DIST_NAME']
           top_levels = []
           version = im.version(dist_name)
@@ -236,27 +252,20 @@ jobs:
       - name: Test 5 - Functional Validation
         id: test5
         continue-on-error: true
-        env:
-          TOP_LEVELS_JSON: ${{ steps.install.outputs.top_levels_json || '[]' }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           . .venv-current/bin/activate
           if python - <<'PY2'
-          import json, os, importlib, importlib.metadata as im
-          top_levels = json.loads(os.environ.get('TOP_LEVELS_JSON', '[]'))
-          if top_levels:
-              imported = False
-              for mod in top_levels:
-                  try:
-                      importlib.import_module(mod)
-                      imported = True
-                      break
-                  except Exception:
-                      continue
-              raise SystemExit(0 if imported else 1)
-          files = list(im.files(os.environ['DIST_NAME']) or [])
-          raise SystemExit(0 if files else 1)
+          import albumentations as A
+          import numpy as np
+
+          image = np.arange(4 * 5 * 3, dtype=np.uint8).reshape(4, 5, 3)
+          transformed = A.HorizontalFlip(p=1.0)(image=image)["image"]
+          expected = image[:, ::-1, :]
+          if transformed.shape != image.shape or not np.array_equal(transformed, expected):
+              raise SystemExit("HorizontalFlip produced an unexpected Arm64 result")
+          print("Albumentations HorizontalFlip validated on a real NumPy image")
           PY2
           then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -334,13 +343,26 @@ jobs:
           python -m venv .venv-next
           . .venv-next/bin/activate
           python -m pip install --upgrade "pip<24.1" packaging >/dev/null
-          if python -m pip install "$DIST_NAME==$LATEST" >/dev/null 2>&1; then
+          if python -m pip install \
+            "$DIST_NAME==$LATEST" \
+            "$NUMPY_CONSTRAINT" \
+            "$OPENCV_CONSTRAINT" >/dev/null 2>&1
+          then
             NEXT_VERSION=$(python -c 'import importlib.metadata as im, os; print(im.version(os.environ["DIST_NAME"]))')
             echo "next_installed_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
-            if [ "$NEXT_VERSION" = "$LATEST" ]; then
+            if [ "$NEXT_VERSION" = "$LATEST" ] && python - <<'PY2'
+          import albumentations as A
+          import numpy as np
+
+          image = np.arange(3 * 4 * 3, dtype=np.uint8).reshape(3, 4, 3)
+          transformed = A.HorizontalFlip(p=1.0)(image=image)["image"]
+          if not np.array_equal(transformed, image[:, ::-1, :]):
+              raise SystemExit("next-version HorizontalFlip produced an unexpected result")
+          PY2
+            then
               echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned package version $CURRENT passed smoke tests in this run, and the newer stable PyPI candidate $LATEST installed successfully on Arm64." >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version passed functional validation on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned package version $CURRENT passed smoke tests in this run, and the newer stable PyPI candidate $LATEST completed a real image transform on Arm64." >> "$GITHUB_OUTPUT"
               echo "status=passed" >> "$GITHUB_OUTPUT"
             else
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
@@ -413,6 +435,9 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          if [ "$OVERALL_STATUS" = "failure" ]; then
+            exit 1
+          fi
 
       - name: Cleanup
         if: always()

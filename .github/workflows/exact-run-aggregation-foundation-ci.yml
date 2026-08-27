@@ -1,0 +1,187 @@
+name: Exact-run aggregation foundation CI
+
+on:
+  pull_request:
+permissions:
+  contents: read
+
+concurrency:
+  group: exact-run-foundation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  LC_ALL: C.UTF-8
+  PYTHONDONTWRITEBYTECODE: "1"
+  TZ: UTC
+
+jobs:
+  exact-run-contract:
+    name: Exact-run contract
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out candidate without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Detect exact-run scope from authenticated PR base
+        id: scope
+        env:
+          AUTHENTICATED_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$AUTHENTICATED_BASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Authenticated pull-request base SHA is missing or malformed." >&2
+            exit 1
+          fi
+          git cat-file -e "${AUTHENTICATED_BASE_COMMIT}^{commit}" ||
+            git fetch --no-tags --depth=1 origin "$AUTHENTICATED_BASE_COMMIT"
+          git cat-file -e "${AUTHENTICATED_BASE_COMMIT}^{commit}"
+          if git diff --quiet "$AUTHENTICATED_BASE_COMMIT" HEAD -- \
+            .github/scripts/download-with-fallback.sh \
+            .github/scripts/package_workflow_action_lock.json \
+            .github/scripts/verify_action_lock_online.py \
+            .github/scripts/package_workflow_supply_chain.py \
+            .github/scripts/exact_run_aggregation.py \
+            .github/scripts/package_result_policy.py \
+            .github/scripts/package_observation.py \
+            .github/scripts/package_observation_migration_audit.py \
+            .github/scripts/promote_package_results.py \
+            .github/scripts/tests/test_package_workflow_supply_chain.py \
+            .github/scripts/tests/test_verify_action_lock_online.py \
+            .github/scripts/tests/test_exact_run_aggregation.py \
+            .github/scripts/tests/test_package_observation.py \
+            .github/scripts/tests/test_package_observation_migration_audit.py \
+            .github/scripts/tests/test_promote_package_results.py \
+            .github/scripts/README-exact-run-aggregation.md \
+            .github/scripts/README-package-observation.md \
+            .github/scripts/requirements-exact-run.txt \
+            '.github/actions/**' \
+            .github/workflows/exact-run-aggregation-foundation-ci.yml \
+            '.github/workflows/test-*.yml'; then
+            printf '%s\n' 'relevant=false' >> "$GITHUB_OUTPUT"
+          else
+            diff_status=$?
+            if [[ "$diff_status" -ne 1 ]]; then
+              echo "Unable to determine exact-run scope from authenticated base." >&2
+              exit "$diff_status"
+            fi
+            printf '%s\n' 'relevant=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch reviewed package workflow source
+        if: steps.scope.outputs.relevant == 'true'
+        env:
+          REVIEWED_SOURCE_COMMIT: 73155d0d3a3dc73da08c62bc2bb7eccf281c6008
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$REVIEWED_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "${REVIEWED_SOURCE_COMMIT}^{commit}" 2>/dev/null ||
+            git fetch --no-tags --depth=1 origin "$REVIEWED_SOURCE_COMMIT"
+          git cat-file -e "${REVIEWED_SOURCE_COMMIT}^{commit}"
+
+
+      - name: Confirm migration audit sources are present
+        if: steps.scope.outputs.relevant == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for source in \
+            .github/scripts/package_observation_migration_audit.py \
+            .github/scripts/tests/test_package_observation_migration_audit.py; do
+            test -f "$source"
+            test ! -L "$source"
+          done
+
+
+      - name: Verify changed action lock against live GitHub evidence
+        if: steps.scope.outputs.relevant == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTHENTICATED_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "${AUTHENTICATED_BASE_COMMIT}^{commit}" ||
+            git fetch --no-tags --depth=1 origin "$AUTHENTICATED_BASE_COMMIT"
+          if git diff --quiet "$AUTHENTICATED_BASE_COMMIT" -- \
+            .github/scripts/package_workflow_action_lock.json \
+            .github/scripts/verify_action_lock_online.py; then
+            echo "Action lock and live verifier are unchanged; retained evidence remains authoritative."
+            exit 0
+          fi
+          python3 .github/scripts/verify_action_lock_online.py
+
+      - name: Install checksum-pinned structured YAML parser
+        if: steps.scope.outputs.relevant == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          python3 -m venv "$RUNNER_TEMP/exact-run-venv"
+          "$RUNNER_TEMP/exact-run-venv/bin/python" -m pip install \
+            --disable-pip-version-check \
+            --no-deps \
+            --only-binary=:all: \
+            --require-hashes \
+            --requirement .github/scripts/requirements-exact-run.txt
+          printf '%s\n' "$RUNNER_TEMP/exact-run-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Confirm structured YAML parser version
+        if: steps.scope.outputs.relevant == 'true'
+        run: python3 -c 'import yaml; assert yaml.__version__ == "6.0.3"'
+
+      - name: Validate reviewed batch topology
+        if: steps.scope.outputs.relevant == 'true'
+        run: >-
+          python3 .github/scripts/exact_run_aggregation.py topology
+          --repository-root .
+          > /dev/null
+
+      - name: Validate immutable package execution closure
+        if: steps.scope.outputs.relevant == 'true'
+        env:
+          AUTHENTICATED_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$AUTHENTICATED_BASE_COMMIT"
+          python3 .github/scripts/package_workflow_supply_chain.py \
+            --expected-base-commit "$AUTHENTICATED_BASE_COMMIT"
+
+      - name: Run adversarial contract tests
+        if: steps.scope.outputs.relevant == 'true'
+        run: >-
+          python3 -m unittest discover
+          -s .github/scripts/tests
+          -p 'test_*.py'
+          -v
+
+      - name: Lint foundation workflow
+        if: steps.scope.outputs.relevant == 'true'
+        env:
+          ACTIONLINT_SHA256: 325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6
+          ACTIONLINT_VERSION: 1.7.12
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          binary="$RUNNER_TEMP/actionlint"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_arm64.tar.gz"
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" "$archive" | sha256sum --check --strict
+          tar --extract --gzip --file "$archive" --directory "$RUNNER_TEMP" actionlint
+          chmod 0755 "$binary"
+          mapfile -d '' workflows < <(
+            find .github/workflows -maxdepth 1 -type f -name 'test-*.yml' -print0 |
+              sort -z
+          )
+          "$binary" -shellcheck= \
+            .github/workflows/exact-run-aggregation-foundation-ci.yml \
+            "${workflows[@]}"

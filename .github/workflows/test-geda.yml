@@ -1,5 +1,8 @@
 name: Test gEDA on Arm64
 
+permissions:
+  contents: read
+
 on:
   workflow_call:
     outputs:
@@ -86,6 +89,9 @@ jobs:
       DOWNLOAD_URL: "https://launchpad.net/geda/+download"
       HOMEPAGE_URL: "https://launchpad.net/geda"
       OFFICIAL_DOCS: "https://launchpad.net/ubuntu/+source/geda-gaf"
+      SOURCE_DESCRIPTOR_URL: "https://archive.ubuntu.com/ubuntu/pool/universe/g/geda-gaf/geda-gaf_1.8.2-4.dsc"
+      SOURCE_DESCRIPTOR_SHA256: "f36575e3aedba6aec018df182a452c5f3afb49cc888ed502e3b6d0c44c6f1b41"
+      LATEST_STABLE_VERSION: "1.10.2"
       GITHUB_REPO: ""
       PACKAGE_PAGE: "content/linux/opensource_packages/geda.md"
       SOURCE_GLOBS: ""
@@ -121,7 +127,9 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # original: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set test metadata
         id: metadata
@@ -163,16 +171,38 @@ jobs:
               exit 0
             fi
           fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 && curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-            exit 0
+          descriptor=baseline-external/geda-gaf.dsc
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --proto '=https' \
+            --tlsv1.2 \
+            --retry 4 \
+            --retry-all-errors \
+            --connect-timeout 15 \
+            --max-time 120 \
+            --output "$descriptor" \
+            "$SOURCE_DESCRIPTOR_URL"
+          descriptor_size="$(stat -c '%s' "$descriptor")"
+          if [ "$descriptor_size" -lt 512 ] || [ "$descriptor_size" -gt 16384 ]; then
+            echo "Official Ubuntu source descriptor has an unexpected size." >&2
+            exit 1
           fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
+          printf '%s  %s\n' "$SOURCE_DESCRIPTOR_SHA256" "$descriptor" | sha256sum --check --strict --status
+          grep -Fxq 'Source: geda-gaf' "$descriptor"
+          grep -Fxq "Version: $BASELINE_VERSION" "$descriptor"
+          grep -Eq '^Architecture: (any|all)( (any|all))*$' "$descriptor"
+          grep -Fxq -- '-----BEGIN PGP SIGNED MESSAGE-----' "$descriptor"
+          grep -Fxq -- '-----BEGIN PGP SIGNATURE-----' "$descriptor"
+          printf 'download=%s\nhomepage=%s\ndocs=%s\nsource_descriptor=%s\n' \
+            "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" \
+            "$SOURCE_DESCRIPTOR_URL" > baseline-external/metadata.txt
+          echo "resolved_tag=ubuntu_source_descriptor" >> "$GITHUB_OUTPUT"
+          echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: Get baseline version
         id: version
@@ -210,7 +240,7 @@ jobs:
               exit 1
             fi
           else
-            if [ ! -f baseline-external/metadata.txt ]; then
+            if [ ! -f baseline-external/metadata.txt ] || [ ! -f baseline-external/geda-gaf.dsc ]; then
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
             fi
@@ -282,6 +312,11 @@ jobs:
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
             fi
+            if ! grep -Fxq 'Source: geda-gaf' baseline-external/geda-gaf.dsc || \
+               ! grep -Eq '^Architecture: (any|all)( (any|all))*$' baseline-external/geda-gaf.dsc; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
           fi
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
@@ -309,9 +344,22 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
           START_TIME=$(date +%s)
-          if apt-cache policy geda 2>/tmp/geda-policy.err | tee /tmp/geda-policy.log | grep -Eiq 'Candidate: [^(]'; then
+          fail_test5() {
+            local exit_code="${1:-$?}"
+            trap - ERR
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=The bounded gEDA package-specific validation failed before completion." >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$exit_code"
+          }
+          trap fail_test5 ERR
+          if ! apt-cache policy geda >/tmp/geda-policy.log 2>/tmp/geda-policy.err; then
+            cat /tmp/geda-policy.err >&2
+            fail_test5 1
+          fi
+          if grep -Eiq 'Candidate: [^(]' /tmp/geda-policy.log; then
             sudo apt-get update
             sudo apt-get install -y geda
             if command -v gschem >/dev/null 2>&1 && gschem --version >/tmp/geda-version.log 2>&1; then
@@ -325,11 +373,19 @@ jobs:
             fi
           else
             cat /tmp/geda-policy.log || true
-            curl -fsSL "$HOMEPAGE_URL" | grep -Eiq 'gEDA|electronic|EDA'
-            curl -fsSL "$OFFICIAL_DOCS" | grep -Eiq 'geda-gaf|gEDA|Ubuntu'
+            descriptor=baseline-external/geda-gaf.dsc
+            printf '%s  %s\n' "$SOURCE_DESCRIPTOR_SHA256" "$descriptor" | sha256sum --check --strict --status
+            grep -Fxq -- '-----BEGIN PGP SIGNED MESSAGE-----' "$descriptor"
+            grep -Fxq 'Source: geda-gaf' "$descriptor"
+            grep -Fxq "Version: $BASELINE_VERSION" "$descriptor"
+            grep -Eq '^Architecture: (any|all)( (any|all))*$' "$descriptor"
+            grep -Eq '^Binary: .*geda-gschem' "$descriptor"
+            grep -A3 '^Checksums-Sha256:' "$descriptor" | \
+              grep -Eq '^[[:space:]]+[0-9a-f]{64} [1-9][0-9]* geda-gaf_1\.8\.2\.orig\.tar\.gz$'
             echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=gEDA is not available from the ubuntu-24.04-arm package repositories, so this archived/manual-review lane validates stable project and Ubuntu source evidence without claiming a live runtime install." >> "$GITHUB_OUTPUT"
+            echo "note=gEDA is not available from the ubuntu-24.04-arm package repositories, so this archived/manual-review lane validates the pinned clear-signed Ubuntu source descriptor structure for 1:1.8.2-4 without claiming a live runtime install or cryptographic signer verification." >> "$GITHUB_OUTPUT"
           fi
+          trap - ERR
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -340,11 +396,11 @@ jobs:
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || env.BASELINE_VERSION }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST_STABLE_VERSION" >> "$GITHUB_OUTPUT"
           echo "next_installed_version=n/a" >> "$GITHUB_OUTPUT"
-          echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-          echo "regression_result=No newer stable public release is available" >> "$GITHUB_OUTPUT"
-          echo "comparison=Tests 1-5 validate archived project metadata and Ubuntu distro-source evidence for the historical Arm64 baseline. On ubuntu-24.04-arm the geda binary package is not available, so no live runtime pass is claimed. No newer stable public release is selected for automated regression validation." >> "$GITHUB_OUTPUT"
+          echo "decision=runtime_validation_not_automated" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Upstream gEDA $LATEST_STABLE_VERSION requires manual or specialized runtime validation" >> "$GITHUB_OUTPUT"
+          echo "comparison=Tests 1-5 validate archived project metadata and pinned Ubuntu distro-source evidence for the historical Arm64 baseline. Upstream publishes stable gEDA $LATEST_STABLE_VERSION, but ubuntu-24.04-arm does not provide the geda binary package, so the workflow explicitly defers candidate runtime validation and makes no live runtime claim." >> "$GITHUB_OUTPUT"
           echo "status=skipped" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -353,12 +409,19 @@ jobs:
         id: summary
         if: always()
         run: |
+          set -euo pipefail
           T1="${{ steps.test1.outputs.status || '' }}"
           T2="${{ steps.test2.outputs.status || '' }}"
           T3="${{ steps.test3.outputs.status || '' }}"
           T4="${{ steps.test4.outputs.status || '' }}"
           T5="${{ steps.test5.outputs.status || '' }}"
           T6="${{ steps.test6.outputs.status || '' }}"
+          O1="${{ steps.test1.outcome }}"
+          O2="${{ steps.test2.outcome }}"
+          O3="${{ steps.test3.outcome }}"
+          O4="${{ steps.test4.outcome }}"
+          O5="${{ steps.test5.outcome }}"
+          O6="${{ steps.test6.outcome }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -368,23 +431,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          record_core() {
+            local status="$1"
+            local outcome="$2"
+            if [ "$status" = "passed" ] && [ "$outcome" = "success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
-          done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          }
+          record_core "$T1" "$O1"
+          record_core "$T2" "$O2"
+          record_core "$T3" "$O3"
+          record_core "$T4" "$O4"
+          record_core "$T5" "$O5"
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ]; then
+            SKIPPED=$((SKIPPED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$CORE_FAILED" -eq 0 ] && [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
             BADGE_STATUS="passing"
           else
