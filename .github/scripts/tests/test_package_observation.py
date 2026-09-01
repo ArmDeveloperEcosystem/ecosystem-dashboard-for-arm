@@ -16,9 +16,362 @@ sys.path.insert(0, str(SCRIPT_ROOT))
 
 import exact_run_aggregation as exact  # noqa: E402
 import package_observation as observation  # noqa: E402
+import package_result_policy as result_policy  # noqa: E402
 
 
 class PackageObservationTests(unittest.TestCase):
+    def test_maven_networked_build_transient_failures_are_explicit(self) -> None:
+        transient_logs = (
+            (
+                "[ERROR] Failed to execute goal example:plugin:goal on project alpha: "
+                "Could not resolve dependencies\n"
+                "[ERROR] Could not transfer artifact example:dep:jar:1.0: "
+                "status code: 503\n"
+                "[ERROR] -> [Help 1]"
+            ),
+            (
+                "[ERROR] Failed to read artifact descriptor for example:dep:jar:1.0\n"
+                "[ERROR] Could not transfer artifact example:dep:pom:1.0: "
+                "Connection reset\n"
+                "[ERROR] Re-run Maven using the -X switch"
+            ),
+            (
+                "\x1b[31m[ERROR]\x1b[0m Could not collect dependencies: "
+                "java.net.UnknownHostException: repo.maven.apache.org\n"
+                "[ERROR] -> [Help 1]"
+            ),
+        )
+        for log in transient_logs:
+            with self.subTest(log=log):
+                self.assertEqual(
+                    "transient_infrastructure",
+                    result_policy.classify_maven_networked_build_failure(
+                        log, return_code=1
+                    ),
+                )
+
+    def test_maven_networked_build_mixed_or_permanent_failures_stay_red(self) -> None:
+        package_failures = (
+            ("Connection reset\nCould not find artifact com.example:missing:jar:1.0", 1),
+            ("Repository returned status code: 503\nstatus code: 404", 1),
+            ("Connection reset\nCOMPILATION ERROR: cannot find symbol", 1),
+            (
+                (
+                    "Connection reset\n"
+                    "[ERROR] Failed to execute goal example:plugin:goal\n"
+                    "[ERROR] Unexpected package build defect"
+                ),
+                1,
+            ),
+            (
+                (
+                    "Repository returned status code: 503\n"
+                    "[ERROR] Failed to execute goal example:plugin:goal"
+                ),
+                1,
+            ),
+            (
+                (
+                    "Connection reset\n"
+                    "\x1b[31m[ERROR]\x1b[0m Unexpected package build defect"
+                ),
+                1,
+            ),
+            (
+                (
+                    "[ERROR] Failed to execute goal example:custom-goal:run: "
+                    "unrelated endpoint returned status code: 503"
+                ),
+                1,
+            ),
+            (
+                (
+                    "[ERROR] Failed to execute goal example:healthcheck:verify:\n"
+                    "[ERROR] java.net.ConnectException: Connection refused\n"
+                    "[ERROR] -> [Help 1]"
+                ),
+                1,
+            ),
+            ("[ERROR] Could not transfer artifact: Connection reset", 124),
+            ("[ERROR] Could not transfer artifact: Connection reset", 125),
+            ("[ERROR] Could not transfer artifact: Connection reset", 137),
+            ("[ERROR] Could not transfer artifact: Connection reset", 0),
+            ("PKIX path building failed", 1),
+            ("No space left on device", 1),
+            ("java.lang.OutOfMemoryError", 1),
+            ("Command timed out after 600 seconds", 1),
+            (b"contains-nul\x00data", 1),
+            ("Non-resolvable parent POM", 1),
+            ("COMPILATION ERROR: cannot find symbol", 1),
+            ("", 1),
+            (b"not-utf8-\xff", 1),
+        )
+        for log, return_code in package_failures:
+            with self.subTest(log=log, return_code=return_code):
+                self.assertEqual(
+                    "package_failure",
+                    result_policy.classify_maven_networked_build_failure(
+                        log, return_code=return_code
+                    ),
+                )
+
+    def test_non_failing_regression_cannot_erase_unproven_failures(self) -> None:
+        result_policy.validate_aggregate_failure_counts(
+            failed=0, core_failed=0, non_failing_regression=True
+        )
+        result_policy.validate_aggregate_failure_counts(
+            failed=2, core_failed=2, non_failing_regression=True
+        )
+        result_policy.validate_aggregate_failure_counts(
+            failed=1, core_failed=0, non_failing_regression=False
+        )
+        contradictory = (
+            {"failed": 1, "core_failed": 0, "non_failing_regression": True},
+            {"failed": 2, "core_failed": 1, "non_failing_regression": True},
+            {"failed": 0, "core_failed": 1, "non_failing_regression": False},
+            {"failed": -1, "core_failed": 0, "non_failing_regression": False},
+            {"failed": True, "core_failed": 0, "non_failing_regression": False},
+        )
+        for values in contradictory:
+            with self.subTest(values=values):
+                with self.assertRaises(ValueError):
+                    result_policy.validate_aggregate_failure_counts(**values)
+
+    @staticmethod
+    def _six_details(
+        statuses: list[str], decision: str = "next_install_validated"
+    ) -> list[dict[str, object]]:
+        details = []
+        for ordinal, status in enumerate(statuses, start=1):
+            detail: dict[str, object] = {
+                "name": f"Test {ordinal} - Evidence check",
+                "status": status,
+                "duration_seconds": ordinal,
+            }
+            if ordinal == 6:
+                detail["decision"] = decision
+            details.append(detail)
+        return details
+
+    def test_six_test_result_accepts_only_coherent_lanes(self) -> None:
+        cases = (
+            (["passed"] * 6, 6, 0, 0, 0, "next_install_validated", "success"),
+            (
+                ["passed"] * 5 + ["failed"],
+                5,
+                1,
+                0,
+                0,
+                "next_install_failed",
+                "failure",
+            ),
+            (
+                ["passed"] * 5 + ["skipped"],
+                5,
+                0,
+                1,
+                0,
+                "runtime_validation_infrastructure_failure",
+                "success",
+            ),
+            (
+                ["failed"] + ["passed"] * 4 + ["skipped"],
+                4,
+                1,
+                1,
+                1,
+                "baseline_failed",
+                "failure",
+            ),
+        )
+        for statuses, passed, failed, skipped, core_failed, decision, expected in cases:
+            with self.subTest(decision=decision):
+                self.assertEqual(
+                    expected,
+                    result_policy.validate_six_test_result(
+                        details=self._six_details(statuses, decision),
+                        passed=passed,
+                        failed=failed,
+                        skipped=skipped,
+                        core_failed=core_failed,
+                        decision=decision,
+                    ),
+                )
+
+    def test_six_test_result_rejects_counter_and_policy_contradictions(self) -> None:
+        deferred = self._six_details(
+            ["passed"] * 5 + ["skipped"],
+            "runtime_validation_infrastructure_failure",
+        )
+        contradictions = (
+            (deferred, 5, 1, 0, 0, "runtime_validation_infrastructure_failure"),
+            (deferred, 5, 0, 1, 1, "runtime_validation_infrastructure_failure"),
+            (
+                self._six_details(["passed"] * 5 + ["failed"]),
+                5,
+                1,
+                0,
+                0,
+                "runtime_validation_infrastructure_failure",
+            ),
+            (
+                self._six_details(
+                    ["failed"] + ["passed"] * 5,
+                    "next_install_validated",
+                ),
+                5,
+                1,
+                0,
+                1,
+                "next_install_validated",
+            ),
+        )
+        for details, passed, failed, skipped, core_failed, decision in contradictions:
+            with self.subTest(decision=decision):
+                with self.assertRaises(ValueError):
+                    result_policy.validate_six_test_result(
+                        details=details,
+                        passed=passed,
+                        failed=failed,
+                        skipped=skipped,
+                        core_failed=core_failed,
+                        decision=decision,
+                    )
+
+    def test_six_test_result_rejects_missing_duplicate_or_extra_details(self) -> None:
+        valid = self._six_details(["passed"] * 6)
+        malformed = (
+            valid[:5],
+            valid + [dict(valid[-1])],
+            [*valid[:4], valid[5], valid[5]],
+        )
+        for details in malformed:
+            with self.subTest(detail_count=len(details)):
+                with self.assertRaises(ValueError):
+                    result_policy.validate_six_test_result(
+                        details=details,
+                        passed=6,
+                        failed=0,
+                        skipped=0,
+                        core_failed=0,
+                        decision="next_install_validated",
+                    )
+
+    def _publishable_result(
+        self, statuses: list[str], decision: str, core_failed: int
+    ) -> dict[str, object]:
+        semantic = result_policy.expected_regression_metadata(
+            decision=decision, core_failed=core_failed
+        )
+        counts = {
+            status: statuses.count(status)
+            for status in ("passed", "failed", "skipped")
+        }
+        return {
+            "run": {"status": semantic["run_status"]},
+            "tests": {
+                **counts,
+                "details": self._six_details(statuses, decision),
+            },
+            "metadata": {
+                "core_failed": core_failed,
+                "badge_status": (
+                    "passing"
+                    if semantic["run_status"] == "success"
+                    else "failing"
+                ),
+                "regression_status": semantic["status"],
+                "regression_decision": decision,
+                "regression_applicability": semantic["applicability"],
+                "regression_reason": semantic["reason"],
+            },
+        }
+
+    def test_publishable_result_accepts_explicit_semantic_lanes(self) -> None:
+        cases = (
+            (["passed"] * 6, "next_install_validated", 0, "success"),
+            (
+                ["passed"] * 5 + ["failed"],
+                "next_install_failed",
+                0,
+                "failure",
+            ),
+            (
+                ["passed"] * 5 + ["skipped"],
+                "runtime_validation_infrastructure_failure",
+                0,
+                "success",
+            ),
+            (
+                ["failed"] + ["passed"] * 4 + ["skipped"],
+                "baseline_failed",
+                1,
+                "failure",
+            ),
+        )
+        for statuses, decision, core_failed, expected in cases:
+            with self.subTest(decision=decision):
+                payload = self._publishable_result(
+                    statuses, decision, core_failed
+                )
+                self.assertEqual(
+                    expected,
+                    result_policy.validate_publishable_result(payload),
+                )
+
+    def test_publishable_result_rejects_untrusted_repairs_and_metadata(self) -> None:
+        base = self._publishable_result(
+            ["passed"] * 5 + ["skipped"],
+            "runtime_validation_infrastructure_failure",
+            0,
+        )
+        adversarial = []
+        malformed_counter = copy.deepcopy(base)
+        malformed_counter["tests"]["failed"] = "0"
+        adversarial.append(malformed_counter)
+        wrong_semantic_status = copy.deepcopy(base)
+        wrong_semantic_status["metadata"]["regression_status"] = "skipped"
+        adversarial.append(wrong_semantic_status)
+        wrong_applicability = copy.deepcopy(base)
+        wrong_applicability["metadata"]["regression_applicability"] = "not_applicable"
+        adversarial.append(wrong_applicability)
+        wrong_reason = copy.deepcopy(base)
+        wrong_reason["metadata"]["regression_reason"] = "validated"
+        adversarial.append(wrong_reason)
+        wrong_run = copy.deepcopy(base)
+        wrong_run["run"]["status"] = "failure"
+        adversarial.append(wrong_run)
+        wrong_badge = copy.deepcopy(base)
+        wrong_badge["metadata"]["badge_status"] = "failing"
+        adversarial.append(wrong_badge)
+        misplaced_decision = copy.deepcopy(base)
+        misplaced_decision["tests"]["details"][0]["decision"] = (
+            "runtime_validation_infrastructure_failure"
+        )
+        adversarial.append(misplaced_decision)
+        mismatched_decision = copy.deepcopy(base)
+        mismatched_decision["tests"]["details"][5]["decision"] = (
+            "next_install_validated"
+        )
+        adversarial.append(mismatched_decision)
+
+        for payload in adversarial:
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError):
+                    result_policy.validate_publishable_result(payload)
+
+    def test_infrastructure_decision_normalizes_to_deferred(self) -> None:
+        payload = self._build(lane="deferred")
+        payload["regression"]["decision"] = (
+            "runtime_validation_infrastructure_failure"
+        )
+        payload["regression"]["reason"] = (
+            "runtime_validation_infrastructure_failure"
+        )
+        normalized = observation.validate_observation(payload)
+        self.assertEqual("deferred", normalized["regression"]["status"])
+        self.assertEqual("success", normalized["outcome"]["run_status"])
+
     def _build(self, *, lane: str = "passed") -> dict[str, object]:
         statuses = ["passed"] * 6
         decision = "next_install_validated"
@@ -281,6 +634,10 @@ class PackageObservationTests(unittest.TestCase):
             },
         )
         self.assertEqual(bound, normalized)
+        self.assertEqual(
+            payload["regression"]["result"],
+            bound["tests"]["details"][5]["regression_result"],
+        )
 
     def test_trusted_binding_rejects_noncanonical_timestamp(self) -> None:
         with self.assertRaisesRegex(observation.ObservationError, "canonical RFC3339"):

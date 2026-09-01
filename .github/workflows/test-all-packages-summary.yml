@@ -1,4 +1,5 @@
 name: Global Test Summary (All Batches)
+run-name: Global Summary [${{ inputs.orchestration_id }}] [nonce:${{ inputs.dispatch_nonce }}]
 
 concurrency:
   group: ${{ github.repository }}-global-summary-publication
@@ -6,8 +7,11 @@ concurrency:
 
 permissions:
   actions: read
-  contents: write
-  pull-requests: write
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  TRUSTED_PUBLICATION_BRANCH: main
 
 on:
   workflow_dispatch:
@@ -27,11 +31,28 @@ on:
         required: false
         default: ""
         type: string
+      orchestration_id:
+        description: Exact orchestration id bound to the batch manifest
+        required: true
+        default: ""
+        type: string
+      dispatch_nonce:
+        description: Exact nonce bound to this summary dispatch
+        required: true
+        default: ""
+        type: string
 
 jobs:
   global-summary:
     name: Generate Global Summary
     runs-on: ubuntu-24.04-arm
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.package_generated_data.outputs.artifact_name }}
+      artifact_sha256: ${{ steps.package_generated_data.outputs.artifact_sha256 }}
+      base_sha: ${{ steps.generated_data_base.outputs.sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -43,11 +64,16 @@ jobs:
       - name: Bind exact generated-data base
         id: generated_data_base
         env:
-          EXPECTED_BRANCH: ${{ github.ref_name }}
+          EXPECTED_BRANCH: ${{ env.TRUSTED_PUBLICATION_BRANCH }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_REF_NAME: ${{ github.ref_name }}
           WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          [[ "$EXPECTED_BRANCH" == "main" ]]
+          [[ "$WORKFLOW_REF" == "refs/heads/${EXPECTED_BRANCH}" ]]
+          [[ "$WORKFLOW_REF_NAME" == "$EXPECTED_BRANCH" ]]
           actual_sha="$(git rev-parse HEAD)"
           [[ "$EXPECTED_SHA" == "$WORKFLOW_SHA" ]]
           [[ "$actual_sha" == "$WORKFLOW_SHA" ]]
@@ -66,8 +92,10 @@ jobs:
 
       - name: Validate exact batch-run manifest
         env:
-          EXPECTED_BRANCH: ${{ github.ref_name }}
+          EXPECTED_BRANCH: ${{ env.TRUSTED_PUBLICATION_BRANCH }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ORCHESTRATION_ID: ${{ inputs.orchestration_id }}
+          DISPATCH_NONCE: ${{ inputs.dispatch_nonce }}
           REPOSITORY: ${{ github.repository }}
           RUN_MANIFEST: ${{ inputs.run_manifest }}
         run: |
@@ -78,6 +106,13 @@ jobs:
             --branch "$EXPECTED_BRANCH" \
             --repository "$REPOSITORY" \
             --output .orchestration/run-manifest.json
+          python3 .github/scripts/orchestration_contract.py validate-summary-dispatch \
+            --manifest .orchestration/run-manifest.json \
+            --orchestration-id "$ORCHESTRATION_ID" \
+            --dispatch-nonce "$DISPATCH_NONCE" \
+            --expected-sha "$EXPECTED_SHA" \
+            --branch "$EXPECTED_BRANCH" \
+            --repository "$REPOSITORY"
 
       - name: Download exact batch artifacts
         id: download
@@ -221,10 +256,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          TRUSTED_PUBLICATION_BRANCH: ${{ env.TRUSTED_PUBLICATION_BRANCH }}
         run: |
           python3 - <<'PY'
           import json
           import os
+          import re
           import shutil
           import subprocess
           import sys
@@ -252,6 +289,11 @@ jobs:
           gh_token = os.environ.get("GH_TOKEN", "").strip()
           github_server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
           github_repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
+          trusted_publication_branch = os.environ.get(
+              "TRUSTED_PUBLICATION_BRANCH", ""
+          ).strip()
+          if trusted_publication_branch != "main":
+              raise RuntimeError("trusted publication branch must be main")
 
           counters = {
               "malformed": 0,
@@ -261,6 +303,37 @@ jobs:
           }
           previous_payloads = {}
           expected_registrations = {}
+          previous_registrations = {}
+          registration_sources = {}
+          max_stage_json_bytes = 2_097_152
+
+          def reject_json_constant(value: str):
+              raise ValueError(f"unsupported JSON constant: {value}")
+
+          def reject_duplicate_keys(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError(f"duplicate JSON key: {key!r}")
+                  result[key] = value
+              return result
+
+          def load_source_payload(source_path: Path):
+              if source_path.is_symlink() or not source_path.is_file():
+                  raise ValueError("source is not a regular file")
+              source_bytes = source_path.read_bytes()
+              if not source_bytes or len(source_bytes) > max_stage_json_bytes:
+                  raise ValueError(
+                      f"source has unsupported size {len(source_bytes)}"
+                  )
+              payload = json.loads(
+                  source_bytes,
+                  object_pairs_hook=reject_duplicate_keys,
+                  parse_constant=reject_json_constant,
+              )
+              if not isinstance(payload, dict):
+                  raise ValueError("source JSON must contain an object")
+              return payload, source_bytes
 
           def write_canonical(
               source_path: Path,
@@ -268,27 +341,25 @@ jobs:
               counter_key: str,
           ) -> None:
               try:
-                  payload = json.loads(source_path.read_text())
+                  payload, source_bytes = load_source_payload(source_path)
               except Exception:
                   print(f"⚠️ Skipping malformed result artifact: {source_path}")
                   counters["malformed"] += 1
                   return
 
               metadata = payload.get("metadata")
-              if metadata is None:
+              if not isinstance(metadata, dict):
                   metadata = {}
-                  payload["metadata"] = metadata
               canonical = catalog.from_metadata(
                   metadata,
                   fallback_stem=source_path.stem,
                   source_label=str(source_path),
               )
-              metadata["package_slug"] = canonical
               target_path = destinations.claim(
                   canonical,
                   source_label=str(source_path),
               )
-              target_path.write_text(json.dumps(payload, indent=2) + "\n")
+              target_path.write_bytes(source_bytes)
               counters[counter_key] += 1
               if counter_key == "previous":
                   previous_payloads[canonical] = payload
@@ -305,6 +376,44 @@ jobs:
               write_canonical(source, candidate_destinations, "candidate")
 
           job_cache = {}
+          run_cache = {}
+          ancestry_cache = {}
+          terminal_job_conclusions = {
+              "success",
+              "failure",
+              "cancelled",
+              "timed_out",
+              "neutral",
+              "skipped",
+              "action_required",
+              "stale",
+              "startup_failure",
+          }
+
+          def fetch_run(run_id: str):
+              if run_id in run_cache:
+                  return run_cache[run_id]
+              if not gh_token or not github_repository:
+                  run_cache[run_id] = {}
+                  return {}
+              try:
+                  raw = subprocess.check_output(
+                      [
+                          "gh",
+                          "api",
+                          f"repos/{github_repository}/actions/runs/{run_id}",
+                      ],
+                      text=True,
+                      timeout=30,
+                      env={**os.environ, "GH_TOKEN": gh_token},
+                  )
+                  run = json.loads(raw)
+                  if not isinstance(run, dict):
+                      run = {}
+              except Exception:
+                  run = {}
+              run_cache[run_id] = run
+              return run
 
           def fetch_jobs(run_id: str):
               if run_id in job_cache:
@@ -320,6 +429,7 @@ jobs:
                           f"repos/{github_repository}/actions/runs/{run_id}/jobs?per_page=100",
                       ],
                       text=True,
+                      timeout=30,
                       env={**os.environ, "GH_TOKEN": gh_token},
                   )
                   jobs = json.loads(raw).get("jobs", [])
@@ -328,28 +438,124 @@ jobs:
               job_cache[run_id] = jobs
               return jobs
 
-          def resolve_expected_job(run_id: str, job_name: str, slug: str):
+          def is_trusted_publication_commit(commit_sha: str) -> bool:
+              if commit_sha in ancestry_cache:
+                  return ancestry_cache[commit_sha]
+              trusted = False
+              if gh_token and github_repository and trusted_publication_branch:
+                  try:
+                      raw = subprocess.check_output(
+                          [
+                              "gh",
+                              "api",
+                              (
+                                  f"repos/{github_repository}/compare/"
+                                  f"{commit_sha}...{trusted_publication_branch}"
+                              ),
+                          ],
+                          text=True,
+                          timeout=30,
+                          env={**os.environ, "GH_TOKEN": gh_token},
+                      )
+                      comparison = json.loads(raw)
+                      merge_base = comparison.get("merge_base_commit") or {}
+                      trusted = (
+                          str(comparison.get("status") or "")
+                          in {"ahead", "identical"}
+                          and str(merge_base.get("sha") or "") == commit_sha
+                      )
+                  except Exception:
+                      trusted = False
+              ancestry_cache[commit_sha] = trusted
+              return trusted
+
+          def resolve_expected_job(
+              run_id: str,
+              run_attempt: str,
+              workflow_name: str,
+              job_name: str,
+              callee_job_name: str,
+          ):
               batch_run_url = f"{github_server}/{github_repository}/actions/runs/{run_id}" if github_repository else ""
+              expected_api_job_name = f"{job_name} / {callee_job_name}"
+              fallback = (
+                  batch_run_url,
+                  expected_api_job_name,
+                  "",
+                  "",
+                  "",
+                  "batch_run_fallback",
+              )
+              run = fetch_run(run_id)
+              repository = run.get("repository") or {}
+              head_repository = run.get("head_repository") or {}
+              expected_workflow_path = f".github/workflows/{workflow_name}"
+              observed_workflow_path = str(run.get("path") or "").split("@", 1)[0]
+              run_head_sha = str(run.get("head_sha") or "")
+              if (
+                  str(run.get("id") or "") != run_id
+                  or str(run.get("run_attempt") or "") != run_attempt
+                  or str(run.get("status") or "") != "completed"
+                  or str(run.get("event") or "") != "workflow_dispatch"
+                  or str(repository.get("full_name") or "") != github_repository
+                  or str(head_repository.get("full_name") or "") != github_repository
+                  or observed_workflow_path != expected_workflow_path
+                  or str(run.get("head_branch") or "")
+                  != trusted_publication_branch
+                  or re.fullmatch(r"[0-9a-f]{40}", run_head_sha) is None
+                  or not is_trusted_publication_commit(run_head_sha)
+              ):
+                  return fallback
               jobs = fetch_jobs(run_id)
               if not jobs:
-                  return batch_run_url, "batch_run_fallback"
+                  return fallback
               by_name = {}
               for job in jobs:
                   name = str(job.get("name") or "").strip()
                   html_url = str(job.get("html_url") or "").strip()
                   if name and html_url:
-                      by_name[name.lower()] = html_url
-              candidates = [
-                  job_name,
-                  f"{job_name} / {job_name}",
-                  f"test-{slug}",
-                  f"test-{slug} / test-{slug}",
-              ]
-              for candidate in candidates:
-                  url = by_name.get(candidate.lower())
-                  if url:
-                      return url, "central_exact"
-              return batch_run_url, "batch_run_fallback"
+                      by_name.setdefault(name.lower(), []).append(job)
+              matches = {}
+              for job in by_name.get(expected_api_job_name.lower(), []):
+                  url = str(job.get("html_url") or "").strip()
+                  matches[url] = job
+              if len(matches) == 1:
+                  url, job = next(iter(matches.items()))
+                  resolved_name = str(job.get("name") or "").strip()
+                  conclusion = str(job.get("conclusion") or "").strip()
+                  started_at = str(job.get("started_at") or "").strip()
+                  completed_at = str(job.get("completed_at") or "").strip()
+                  labels = job.get("labels")
+                  runner_group_id = job.get("runner_group_id")
+                  runner_group_name = str(job.get("runner_group_name") or "")
+                  if (
+                      str(job.get("run_id") or "") == run_id
+                      and str(job.get("run_attempt") or "") == run_attempt
+                      and str(job.get("status") or "") == "completed"
+                      and conclusion in terminal_job_conclusions
+                      and started_at
+                      and completed_at
+                      and str(job.get("head_sha") or "") == run_head_sha
+                      and isinstance(labels, list)
+                      and "ubuntu-24.04-arm" in labels
+                      and "self-hosted" not in labels
+                      and runner_group_id == 0
+                      and runner_group_name == "GitHub Actions"
+                      and re.fullmatch(
+                          rf"https://github\.com/{re.escape(github_repository)}"
+                          rf"/actions/runs/{re.escape(run_id)}/job/[1-9][0-9]*",
+                          url,
+                      )
+                  ):
+                      return (
+                          url,
+                          resolved_name,
+                          conclusion,
+                          started_at,
+                          completed_at,
+                          "central_exact",
+                      )
+              return fallback
 
           if batch_runs_path.exists():
               for raw_line in batch_runs_path.read_text().splitlines():
@@ -369,26 +575,120 @@ jobs:
                       uses = str((job_def or {}).get("uses") or "")
                       if uses.startswith("./.github/workflows/test-") and uses.endswith(".yml"):
                           stem = Path(uses).stem.replace("test-", "", 1)
+                          reusable_workflow_path = Path(
+                              uses.removeprefix("./")
+                          )
+                          if not reusable_workflow_path.is_file():
+                              raise ValueError(
+                                  f"reusable workflow is missing: {uses}"
+                              )
+                          reusable_workflow = (
+                              yaml.safe_load(
+                                  reusable_workflow_path.read_text()
+                              )
+                              or {}
+                          )
+                          reusable_jobs = (
+                              reusable_workflow.get("jobs") or {}
+                          )
+                          if len(reusable_jobs) != 1:
+                              raise ValueError(
+                                  f"reusable workflow must have one job: {uses}"
+                              )
+                          callee_job_name = next(iter(reusable_jobs))
                           slug = catalog.require(
                               stem,
                               label=f"{workflow_path}:{job_name} workflow slug",
                           )
                           registration = f"{workflow_path}:{job_name}"
-                          previous_registration = expected_registrations.get(slug)
+                          previous_registration = registration_sources.get(slug)
                           if previous_registration is not None:
                               raise ValueError(
                                   f"duplicate expected package_slug {slug!r} in "
                                   f"{previous_registration!r} and {registration!r}"
                               )
-                          expected_registrations[slug] = registration
-                          expected.append((slug, job_name))
+                          registration_sources[slug] = registration
+                          expected.append((slug, job_name, callee_job_name))
 
-                  for slug, job_name in expected:
+                  for slug, job_name, callee_job_name in expected:
+                      (
+                          run_url,
+                          resolved_job_name,
+                          job_conclusion,
+                          job_started_at,
+                          job_completed_at,
+                          resolution_state,
+                      ) = resolve_expected_job(
+                          str(run_id),
+                          "1",
+                          workflow_name,
+                          job_name,
+                          callee_job_name,
+                      )
+                      expected_registrations[slug] = {
+                          "batch_title": batch_title,
+                          "workflow_path": str(workflow_path),
+                          "run_id": str(run_id),
+                          "run_attempt": "1",
+                          "job_name": resolved_job_name,
+                          "job_url": run_url,
+                          "job_conclusion": job_conclusion,
+                          "job_started_at": job_started_at,
+                          "job_completed_at": job_completed_at,
+                          "resolution_status": resolution_state,
+                      }
+
+                      previous = previous_payloads.get(slug, {})
+                      previous_run = (
+                          previous.get("run")
+                          if isinstance(previous, dict)
+                          else None
+                      )
+                      if isinstance(previous_run, dict):
+                          previous_run_id = str(
+                              previous_run.get("id") or ""
+                          ).strip()
+                          previous_run_attempt = str(
+                              previous_run.get("attempt") or ""
+                          ).strip()
+                          if (
+                              re.fullmatch(r"[1-9][0-9]*", previous_run_id)
+                              and re.fullmatch(
+                                  r"[1-9][0-9]*", previous_run_attempt
+                              )
+                          ):
+                              (
+                                  previous_job_url,
+                                  previous_job_name,
+                                  previous_job_conclusion,
+                                  previous_job_started_at,
+                                  previous_job_completed_at,
+                                  previous_resolution_state,
+                              ) = resolve_expected_job(
+                                  previous_run_id,
+                                  previous_run_attempt,
+                                  workflow_name,
+                                  job_name,
+                                  callee_job_name,
+                              )
+                              if previous_resolution_state == "central_exact":
+                                  previous_registrations[slug] = {
+                                      "batch_title": batch_title,
+                                      "workflow_path": str(workflow_path),
+                                      "run_id": previous_run_id,
+                                      "run_attempt": previous_run_attempt,
+                                      "job_name": previous_job_name,
+                                      "job_url": previous_job_url,
+                                      "job_conclusion": previous_job_conclusion,
+                                      "job_started_at": previous_job_started_at,
+                                      "job_completed_at": previous_job_completed_at,
+                                      "resolution_status": "central_exact",
+                                  }
+
                       target_path = candidate_destinations.destination(slug)
                       if target_path.exists():
                           continue
 
-                      previous = previous_payloads.get(slug, {})
                       package = previous.get("package") or {}
                       metadata = previous.get("metadata") or {}
                       version = str((package.get("version") or "unknown")).strip() or "unknown"
@@ -396,7 +696,6 @@ jobs:
                       dashboard_link = str((metadata.get("dashboard_link") or f"/linux/opensource_packages/{slug}")).strip()
                       if dashboard_link.startswith("/opensource_packages/"):
                           dashboard_link = dashboard_link.replace("/opensource_packages/", "/linux/opensource_packages/", 1)
-                      run_url, resolution_state = resolve_expected_job(run_id, job_name, slug)
 
                       payload = {
                           "schema_version": "2.0",
@@ -414,7 +713,7 @@ jobs:
                                   "os": "ubuntu-24.04",
                                   "arch": "arm64",
                               },
-                              "job_name": f"{job_name} / {job_name}",
+                              "job_name": resolved_job_name,
                           },
                           "tests": {
                               "passed": 0,
@@ -445,6 +744,44 @@ jobs:
                       counters["candidate"] += 1
                       counters["synthesized"] += 1
 
+          candidate_slugs = {
+              path.stem for path in candidate_dir.glob("*.json")
+          }
+          previous_slugs = {
+              path.stem for path in previous_dir.glob("*.json")
+          }
+          staged_slugs = candidate_slugs | previous_slugs
+          if set(expected_registrations) != staged_slugs:
+              raise ValueError(
+                  "trusted registrations do not exactly cover staged rows: "
+                  f"missing={sorted(staged_slugs - set(expected_registrations))}, "
+                  f"unexpected={sorted(set(expected_registrations) - staged_slugs)}"
+              )
+          unresolved_registrations = sorted(
+              slug
+              for slug, registration in expected_registrations.items()
+              if registration["resolution_status"] != "central_exact"
+          )
+          if unresolved_registrations:
+              raise ValueError(
+                  "trusted GitHub job identity is unresolved for: "
+                  + ", ".join(unresolved_registrations)
+              )
+          (stage_root / "trusted-registrations.json").write_text(
+              json.dumps(
+                  {
+                      "schema": "arm-dashboard-summary-registration",
+                      "version": 2,
+                      "repository": github_repository,
+                      "registrations": expected_registrations,
+                      "previous_registrations": previous_registrations,
+                  },
+                  indent=2,
+                  sort_keys=True,
+              )
+              + "\n"
+          )
+
           candidate_count = len(list(candidate_dir.glob("*.json")))
           previous_count = len(list(previous_dir.glob("*.json")))
           metrics = Path(".summary-staging/assemble-metrics.env")
@@ -473,100 +810,27 @@ jobs:
           source .summary-staging/assemble-metrics.env
           echo "✅ Prepared ${candidate_count:-0} candidate staged result files and ${previous_count:-0} previous-production files."
 
-      - name: Validate candidate exact job URLs
+      - name: Validate candidate exact job identities
         if: steps.assemble.outcome == 'success' && steps.assemble.outputs.json_count != '0'
         id: normalize
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
           import json
-          import os
-          import re
-          import subprocess
           from pathlib import Path
 
           data_dir = Path(".summary-staging/candidate-test-results")
-          job_cache = {}
+          registration_manifest = json.loads(
+              Path(".summary-staging/trusted-registrations.json").read_text()
+          )
+          trusted_registrations = registration_manifest.get("registrations")
+          if not isinstance(trusted_registrations, dict):
+              raise ValueError("trusted registrations are unavailable")
           updated = 0
           unresolved = []
           duplicate_url_map = {}
           weak_urls = []
           blocked_slugs = {}
           exact_urls = 0
-
-          def normalize_runner(runner):
-              if isinstance(runner, dict):
-                  return runner
-
-              if not isinstance(runner, str):
-                  return runner
-
-              value = runner.strip()
-              lowered = value.lower()
-              known_suffixes = [
-                  ("-arm64", "arm64"),
-                  ("-aarch64", "arm64"),
-                  ("-amd64", "amd64"),
-                  ("-x86_64", "amd64"),
-                  ("-arm", "arm64"),
-              ]
-
-              for suffix, arch in known_suffixes:
-                  if lowered.endswith(suffix):
-                      os_value = value[: -len(suffix)]
-                      if os_value:
-                          return {"os": os_value, "arch": arch}
-
-              return {"os": value, "arch": "unknown"}
-
-          def load_jobs(run_id: str):
-              if run_id in job_cache:
-                  return job_cache[run_id]
-              try:
-                  raw = subprocess.check_output(
-                      [
-                          "gh",
-                          "api",
-                          f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run_id}/jobs?per_page=100",
-                      ],
-                      text=True,
-                  )
-                  jobs = json.loads(raw).get("jobs", [])
-              except Exception:
-                  jobs = []
-              job_cache[run_id] = jobs
-              return jobs
-
-          def resolve_job_url(run_id: str, package_slug: str, fallback_url: str) -> str:
-              jobs = load_jobs(run_id)
-              if not jobs:
-                  return fallback_url
-
-              slug = (package_slug or "").strip()
-              slug_candidates = {
-                  slug,
-                  slug.lower(),
-                  slug.replace("_", "-"),
-                  slug.replace("-", "_"),
-                  slug.lower().replace("_", "-"),
-                  slug.lower().replace("-", "_"),
-              }
-              expected_job_ids = {f"test-{candidate}".lower() for candidate in slug_candidates if candidate}
-
-              for job in jobs:
-                  name = (job.get("name") or "").strip()
-                  if not name:
-                      continue
-                  parts = [part.strip().lower() for part in name.split("/")]
-                  if "summary" in parts:
-                      continue
-                  if any(part in expected_job_ids for part in parts):
-                      html_url = (job.get("html_url") or "").strip()
-                      if html_url:
-                          return html_url
-
-              return fallback_url
 
           for json_path in sorted(list(data_dir.glob("*.json"))):
               try:
@@ -575,59 +839,69 @@ jobs:
                   weak_urls.append((json_path.name, "malformed_json", "malformed_json"))
                   continue
 
-              package_slug = (
-                  str((payload.get("metadata") or {}).get("package_slug") or "").strip()
-                  or json_path.stem
-              )
-              payload.setdefault("metadata", {})["package_slug"] = package_slug
-              run = payload.get("run") or {}
-              schema_changed = False
-              legacy_workflow_url = str(run.get("workflow_url") or "").strip()
-              run_id = str(run.get("id") or "").strip()
-              if not run_id and legacy_workflow_url:
-                  match = re.search(r"/actions/runs/(\d+)", legacy_workflow_url)
-                  if match:
-                      run_id = match.group(1)
-                      payload.setdefault("run", {})["id"] = run_id
-                      schema_changed = True
-
-              current_url = str(run.get("url") or "").strip()
-              if not current_url and legacy_workflow_url:
-                  current_url = legacy_workflow_url
-
-              if legacy_workflow_url:
-                  payload.setdefault("run", {}).pop("workflow_url", None)
-                  schema_changed = True
-
-              runner_value = run.get("runner")
-              normalized_runner = normalize_runner(runner_value)
-              runner_changed = normalized_runner != runner_value
-
-              if runner_changed:
-                  payload["run"]["runner"] = normalized_runner
-
-              if not run_id:
-                  weak_urls.append((json_path.name, "missing_run_id", current_url or "missing_run_id"))
-                  blocked_slugs[package_slug] = "missing_run_id"
-                  if runner_changed or schema_changed:
-                      json_path.write_text(json.dumps(payload, indent=2) + "\n")
-                      updated += 1
+              candidate_slug = json_path.stem
+              metadata = payload.get("metadata")
+              run = payload.get("run")
+              registration = trusted_registrations.get(candidate_slug)
+              if (
+                  not isinstance(metadata, dict)
+                  or not isinstance(run, dict)
+                  or not isinstance(registration, dict)
+              ):
+                  reason = "trusted_registration_or_candidate_shape_missing"
+                  blocked_slugs[candidate_slug] = reason
+                  weak_urls.append((json_path.name, "missing", reason))
+                  unresolved.append(
+                      f"{json_path.name}\tmissing\t{candidate_slug}"
+                  )
                   continue
 
-              exact_url = resolve_job_url(run_id, package_slug, current_url)
-              if exact_url != current_url or runner_changed or schema_changed:
-                  payload["run"]["url"] = exact_url
-                  json_path.write_text(json.dumps(payload, indent=2) + "\n")
-                  updated += 1
+              package_slug = str(metadata.get("package_slug") or "").strip()
+              run_id = str(run.get("id") or "").strip()
+              run_attempt = str(run.get("attempt") or "").strip()
+              current_url = str(run.get("url") or "").strip()
+              job_name = str(run.get("job_name") or "").strip()
+              batch_title = str(metadata.get("batch_title") or "").strip()
+              resolution_status = str(
+                  metadata.get("job_url_resolution_status") or ""
+              ).strip()
+              expected_run_id = registration["run_id"]
+              expected_attempt = registration["run_attempt"]
+              expected_url = registration["job_url"]
+              expected_job_name = registration["job_name"]
+              expected_batch_title = registration["batch_title"]
 
-              final_url = str((payload.get("run") or {}).get("url") or "").strip()
-              if re.search(r"/actions/runs/\d+/job/\d+$", final_url):
-                  exact_urls += 1
-                  duplicate_url_map.setdefault(final_url, []).append(json_path.stem)
-              else:
-                  weak_urls.append((json_path.name, run_id, final_url or "missing_url"))
-                  blocked_slugs[package_slug] = "job_url_unresolved"
-                  unresolved.append(f"{json_path.name}\t{run_id}\t{package_slug}")
+              mismatches = []
+              if package_slug != candidate_slug:
+                  mismatches.append("package_slug")
+              if run_id != expected_run_id:
+                  mismatches.append("run_id")
+              if run_attempt != expected_attempt:
+                  mismatches.append("run_attempt")
+              if current_url != expected_url:
+                  mismatches.append("job_url")
+              if job_name != expected_job_name:
+                  mismatches.append("job_name")
+              if batch_title != expected_batch_title:
+                  mismatches.append("batch_title")
+              if resolution_status != "central_exact":
+                  mismatches.append("resolution_status")
+
+              if mismatches:
+                  reason = "trusted_job_identity_mismatch:" + ",".join(mismatches)
+                  blocked_slugs[candidate_slug] = reason
+                  weak_urls.append(
+                      (json_path.name, run_id or "missing", current_url or reason)
+                  )
+                  unresolved.append(
+                      f"{json_path.name}\t{run_id or 'missing'}\t{candidate_slug}"
+                  )
+                  continue
+
+              exact_urls += 1
+              duplicate_url_map.setdefault(expected_url, []).append(
+                  candidate_slug
+              )
 
           duplicate_clusters = {
               url: slugs for url, slugs in duplicate_url_map.items() if len(slugs) > 1
@@ -664,7 +938,7 @@ jobs:
               + "\n"
           )
 
-          print(f"Normalized {updated} result URLs to exact job links.")
+          print(f"Validated {exact_urls} exact trusted job identities.")
           if weak_urls:
               print("Weak or unresolved result URLs:")
               for name, run_id, url in weak_urls[:50]:
@@ -685,173 +959,10 @@ jobs:
         if: steps.normalize.outcome == 'success' && steps.assemble.outputs.json_count != '0'
         id: promote
         run: |
-          python3 - <<'PY'
-          import json
-          import re
-          import shutil
-          from datetime import datetime, timezone
-          from pathlib import Path
-
-          stage_root = Path(".summary-staging")
-          previous_dir = stage_root / "previous-production-test-results"
-          candidate_dir = stage_root / "candidate-test-results"
-          publish_dir = stage_root / "publish-data-test-results"
-          publish_dir.mkdir(parents=True, exist_ok=True)
-
-          normalize_report_path = stage_root / "normalize-report.json"
-          normalize_report = {
-              "blocked_slugs": {},
-              "weak_urls": [],
-              "duplicate_clusters": {},
-              "unresolved": [],
-          }
-          if normalize_report_path.exists():
-              normalize_report = json.loads(normalize_report_path.read_text())
-
-          previous_payloads = {}
-          for json_path in sorted(previous_dir.glob("*.json")):
-              previous_payloads[json_path.stem] = json.loads(json_path.read_text())
-              shutil.copy2(json_path, publish_dir / json_path.name)
-
-          decisions = {}
-          promoted_count = 0
-          warning_count = 0
-
-          def as_int(value, default=0):
-              try:
-                  return int(str(value).strip())
-              except Exception:
-                  return default
-
-          def regression_detail(payload):
-              tests = payload.get("tests") or {}
-              for detail in tests.get("details") or []:
-                  name = str(detail.get("name") or "")
-                  if "Regression Validation" in name:
-                      return detail
-                  if any(key in detail for key in ("decision", "regression_result", "latest_version", "next_installed_version")):
-                      return detail
-              return {}
-
-          def normalize_payload_status(payload):
-              tests = payload.setdefault("tests", {})
-              metadata = payload.setdefault("metadata", {})
-              run = payload.setdefault("run", {})
-
-              passed = as_int(tests.get("passed"), 0)
-              failed = as_int(tests.get("failed"), 0)
-              skipped = as_int(tests.get("skipped"), 0)
-              core_failed = as_int(metadata.get("core_failed"), 0)
-
-              detail = regression_detail(payload)
-              regression_status = str(detail.get("status") or metadata.get("regression_status") or "").strip().lower()
-              regression_decision = str(detail.get("decision") or metadata.get("regression_decision") or "").strip()
-              regression_applicability = str(metadata.get("regression_applicability") or "").strip()
-              regression_reason = str(metadata.get("regression_reason") or "").strip()
-
-              safe_policy_skip = (
-                  regression_applicability == "not_applicable"
-                  and regression_reason == "package_manager_installed"
-              )
-              safe_regression_skip = safe_policy_skip or regression_decision in {
-                  "no_newer_stable_available",
-                  "not_applicable_package_manager",
-                  "package_manager_installed",
-                  "package_manager_regression_safe_skip",
-                  "current_is_latest_stable",
-                  "pinned_is_latest",
-                  "already_current",
-                  "already_at_latest",
-                  "at_latest",
-                  "current_is_latest",
-                  "metadata_review_required",
-                  "runtime_validation_not_automated",
-                  "bounded_runtime_deferred",
-                  "arm64_desktop_artifact_unavailable",
-                  "hold_current_arm_dependency_gap",
-              }
-              non_failing_regression = safe_regression_skip and regression_status in {"skipped", "deferred", "not_applicable"}
-
-              if core_failed == 0 and failed > 0 and non_failing_regression:
-                  failed = max(0, failed - 1)
-                  skipped += 1
-
-              tests["passed"] = passed
-              tests["failed"] = failed
-              tests["skipped"] = skipped
-
-              is_success = passed > 0 and failed == 0 and (skipped == 0 or safe_regression_skip)
-              run["status"] = "success" if is_success else "failure"
-              metadata["badge_status"] = "passing" if is_success else "failing"
-              if regression_status:
-                  metadata["regression_status"] = regression_status
-              if regression_decision:
-                  metadata["regression_decision"] = regression_decision
-
-          def candidate_publish_reason(slug, payload):
-              blocked_reason = (normalize_report.get("blocked_slugs") or {}).get(slug)
-              if blocked_reason:
-                  return blocked_reason
-
-              final_url = str((payload.get("run") or {}).get("url") or "").strip()
-              if not re.search(r"/actions/runs/\d+/job/\d+$", final_url):
-                  return "non_exact_job_url"
-              return ""
-
-          for json_path in sorted(candidate_dir.glob("*.json")):
-              slug = json_path.stem
-              payload = json.loads(json_path.read_text())
-              normalize_payload_status(payload)
-              reason = candidate_publish_reason(slug, payload)
-              metadata = payload.setdefault("metadata", {})
-              metadata["production_refreshed_at"] = datetime.now(timezone.utc).isoformat()
-
-              if not reason:
-                  metadata["publish_state"] = "published"
-                  (publish_dir / json_path.name).write_text(json.dumps(payload, indent=2) + "\n")
-                  decisions[slug] = {
-                      "state": "published",
-                      "reason": "candidate_validated",
-                  }
-                  promoted_count += 1
-                  continue
-
-              metadata["publish_state"] = "published_with_warning"
-              metadata["publish_warning"] = reason
-              (publish_dir / json_path.name).write_text(json.dumps(payload, indent=2) + "\n")
-              decisions[slug] = {
-                  "state": "published_with_warning",
-                  "reason": reason,
-              }
-              promoted_count += 1
-              warning_count += 1
-
-          report_payload = {
-              "generated_at": datetime.now(timezone.utc).isoformat(),
-              "candidate_count": len(list(candidate_dir.glob("*.json"))),
-              "previous_count": len(list(previous_dir.glob("*.json"))),
-              "published_count": len(list(publish_dir.glob("*.json"))),
-              "promoted_count": promoted_count,
-              "warning_count": warning_count,
-              "normalize": normalize_report,
-              "decisions": decisions,
-          }
-          (stage_root / "publish-report.json").write_text(
-              json.dumps(report_payload, indent=2, sort_keys=True) + "\n"
-          )
-          (stage_root / "publish-metrics.env").write_text(
-              "\n".join(
-                  [
-                      f"candidate_count={report_payload['candidate_count']}",
-                      f"previous_count={report_payload['previous_count']}",
-                      f"published_count={report_payload['published_count']}",
-                      f"promoted_count={promoted_count}",
-                      f"warning_count={warning_count}",
-                  ]
-              )
-              + "\n"
-          )
-          PY
+          python3 .github/scripts/promote_package_results.py \
+            --stage-root .summary-staging \
+            --validation-policy compatibility \
+            --repository "$GITHUB_REPOSITORY"
 
           cat .summary-staging/publish-metrics.env >> "$GITHUB_OUTPUT"
 
@@ -868,24 +979,8 @@ jobs:
             cp "$json_file" "test-results/${base}-test-results/${base}.json"
           done
 
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          data_dir = Path("data/test-results")
-          index_payload = {}
-
-          for json_path in sorted(data_dir.glob("*.json")):
-              try:
-                  index_payload[json_path.stem] = json.loads(json_path.read_text())
-              except Exception:
-                  continue
-
-          Path("data/test-results-index.json").write_text(
-              json.dumps(index_payload, indent=2, sort_keys=True) + "\n"
-          )
-          print(f"Wrote canonical test-results index for {len(index_payload)} packages.")
-          PY
+          cp .summary-staging/publish-index.json \
+            data/test-results-index.json
 
       - name: Generate global summary
         run: |
@@ -903,7 +998,7 @@ jobs:
           echo "| Exact candidate job URLs resolved | ${{ steps.normalize.outputs.exact_url_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Candidate rows with weak URLs | ${{ steps.normalize.outputs.weak_url_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Candidate rows promoted to production | ${{ steps.promote.outputs.promoted_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Candidate rows published with warnings | ${{ steps.promote.outputs.warning_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Prior rows retained for blocked candidates | ${{ steps.promote.outputs.warning_count || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           TOTAL=0
@@ -950,7 +1045,7 @@ jobs:
               FAILED_COUNT=$(jq -r '.tests.failed' "$json_file")
               SKIPPED_COUNT=$(jq -r '.tests.skipped // 0' "$json_file")
               TOTAL_TESTS=$((PASSED_COUNT + FAILED_COUNT + SKIPPED_COUNT))
-              REGRESSION_ENTRY=$(jq -c '.tests.details[]? | select(.name == "Test 6 - Regression Validation" or .name == "Regression Validation")' "$json_file" | head -n 1)
+              REGRESSION_ENTRY=$(jq -c '[.tests.details[]? | select(.name == "Test 6 - Regression Validation" or .name == "Regression Validation")] | .[0] // empty' "$json_file")
               REGRESSION_APPLICABILITY=$(jq -r '.metadata.regression_applicability // ""' "$json_file")
               REGRESSION_REASON=$(jq -r '.metadata.regression_reason // ""' "$json_file")
               REGRESSION_NOTE=$(jq -r '.metadata.regression_note // ""' "$json_file" | tr '\n' ' ' | sed 's/|/\\|/g')
@@ -1023,7 +1118,7 @@ jobs:
                   next_install_validated|next_bundle_validated|next_image_validated|limited_cpu_smoke_validated|safe_to_upgrade)
                     REGRESSION_CLASS="passed"
                     ;;
-                  metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|no_newer_stable_available|manual_review_needed|not_applicable_package_manager|hold_current_arm_dependency_gap|not_configured|baseline_failed|baseline_install_failed|runtime_validation_not_automated|bounded_runtime_deferred|arm64_desktop_artifact_unavailable)
+                  metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|no_newer_stable_available|manual_review_needed|not_applicable_package_manager|hold_current_arm_dependency_gap|not_configured|baseline_failed|baseline_install_failed|runtime_validation_not_automated|runtime_validation_infrastructure_failure|bounded_runtime_deferred|arm64_desktop_artifact_unavailable)
                     REGRESSION_CLASS="deferred"
                     ;;
                   *)
@@ -1086,6 +1181,9 @@ jobs:
                       ;;
                     runtime_validation_not_automated)
                       REGRESSION_RESULT="Package-specific runtime validation is not automated"
+                      ;;
+                    runtime_validation_infrastructure_failure)
+                      REGRESSION_RESULT="Next-version validation deferred after a transient infrastructure failure"
                       ;;
                     baseline_failed|baseline_install_failed)
                       REGRESSION_RESULT="Regression validation deferred because baseline install or core smoke checks failed"
@@ -1224,22 +1322,30 @@ jobs:
           }}
         id: publication_base
         env:
-          EXPECTED_BRANCH: ${{ github.ref_name }}
+          EXPECTED_BRANCH: ${{ env.TRUSTED_PUBLICATION_BRANCH }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_REF_NAME: ${{ github.ref_name }}
           WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          [[ "$EXPECTED_BRANCH" == "main" ]]
+          [[ "$WORKFLOW_REF" == "refs/heads/${EXPECTED_BRANCH}" ]]
+          [[ "$WORKFLOW_REF_NAME" == "$EXPECTED_BRANCH" ]]
           actual_sha="$(git rev-parse HEAD)"
+          [[ "$EXPECTED_SHA" == "$WORKFLOW_SHA" ]]
+          [[ "$actual_sha" == "$WORKFLOW_SHA" ]]
           git fetch --no-tags origin \
             "+refs/heads/${EXPECTED_BRANCH}:refs/remotes/origin/${EXPECTED_BRANCH}"
           remote_sha="$(git rev-parse "refs/remotes/origin/${EXPECTED_BRANCH}^{commit}")"
+          [[ "$remote_sha" == "$WORKFLOW_SHA" ]]
           python3 .github/scripts/orchestration_contract.py validate-base \
             --expected-sha "$EXPECTED_SHA" \
             --workflow-sha "$WORKFLOW_SHA" \
             --checkout-sha "$actual_sha" \
             --remote-sha "$remote_sha"
 
-      - name: Open or update aggregated test-results review PR
+      - name: Package exact generated test-results artifact
         if: >-
           ${{
             success() &&
@@ -1250,18 +1356,165 @@ jobs:
             steps.publication_base.outcome == 'success' &&
             steps.assemble.outputs.json_count != '0'
           }}
+        id: package_generated_data
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$RUNNER_TEMP/generated-test-results"
+          python3 .github/scripts/generated_test_results_artifact.py pack \
+            --repository "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/generated-test-results/generated-test-results.json" \
+            --base-sha "${{ steps.generated_data_base.outputs.sha }}" \
+            >> "$GITHUB_OUTPUT"
+          artifact_name="generated-test-results-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'artifact_name=%s\n' "$artifact_name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload exact generated test-results artifact
+        if: >-
+          ${{
+            steps.package_generated_data.outcome == 'success' &&
+            steps.package_generated_data.outputs.artifact_name != '' &&
+            steps.package_generated_data.outputs.artifact_sha256 != ''
+          }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.package_generated_data.outputs.artifact_name }}
+          path: ${{ runner.temp }}/generated-test-results/generated-test-results.json
+          if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 0
+          retention-days: 1
+
+  publish-generated-data:
+    name: Open generated test-results draft PR
+    needs: global-summary
+    if: >-
+      ${{
+        needs.global-summary.result == 'success' &&
+        needs.global-summary.outputs.artifact_name != '' &&
+        needs.global-summary.outputs.artifact_sha256 != ''
+      }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    environment: generated-data-delivery
+    permissions:
+      contents: read
+    steps:
+      - name: Reject an untrusted publication ref
+        env:
+          EXPECTED_BRANCH: ${{ env.TRUSTED_PUBLICATION_BRANCH }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_REF_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_BRANCH" == "main" ]]
+          [[ "$WORKFLOW_REF" == "refs/heads/${EXPECTED_BRANCH}" ]]
+          [[ "$WORKFLOW_REF_NAME" == "$EXPECTED_BRANCH" ]]
+
+      - name: Reject a missing or malformed App bot login
+        env:
+          DASHBOARD_DELIVERY_APP_BOT_LOGIN: ${{ vars.DASHBOARD_DELIVERY_APP_BOT_LOGIN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+
+          login = os.environ.get("DASHBOARD_DELIVERY_APP_BOT_LOGIN", "")
+          pattern = re.compile(
+              r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,98}[A-Za-z0-9])?\[bot\]$"
+          )
+          if not pattern.fullmatch(login) or login.casefold() == "github-actions[bot]":
+              raise SystemExit("DASHBOARD_DELIVERY_APP_BOT_LOGIN is missing or malformed")
+          PY
+
+      - name: Check out the exact generated-data base without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.global-summary.outputs.base_sha }}
+
+      - name: Download the exact generated test-results artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.global-summary.outputs.artifact_name }}
+          path: ${{ runner.temp }}/generated-test-results-download
+          digest-mismatch: error
+
+      - name: Validate and restore only generated test-results data
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/generated_test_results_artifact.py restore \
+            --repository "$GITHUB_WORKSPACE" \
+            --artifact-directory "$RUNNER_TEMP/generated-test-results-download" \
+            --expected-base-sha "${{ needs.global-summary.outputs.base_sha }}" \
+            --expected-artifact-sha256 \
+              "${{ needs.global-summary.outputs.artifact_sha256 }}"
+
+      - name: Mint short-lived Dashboard Delivery App token
+        id: delivery_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.DASHBOARD_DELIVERY_APP_ID }}
+          private-key: ${{ secrets.DASHBOARD_DELIVERY_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-metadata: read
+          permission-pull-requests: write
+
+      - name: Bind configured bot login to minted App identity
+        env:
+          CONFIGURED_BOT_LOGIN: ${{ vars.DASHBOARD_DELIVERY_APP_BOT_LOGIN }}
+          MINTED_APP_SLUG: ${{ steps.delivery_token.outputs.app-slug }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+
+          configured = os.environ.get("CONFIGURED_BOT_LOGIN", "")
+          app_slug = os.environ.get("MINTED_APP_SLUG", "")
+          if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?", app_slug):
+              raise SystemExit("minted Dashboard Delivery App slug is missing or malformed")
+          minted_bot_login = f"{app_slug}[bot]"
+          if configured.casefold() != minted_bot_login.casefold():
+              raise SystemExit(
+                  "configured Dashboard Delivery App bot login does not match minted App"
+              )
+          PY
+
+      - name: Reverify exact generated bytes after credential minting
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/generated_test_results_artifact.py verify-restored \
+            --repository "$GITHUB_WORKSPACE" \
+            --artifact-directory "$RUNNER_TEMP/generated-test-results-download" \
+            --expected-base-sha "${{ needs.global-summary.outputs.base_sha }}" \
+            --expected-artifact-sha256 \
+              "${{ needs.global-summary.outputs.artifact_sha256 }}"
+
+      - name: Open or update aggregated test-results review PR
         id: generated_data_review
         uses: ./.github/actions/publish-generated-data-pr
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.delivery_token.outputs.token }}
         with:
           producer: global-test-results
-          base-branch: ${{ github.ref_name }}
-          expected-base-sha: ${{ steps.generated_data_base.outputs.sha }}
-          head-branch: automation/generated-data/global-test-results/${{ github.ref_name }}
+          base-branch: ${{ env.TRUSTED_PUBLICATION_BRANCH }}
+          expected-base-sha: ${{ needs.global-summary.outputs.base_sha }}
+          head-branch: automation/generated-data/global-test-results/${{ env.TRUSTED_PUBLICATION_BRANCH }}/${{ needs.global-summary.outputs.base_sha }}
           title: Update generated Arm64 test results
           commit-message: Update generated Arm64 test results
           paths: |
             data/test-results-index.json
             data/test-results/
           required-tracked-paths: data/test-results-index.json
+          expected-pr-author-login: ${{ vars.DASHBOARD_DELIVERY_APP_BOT_LOGIN }}
+          credential-source: github-app

@@ -92,7 +92,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"core_failed": 402, "duration": 3, "skipped": 726},
+            {"core_failed": 402, "duration": 3, "skipped": 725},
             {
                 key: len(value)
                 for key, value in remediation["missing_summary_outputs"].items()
@@ -103,7 +103,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             len(remediation["package_manager_missing_explicit_skip_counter"]),
         )
         self.assertEqual(79, len(remediation["package_manager_non_skipped_status"]))
-        self.assertEqual(287, len(remediation["literal_pair_contradictions"]))
+        self.assertEqual(286, len(remediation["literal_pair_contradictions"]))
         self.assertEqual(21, len(remediation["no_literal_decision"]))
         self.assertEqual(
             326, len(remediation["package_manager_summary_omits_test6"])
@@ -169,12 +169,14 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual([], remediation["invalid_strict_batch_collector"])
         self.assertEqual(
             [
+                "all_registered_workflows_emit_strict_observations",
+                "strict_collector_shadow_validation",
                 "native_arm64_shadow_validation",
                 "supply_chain_lock_reseal_after_workflow_bytes_stabilize",
             ],
             self.report["required_activation_gates"],
         )
-        self.assertEqual(10, len(self.report["audited_source_digests"]))
+        self.assertEqual(12, len(self.report["audited_source_digests"]))
         self.assertTrue(
             all(
                 len(digest) == 64
@@ -188,7 +190,6 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         with self.assertRaises(audit.AuditError):
             audit.report_is_activation_ready(candidate)
 
-
     def test_report_is_canonical_json_without_absolute_paths(self) -> None:
         encoded = audit.canonical_json(self.report)
         self.assertEqual(self.report, json.loads(encoded))
@@ -197,7 +198,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "881420fd31d45dd6ad28cf3fc8ad0d7b99a48b809e781a37276d64cf63f165cd",
+            "5270bf8cf86bbd6bb9d0420de8d420777b695db4d080563fab380d88977e42b5",
             digest,
         )
 

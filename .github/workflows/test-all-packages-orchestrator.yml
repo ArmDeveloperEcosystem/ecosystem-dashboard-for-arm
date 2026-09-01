@@ -14,14 +14,6 @@ on:
     # Weekly main-branch validation run: Friday night in US Central time.
     # 03:00 UTC Saturday is 10 PM CDT / 9 PM CST Friday.
     - cron: '0 3 * * 6'
-  push:
-    branches:
-      - main
-      - smoke_tests
-    paths:
-      - 'content/linux/opensource_packages/*.md'
-      - 'content/opensource_packages/*.md'
-      - '.github/workflows/*.yml'
 
 jobs:
   orchestrate-batches:
@@ -174,6 +166,7 @@ jobs:
           set -euo pipefail
           helper=".github/scripts/orchestration_contract.py"
           manifest=".orchestration/run-manifest.json"
+          failed_batches=()
 
           for i in {1..22}; do
             WORKFLOW="test-all-packages-batch${i}.yml"
@@ -212,7 +205,12 @@ jobs:
               IFS=$'\t' read -r STATUS CONCLUSION <<< "$state"
               if [[ "$STATUS" == "completed" ]]; then
                 completed=true
-                echo "$WORKFLOW completed with conclusion $CONCLUSION; package failure remains valid batch evidence."
+                if [[ "$CONCLUSION" == "success" ]]; then
+                  echo "$WORKFLOW completed successfully."
+                else
+                  echo "$WORKFLOW run $RUN_ID completed with conclusion ${CONCLUSION:-unknown}."
+                  failed_batches+=("$WORKFLOW run $RUN_ID concluded ${CONCLUSION:-unknown}")
+                fi
                 break
               fi
               echo "$WORKFLOW run $RUN_ID is $STATUS (attempt $attempt/330)."
@@ -224,6 +222,12 @@ jobs:
               exit 1
             fi
           done
+
+          if [[ "${#failed_batches[@]}" -gt 0 ]]; then
+            echo "One or more captured batch runs failed:"
+            printf ' - %s\n' "${failed_batches[@]}"
+            exit 1
+          fi
 
       - name: Dispatch exact global summary
         env:
@@ -238,10 +242,73 @@ jobs:
             "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
           remote_sha="$(git rev-parse "refs/remotes/origin/${BRANCH}^{commit}")"
           [[ "$remote_sha" == "$EXPECTED_SHA" ]]
+          summary_nonce_file=".orchestration/summary-dispatch-nonce"
+          summary_registration_payload=".orchestration/summary-registration.json"
+          summary_run_payload=".orchestration/summary-run.json"
+          python3 "$helper" generate-dispatch-nonce \
+            --output "$summary_nonce_file"
           python3 "$helper" summary-dispatch-payload \
             --manifest .orchestration/run-manifest.json \
             --ref "$BRANCH" \
+            --dispatch-nonce-file "$summary_nonce_file" \
             --output .orchestration/summary-dispatch.json
+          summary_endpoint="$(python3 "$helper" summary-runs-endpoint \
+            --branch "$BRANCH" \
+            --expected-sha "$EXPECTED_SHA" \
+            --repository "$REPOSITORY")"
           gh api --method POST \
             "repos/${REPOSITORY}/actions/workflows/test-all-packages-summary.yml/dispatches" \
             --input .orchestration/summary-dispatch.json
+
+          summary_run_id=""
+          for attempt in {1..18}; do
+            if gh api --paginate --slurp "$summary_endpoint" > "$summary_registration_payload"; then
+              summary_run_id="$(python3 "$helper" select-summary-registration \
+                --payload "$summary_registration_payload" \
+                --manifest .orchestration/run-manifest.json \
+                --dispatch-nonce-file "$summary_nonce_file" \
+                --expected-sha "$EXPECTED_SHA" \
+                --branch "$BRANCH" \
+                --repository "$REPOSITORY")"
+              if [[ -n "$summary_run_id" ]]; then
+                break
+              fi
+            fi
+            echo "Exact Global Summary run is not visible yet (attempt $attempt/18)."
+            sleep 10
+          done
+
+          if [[ -z "$summary_run_id" ]]; then
+            echo "No exact Global Summary run registered for ${EXPECTED_SHA} on ${BRANCH}."
+            exit 1
+          fi
+
+          echo "Tracking Global Summary run $summary_run_id."
+          for attempt in {1..120}; do
+            gh api \
+              "repos/${REPOSITORY}/actions/runs/${summary_run_id}" \
+              > "$summary_run_payload"
+            run_state="$(python3 "$helper" validate-summary-run \
+              --payload "$summary_run_payload" \
+              --manifest .orchestration/run-manifest.json \
+              --dispatch-nonce-file "$summary_nonce_file" \
+              --expected-sha "$EXPECTED_SHA" \
+              --branch "$BRANCH" \
+              --repository "$REPOSITORY" \
+              --expected-run-id "$summary_run_id" \
+              --allow-incomplete)"
+            IFS=$'\t' read -r STATUS CONCLUSION <<< "$run_state"
+            if [[ "$STATUS" == "completed" ]]; then
+              if [[ "$CONCLUSION" != "success" ]]; then
+                echo "Global Summary run $summary_run_id completed with conclusion ${CONCLUSION:-unknown}."
+                exit 1
+              fi
+              echo "Global Summary completed successfully."
+              exit 0
+            fi
+            echo "Global Summary run $summary_run_id is $STATUS (attempt $attempt/120)."
+            sleep 30
+          done
+
+          echo "Global Summary run $summary_run_id did not complete within the bounded wait."
+          exit 1

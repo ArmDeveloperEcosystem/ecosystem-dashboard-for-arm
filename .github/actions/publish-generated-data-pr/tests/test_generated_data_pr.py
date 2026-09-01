@@ -769,6 +769,25 @@ class GeneratedDataPublisherTests(unittest.TestCase):
 
         self.assertIsNone(self._remote_head_sha())
 
+    def test_rejects_python_bytecode_outside_the_allowlist(self) -> None:
+        worktree = self._clone("unexpected-python-bytecode")
+        (worktree / "data/generated.yml").write_text(
+            "value: proposed\n",
+            encoding="utf-8",
+        )
+        cache = worktree / ".github/scripts/__pycache__"
+        cache.mkdir(parents=True)
+        (cache / "orchestration_contract.cpython-312.pyc").write_bytes(b"pyc")
+
+        with self.assertRaisesRegex(PublishError, "outside the generated-data allowlist"):
+            publish_generated_data(
+                self._config(),
+                repository_root=worktree,
+                github=self.github,
+            )
+
+        self.assertIsNone(self._remote_head_sha())
+
     def test_allows_new_regular_files_only_inside_an_allowlisted_directory(self) -> None:
         worktree = self._clone("allowlisted-new-file")
         results = worktree / "data/results"
@@ -976,6 +995,12 @@ class FoundationContractTests(unittest.TestCase):
         self.assertIn("python3 -m unittest discover", workflow)
         self.assertIn("actionlint_", workflow)
         self.assertIn("_linux_arm64.tar.gz", workflow)
+        for covered_path in (
+            ".github/scripts/generated_test_results_artifact.py",
+            ".github/GLOBAL_TEST_SUMMARY_DELIVERY.md",
+            ".github/workflows/test-all-packages-summary.yml",
+        ):
+            self.assertIn(covered_path, workflow)
         self.assertIn(
             "325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6",
             workflow,
@@ -989,12 +1014,13 @@ class FoundationContractTests(unittest.TestCase):
             self.assertEqual(separator, "@")
             self.assertRegex(revision, r"^[0-9a-f]{40}$")
 
-    def test_readme_declares_dormant_least_privilege_foundation(self) -> None:
+    def test_readme_declares_least_privilege_integration_contract(self) -> None:
         readme = (ACTION_ROOT / "README.md").read_text(encoding="utf-8")
 
-        self.assertIn("No existing", readme)
-        self.assertIn("production workflow invokes it", readme)
-        self.assertIn("does not change repository", readme)
+        self.assertIn("shared publisher foundation", readme)
+        self.assertIn("Each caller must isolate", readme)
+        self.assertIn("Global Test Summary workflow", readme)
+        self.assertIn("cannot change repository permissions", readme)
         self.assertIn("Generation and publication should be separate jobs", readme)
         self.assertIn("contents: read", readme)
         self.assertIn("short-lived credential", readme)

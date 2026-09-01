@@ -1347,6 +1347,7 @@ def audit_repository(repository_root: Path) -> dict[str, Any]:
 
     critical_sources = (
         ".github/actions/collect-batch-results/action.yml",
+        ".github/actions/collect-batch-results-v2/action.yml",
         ".github/actions/emit-package-observation/action.yml",
         ".github/actions/emit-package-result/action.yml",
         ".github/actions/generic-source-regression-check/action.yml",
@@ -1356,6 +1357,7 @@ def audit_repository(repository_root: Path) -> dict[str, Any]:
         ".github/scripts/package_observation_migration_audit.py",
         ".github/scripts/package_observation.py",
         ".github/scripts/package_result_policy.py",
+        ".github/scripts/promote_package_results.py",
     )
     existing_critical_sources = list(critical_sources)
     strict_batch_action_path = _local_action_path(root, strict_batch_action)
@@ -1489,6 +1491,8 @@ def audit_repository(repository_root: Path) -> dict[str, Any]:
         "decision_token_counts": dict(sorted(decision_token_counts.items())),
         "fallback_counts": dict(sorted(fallback_counts.items())),
         "required_activation_gates": [
+            "all_registered_workflows_emit_strict_observations",
+            "strict_collector_shadow_validation",
             "native_arm64_shadow_validation",
             "supply_chain_lock_reseal_after_workflow_bytes_stabilize",
         ],

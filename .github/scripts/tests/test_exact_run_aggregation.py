@@ -353,6 +353,7 @@ jobs:
             }
             if index == 6:
                 detail["decision"] = regression_decision
+                detail["regression_result"] = "Exact Test 6 outcome recorded with explicit evidence."
             details.append(detail)
         return {
             "schema_version": "2.0",
@@ -511,7 +512,7 @@ class ExactRunAggregationTests(unittest.TestCase):
         payload = contract.topology_payload(topology)
         self.assertEqual(payload["over_capacity_batches"], [])
         self.assertEqual(payload["target_packages_per_batch"], 45)
-        self.assertEqual(len(payload["external_actions"]), 18)
+        self.assertEqual(len(payload["external_actions"]), 19)
         self.assertEqual(len(payload["local_actions"]), 7)
 
     def test_topology_rejects_unregistered_and_commented_out_contracts(self) -> None:
@@ -887,6 +888,8 @@ class ExactRunAggregationTests(unittest.TestCase):
                 "    runs-on: ubuntu-24.04-arm\n",
                 (
                     "    runs-on: ubuntu-24.04-arm\n"
+                    "    env:\n"
+                    f"      PINNED_CONTAINER_IMAGE_TOOL: tool@sha256:{'d' * 64}\n"
                     "    container:\n"
                     "      image: ubuntu:latest\n"
                     "    services:\n"
@@ -900,6 +903,9 @@ class ExactRunAggregationTests(unittest.TestCase):
         payload = contract.topology_payload(topology)
         self.assertIn("docker://ubuntu:latest", payload["mutable_external_actions"])
         self.assertIn(f"docker://redis@sha256:{'c' * 64}", payload["external_actions"])
+        self.assertIn(
+            f"docker://tool@sha256:{'d' * 64}", payload["external_actions"]
+        )
         candidate = copy.deepcopy(self.fixture.manifest)
         candidate["topology_sha256"] = contract.topology_sha256(topology)
         with self.assertRaises(contract.ContractError):
@@ -1546,6 +1552,13 @@ class ExactRunAggregationTests(unittest.TestCase):
         )
         cases.append(not_applicable_but_applicable)
 
+        missing_regression_result = self.fixture.result(1)
+        missing_regression_result["tests"]["details"][5].pop("regression_result")
+        cases.append(missing_regression_result)
+
+        placeholder_regression_result = self.fixture.result(1)
+        placeholder_regression_result["tests"]["details"][5]["regression_result"] = "passed"
+        cases.append(placeholder_regression_result)
         missing_detail_decision = self.fixture.result(1)
         missing_detail_decision["tests"]["details"][5].pop("decision")
         cases.append(missing_detail_decision)

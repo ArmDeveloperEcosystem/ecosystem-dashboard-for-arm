@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -21,23 +22,29 @@ from orchestration_contract import (  # noqa: E402
     canonical_json,
     expected_artifact,
     expected_run_name,
+    expected_summary_run_name,
     expected_workflow,
     expected_workflow_name,
     expected_workflow_path,
     generate_dispatch_nonce,
     select_exact_registration,
+    select_exact_summary_registration,
     validate_dispatch_nonce,
     validate_artifacts,
     validate_manifest,
     validate_manifest_text,
     validate_run,
     validate_sha_binding,
+    validate_summary_dispatch,
+    validate_summary_run,
 )
 
 ORCHESTRATION_ID = "orchestration-123456-2"
 EXPECTED_SHA = "a" * 40
 BRANCH = "main"
 REPOSITORY = "example/dashboard"
+SUMMARY_RUN_ID = 30_001
+SUMMARY_NONCE = "f" * 64
 
 
 def nonce_for(batch: int) -> str:
@@ -83,6 +90,31 @@ def run_payload(
             batch,
             ORCHESTRATION_ID,
             nonce_for(batch),
+        ),
+        "event": "workflow_dispatch",
+        "head_branch": BRANCH,
+        "head_sha": EXPECTED_SHA,
+        "status": status,
+        "conclusion": conclusion,
+        "repository": {"full_name": REPOSITORY},
+    }
+
+
+def summary_run_payload(
+    *,
+    run_id: int = SUMMARY_RUN_ID,
+    dispatch_nonce: str = SUMMARY_NONCE,
+    status: str = "completed",
+    conclusion: str | None = "success",
+) -> dict[str, object]:
+    return {
+        "id": run_id,
+        "run_attempt": 1,
+        "name": "Global Test Summary (All Batches)",
+        "path": ".github/workflows/test-all-packages-summary.yml",
+        "display_title": expected_summary_run_name(
+            ORCHESTRATION_ID,
+            dispatch_nonce,
         ),
         "event": "workflow_dispatch",
         "head_branch": BRANCH,
@@ -265,6 +297,10 @@ class ManifestContractTests(unittest.TestCase):
             records_path = root / "records.json"
             nonce_path = root / "nonce"
             dispatch_path = root / "dispatch.json"
+            manifest_path = root / "manifest.json"
+            summary_dispatch_path = root / "summary-dispatch.json"
+            summary_registration_path = root / "summary-registration.json"
+            summary_run_path = root / "summary-run.json"
 
             def run(*arguments: str) -> subprocess.CompletedProcess[str]:
                 return subprocess.run(
@@ -333,6 +369,138 @@ class ManifestContractTests(unittest.TestCase):
             bound = json.loads(records_path.read_text(encoding="utf-8"))
             self.assertEqual(bound[0]["run_id"], 10_001)
             self.assertEqual(bound[0]["run_attempt"], 1)
+
+            manifest_path.write_text(canonical_json(manifest()), encoding="utf-8")
+            summary_nonce_path = root / "summary-nonce"
+            run(
+                "generate-dispatch-nonce",
+                "--output",
+                str(summary_nonce_path),
+            )
+            summary_nonce = summary_nonce_path.read_text(encoding="ascii")
+            self.assertEqual(validate_dispatch_nonce(summary_nonce), summary_nonce)
+
+            summary_name = run(
+                "summary-run-name",
+                "--orchestration-id",
+                ORCHESTRATION_ID,
+                "--dispatch-nonce",
+                summary_nonce,
+            )
+            self.assertEqual(
+                summary_name.stdout.strip(),
+                expected_summary_run_name(ORCHESTRATION_ID, summary_nonce),
+            )
+            summary_endpoint = run(
+                "summary-runs-endpoint",
+                "--branch",
+                BRANCH,
+                "--expected-sha",
+                EXPECTED_SHA,
+                "--repository",
+                REPOSITORY,
+            )
+            self.assertIn(
+                "repos/example/dashboard/actions/workflows/"
+                "test-all-packages-summary.yml/runs?",
+                summary_endpoint.stdout,
+            )
+            self.assertIn("event=workflow_dispatch", summary_endpoint.stdout)
+            self.assertIn("branch=main", summary_endpoint.stdout)
+            self.assertIn(f"head_sha={EXPECTED_SHA}", summary_endpoint.stdout)
+
+            run(
+                "summary-dispatch-payload",
+                "--manifest",
+                str(manifest_path),
+                "--ref",
+                BRANCH,
+                "--dispatch-nonce-file",
+                str(summary_nonce_path),
+                "--output",
+                str(summary_dispatch_path),
+            )
+            summary_dispatch = json.loads(
+                summary_dispatch_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(summary_dispatch["ref"], BRANCH)
+            self.assertEqual(summary_dispatch["inputs"]["expected_sha"], EXPECTED_SHA)
+            self.assertEqual(
+                summary_dispatch["inputs"]["orchestration_id"],
+                ORCHESTRATION_ID,
+            )
+            self.assertEqual(
+                summary_dispatch["inputs"]["dispatch_nonce"],
+                summary_nonce,
+            )
+
+            run(
+                "validate-summary-dispatch",
+                "--manifest",
+                str(manifest_path),
+                "--orchestration-id",
+                ORCHESTRATION_ID,
+                "--dispatch-nonce",
+                summary_nonce,
+                "--expected-sha",
+                EXPECTED_SHA,
+                "--branch",
+                BRANCH,
+                "--repository",
+                REPOSITORY,
+            )
+            summary_registration_path.write_text(
+                json.dumps(
+                    {
+                        "workflow_runs": [
+                            summary_run_payload(
+                                dispatch_nonce=summary_nonce,
+                                status="queued",
+                                conclusion=None,
+                            )
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            selected = run(
+                "select-summary-registration",
+                "--payload",
+                str(summary_registration_path),
+                "--manifest",
+                str(manifest_path),
+                "--dispatch-nonce-file",
+                str(summary_nonce_path),
+                "--expected-sha",
+                EXPECTED_SHA,
+                "--branch",
+                BRANCH,
+                "--repository",
+                REPOSITORY,
+            )
+            self.assertEqual(selected.stdout, f"{SUMMARY_RUN_ID}\n")
+            summary_run_path.write_text(
+                json.dumps(summary_run_payload(dispatch_nonce=summary_nonce)),
+                encoding="utf-8",
+            )
+            validated = run(
+                "validate-summary-run",
+                "--payload",
+                str(summary_run_path),
+                "--manifest",
+                str(manifest_path),
+                "--dispatch-nonce-file",
+                str(summary_nonce_path),
+                "--expected-sha",
+                EXPECTED_SHA,
+                "--branch",
+                BRANCH,
+                "--repository",
+                REPOSITORY,
+                "--expected-run-id",
+                str(SUMMARY_RUN_ID),
+            )
+            self.assertEqual(validated.stdout, "completed\tsuccess\n")
 
 
 class RunIdentityTests(unittest.TestCase):
@@ -625,6 +793,240 @@ class RunIdentityTests(unittest.TestCase):
         self.assertEqual(result["conclusion"], "failure")
 
 
+class SummaryRunIdentityTests(unittest.TestCase):
+    def test_exact_summary_registration_and_dispatch_are_accepted(self) -> None:
+        summary_manifest = manifest()
+        exact = summary_run_payload(status="queued", conclusion=None)
+        unrelated = summary_run_payload(
+            run_id=99_999,
+            status="queued",
+            conclusion=None,
+        )
+        unrelated["display_title"] = "Global Summary [manual-999-1] [nonce:wrong]"
+        pages = [
+            {"workflow_runs": [unrelated]},
+            {"workflow_runs": [exact]},
+        ]
+
+        self.assertEqual(
+            select_exact_summary_registration(
+                pages,
+                manifest=summary_manifest,
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+            ),
+            SUMMARY_RUN_ID,
+        )
+        self.assertEqual(
+            validate_summary_dispatch(
+                summary_manifest,
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+            ),
+            summary_manifest,
+        )
+
+        for api_name in (
+            "Global Test Summary (All Batches)",
+            expected_summary_run_name(ORCHESTRATION_ID, SUMMARY_NONCE),
+        ):
+            payload = summary_run_payload()
+            payload["name"] = api_name
+            with self.subTest(api_name=api_name):
+                result = validate_summary_run(
+                    payload,
+                    manifest=summary_manifest,
+                    dispatch_nonce=SUMMARY_NONCE,
+                    expected_sha=EXPECTED_SHA,
+                    branch=BRANCH,
+                    repository=REPOSITORY,
+                    expected_run_id=SUMMARY_RUN_ID,
+                    require_completed=True,
+                )
+                self.assertEqual(result["id"], SUMMARY_RUN_ID)
+
+    def test_duplicate_exact_summary_registration_is_rejected(self) -> None:
+        payload = {
+            "workflow_runs": [
+                summary_run_payload(status="queued", conclusion=None),
+                summary_run_payload(
+                    run_id=77_777,
+                    status="queued",
+                    conclusion=None,
+                ),
+            ]
+        }
+        with self.assertRaisesRegex(ContractError, "multiple summary runs"):
+            select_exact_summary_registration(
+                payload,
+                manifest=manifest(),
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+            )
+
+    def test_wrong_summary_nonce_sha_branch_repo_path_and_id_are_rejected(self) -> None:
+        wrong_nonce = "e" * 64
+        self.assertIsNone(
+            select_exact_summary_registration(
+                {"workflow_runs": [summary_run_payload()]},
+                manifest=manifest(),
+                dispatch_nonce=wrong_nonce,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+            )
+        )
+        with self.assertRaises(ContractError):
+            validate_summary_run(
+                summary_run_payload(),
+                manifest=manifest(),
+                dispatch_nonce=wrong_nonce,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                expected_run_id=SUMMARY_RUN_ID,
+                require_completed=True,
+            )
+
+        mutations = {
+            "head_sha": "b" * 40,
+            "head_branch": "release",
+            "path": ".github/workflows/wrong.yml",
+            "display_title": "wrong title",
+            "id": 99_999,
+            "run_attempt": 2,
+        }
+        for field, value in mutations.items():
+            payload = summary_run_payload()
+            payload[field] = value
+            with self.subTest(field=field):
+                with self.assertRaises(ContractError):
+                    validate_summary_run(
+                        payload,
+                        manifest=manifest(),
+                        dispatch_nonce=SUMMARY_NONCE,
+                        expected_sha=EXPECTED_SHA,
+                        branch=BRANCH,
+                        repository=REPOSITORY,
+                        expected_run_id=SUMMARY_RUN_ID,
+                        require_completed=True,
+                    )
+
+        payload = summary_run_payload()
+        payload["repository"] = {"full_name": "example/other"}
+        with self.assertRaises(ContractError):
+            validate_summary_run(
+                payload,
+                manifest=manifest(),
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                expected_run_id=SUMMARY_RUN_ID,
+                require_completed=True,
+            )
+
+    def test_summary_dispatch_rejects_wrong_manifest_binding(self) -> None:
+        for field, value in (
+            ("orchestration_id", "orchestration-999-1"),
+            ("expected_sha", "b" * 40),
+            ("branch", "release"),
+        ):
+            values = {
+                "orchestration_id": ORCHESTRATION_ID,
+                "dispatch_nonce": SUMMARY_NONCE,
+                "expected_sha": EXPECTED_SHA,
+                "branch": BRANCH,
+                "repository": REPOSITORY,
+            }
+            values[field] = value
+            with self.subTest(field=field):
+                with self.assertRaises(ContractError):
+                    validate_summary_dispatch(manifest(), **values)
+
+        with self.assertRaises(ContractError):
+            validate_summary_dispatch(
+                manifest(),
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce="not-a-nonce",
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+            )
+        with self.assertRaises(ContractError):
+            validate_summary_dispatch(
+                manifest(),
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository="bad repository",
+            )
+
+    def test_summary_completion_states_are_validated(self) -> None:
+        incomplete = summary_run_payload(status="in_progress", conclusion=None)
+        with self.assertRaisesRegex(ContractError, "not completed"):
+            validate_summary_run(
+                incomplete,
+                manifest=manifest(),
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                expected_run_id=SUMMARY_RUN_ID,
+                require_completed=True,
+            )
+        self.assertEqual(
+            validate_summary_run(
+                incomplete,
+                manifest=manifest(),
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                expected_run_id=SUMMARY_RUN_ID,
+                require_completed=False,
+            )["status"],
+            "in_progress",
+        )
+
+        invalid_incomplete = summary_run_payload(
+            status="queued",
+            conclusion="success",
+        )
+        with self.assertRaisesRegex(ContractError, "invalid incomplete state"):
+            validate_summary_run(
+                invalid_incomplete,
+                manifest=manifest(),
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                expected_run_id=SUMMARY_RUN_ID,
+                require_completed=False,
+            )
+
+        canceled = summary_run_payload(conclusion="cancelled")
+        with self.assertRaisesRegex(ContractError, "rejected conclusion"):
+            validate_summary_run(
+                canceled,
+                manifest=manifest(),
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                expected_run_id=SUMMARY_RUN_ID,
+                require_completed=True,
+            )
+
+
 class ArtifactContractTests(unittest.TestCase):
     def test_accepts_one_nonexpired_artifact_from_exact_run(self) -> None:
         result = validate_artifacts(
@@ -841,6 +1243,17 @@ class WorkflowExactRunBindingTests(unittest.TestCase):
         )
         self.assertIn("steps.publication_base.outcome == 'success'", summary)
         self.assertIn(".orchestration", summary)
+        self.assertIn(
+            "head-branch: automation/generated-data/global-test-results/"
+            "${{ env.TRUSTED_PUBLICATION_BRANCH }}/"
+            "${{ needs.global-summary.outputs.base_sha }}",
+            summary,
+        )
+        self.assertNotIn(
+            "head-branch: automation/generated-data/global-test-results/"
+            "${{ env.TRUSTED_PUBLICATION_BRANCH }}\n",
+            summary,
+        )
 
         checkout_step = summary.split("- name: Checkout repository", 1)[1].split(
             "- name: Bind exact generated-data base", 1
@@ -866,6 +1279,464 @@ class WorkflowExactRunBindingTests(unittest.TestCase):
         first_helper = summary.index("python3 ")
         self.assertGreater(first_helper, bind_start)
         self.assertLess(first_helper, summary.index("GH_TOKEN:"))
+
+    def _assert_global_summary_delivery_contract(self, summary: str) -> None:
+        preamble, jobs = summary.split("\njobs:\n", maxsplit=1)
+        generation, delivery = jobs.split("\n  publish-generated-data:\n", maxsplit=1)
+
+        self.assertIn("permissions:\n  actions: read\n  contents: read", preamble)
+        self.assertNotIn("contents: write", preamble)
+        self.assertNotIn("pull-requests: write", preamble)
+        self.assertNotIn("secrets.", preamble)
+        self.assertNotIn("DASHBOARD_DELIVERY_APP", preamble)
+        self.assertEqual(preamble.count("TRUSTED_PUBLICATION_BRANCH: main"), 1)
+
+        self.assertIn("  global-summary:\n", f"  {generation}")
+        self.assertIn("    permissions:\n      actions: read\n      contents: read", generation)
+        self.assertNotIn("secrets.", generation)
+        self.assertNotIn("DASHBOARD_DELIVERY_APP", generation)
+        self.assertNotIn("contents: write", generation)
+        self.assertNotIn("pull-requests: write", generation)
+        self.assertIn("generated_test_results_artifact.py pack", generation)
+        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", generation)
+        self.assertIn(
+            "artifact_name: "
+            "${{ steps.package_generated_data.outputs.artifact_name }}",
+            generation,
+        )
+        self.assertIn("artifact_sha256:", generation)
+        self.assertIn(
+            'artifact_name="generated-test-results-'
+            '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
+            generation,
+        )
+        self.assertIn(
+            "name: ${{ steps.package_generated_data.outputs.artifact_name }}",
+            generation,
+        )
+
+        bind_step = generation.split(
+            "- name: Bind exact generated-data base", maxsplit=1
+        )[1].split("- name: Validate exact batch-run manifest", maxsplit=1)[0]
+        final_validation = generation.split(
+            "- name: Revalidate exact publication base", maxsplit=1
+        )[1].split(
+            "- name: Package exact generated test-results artifact", maxsplit=1
+        )[0]
+        for step in (bind_step, final_validation):
+            self.assertIn(
+                "EXPECTED_BRANCH: ${{ env.TRUSTED_PUBLICATION_BRANCH }}", step
+            )
+            self.assertIn("WORKFLOW_REF: ${{ github.ref }}", step)
+            self.assertIn("WORKFLOW_REF_NAME: ${{ github.ref_name }}", step)
+            self.assertIn('[[ "$EXPECTED_BRANCH" == "main" ]]', step)
+            self.assertIn(
+                '[[ "$WORKFLOW_REF" == "refs/heads/${EXPECTED_BRANCH}" ]]',
+                step,
+            )
+            self.assertIn(
+                '[[ "$WORKFLOW_REF_NAME" == "$EXPECTED_BRANCH" ]]', step
+            )
+            self.assertIn('[[ "$EXPECTED_SHA" == "$WORKFLOW_SHA" ]]', step)
+            self.assertIn('[[ "$actual_sha" == "$WORKFLOW_SHA" ]]', step)
+            self.assertIn('[[ "$remote_sha" == "$WORKFLOW_SHA" ]]', step)
+
+        self.assertIn("environment: generated-data-delivery", delivery)
+        self.assertIn("permissions:\n      contents: read", delivery)
+        self.assertNotIn("${{ github.token }}", delivery)
+        self.assertNotIn("${{ secrets.GITHUB_TOKEN }}", delivery)
+        self.assertNotIn("GITHUB_TOKEN", delivery)
+        self.assertNotIn("personal-access-token", delivery.casefold())
+        self.assertNotRegex(delivery, r"(?i)\bpat\b")
+        self.assertEqual(
+            set(re.findall(r"secrets\.([A-Z0-9_]+)", delivery)),
+            {"DASHBOARD_DELIVERY_APP_ID", "DASHBOARD_DELIVERY_APP_PRIVATE_KEY"},
+        )
+        self.assertEqual(summary.count("secrets.DASHBOARD_DELIVERY_APP_ID"), 1)
+        self.assertEqual(
+            summary.count("secrets.DASHBOARD_DELIVERY_APP_PRIVATE_KEY"), 1
+        )
+        self.assertIn(
+            "actions/create-github-app-token@"
+            "bcd2ba49218906704ab6c1aa796996da409d3eb1",
+            delivery,
+        )
+        for permission in (
+            "permission-contents: write",
+            "permission-metadata: read",
+            "permission-pull-requests: write",
+        ):
+            self.assertEqual(delivery.count(permission), 1)
+        self.assertNotIn("permission-actions:", delivery)
+        self.assertNotIn("permission-workflows:", delivery)
+        self.assertNotIn("permission-administration:", delivery)
+        self.assertIn(
+            "DASHBOARD_DELIVERY_APP_BOT_LOGIN is missing or malformed", delivery
+        )
+        self.assertIn(
+            'login.casefold() == "github-actions[bot]"', delivery
+        )
+        self.assertIn(
+            "expected-pr-author-login: "
+            "${{ vars.DASHBOARD_DELIVERY_APP_BOT_LOGIN }}",
+            delivery,
+        )
+        self.assertIn("credential-source: github-app", delivery)
+        self.assertIn(
+            "name: ${{ needs.global-summary.outputs.artifact_name }}", delivery
+        )
+        self.assertNotIn("github.run_attempt", delivery)
+        self.assertNotIn("github.run_id", delivery)
+        self.assertEqual(
+            delivery.count("GH_TOKEN: ${{ steps.delivery_token.outputs.token }}"), 1
+        )
+        self.assertIn("persist-credentials: false", delivery)
+        self.assertEqual(delivery.count("${{ github.ref_name }}"), 1)
+        self.assertIn(
+            "base-branch: ${{ env.TRUSTED_PUBLICATION_BRANCH }}", delivery
+        )
+        self.assertIn(
+            "head-branch: automation/generated-data/global-test-results/"
+            "${{ env.TRUSTED_PUBLICATION_BRANCH }}/"
+            "${{ needs.global-summary.outputs.base_sha }}",
+            delivery,
+        )
+
+        ref_guard = delivery.split(
+            "- name: Reject an untrusted publication ref", maxsplit=1
+        )[1].split(
+            "- name: Reject a missing or malformed App bot login", maxsplit=1
+        )[0]
+        self.assertIn(
+            "EXPECTED_BRANCH: ${{ env.TRUSTED_PUBLICATION_BRANCH }}", ref_guard
+        )
+        self.assertIn("WORKFLOW_REF: ${{ github.ref }}", ref_guard)
+        self.assertIn("WORKFLOW_REF_NAME: ${{ github.ref_name }}", ref_guard)
+        self.assertIn('[[ "$EXPECTED_BRANCH" == "main" ]]', ref_guard)
+        self.assertIn(
+            '[[ "$WORKFLOW_REF" == "refs/heads/${EXPECTED_BRANCH}" ]]',
+            ref_guard,
+        )
+        self.assertIn(
+            '[[ "$WORKFLOW_REF_NAME" == "$EXPECTED_BRANCH" ]]', ref_guard
+        )
+
+        self.assertEqual(
+            delivery.count(
+                "MINTED_APP_SLUG: ${{ steps.delivery_token.outputs.app-slug }}"
+            ),
+            1,
+        )
+        self.assertIn('minted_bot_login = f"{app_slug}[bot]"', delivery)
+        self.assertIn(
+            "if configured.casefold() != minted_bot_login.casefold():", delivery
+        )
+        self.assertIn(
+            "configured Dashboard Delivery App bot login does not match minted App",
+            delivery,
+        )
+
+        restore = delivery.index(
+            "Validate and restore only generated test-results data"
+        )
+        mint = delivery.index("Mint short-lived Dashboard Delivery App token")
+        identity = delivery.index(
+            "Bind configured bot login to minted App identity"
+        )
+        reverify = delivery.index(
+            "Reverify exact generated bytes after credential minting"
+        )
+        publish = delivery.index(
+            "Open or update aggregated test-results review PR"
+        )
+        self.assertLess(restore, mint)
+        self.assertLess(mint, identity)
+        self.assertLess(identity, reverify)
+        self.assertLess(reverify, publish)
+        self.assertIn("generated_test_results_artifact.py restore", delivery)
+        self.assertIn("generated_test_results_artifact.py verify-restored", delivery)
+        self.assertIn("digest-mismatch: error", delivery)
+
+        self.assertEqual(summary.count("contents: write"), 1)
+        self.assertEqual(summary.count("pull-requests: write"), 1)
+        self.assertNotRegex(summary, r"(?m)^\s+contents:\s+write\s*$")
+        self.assertNotRegex(summary, r"(?m)^\s+pull-requests:\s+write\s*$")
+
+    def test_global_summary_uses_only_protected_app_delivery(self) -> None:
+        summary = (
+            self.workflow_root / "test-all-packages-summary.yml"
+        ).read_text(encoding="utf-8")
+
+        self._assert_global_summary_delivery_contract(summary)
+
+    def test_global_summary_contract_rejects_builtin_token_fallback(self) -> None:
+        summary = (
+            self.workflow_root / "test-all-packages-summary.yml"
+        ).read_text(encoding="utf-8")
+        mutations = (
+            summary.replace(
+                "GH_TOKEN: ${{ steps.delivery_token.outputs.token }}",
+                "GH_TOKEN: ${{ github.token }}",
+                1,
+            ),
+            summary.replace(
+                "GH_TOKEN: ${{ steps.delivery_token.outputs.token }}",
+                "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+                1,
+            ),
+            summary.replace(
+                "GH_TOKEN: ${{ steps.delivery_token.outputs.token }}",
+                "GITHUB_TOKEN: ${{ steps.delivery_token.outputs.token }}",
+                1,
+            ),
+        )
+
+        for mutated in mutations:
+            with self.subTest():
+                with self.assertRaises(AssertionError):
+                    self._assert_global_summary_delivery_contract(mutated)
+
+    def test_global_summary_contract_rejects_partial_rerun_artifact_rebinding(
+        self,
+    ) -> None:
+        summary = (
+            self.workflow_root / "test-all-packages-summary.yml"
+        ).read_text(encoding="utf-8")
+        recomputed = (
+            "generated-test-results-${{ github.run_id }}-"
+            "${{ github.run_attempt }}"
+        )
+        mutations = (
+            summary.replace(
+                "name: ${{ needs.global-summary.outputs.artifact_name }}",
+                f"name: {recomputed}",
+                1,
+            ),
+            summary.replace(
+                "artifact_name: "
+                "${{ steps.package_generated_data.outputs.artifact_name }}\n",
+                "",
+                1,
+            ),
+            summary.replace(
+                "name: ${{ steps.package_generated_data.outputs.artifact_name }}",
+                f"name: {recomputed}",
+                1,
+            ),
+        )
+
+        for mutated in mutations:
+            self.assertNotEqual(mutated, summary)
+            with self.subTest():
+                with self.assertRaises(AssertionError):
+                    self._assert_global_summary_delivery_contract(mutated)
+
+    def test_global_summary_contract_rejects_non_main_publication_context(
+        self,
+    ) -> None:
+        summary = (
+            self.workflow_root / "test-all-packages-summary.yml"
+        ).read_text(encoding="utf-8")
+        mutations = (
+            summary.replace(
+                "TRUSTED_PUBLICATION_BRANCH: main",
+                "TRUSTED_PUBLICATION_BRANCH: feature",
+                1,
+            ),
+            summary.replace(
+                '[[ "$WORKFLOW_REF" == "refs/heads/${EXPECTED_BRANCH}" ]]',
+                '[[ "$WORKFLOW_REF" == "refs/heads/feature" ]]',
+                1,
+            ),
+            summary.replace(
+                "base-branch: ${{ env.TRUSTED_PUBLICATION_BRANCH }}",
+                "base-branch: ${{ github.ref_name }}",
+                1,
+            ),
+            summary.replace(
+                "head-branch: automation/generated-data/global-test-results/"
+                "${{ env.TRUSTED_PUBLICATION_BRANCH }}/"
+                "${{ needs.global-summary.outputs.base_sha }}",
+                "head-branch: automation/generated-data/global-test-results/"
+                "${{ github.ref_name }}/"
+                "${{ needs.global-summary.outputs.base_sha }}",
+                1,
+            ),
+        )
+
+        for mutated in mutations:
+            self.assertNotEqual(mutated, summary)
+            with self.subTest():
+                with self.assertRaises(AssertionError):
+                    self._assert_global_summary_delivery_contract(mutated)
+
+    def test_global_summary_publication_ref_guard_rejects_feature_branch(
+        self,
+    ) -> None:
+        summary = (
+            self.workflow_root / "test-all-packages-summary.yml"
+        ).read_text(encoding="utf-8")
+        ref_step = summary.split(
+            "- name: Reject an untrusted publication ref", maxsplit=1
+        )[1].split(
+            "- name: Reject a missing or malformed App bot login", maxsplit=1
+        )[0]
+        script = textwrap.dedent(
+            ref_step.split("run: |\n", maxsplit=1)[1]
+        ).strip()
+
+        main = subprocess.run(
+            ["/bin/bash", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={
+                "EXPECTED_BRANCH": "main",
+                "WORKFLOW_REF": "refs/heads/main",
+                "WORKFLOW_REF_NAME": "main",
+            },
+        )
+        feature = subprocess.run(
+            ["/bin/bash", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={
+                "EXPECTED_BRANCH": "main",
+                "WORKFLOW_REF": "refs/heads/feature",
+                "WORKFLOW_REF_NAME": "feature",
+            },
+        )
+
+        self.assertEqual(main.returncode, 0, main.stderr)
+        self.assertNotEqual(feature.returncode, 0)
+
+    def test_global_summary_contract_rejects_missing_environment_or_app_mint(
+        self,
+    ) -> None:
+        summary = (
+            self.workflow_root / "test-all-packages-summary.yml"
+        ).read_text(encoding="utf-8")
+        mutations = (
+            summary.replace("environment: generated-data-delivery", "", 1),
+            summary.replace(
+                "actions/create-github-app-token@"
+                "bcd2ba49218906704ab6c1aa796996da409d3eb1",
+                "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                1,
+            ),
+        )
+
+        for mutated in mutations:
+            with self.subTest():
+                with self.assertRaises(AssertionError):
+                    self._assert_global_summary_delivery_contract(mutated)
+
+    def test_global_summary_contract_rejects_wrong_bot_identity(self) -> None:
+        summary = (
+            self.workflow_root / "test-all-packages-summary.yml"
+        ).read_text(encoding="utf-8")
+        mutated = summary.replace(
+            "expected-pr-author-login: "
+            "${{ vars.DASHBOARD_DELIVERY_APP_BOT_LOGIN }}",
+            "expected-pr-author-login: github-actions[bot]",
+            1,
+        )
+
+        with self.assertRaises(AssertionError):
+            self._assert_global_summary_delivery_contract(mutated)
+
+    def test_global_summary_minted_app_identity_rejects_mismatched_bot(
+        self,
+    ) -> None:
+        summary = (
+            self.workflow_root / "test-all-packages-summary.yml"
+        ).read_text(encoding="utf-8")
+        identity_step = summary.split(
+            "- name: Bind configured bot login to minted App identity", maxsplit=1
+        )[1].split(
+            "- name: Reverify exact generated bytes after credential minting",
+            maxsplit=1,
+        )[0]
+        raw_script = identity_step.split("python3 - <<'PY'\n", maxsplit=1)[1].split(
+            "\n          PY", maxsplit=1
+        )[0]
+        script = textwrap.dedent(raw_script)
+
+        matching = subprocess.run(
+            [sys.executable, "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={
+                "CONFIGURED_BOT_LOGIN": "arm-dashboard-delivery[bot]",
+                "MINTED_APP_SLUG": "arm-dashboard-delivery",
+            },
+        )
+        mismatched = subprocess.run(
+            [sys.executable, "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={
+                "CONFIGURED_BOT_LOGIN": "different-app[bot]",
+                "MINTED_APP_SLUG": "arm-dashboard-delivery",
+            },
+        )
+
+        self.assertEqual(matching.returncode, 0, matching.stderr)
+        self.assertNotEqual(mismatched.returncode, 0)
+        self.assertIn("does not match minted App", mismatched.stderr)
+
+    def test_global_summary_contract_rejects_secret_exposure_to_other_jobs(
+        self,
+    ) -> None:
+        summary = (
+            self.workflow_root / "test-all-packages-summary.yml"
+        ).read_text(encoding="utf-8")
+        mutations = (
+            summary.replace(
+                'env:\n  PYTHONDONTWRITEBYTECODE: "1"',
+                "env:\n"
+                "  LEAKED_APP_KEY: "
+                "${{ secrets.DASHBOARD_DELIVERY_APP_PRIVATE_KEY }}\n"
+                '  PYTHONDONTWRITEBYTECODE: "1"',
+                1,
+            ),
+            summary.replace(
+                "    steps:\n      - name: Checkout repository",
+                "    env:\n"
+                "      LEAKED_APP_KEY: "
+                "${{ secrets.DASHBOARD_DELIVERY_APP_PRIVATE_KEY }}\n"
+                "    steps:\n"
+                "      - name: Checkout repository",
+                1,
+            ),
+        )
+
+        for mutated in mutations:
+            with self.subTest():
+                with self.assertRaises(AssertionError):
+                    self._assert_global_summary_delivery_contract(mutated)
+
+    def test_global_summary_contract_rejects_builtin_write_permissions(self) -> None:
+        summary = (
+            self.workflow_root / "test-all-packages-summary.yml"
+        ).read_text(encoding="utf-8")
+        mutations = (
+            summary.replace("  contents: read", "  contents: write", 1),
+            summary.replace("      contents: read", "      contents: write", 1),
+            summary.replace(
+                "permissions:\n  actions: read\n  contents: read",
+                "permissions:\n  actions: read\n  contents: read\n  pull-requests: write",
+                1,
+            ),
+        )
+
+        for mutated in mutations:
+            with self.subTest():
+                with self.assertRaises(AssertionError):
+                    self._assert_global_summary_delivery_contract(mutated)
 
     def test_all_batch_wrappers_cap_permissions_and_pin_summary_actions(self) -> None:
         checkout = (

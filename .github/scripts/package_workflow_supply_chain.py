@@ -38,7 +38,7 @@ EXACT_RUN_SPEC.loader.exec_module(exact_run)
 EXPECTED_BATCHES = 22
 EXPECTED_WORKFLOWS = 960
 EXPECTED_EXTERNAL_USES = 1130
-EXPECTED_CONTAINER_USES = 3
+EXPECTED_CONTAINER_USES = 4
 SOURCE_COMMIT = "73155d0d3a3dc73da08c62bc2bb7eccf281c6008"
 LOCK_NAME = "package_workflow_action_lock.json"
 MAX_SOURCE_ARCHIVE_BYTES = 67_108_864
@@ -66,7 +66,7 @@ DOCKER_DIGEST_RE = re.compile(r"^docker://[^@\s]+@sha256:[0-9a-f]{64}$")
 ORIGINAL_COMMENT_RE = re.compile(r"^\s+# original: (?P<ref>[^\s#]+)\s*$")
 VERSION_COMMENT_RE = re.compile(r"^\s+# (?P<ref>v[^\s#]+)\s*$")
 CONTAINER_RE = re.compile(
-    r"^(?P<space>\s*)(?P<key>image|container):\s*"
+    r"^(?P<space>\s*)(?P<key>image|container|PINNED_CONTAINER_IMAGE_[A-Z0-9_]+):\s*"
     r"(?P<spec>[^\s#]+)(?P<tail>[ \t]*(?:#.*)?)"
     r"(?P<eol>\r?\n?)$"
 )
@@ -242,6 +242,37 @@ def validate_container_lock_entry(entry: object) -> str:
     return workflow
 
 
+def validate_hardened_workflow_transition(
+    lock: dict[str, object],
+) -> dict[str, str] | None:
+    transition = lock.get("hardened_workflow_transition")
+    if transition is None:
+        return None
+    expected_keys = {"from_sha256", "to_sha256", "reason"}
+    if not isinstance(transition, dict) or set(transition) != expected_keys:
+        raise ContractError("hardened workflow transition is malformed")
+    transition_from = transition.get("from_sha256")
+    transition_to = transition.get("to_sha256")
+    transition_reason = transition.get("reason")
+    if (
+        not isinstance(transition_from, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", transition_from)
+        or not isinstance(transition_to, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", transition_to)
+        or transition_from == transition_to
+        or transition_to != lock.get("hardened_workflow_sha256")
+        or not isinstance(transition_reason, str)
+        or not transition_reason.strip()
+        or len(transition_reason) > 512
+    ):
+        raise ContractError("hardened workflow transition is invalid")
+    return {
+        "from_sha256": transition_from,
+        "to_sha256": transition_to,
+        "reason": transition_reason,
+    }
+
+
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -310,6 +341,8 @@ def load_lock(root: Path) -> dict[str, object]:
         value = lock.get(key)
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
             raise ContractError(f"action lock {key} is not a canonical SHA-256")
+
+    validate_hardened_workflow_transition(lock)
     entries = lock.get("actions")
     if not isinstance(entries, list) or not entries:
         raise ContractError("action lock must contain a non-empty actions list")
@@ -326,7 +359,9 @@ def load_lock(root: Path) -> dict[str, object]:
 
     containers = lock.get("containers")
     if not isinstance(containers, list) or len(containers) != EXPECTED_CONTAINER_USES:
-        raise ContractError("container lock must contain exactly three entries")
+        raise ContractError(
+            f"container lock must contain exactly {EXPECTED_CONTAINER_USES} entries"
+        )
     locations: set[str] = set()
     for entry in containers:
         workflow = validate_container_lock_entry(entry)
@@ -1091,11 +1126,12 @@ def validate_authenticated_base(
     digest = workflow_snapshot_sha256(snapshot)
     if digest == lock["hardened_workflow_sha256"]:
         return "current_hardened_snapshot"
-    if digest == lock["migration_parent_workflow_sha256"]:
-        return "reviewed_migration_parent"
+    transition = validate_hardened_workflow_transition(lock)
+    if transition is not None and digest == transition["from_sha256"]:
+        return "declared_hardened_transition_source"
     raise ContractError(
-        "advanced pull-request base does not match the reviewed hardened "
-        "workflow snapshot"
+        "advanced pull-request base does not match the current or declared "
+        "transition source workflow snapshot"
     )
 
 
