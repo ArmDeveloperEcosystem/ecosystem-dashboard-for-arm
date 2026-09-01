@@ -16,27 +16,35 @@ jobs:
     # The type of runner that the job will run on
     runs-on: ubuntu-24.04-arm
 
-    # Required so the workflow can push changes back to the repo
     permissions:
-      contents: write
+      contents: read
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true  # Fetch Hugo Themes
-          fetch-depth: 0 
+          fetch-depth: 0
+          persist-credentials: false
 
-      # Sets up Git author so commits from Actions are attributed correctly
-      - name: Set up Git author
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Set up pinned preprocessing Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install hash-locked preprocessing dependency
+        run: >-
+          python3 -m pip install
+          --disable-pip-version-check
+          --no-deps
+          --only-binary=:all:
+          --require-hashes
+          --requirement .github/scripts/generated-site-data-requirements.txt
 
       # Sets Up Hugo
       - name: Setup Hugo
-        uses: peaceiris/actions-hugo@v3
+        uses: peaceiris/actions-hugo@2752ce1d29631191ea3f27c23495fa06139a5b78 # v3.2.1
         with:
           hugo-version: '0.130.0'
           extended: true
@@ -46,23 +54,33 @@ jobs:
       # (2) category descriptions are always up-to-date,
       # (3) the packages have valid categories
       - name: Python pre-processing
+        shell: bash
         run: |
-          python --version
-          python ./build_steps/update_category_mappings.py
-          python ./build_steps/update_recently_added_json.py
-          python ./build_steps/validate_package_catagories.py
+          set -euo pipefail
+          python3 --version
+          python3 ./build_steps/update_category_mappings.py
+          python3 ./build_steps/update_recently_added_json.py
+          python3 ./build_steps/validate_package_catagories.py
 
-      # Debug step to confirm Windows category data is generated correctly
-      - name: Debug Windows file after generation
+      - name: Require reviewed generated site data
+        shell: bash
         run: |
-          echo "---- ls data ----"
-          ls -l ./data
-          echo "---- windows file ----"
-          cat ./data/category_data_windows.yml || true
-          echo "---- git status ----"
-          git status --short
-          echo "---- git diff for windows file ----"
-          git diff -- data/category_data_windows.yml || true
+          set -euo pipefail
+          generated_paths=(
+            data/category_data.yml
+            data/category_data_windows.yml
+            data/recently_added_packages.yaml
+          )
+          if ! git diff --quiet -- "${generated_paths[@]}"; then
+            git diff -- "${generated_paths[@]}"
+            echo "Generated site data differs from the reviewed repository bytes." >&2
+            echo "Use the generated site data review workflow to open a draft PR." >&2
+            exit 1
+          fi
+          [[ -z "$(git ls-files --others --exclude-standard -- "${generated_paths[@]}")" ]] || {
+            echo "Generated site data contains an unreviewed untracked file." >&2
+            exit 1
+          }
 
       # Builds arm-software-developer repo
       - name: Build
@@ -74,13 +92,3 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
-      # Commits only the Windows category data file back to the repository if it has changed
-      - name: Commit Windows category data only
-        run: |
-          git add data/category_data_windows.yml
-
-          git diff --cached --quiet && echo "No changes to commit" && exit 0
-
-          git commit -m "Update Windows category data [skip ci]"
-          git push

@@ -3,10 +3,11 @@
 ## Status
 
 `generated-site-data-review.yml` is a dormant, manual-only review path. It is
-not called by `main.yml`, does not deploy the site, and does not change the
-current preprocessing or deployment behavior. Missing configuration fails
-closed. Cutting `main.yml` over to this path requires a later, separately
-reviewed change.
+not called by `main.yml` and does not deploy the site. Missing configuration fails
+closed. The production deployment regenerates the same three files with the
+same pinned Python dependency and stops before deployment if their bytes differ
+from the reviewed repository versions. Generated changes must therefore reach
+`main` through a reviewed pull request opened by this workflow.
 
 ## What a bounded run does
 
@@ -56,6 +57,6 @@ Contents, and Pull requests because it never edits workflow files.
 
 After a bounded run, immediately return
 `GENERATED_SITE_DATA_REVIEW_ENABLED=false`. Review the draft PR normally; this
-workflow never approves or merges it. A later production cutover must remove the
-direct generated-data write from `main.yml` and wire deployment to independently
-reviewed merged data in a separate PR.
+workflow never approves or merges it. Merge the generated-data PR before any
+source change that depends on those bytes reaches `main`; otherwise deployment
+stops at the generated-data drift gate without changing production.
