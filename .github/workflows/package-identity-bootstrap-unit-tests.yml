@@ -2,38 +2,33 @@ name: Package Identity Bootstrap Unit Tests
 
 on:
   pull_request:
-    paths:
-      - '.github/PACKAGE_IDENTITY_CATALOG.md'
-      - '.github/package-identity-catalog.json'
-      - '.github/workflows/package-identity-bootstrap-unit-tests.yml'
-      - 'build_steps/**'
-      - 'config.toml'
-      - 'config.cloudfront.toml'
-      - 'config/**'
-      - 'content/**'
-      - 'themes/**'
-      - '.gitattributes'
-      - '**/.gitattributes'
-      - 'hugo.*'
-      - '_vendor/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'tests/**'
-  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  bootstrap-unit-tests:
-    name: Run isolated bootstrap validator unit tests
+  catalog-merge-tree:
+    name: Package identity catalog merge-tree
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
           persist-credentials: false
+
+      - name: Bind authenticated pull-request merge tree
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^1)" = "$BASE_SHA"
+          test "$(git rev-parse HEAD^2)" = "$HEAD_SHA"
 
       - name: Install checksum-pinned Hugo
         shell: bash
@@ -57,6 +52,39 @@ jobs:
           "$install_dir/hugo" version | grep -Fq "v${HUGO_VERSION}"
           printf 'PACKAGE_CATALOG_HUGO_BINARY=%s\n' "$install_dir/hugo" \
             >> "$GITHUB_ENV"
+
+      - name: Validate proposed package identity catalog
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          catalog='.github/package-identity-catalog.json'
+
+          base_type="$(
+            git ls-tree --format='%(objecttype)' "$BASE_SHA" -- "$catalog"
+          )"
+          candidate_type="$(
+            git ls-tree --format='%(objecttype)' "$GITHUB_SHA" -- "$catalog"
+          )"
+          for object_type in "$base_type" "$candidate_type"; do
+            if [[ -n "$object_type" && "$object_type" != 'blob' ]]; then
+              echo 'Catalog path must resolve to a regular Git blob.' >&2
+              exit 1
+            fi
+          done
+
+          if [[ "$base_type" == 'blob' && -z "$candidate_type" ]]; then
+            echo 'A bootstrapped package identity catalog cannot be deleted.' >&2
+            exit 1
+          fi
+          if [[ -z "$candidate_type" ]]; then
+            echo 'Catalog is not present; production onboarding remains fail-closed.'
+            exit 0
+          fi
+          python3 -I -B build_steps/validate_package_identity_catalog.py \
+            --revision "$GITHUB_SHA" \
+            --hugo-binary "$PACKAGE_CATALOG_HUGO_BINARY"
 
       - name: Run catalog trust-boundary tests
         run: python3 -I -B tests/test_package_identity_catalog.py -v
