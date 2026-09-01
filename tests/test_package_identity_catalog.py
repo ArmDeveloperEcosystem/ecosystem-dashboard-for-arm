@@ -1527,6 +1527,149 @@ class PackageIdentityCatalogTests(unittest.TestCase):
         ):
             validate_catalog(self.root)
 
+    def test_registry_status_and_exhaustive_matrix_is_fail_closed(self) -> None:
+        cases = (
+            (
+                "verified-without-identity",
+                "verified",
+                False,
+                [],
+                "verified status requires an identity",
+            ),
+            (
+                "not-applicable-with-identity",
+                "not_applicable",
+                True,
+                ["alpha"],
+                "not_applicable status cannot claim identities",
+            ),
+            (
+                "not-applicable-non-exhaustive",
+                "not_applicable",
+                False,
+                [],
+                "not_applicable status must be exhaustive",
+            ),
+            (
+                "unknown-with-identity",
+                "unknown",
+                False,
+                ["alpha"],
+                "unknown status cannot claim identities",
+            ),
+            (
+                "unknown-exhaustive",
+                "unknown",
+                True,
+                [],
+                "unknown status cannot be exhaustive",
+            ),
+            (
+                "ambiguous-exhaustive",
+                "ambiguous",
+                True,
+                ["alpha"],
+                "ambiguous status cannot be exhaustive",
+            ),
+        )
+        for name, status, exhaustive, identities, error in cases:
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as repository_directory:
+                    root = Path(repository_directory)
+                    fixture = _write_valid_fixture(root)
+                    payload = fixture.payload()
+                    dimension = payload["records"][0]["registries"]["pip"]
+                    dimension["status"] = status
+                    dimension["exhaustive"] = exhaustive
+                    dimension["identities"] = identities
+                    fixture.write(payload)
+
+                    with self.assertRaisesRegex(CatalogValidationError, error):
+                        validate_catalog(root)
+
+    def test_exhaustive_registry_decision_requires_registry_api_evidence(self) -> None:
+        fixture = self.fixture()
+        payload = fixture.payload()
+        dimension = payload["records"][0]["registries"]["pip"]
+        dimension["status"] = "verified"
+        dimension["exhaustive"] = True
+        dimension["identities"] = ["alpha"]
+        fixture.write(payload)
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "exhaustive coverage requires registry evidence",
+        ):
+            validate_catalog(self.root)
+
+    def test_exhaustive_registry_api_evidence_is_accepted(self) -> None:
+        fixture = self.fixture()
+        payload = fixture.payload()
+        for registry_kind, identity in (("pip", "alpha"), ("npm", "alpha")):
+            dimension = payload["records"][0]["registries"][registry_kind]
+            dimension["status"] = "verified"
+            dimension["exhaustive"] = True
+            dimension["identities"] = [identity]
+            dimension["evidence"] = [
+                _registry_api_evidence(registry_kind, identity)
+            ]
+        fixture.write(payload)
+
+        self.assertEqual(validate_catalog(self.root), 2)
+
+    def test_not_applicable_requires_exhaustive_registry_evidence(self) -> None:
+        fixture = self.fixture()
+        payload = fixture.payload()
+        dimension = payload["records"][0]["registries"]["pip"]
+        dimension["status"] = "not_applicable"
+        dimension["exhaustive"] = True
+        dimension["identities"] = []
+        dimension["evidence"] = [_registry_api_evidence("pip", "alpha")]
+        fixture.write(payload)
+
+        self.assertEqual(validate_catalog(self.root), 2)
+
+    def test_non_verified_decision_requires_evidence_rationale(self) -> None:
+        fixture = self.fixture()
+        payload = fixture.payload()
+        dimension = payload["records"][0]["registries"]["pip"]
+        dimension["status"] = "unknown"
+        dimension["evidence"][0]["rationale"] = None
+        fixture.write(payload)
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "unknown status requires a rationale",
+        ):
+            validate_catalog(self.root)
+
+    def test_exhaustive_decision_rejects_wrong_registry_evidence(self) -> None:
+        fixture = self.fixture()
+        payload = fixture.payload()
+        dimension = payload["records"][0]["registries"]["pip"]
+        dimension["status"] = "verified"
+        dimension["exhaustive"] = True
+        dimension["identities"] = ["alpha"]
+        dimension["evidence"] = [_registry_api_evidence("npm", "alpha")]
+        fixture.write(payload)
+
+        with self.assertRaisesRegex(
+            CatalogValidationError,
+            "exhaustive coverage requires registry evidence",
+        ):
+            validate_catalog(self.root)
+
+    def test_non_exhaustive_ambiguous_candidates_are_accepted(self) -> None:
+        fixture = self.fixture()
+        payload = fixture.payload()
+        dimension = payload["records"][0]["registries"]["pip"]
+        dimension["status"] = "ambiguous"
+        dimension["exhaustive"] = False
+        dimension["identities"] = ["alpha", "alpha-alt"]
+        fixture.write(payload)
+
+        self.assertEqual(validate_catalog(self.root), 2)
+
     def test_new_package_page_without_catalog_record_is_rejected(self) -> None:
         self.fixture()
         new_page = self.root / CONTENT_ROOT / "gamma.md"
@@ -1736,6 +1879,30 @@ def _dimension(
                 ),
             }
         ],
+    }
+
+
+def _registry_api_evidence(registry_kind: str, identity: str) -> dict[str, Any]:
+    if registry_kind == "pip":
+        locator = f"https://pypi.org/pypi/{identity}/json"
+        source_kind = "pypi_api"
+    else:
+        locator = f"https://registry.npmjs.org/{identity}"
+        source_kind = "npm_api"
+    snapshot = json.dumps(
+        {"name": identity, "registry": registry_kind},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    snapshot_sha256 = _sha256(snapshot)
+    return {
+        "source_kind": source_kind,
+        "source_locator": locator,
+        "source_revision": snapshot_sha256,
+        "evidence_sha256": snapshot_sha256,
+        "verified_by": "catalog-validator-test",
+        "verified_at": "2025-01-01T00:00:00+00:00",
+        "rationale": "Synthetic immutable registry evidence for a validator test.",
     }
 
 
