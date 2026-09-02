@@ -175,6 +175,15 @@ class RegistryEvidenceCollectorTests(unittest.TestCase):
             )
         self.assertFalse(self.output.exists())
 
+    def test_rejects_numeric_overflow_before_json_serialization(self) -> None:
+        payload = b'{"info":{"name":"alpha-pkg"},"overflow":1e999}'
+
+        with self.assertRaisesRegex(
+            collector.EvidenceCollectionError,
+            "non-finite number",
+        ):
+            collector._canonical_snapshot(payload, "pip", "alpha-pkg")
+
     def test_endpoint_allowlist_rejects_credentials_redirect_targets_and_http(self) -> None:
         invalid = (
             "http://pypi.org/pypi/alpha/json",
