@@ -284,10 +284,92 @@ def parse_candidate_specs(specifications: list[str], decisions: Mapping[str, dic
     return sorted(selected, key=lambda item: (item[0]["decision_id"], item[1]))
 
 
-def registry_endpoint(registry: str, candidate: str) -> str:
+def _worksheet_pypi_release_versions(decision: Mapping[str, str], candidate: str) -> set[str]:
+    versions: set[str] = set()
+    source_urls = _json_string_list(
+        decision["candidate_source_urls"],
+        f"{decision['decision_id']} source URLs",
+    )
+    for source_url in source_urls:
+        try:
+            parsed = urllib.parse.urlsplit(source_url)
+            port = parsed.port
+        except ValueError:
+            continue
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "pypi.org"
+            or parsed.username is not None
+            or parsed.password is not None
+            or port is not None
+            or parsed.query
+            or parsed.fragment not in {"", "files"}
+        ):
+            continue
+        match = re.fullmatch(r"/project/([^/]+)/([^/]+)/?", parsed.path)
+        if match is None:
+            continue
+        encoded_name, encoded_version = match.groups()
+        try:
+            observed_name = urllib.parse.unquote(encoded_name, errors="strict")
+            version = urllib.parse.unquote(encoded_version, errors="strict")
+        except UnicodeDecodeError:
+            continue
+        if (
+            urllib.parse.quote(observed_name, safe="") != encoded_name
+            or urllib.parse.quote(version, safe="") != encoded_version
+            or re.sub(r"[-_.]+", "-", observed_name).lower() != candidate
+            or not 1 <= len(version) <= 128
+            or version in {".", ".."}
+            or any(ord(character) < 33 or ord(character) > 126 for character in version)
+        ):
+            continue
+        versions.add(version)
+    return versions
+
+
+def parse_pypi_release_specs(
+    specifications: list[str],
+    selected: list[tuple[dict[str, str], str]],
+) -> dict[str, str]:
+    selected_by_decision: dict[str, list[tuple[dict[str, str], str]]] = {}
+    for decision, candidate in selected:
+        selected_by_decision.setdefault(decision["decision_id"], []).append((decision, candidate))
+
+    releases: dict[str, str] = {}
+    for specification in specifications:
+        decision_id, separator, version = specification.partition("=")
+        matches = selected_by_decision.get(decision_id, [])
+        if not separator or not version or len(matches) != 1:
+            raise EvidenceCollectionError(f"invalid PyPI release specification: {specification}")
+        decision, candidate = matches[0]
+        if decision["registry"] != "pip":
+            raise EvidenceCollectionError(
+                f"PyPI release specified for a non-pip decision: {decision_id}"
+            )
+        if decision_id in releases:
+            raise EvidenceCollectionError(f"duplicate PyPI release specification: {decision_id}")
+        if version not in _worksheet_pypi_release_versions(decision, candidate):
+            raise EvidenceCollectionError(
+                f"PyPI release is not bound by an immutable worksheet source URL: {decision_id}={version}"
+            )
+        releases[decision_id] = version
+    return releases
+
+
+def registry_endpoint(
+    registry: str,
+    candidate: str,
+    pypi_release_version: str | None = None,
+) -> str:
     if registry == "pip":
         encoded = urllib.parse.quote(candidate, safe="")
+        if pypi_release_version is not None:
+            encoded_version = urllib.parse.quote(pypi_release_version, safe="")
+            return f"https://pypi.org/pypi/{encoded}/{encoded_version}/json"
         return f"https://pypi.org/pypi/{encoded}/json"
+    if pypi_release_version is not None:
+        raise EvidenceCollectionError("PyPI release version cannot be used for npm")
     encoded = urllib.parse.quote(candidate, safe="")
     return f"https://registry.npmjs.org/{encoded}/latest"
 
@@ -307,7 +389,10 @@ def fetch_registry_json(url: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> b
         and parsed.query == ""
         and parsed.fragment == ""
         and (
-            (parsed.hostname == "pypi.org" and re.fullmatch(r"/pypi/[^/]+/json", parsed.path))
+            (
+                parsed.hostname == "pypi.org"
+                and re.fullmatch(r"/pypi/[^/]+(?:/[^/]+)?/json", parsed.path)
+            )
             or (parsed.hostname == "registry.npmjs.org" and re.fullmatch(r"/[^/]+/latest", parsed.path))
         )
     )
@@ -354,13 +439,20 @@ def fetch_registry_json(url: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> b
     return payload
 
 
-def _canonical_snapshot(payload: bytes, registry: str, candidate: str) -> bytes:
+def _canonical_snapshot(
+    payload: bytes,
+    registry: str,
+    candidate: str,
+    pypi_release_version: str | None = None,
+) -> bytes:
     document = _load_json(payload, f"{registry} registry response")
     if registry == "pip":
         info = document.get("info")
         observed = info.get("name") if isinstance(info, dict) else None
         if not isinstance(observed, str) or re.sub(r"[-_.]+", "-", observed).lower() != candidate:
             raise EvidenceCollectionError("PyPI response identity does not match the candidate")
+        if pypi_release_version is not None and info.get("version") != pypi_release_version:
+            raise EvidenceCollectionError("PyPI response version does not match the bound release")
     else:
         observed = document.get("name")
         if not isinstance(observed, str) or observed.lower() != candidate:
@@ -390,6 +482,7 @@ def collect(
     output_directory: Path,
     candidate_specs: list[str],
     *,
+    pypi_release_specs: list[str] | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     fetcher: Callable[[str, float], bytes] = fetch_registry_json,
 ) -> dict[str, Any]:
@@ -399,6 +492,7 @@ def collect(
         raise EvidenceCollectionError("timeout must be between 0.1 and 30 seconds")
     base_commit, decisions = load_worksheet(worksheet_directory)
     selected = parse_candidate_specs(candidate_specs, decisions)
+    pypi_releases = parse_pypi_release_specs(pypi_release_specs or [], selected)
 
     temporary_parent = output_directory.parent
     temporary_parent.mkdir(parents=True, exist_ok=True)
@@ -411,8 +505,18 @@ def collect(
         snapshot_entries: list[dict[str, str]] = []
         for decision, candidate in selected:
             registry = decision["registry"]
-            endpoint = registry_endpoint(registry, candidate)
-            canonical = _canonical_snapshot(fetcher(endpoint, timeout), registry, candidate)
+            pypi_release_version = pypi_releases.get(decision["decision_id"])
+            endpoint = registry_endpoint(
+                registry,
+                candidate,
+                pypi_release_version,
+            )
+            canonical = _canonical_snapshot(
+                fetcher(endpoint, timeout),
+                registry,
+                candidate,
+                pypi_release_version,
+            )
             digest = _sha256(canonical)
             snapshot_name = f"{digest}.json"
             snapshot_path = snapshots / snapshot_name
@@ -510,6 +614,16 @@ def main() -> int:
         metavar="DECISION_ID=NORMALIZED_IDENTITY",
         help="explicit normalized worksheet hint to query; repeat for additional candidates",
     )
+    parser.add_argument(
+        "--pypi-release",
+        action="append",
+        default=[],
+        metavar="DECISION_ID=VERSION",
+        help=(
+            "use a release-specific PyPI API endpoint when VERSION is explicitly "
+            "bound by a versioned PyPI source URL on the same selected decision"
+        ),
+    )
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     arguments = parser.parse_args()
     try:
@@ -517,6 +631,7 @@ def main() -> int:
             arguments.worksheet_directory,
             arguments.output_directory,
             arguments.candidate,
+            pypi_release_specs=arguments.pypi_release,
             timeout=arguments.timeout_seconds,
         )
     except EvidenceCollectionError as error:
