@@ -6,7 +6,7 @@ download_url: https://kubernetes.io/releases/download/
 works_on_arm: true
 supported_minimum_version:
     version_number: 1.5.0
-    release_date: 2016/12/13	
+    release_date: 2016/12/13
 
 optional_info:
     homepage_url: https://kubernetes.io/
@@ -17,7 +17,7 @@ optional_info:
         arm_content: https://learn.arm.com/install-guides/kubectl/
         partner_content:
             - display_name: Oracle OCI
-                url:https://docs.oracle.com/en/learn/arm_oke_cluster_oci/index.html
+              url: https://docs.oracle.com/en/learn/arm_oke_cluster_oci/index.html
     arm_recommended_minimum_version:
         version_number: 1.32.0
         release_date: 2024/12/11
