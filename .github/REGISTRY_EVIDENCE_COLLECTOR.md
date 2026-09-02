@@ -12,8 +12,15 @@ identity worksheet. It is advisory tooling, not an approval system.
   The normalized identity must already be present in that decision's immutable
   worksheet hints.
 - The collector constructs the URL itself. The only accepted endpoints are
-  `https://pypi.org/pypi/<name>/json` and
+  `https://pypi.org/pypi/<name>/json`, the explicitly bound release form
+  `https://pypi.org/pypi/<name>/<version>/json`, and
   `https://registry.npmjs.org/<name>/latest`.
+- A release-specific PyPI request requires an explicit
+  `--pypi-release DECISION_ID=VERSION`. The selected decision must be pip, must
+  have exactly one selected candidate, and must contain that exact package and
+  version in an immutable worksheet source URL of the form
+  `https://pypi.org/project/<name>/<version>/`. Arbitrary, unbound, cross-decision,
+  and npm release selections fail closed.
 - Redirects, URL credentials, ports, query strings, fragments, proxies,
   compressed responses, non-JSON media types, oversized responses, identity
   mismatches, duplicate JSON keys, and excessive JSON complexity fail closed.
@@ -34,6 +41,20 @@ python3 -I -B build_steps/collect_registry_evidence.py \
   --output-directory /tmp/package-identity-evidence \
   --candidate 'orjson:pip=orjson'
 ```
+
+For a project whose complete PyPI history exceeds the response-size boundary,
+use a version already bound by the same immutable worksheet decision:
+
+```bash
+python3 -I -B build_steps/collect_registry_evidence.py \
+  --worksheet-directory /tmp/package-identity-review \
+  --output-directory /tmp/package-identity-evidence \
+  --candidate 'numpy:pip=numpy' \
+  --pypi-release 'numpy:pip=1.19.0'
+```
+
+Release mode does not relax the two-million-byte response cap or any transport,
+JSON, identity, hashing, or human-review requirement.
 
 The output contains canonical snapshots, `collected-evidence.csv`,
 `proposed-decisions.csv`, and `collector-manifest.json`. Proposals always remain

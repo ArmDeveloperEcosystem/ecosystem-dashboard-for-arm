@@ -55,7 +55,11 @@ class RegistryEvidenceCollectorTests(unittest.TestCase):
                 "normalized_candidate_identity_hints": json.dumps(hints, separators=(",", ":")),
                 "invalid_candidate_identity_hints": "[]",
                 "candidate_source_fields": "[]",
-                "candidate_source_urls": "[]",
+                "candidate_source_urls": (
+                    '["https://pypi.org/project/alpha-pkg/1.2.3/#files"]'
+                    if registry == "pip"
+                    else "[]"
+                ),
                 "decision_status": "unknown",
                 "exhaustive": "false",
                 "review_state": "pending",
@@ -95,6 +99,8 @@ class RegistryEvidenceCollectorTests(unittest.TestCase):
     def fetch(url: str, timeout: float) -> bytes:
         if url == "https://pypi.org/pypi/alpha-pkg/json":
             return b'{"urls":[],"info":{"version":"1.0","name":"Alpha_Pkg"}}'
+        if url == "https://pypi.org/pypi/alpha-pkg/1.2.3/json":
+            return b'{"urls":[],"info":{"version":"1.2.3","name":"Alpha_Pkg"}}'
         if url == "https://registry.npmjs.org/%40scope%2Falpha/latest":
             return b'{"version":"2.0","name":"@scope/alpha"}'
         raise AssertionError((url, timeout))
@@ -154,6 +160,70 @@ class RegistryEvidenceCollectorTests(unittest.TestCase):
                 fetcher=self.fetch,
             )
 
+    def test_collects_release_bound_by_same_decision_source_url(self) -> None:
+        manifest = collector.collect(
+            self.worksheet,
+            self.output,
+            ["alpha:pip=alpha-pkg"],
+            pypi_release_specs=["alpha:pip=1.2.3"],
+            fetcher=self.fetch,
+        )
+
+        self.assertEqual(
+            manifest["snapshots"][0]["source_locator"],
+            "https://pypi.org/pypi/alpha-pkg/1.2.3/json",
+        )
+        with (self.output / "collected-evidence.csv").open(encoding="utf-8", newline="") as source:
+            evidence = list(csv.DictReader(source))
+        self.assertEqual(evidence[0]["source_kind"], "pypi_api")
+        self.assertEqual(evidence[0]["source_revision"], evidence[0]["evidence_sha256"])
+
+    def test_rejects_arbitrary_or_unbound_pypi_release(self) -> None:
+        cases = (
+            (["alpha:pip=alpha-pkg"], "alpha:pip=9.9.9", "not bound"),
+            (["alpha:npm=@scope/alpha"], "alpha:npm=1.2.3", "non-pip"),
+        )
+        for candidates, release, message in cases:
+            with self.subTest(release=release):
+                with self.assertRaisesRegex(collector.EvidenceCollectionError, message):
+                    collector.collect(
+                        self.worksheet,
+                        self.output,
+                        candidates,
+                        pypi_release_specs=[release],
+                        fetcher=self.fetch,
+                    )
+                self.assertFalse(self.output.exists())
+
+    def test_rejects_release_bound_only_to_another_decision(self) -> None:
+        decisions = collector.load_worksheet(self.worksheet)[1]
+        alpha = decisions["alpha:pip"]
+        other = dict(alpha)
+        other.update({
+            "decision_id": "other:pip",
+            "slug": "other",
+            "candidate_source_urls": '["https://pypi.org/project/alpha-pkg/9.9.9/#files"]',
+        })
+
+        with self.assertRaisesRegex(collector.EvidenceCollectionError, "not bound"):
+            collector.parse_pypi_release_specs(
+                ["alpha:pip=9.9.9"],
+                [(alpha, "alpha-pkg"), (other, "alpha-pkg")],
+            )
+
+    def test_rejects_release_response_with_wrong_version(self) -> None:
+        with self.assertRaisesRegex(collector.EvidenceCollectionError, "bound release"):
+            collector.collect(
+                self.worksheet,
+                self.output,
+                ["alpha:pip=alpha-pkg"],
+                pypi_release_specs=["alpha:pip=1.2.3"],
+                fetcher=lambda _url, _timeout: (
+                    b'{"urls":[],"info":{"version":"9.9.9","name":"Alpha_Pkg"}}'
+                ),
+            )
+        self.assertFalse(self.output.exists())
+
     def test_rejects_tampered_worksheet_file(self) -> None:
         with (self.worksheet / "registry-decisions.csv").open("ab") as target:
             target.write(b"tampered\n")
@@ -190,6 +260,7 @@ class RegistryEvidenceCollectorTests(unittest.TestCase):
             "https://user@pypi.org/pypi/alpha/json",
             "https://pypi.org.evil.example/pypi/alpha/json",
             "https://registry.npmjs.org/alpha",
+            "https://pypi.org/pypi/alpha/1.2.3/extra/json",
         )
         for url in invalid:
             with self.subTest(url=url):
@@ -254,6 +325,9 @@ class RegistryEvidenceCollectorTests(unittest.TestCase):
             with self.subTest(specifications=specifications):
                 with self.assertRaisesRegex(collector.EvidenceCollectionError, message):
                     collector.parse_candidate_specs(specifications, decisions)
+        selected = collector.parse_candidate_specs(["alpha:pip=alpha-pkg"], decisions)
+        with self.assertRaisesRegex(collector.EvidenceCollectionError, "invalid PyPI release"):
+            collector.parse_pypi_release_specs(["missing:pip=1.2.3"], selected)
         with self.assertRaisesRegex(collector.EvidenceCollectionError, "complexity"):
             collector._canonical_snapshot(
                 (b'{"info":{"name":"alpha-pkg","nested":' + b"[" * 40 + b"0" + b"]" * 40 + b"}}"),
