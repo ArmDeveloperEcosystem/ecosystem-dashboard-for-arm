@@ -19,6 +19,7 @@ import csv
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -129,6 +130,8 @@ def _bound_json(value: Any, label: str) -> None:
             pending.extend((child, depth + 1) for child in item.values())
         elif isinstance(item, list):
             pending.extend((child, depth + 1) for child in item)
+        elif isinstance(item, float) and not math.isfinite(item):
+            raise EvidenceCollectionError(f"{label} contains a non-finite number")
         elif isinstance(item, str) and len(item) > MAX_RESPONSE_BYTES:
             raise EvidenceCollectionError(f"{label} contains an oversized JSON string")
 
@@ -362,7 +365,16 @@ def _canonical_snapshot(payload: bytes, registry: str, candidate: str) -> bytes:
         observed = document.get("name")
         if not isinstance(observed, str) or observed.lower() != candidate:
             raise EvidenceCollectionError("npm response identity does not match the candidate")
-    return (json.dumps(document, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    return (
+        json.dumps(
+            document,
+            allow_nan=False,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
 
 
 def _csv_bytes(columns: tuple[str, ...], rows: list[Mapping[str, str]]) -> bytes:
@@ -469,7 +481,16 @@ def collect(
             },
             "snapshots": snapshot_entries,
         }
-        manifest_payload = (json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        manifest_payload = (
+            json.dumps(
+                manifest,
+                allow_nan=False,
+                ensure_ascii=True,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
         (temporary / "collector-manifest.json").write_bytes(manifest_payload)
         os.replace(temporary, output_directory)
         return manifest
