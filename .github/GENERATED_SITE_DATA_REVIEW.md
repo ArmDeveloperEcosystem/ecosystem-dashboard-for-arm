@@ -60,3 +60,29 @@ After a bounded run, immediately return
 workflow never approves or merges it. Merge the generated-data PR before any
 source change that depends on those bytes reaches `main`; otherwise deployment
 stops at the generated-data drift gate without changing production.
+
+## Production deployment
+
+Production deployment is a separate, manual-only, fail-closed workflow. Keep
+repository variable `PRODUCTION_DEPLOYMENT_ENABLED=false` except during one
+approved bounded deployment. A production run must be manually dispatched from
+the default branch while that variable is exactly `true`.
+
+The deployment job is bound to the exact dispatch commit and enters protected
+environment `production` before it can access AWS credentials or run Hugo.
+Require independent reviewers, prevent self-review, disable administrator
+bypass, and allow only the default branch in that environment. Once the
+protected job is waiting for approval, immediately return
+`PRODUCTION_DEPLOYMENT_ENABLED=false`.
+
+Immediately before `hugo deploy`, the workflow confirms that the live default
+branch still points to the reviewed dispatch commit. If `main` advances while a
+run waits for approval or builds, the stale run fails instead of rolling
+production backward. The checkout retains complete Git history because Hugo
+uses Git metadata for page modification dates.
+
+The deployment regenerates and validates the three allowlisted site-data files
+before building. Any difference from the reviewed bytes on `main`, or any other
+unexpected tracked or untracked preprocessing change, fails before `hugo
+deploy`. Enabling a push trigger or unattended production deployment is a
+separate policy change and is outside this initial rollout.

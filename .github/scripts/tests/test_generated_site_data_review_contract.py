@@ -168,11 +168,36 @@ class GeneratedSiteDataReviewContractTests(unittest.TestCase):
             "data/recently_added_packages.yaml",
         ):
             self.assertEqual(main.count(path), 1)
-        self.assertIn("git diff --quiet", main)
-        self.assertLess(main.index("git diff --quiet"), main.index("hugo --minify"))
-        self.assertLess(main.index("git diff --quiet"), main.index("hugo deploy"))
+        self.assertIn('git diff --quiet HEAD -- "${generated_paths[@]}"', main)
+        self.assertIn("git diff --quiet HEAD --", main)
+        self.assertIn("git ls-files --others --exclude-standard", main)
+        self.assertLess(main.index("git diff --quiet HEAD --"), main.index("hugo --minify"))
+        self.assertLess(main.index("git diff --quiet HEAD --"), main.index("hugo deploy"))
         self.assertIn("--require-hashes", main)
         self.assertIn("generated-site-data-requirements.txt", main)
+
+    def test_main_deploy_is_manual_only_fail_closed_and_protected(self) -> None:
+        main = MAIN_WORKFLOW.read_text(encoding="utf-8")
+        trigger = main.split("permissions:", maxsplit=1)[0]
+
+        self.assertIn("  workflow_dispatch:\n", trigger)
+        self.assertNotIn("pull_request", trigger)
+        self.assertNotIn("push:", trigger)
+        self.assertIn("PRODUCTION_DEPLOYMENT_ENABLED", main)
+        self.assertIn('== "true"', main)
+        self.assertIn("vars.PRODUCTION_DEPLOYMENT_ENABLED == 'true'", main)
+        self.assertIn("Production deployment is disabled", main)
+        self.assertIn("environment: production", main)
+        self.assertIn("group: production-deployment", main)
+        self.assertIn("cancel-in-progress: false", main)
+        self.assertIn("needs: activation", main)
+        self.assertIn("fetch-depth: 0", main)
+        self.assertIn("ref: ${{ needs.activation.outputs.base_sha }}", main)
+        self.assertIn("git rev-parse --verify 'HEAD^{commit}'", main)
+        self.assertIn('[[ "$GITHUB_REF_NAME" == "$DEFAULT_BRANCH" ]]', main)
+        self.assertIn("git ls-remote --exit-code origin", main)
+        self.assertIn("refusing to deploy stale content", main)
+        self.assertLess(main.index("git ls-remote --exit-code origin"), main.index("hugo deploy"))
 
     def test_main_deploy_external_actions_are_exactly_sha_pinned(self) -> None:
         main = MAIN_WORKFLOW.read_text(encoding="utf-8")
@@ -221,6 +246,15 @@ class GeneratedSiteDataReviewContractTests(unittest.TestCase):
         self.assertIn("downscopes its token", operations)
         self.assertIn("separately", operations)
         self.assertIn("Do not substitute a PAT", operations)
+        self.assertIn("PRODUCTION_DEPLOYMENT_ENABLED=false", operations)
+        self.assertIn("environment `production`", operations)
+        self.assertIn("manual-only, fail-closed", operations)
+        self.assertIn("prevent self-review", operations)
+        self.assertIn("disable administrator\nbypass", operations)
+        self.assertIn(
+            "stale run fails instead of rolling\nproduction backward", operations
+        )
+        self.assertIn("complete Git history", operations)
 
 
 if __name__ == "__main__":
