@@ -3,10 +3,11 @@
 ## Status
 
 `generated-site-data-review.yml` is a dormant, manual-only review path. It is
-not called by `main.yml`, does not deploy the site, and does not change the
-current preprocessing or deployment behavior. Missing configuration fails
-closed. Cutting `main.yml` over to this path requires a later, separately
-reviewed change.
+not called by `main.yml` and does not deploy the site. Missing configuration fails
+closed. The production deployment regenerates the same three files with the
+same pinned Python dependency and stops before deployment if their bytes differ
+from the reviewed repository versions. Generated changes must therefore reach
+`main` through a reviewed pull request opened by this workflow.
 
 ## What a bounded run does
 
@@ -56,6 +57,32 @@ Contents, and Pull requests because it never edits workflow files.
 
 After a bounded run, immediately return
 `GENERATED_SITE_DATA_REVIEW_ENABLED=false`. Review the draft PR normally; this
-workflow never approves or merges it. A later production cutover must remove the
-direct generated-data write from `main.yml` and wire deployment to independently
-reviewed merged data in a separate PR.
+workflow never approves or merges it. Merge the generated-data PR before any
+source change that depends on those bytes reaches `main`; otherwise deployment
+stops at the generated-data drift gate without changing production.
+
+## Production deployment
+
+Production deployment is a separate, manual-only, fail-closed workflow. Keep
+repository variable `PRODUCTION_DEPLOYMENT_ENABLED=false` except during one
+approved bounded deployment. A production run must be manually dispatched from
+the default branch while that variable is exactly `true`.
+
+The deployment job is bound to the exact dispatch commit and enters protected
+environment `production` before it can access AWS credentials or run Hugo.
+Require independent reviewers, prevent self-review, disable administrator
+bypass, and allow only the default branch in that environment. Once the
+protected job is waiting for approval, immediately return
+`PRODUCTION_DEPLOYMENT_ENABLED=false`.
+
+Immediately before `hugo deploy`, the workflow confirms that the live default
+branch still points to the reviewed dispatch commit. If `main` advances while a
+run waits for approval or builds, the stale run fails instead of rolling
+production backward. The checkout retains complete Git history because Hugo
+uses Git metadata for page modification dates.
+
+The deployment regenerates and validates the three allowlisted site-data files
+before building. Any difference from the reviewed bytes on `main`, or any other
+unexpected tracked or untracked preprocessing change, fails before `hugo
+deploy`. Enabling a push trigger or unattended production deployment is a
+separate policy change and is outside this initial rollout.
