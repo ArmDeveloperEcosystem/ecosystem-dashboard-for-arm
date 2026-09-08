@@ -1,7 +1,7 @@
 ---
 name: Kong Gateway
 vendor: Kong (API GW)
-category: Networking
+category: Tool / Action Execution
 description: Kong Gateway is a lightweight, fast, and flexible cloud-native API gateway.
 product_url: https://konghq.com/products/kong-gateway
 works_on_arm: true

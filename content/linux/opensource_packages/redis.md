@@ -1,6 +1,6 @@
 ---
 name: Redis
-category: Databases - noSQL
+category: Data / Memory / State
 description: Redis is an open-source, in-memory data structure store used as a database, cache, message broker, and streaming engine.
 download_url: https://redis.io/download/
 works_on_arm: true

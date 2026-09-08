@@ -1,6 +1,6 @@
 ---
 name: TensorRT-LLM
-category: AI/ML
+category: Model Serving / Runtime
 description: TensorRT-LLM is an open-source NVIDIA library that accelerates and optimizes large language model inference on GPUs, providing high-performance runtimes, advanced parallelism, and production-ready optimization features.
 download_url: https://github.com/NVIDIA/TensorRT-LLM/releases
 works_on_arm: true

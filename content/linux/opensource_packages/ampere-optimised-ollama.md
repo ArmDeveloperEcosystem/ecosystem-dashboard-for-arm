@@ -1,6 +1,6 @@
 ---
 name: Ampere Optimized Ollama
-category: AI/ML
+category: Model Serving / Runtime
 description: Ampere Optimized Ollama is an optimized build of Ollama designed to efficiently run and serve large language models on Ampere CPUs, delivering improved inference performance through architecture-specific optimizations and support for custom quantized models.
 download_url: https://hub.docker.com/r/amperecomputingai/ollama/tags
 works_on_arm: true

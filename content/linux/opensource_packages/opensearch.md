@@ -1,6 +1,6 @@
 ---
 name: Opensearch
-category: Databases - noSQL
+category: RAG / Vector Search
 description: OpenSearch is a fully open source, distributed search and analytics engine used for a wide range of use cases including site search, observability, and security analytics.
 download_url: https://opensearch.org/downloads/
 works_on_arm: true

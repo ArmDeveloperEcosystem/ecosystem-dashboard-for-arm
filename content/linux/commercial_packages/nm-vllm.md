@@ -1,7 +1,7 @@
 ---
 name: nm-vllm
 vendor: Neural Magic
-category: AI/ML
+category: Model Serving / Runtime
 description: nm-vllm is the supported enterprise distribution of vLLM. It's a high-throughput, memory-efficient inference engine for LLMs.
 product_url: https://neuralmagic.com/nm-vllm/
 works_on_arm: false

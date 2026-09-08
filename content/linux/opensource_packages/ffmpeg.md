@@ -1,6 +1,6 @@
 ---
 name: FFmpeg
-category: Video
+category: AI / Data Processing
 description: FFmpeg is an open-source software project consisting of a suite of libraries and programs for handling video, audio, and other multimedia files and streams.
 download_url: https://ffmpeg.org/download.html
 works_on_arm: true

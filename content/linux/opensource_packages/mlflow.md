@@ -1,6 +1,6 @@
 ---
 name: MLflow
-category: AI/ML
+category: Observability
 description: MLflow is an open-source platform for building and managing AI/LLM applications, providing integrated experiment tracking, observability, and evaluation tools to support end-to-end model development.
 download_url: https://github.com/mlflow/mlflow/releases
 works_on_arm: true

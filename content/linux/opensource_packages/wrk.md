@@ -1,6 +1,6 @@
 ---
 name: WRK
-category: Monitoring/Observability
+category: Benchmarks / Evaluation
 description: Wrk is a modern HTTP benchmarking tool that generates significant load on web servers to evaluate their performance. It features a multi-threaded design and customizable request patterns, making it ideal for stress testing and analyzing server responses.
 download_url: https://github.com/wg/wrk/tags
 works_on_arm: true

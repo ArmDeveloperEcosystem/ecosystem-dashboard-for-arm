@@ -1,6 +1,6 @@
 ---
 name: Tesseract 
-category: AI/ML 
+category: AI / Data Processing
 description: Tesseract is an open-source optical character recognition (OCR) engine that is widely used in AI and machine learning applications to extract text from images or scanned documents. It leverages machine learning techniques to recognize and convert different types of text.
 download_url: https://github.com/tesseract-ocr/tesseract/releases
 works_on_arm: true

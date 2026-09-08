@@ -1,6 +1,6 @@
 ---
 name: Docker CE
-category: Containers and Orchestration
+category: Platform / Infrastructure
 description: Docker CE (Community Edition) is an open-source platform for developing, shipping, and running applications in containers.
 download_url: https://github.com/docker-archive/docker-ce/tags
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: LangChain
-category: Languages and Frameworks
+category: Agent Orchestration
 description: LangChain is a framework that simplifies building applications with large language models, offering tools for prompt management, state handling, chain-of-thought reasoning, and integration with external data sources.
 download_url: https://pypi.org/project/langchain/#files
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: Transformers (Hugging Face)
-category: AI/ML
+category: Model Serving / Runtime
 description: Transformers from Hugging Face is a toolkit that simplifies the utilization of advanced AI models for comprehending and generating human language.
 download_url: https://pypi.org/project/transformers/#history
 works_on_arm: true

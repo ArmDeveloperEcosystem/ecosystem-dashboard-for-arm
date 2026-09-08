@@ -1,6 +1,6 @@
 ---
 name: Whisper
-category: AI/ML
+category: AI / Data Processing
 description: Whisper is a speech recognition model, which is trained on a large dataset of audio. Whisper can perform multilingual speech recognition/translation, and language identification.
 download_url: https://pypi.org/project/openai-whisper/#history
 works_on_arm: true

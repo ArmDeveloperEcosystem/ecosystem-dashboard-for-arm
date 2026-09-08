@@ -1,6 +1,6 @@
 ---
 name: Ollama
-category: AI/ML
+category: Model Serving / Runtime
 description: Ollama is a lightweight framework for running large language models locally, offering simple commands to download, manage, and serve models like GPT-OSS, Gemma, DeepSeek, and Qwen with minimal setup.
 download_url: https://github.com/ollama/ollama/releases
 works_on_arm: true

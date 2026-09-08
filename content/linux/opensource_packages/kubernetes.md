@@ -1,6 +1,6 @@
 ---
 name: Kubernetes
-category: Containers and Orchestration
+category: Platform / Infrastructure
 description: Kubernetes is an open-source system for automating deployment, scaling, and management of containerized applications.
 download_url: https://kubernetes.io/releases/download/
 works_on_arm: true

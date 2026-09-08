@@ -1,6 +1,6 @@
 ---
 name: MinIO OS
-category: Storage
+category: Data / Memory / State
 description: MinIO is a high-performance distributed Object Storage server, which is designed for large-scale private cloud infrastructure.
 download_url: https://github.com/minio/minio/releases
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: Opentelemetry-cpp
-category: Monitoring/Observability
+category: Observability
 description: C++ Client for observability framework & toolkit designed to create, manage telemetry data such as traces, metrics, and log.
 download_url: https://github.com/open-telemetry/opentelemetry-cpp/releases
 works_on_arm: true

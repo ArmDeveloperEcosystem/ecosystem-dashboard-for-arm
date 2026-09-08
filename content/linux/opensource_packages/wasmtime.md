@@ -1,6 +1,6 @@
 ---
 name: Wasmtime
-category: Runtimes
+category: Tool / Action Execution
 description: Wasmtime is a runtime for WebAssembly. It is fast, secure, configurable, supports a rich set of APIs, and compliant by standards.
 download_url: https://github.com/bytecodealliance/wasmtime/releases
 works_on_arm: true

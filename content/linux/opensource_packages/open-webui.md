@@ -1,6 +1,6 @@
 ---
 name: Open WebUI
-category: AI/ML
+category: Agent Orchestration
 description: Open WebUI is a self-hosted, offline-capable AI platform with an extensible interface that supports multiple LLM runtimes and includes built-in RAG capabilities for deploying powerful local AI applications.
 download_url: https://pypi.org/project/open-webui/#history
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: Qdrant
-category: AI/ML
+category: RAG / Vector Search
 description: Qdrant is a high-performance vector database designed to handle large-scale, high-dimensional vector data. It is particularly useful for applications in machine learning and artificial intelligence.
 download_url: https://github.com/qdrant/qdrant/releases
 works_on_arm: true

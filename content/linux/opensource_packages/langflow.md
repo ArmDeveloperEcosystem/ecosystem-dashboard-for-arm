@@ -1,6 +1,6 @@
 ---
 name: Langflow
-category: AI/ML
+category: Agent Orchestration
 description: Langflow is an open-source, Python-based visual framework for building AI applications, offering drag-and-drop workflow design with support for agents, MCP, and any LLM or vector store.
 download_url: https://pypi.org/project/langflow/#history
 works_on_arm: true

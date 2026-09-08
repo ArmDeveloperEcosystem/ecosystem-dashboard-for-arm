@@ -1,6 +1,6 @@
 ---
 name: CuVS
-category: AI/ML
+category: RAG / Vector Search
 description: CuVS is a CUDA-based GPU library that provides high-performance algorithms for vector similarity search, nearest neighbor queries, and clustering in large-scale machine learning workloads.
 download_url: https://anaconda.org/channels/rapidsai/packages/cuvs/files
 works_on_arm: true

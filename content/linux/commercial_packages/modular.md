@@ -1,7 +1,7 @@
 ---
 name: Modular Accelerated Xecution (MAX)
 vendor: Modular
-category: AI/ML
+category: Model Serving / Runtime
 description: Modular Accelerated Xecution (MAX) is a framework that speeds up computational tasks by breaking them into modular, optimized components. It improves performance and efficiency across different applications.
 product_url: https://www.modular.com/max
 works_on_arm: true

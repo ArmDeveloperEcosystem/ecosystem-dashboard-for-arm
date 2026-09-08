@@ -1,6 +1,6 @@
 ---
 name: Ampere Optimized ONNX Runtime
-category: AI/ML
+category: Model Serving / Runtime
 description: Ampere Optimized ONNX Runtime is an inference acceleration backend for ONNX Runtime that enhances deep learning performance on Ampere Altra ARM CPUs using model optimizations, vectorized compute kernels, and multi-threaded execution without requiring model changes.
 download_url: https://hub.docker.com/r/amperecomputingai/onnxruntime/tags
 works_on_arm: true
