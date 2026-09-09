@@ -417,8 +417,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "status=failed" >> "$GITHUB_OUTPUT"
-          echo "duration=0" >> "$GITHUB_OUTPUT"
+          {
+            echo "decision=next_install_failed"
+            echo "status=failed"
+            echo "duration=0"
+          } >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
           STATUS=failed
           WORKDIR=""
@@ -437,7 +440,6 @@ jobs:
           echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
           echo "next_installed_version=not_validated" >> "$GITHUB_OUTPUT"
-          echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
           for RESULT in \
             "${{ steps.test1.outputs.status || 'failed' }}:${{ steps.test1.outcome || 'failure' }}" \
             "${{ steps.test2.outputs.status || 'failed' }}:${{ steps.test2.outcome || 'failure' }}" \
@@ -445,21 +447,28 @@ jobs:
             "${{ steps.test4.outputs.status || 'failed' }}:${{ steps.test4.outcome || 'failure' }}" \
             "${{ steps.test5.outputs.status || 'failed' }}:${{ steps.test5.outcome || 'failure' }}"; do
             if [ "$RESULT" != "passed:success" ]; then
-              echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+              {
+                echo "decision=baseline_failed"
+                echo "status=failed"
+                echo "duration=$(($(date +%s) - START_TIME))"
+              } >> "$GITHUB_OUTPUT"
               echo "regression_result=Baseline CPU checks failed; candidate was not validated." >> "$GITHUB_OUTPUT"
               exit 1
             fi
           done
-          test -n "$LATEST_VERSION"
-          if [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
-            STATUS=skipped
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
-            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
-            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Baseline equals the configured candidate version." >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          python3 - "$CURRENT_VERSION" "$LATEST_VERSION" <<'PY'
+          import re
+          import sys
+
+          def numeric_version(value):
+              if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value) is None:
+                  raise SystemExit("Invalid configured Cobbler version: " + value)
+              return tuple(int(part) for part in value.split("."))
+
+          current, candidate = map(numeric_version, sys.argv[1:])
+          if candidate <= current:
+              raise SystemExit("Configured Cobbler candidate must be newer than the baseline")
+          PY
           WORKDIR=$(mktemp -d)
           python3 -m venv "$WORKDIR/next-venv"
           source "$WORKDIR/next-venv/bin/activate"
@@ -474,9 +483,11 @@ jobs:
           python -c "import cobbler; print(cobbler.__file__)"
           timeout --signal=TERM --kill-after=15s 180s sudo env VENV="$WORKDIR/next-venv" EXPECTED_VERSION="$LATEST_VERSION" bash -e -o pipefail -c "$COBBLER_CLI_SMOKE"
           STATUS=passed
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
-          echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+          {
+            echo "decision=next_install_validated"
+            echo "status=passed"
+            echo "duration=$(($(date +%s) - START_TIME))"
+          } >> "$GITHUB_OUTPUT"
           echo "regression_result=Exact candidate installed and local signature CLI help passed on Arm64." >> "$GITHUB_OUTPUT"
           echo "comparison=Baseline $CURRENT_VERSION and candidate $LATEST_VERSION passed package version/import and real signature help against temporary loopback-only Cobbler services. No provisioning, DHCP, DNS, TFTP or external credentials were used." >> "$GITHUB_OUTPUT"
 
@@ -498,7 +509,6 @@ jobs:
           O4="${{ steps.test4.outcome || 'failure' }}"
           O5="${{ steps.test5.outcome || 'failure' }}"
           O6="${{ steps.test6.outcome || 'failure' }}"
-          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -519,8 +529,6 @@ jobs:
           done
           if [ "$T6:$O6" = "passed:success" ]; then
             PASSED=$((PASSED + 1))
-          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
-            SKIPPED=1
           else
             FAILED=$((FAILED + 1))
           fi

@@ -72,6 +72,44 @@ class CobblerWorkflowTests(unittest.TestCase):
                         WORKFLOW.parents[2], self.steps[f"test{number}"], output,
                     ))
 
+    def test_literal_decision_status_pairs_match_existing_observation_audit(self):
+        self.assertEqual(
+            {
+                ("next_install_failed", "failed"),
+                ("baseline_failed", "failed"),
+                ("next_install_validated", "passed"),
+            },
+            set(observation_audit._step_literal_pairs(
+                WORKFLOW.parents[2], self.steps["test6"],
+            )),
+        )
+
+    def test_same_or_older_configured_candidate_fails_before_installation(self):
+        for current, candidate in (("3.3.7", "v3.3.7"), ("3.3.6", "v3.3.5")):
+            with self.subTest(current=current, candidate=candidate):
+                result, outputs = self.run_step(
+                    "test6", {"steps.version.outputs.version": current},
+                    COBBLER_NEXT_VERSION=candidate,
+                )
+                self.assertEqual(1, result.returncode, result.stderr)
+                self.assertIn("candidate must be newer", result.stderr)
+                self.assertEqual("next_install_failed", outputs["decision"])
+                self.assertEqual("failed", outputs["status"])
+                self.assertEqual("not_validated", outputs["next_installed_version"])
+                self.assertTrue(outputs["duration"].isdigit())
+
+    def test_candidate_ordering_is_numeric_and_rejects_invalid_versions(self):
+        script = self.steps["test6"]["run"].split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
+        for current, candidate, expected in (
+            ("3.3.9", "3.3.10", 0), ("3.3.10", "3.3.9", 1),
+            ("unknown", "3.3.7", 1), ("3.3.6", "3.3.7rc1", 1),
+            ("3.3.6", "", 1), ("3.3.6", "3.3.7.1", 1),
+        ):
+            with self.subTest(current=current, candidate=candidate):
+                result = subprocess.run([sys.executable, "-B", "-c", script, current, candidate],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(expected, result.returncode, result.stderr)
+
     def test_original_skipped_signature_check_is_a_core_failure(self):
         result, outputs = self.run_step("summary", {"steps.test4.outputs.status": "skipped"})
         self.assertEqual(1, result.returncode)
@@ -91,12 +129,12 @@ class CobblerWorkflowTests(unittest.TestCase):
             self.assertEqual(1, result.returncode)
             self.assertEqual("1", outputs["failed"])
 
-    def test_only_explicit_no_newer_candidate_is_na(self):
+    def test_candidate_skip_is_not_supported_without_release_discovery(self):
         result, outputs = self.run_step("summary")
         self.assertEqual((0, "6", "0", "0"), (result.returncode, outputs["passed"], outputs["failed"], outputs["skipped"]))
         for decision in ("", "baseline_failed", "runtime_validation_not_automated", "no_newer_stable_available"):
             result, outputs = self.run_step("summary", {"steps.test6.outputs.status": "skipped", "steps.test6.outputs.decision": decision})
-            self.assertEqual(0 if decision == "no_newer_stable_available" else 1, result.returncode)
+            self.assertEqual(1, result.returncode)
 
     def test_signature_command_failure_preserves_status_and_duration(self):
         self.executable("timeout", 'shift 3\nexec "$@"\n')
