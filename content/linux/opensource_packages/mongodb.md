@@ -1,6 +1,6 @@
 ---
 name: MongoDB
-category: Databases - noSQL
+category: Data / Memory / State
 description: MongoDB is a source-available, cross-platform, document-oriented database program. It is a NoSQL database product.
 download_url: https://www.mongodb.com/download-center/enterprise/releases
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: Ampere Optimized Llama.cpp
-category: AI/ML
+category: Model Serving / Runtime
 description: Ampere Optimized llama.cpp is an optimized build of llama.cpp designed to run GGUF large language models efficiently on Ampere CPUs, providing improved inference performance through architecture-specific optimizations.
 download_url: https://github.com/AmpereComputingAI/llama.cpp/releases
 works_on_arm: true

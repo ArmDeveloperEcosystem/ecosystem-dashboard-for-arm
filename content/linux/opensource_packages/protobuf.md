@@ -1,6 +1,6 @@
 ---
 name: Protobuf
-category: Data-format
+category: AI / Data Processing
 description: Protocol Buffers (protobuf) is Google's language-neutral, platform-neutral, extensible mechanism for serializing structured data. 
 download_url: https://github.com/protocolbuffers/protobuf/releases
 works_on_arm: true

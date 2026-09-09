@@ -1,6 +1,6 @@
 ---
 name: NVIDIA NeMo Agent Toolkit
-category: AI/ML
+category: Agent Orchestration
 description: NVIDIA NeMo Agent Toolkit is a lightweight, framework-agnostic AI/ML library for building, composing, profiling, and operating enterprise-grade agentic workflows, enabling seamless integration with existing agent frameworks, data sources, tools, and observability systems without replatforming.
 download_url: https://github.com/NVIDIA/NeMo-Agent-Toolkit/releases
 works_on_arm: true

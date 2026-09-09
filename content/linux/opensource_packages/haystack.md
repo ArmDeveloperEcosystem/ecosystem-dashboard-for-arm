@@ -1,6 +1,6 @@
 ---
 name: Haystack
-category: AI/ML
+category: Agent Orchestration
 description: Haystack is an LLM framework for building applications powered by LLMs, vector search, Transformer models, and more. It can orchestrate embedding models and LLMs into pipelines to build end-to-end NLP applications and solve problems.
 download_url: https://pypi.org/project/haystack-ai/#history
 works_on_arm: true

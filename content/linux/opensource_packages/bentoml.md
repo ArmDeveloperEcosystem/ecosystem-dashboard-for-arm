@@ -1,6 +1,6 @@
 ---
 name: BentoML
-category: AI/ML
+category: Model Serving / Runtime
 description: BentoML is a Python framework for building high-performance AI model serving systems, enabling developers to turn any ML or LLM model into scalable REST APIs while optimizing inference through batching, parallelism, and containerized deployment.
 download_url: https://pypi.org/project/bentoml/#history
 works_on_arm: true
