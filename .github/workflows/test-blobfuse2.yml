@@ -90,6 +90,29 @@ jobs:
       HOMEPAGE_URL: "https://github.com/Azure/azure-storage-fuse"
       OFFICIAL_DOCS: "https://github.com/Azure/azure-storage-fuse/wiki/Blobfuse2-Installation"
       GITHUB_REPO: "Azure/azure-storage-fuse"
+      BLOBFUSE_SMOKE: |
+        set -euo pipefail
+        [ "$(uname -m)" = aarch64 ]
+        cd "$SOURCE_DIR"
+        [ "$(git describe --tags --exact-match HEAD)" = "blobfuse2-$EXPECTED_VERSION" ]
+        SMOKE_DIR=$(mktemp -d "${RUNNER_TEMP}/blobfuse2-smoke.XXXXXX")
+        trap 'rm -rf "$SMOKE_DIR"' EXIT
+        pkg-config --modversion fuse3
+        go version
+        go list ./... > "$SMOKE_DIR/packages.txt"
+        timeout 600s env CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -o "$SMOKE_DIR/blobfuse2" .
+        file "$SMOKE_DIR/blobfuse2" | tee "$SMOKE_DIR/elf.txt"
+        grep -Eiq 'aarch64|ARM aarch64|ARM64' "$SMOKE_DIR/elf.txt"
+        "$SMOKE_DIR/blobfuse2" --version | tee "$SMOKE_DIR/version.txt"
+        grep -Fx "blobfuse2 version $EXPECTED_VERSION" "$SMOKE_DIR/version.txt"
+        "$SMOKE_DIR/blobfuse2" mount all --help > "$SMOKE_DIR/mount-help.txt"
+        grep -F 'Usage:' "$SMOKE_DIR/mount-help.txt"
+        printf '%s\n' 'version: 2' 'logging:' '  type: syslog' 'components:' \
+          '  - libfuse' '  - attr_cache' '  - azstorage' 'azstorage:' '  type: block' \
+          '  account-name: invalid-smoke-account' '  account-key: invalid-smoke-key' \
+          '  container: invalid-smoke-container' > "$SMOKE_DIR/minimal.yaml"
+        grep -Eq 'azstorage|libfuse|attr_cache' "$SMOKE_DIR/minimal.yaml"
+        printf 'source=%s version=%s cli=passed\n' "$(git rev-parse HEAD)" "$EXPECTED_VERSION"
 
     outputs:
       contract_version: "2.0"
@@ -133,7 +156,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates build-essential pkg-config libfuse3-dev golang-go"
           quiet: "true"
 
       - name: Install baseline source or artifact
@@ -141,38 +164,12 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf baseline-src baseline-external
-          mkdir -p baseline-src baseline-external
-          if [ -n "$GITHUB_REPO" ]; then
-            RESOLVED_TAG=""
-            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
-              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
-                RESOLVED_TAG="$CANDIDATE"
-                break
-              fi
-            done
-            if [ -n "$RESOLVED_TAG" ]; then
-              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
-            else
-              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
-            fi
-            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
+          RESOLVED_TAG="blobfuse2-$BASELINE_VERSION"
+          git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src
+          [ "$(git -C baseline-src describe --tags --exact-match HEAD)" = "$RESOLVED_TAG" ]
+          echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
+          echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get baseline version
         id: version
@@ -347,91 +344,12 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if [ "$MODE" != "github_source" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "note=Blobfuse2 Arm preflight requires the checked-out source tree so the CLI can be built and exercised." >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          cd baseline-src
-          go list ./... >/tmp/blobfuse2-go-packages.txt
-          GOOS=linux GOARCH=arm64 go build -o /tmp/blobfuse2-arm64 .
-          file /tmp/blobfuse2-arm64 | grep -Eiq 'aarch64|ARM aarch64|ARM64'
-          /tmp/blobfuse2-arm64 --version >/tmp/blobfuse2-version.txt 2>&1 || /tmp/blobfuse2-arm64 --help >/tmp/blobfuse2-version.txt
-          /tmp/blobfuse2-arm64 mount all --help >/tmp/blobfuse2-mount-help.txt
-          printf '%s\n' \
-            'version: 2' \
-            'logging:' \
-            '  type: syslog' \
-            'components:' \
-            '  - libfuse' \
-            '  - attr_cache' \
-            '  - azstorage' \
-            'azstorage:' \
-            '  type: block' \
-            '  account-name: invalid-smoke-account' \
-            '  account-key: invalid-smoke-key' \
-            '  container: invalid-smoke-container' \
-            > /tmp/blobfuse2-minimal.yaml
-          grep -Eq 'azstorage|libfuse|attr_cache' /tmp/blobfuse2-minimal.yaml
+          trap 'rc=$?; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"; if [ "$rc" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; fi' EXIT
+          [ "${{ steps.install.outputs.install_mode || '' }}" = github_source ]
+          SOURCE_DIR=baseline-src EXPECTED_VERSION="$BASELINE_VERSION" bash -euo pipefail -c "$BLOBFUSE_SMOKE"
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "note=Built the Blobfuse2 Linux/Arm64 CLI from source, verified the AArch64 binary, exercised version/help and mount command parsing, and validated a minimal scoped config without attempting an Azure/FUSE mount." >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-          exit 0
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            case "$IDENTITY_KIND" in
-              go_module)
-                grep -Fx "module $IDENTITY_EXPECT" "$IDENTITY_TARGET" >/dev/null
-                RESULT="Verified go module identity in $IDENTITY_TARGET"
-                ;;
-              toml_name)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); name=(data.get('project') or {}).get('name') or ((data.get('tool') or {}).get('poetry') or {}).get('name'); assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified TOML package identity in $IDENTITY_TARGET"
-                ;;
-              package_json_name)
-                python3 -c "import json,sys; data=json.load(open(sys.argv[1], encoding='utf-8')); assert data.get('name') == sys.argv[2], (data.get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified package.json identity in $IDENTITY_TARGET"
-                ;;
-              cargo_package)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); assert (data.get('package') or {}).get('name') == sys.argv[2], ((data.get('package') or {}).get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified Cargo package identity in $IDENTITY_TARGET"
-                ;;
-              chart_name)
-                python3 -c "from pathlib import Path; import sys; lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(); matches=[line.split(':', 1)[1].strip() for line in lines if line.startswith('name:')]; name=matches[0] if matches else ''; assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified chart identity in $IDENTITY_TARGET"
-                ;;
-              grep_file)
-                grep -Eiq "$IDENTITY_EXPECT" "$IDENTITY_TARGET"
-                RESULT="Verified package-specific content in $IDENTITY_TARGET"
-                ;;
-              *)
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                echo "note=No bounded identity check was configured for this package." >> "$GITHUB_OUTPUT"
-                exit 1
-                ;;
-            esac
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=$RESULT" >> "$GITHUB_OUTPUT"
-          else
-            TEMP_PAGE=$(mktemp)
-            trap 'rm -f "$TEMP_PAGE"' EXIT
-            if curl -fsSL "$OFFICIAL_DOCS" -o "$TEMP_PAGE" || curl -fsSL "$HOMEPAGE_URL" -o "$TEMP_PAGE" || curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_PAGE"; then
-              grep -Eiq "$EXTERNAL_EXPECT" "$TEMP_PAGE"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Verified external package identity from published docs or homepage content using /$EXTERNAL_EXPECT/." >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Could not fetch published docs or homepage content for bounded external validation." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "note=Built the exact Blobfuse2 baseline, verified its AArch64 binary and exact version, exercised mount command help, and checked a config fixture. No Azure/FUSE mount was attempted." >> "$GITHUB_OUTPUT"
+
       - name: Test 6 - Regression Validation
         id: test6
         uses: ./.github/actions/generic-source-regression-check
@@ -439,60 +357,50 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          next_version_override: "2.5.5"
+          candidate_tag_override: "blobfuse2-2.5.5"
           limited_cpu_probe: |
-            cd next-src
-            go list ./... >/tmp/blobfuse2-next-go-packages.txt
-            GOOS=linux GOARCH=arm64 go build -o /tmp/blobfuse2-next-arm64 .
-            file /tmp/blobfuse2-next-arm64 | grep -Eiq 'aarch64|ARM aarch64|ARM64'
-            /tmp/blobfuse2-next-arm64 --version >/tmp/blobfuse2-next-version.txt 2>&1 || /tmp/blobfuse2-next-arm64 --help >/tmp/blobfuse2-next-version.txt
-            /tmp/blobfuse2-next-arm64 mount all --help >/tmp/blobfuse2-next-mount-help.txt
-          limited_cpu_description: "Test 6 reran the scoped Blobfuse2 Arm preflight against the next stable source tag: Go package discovery, linux/arm64 CLI build, AArch64 binary inspection, version/help, and mount command help. Real Azure Blob mounting still requires FUSE plus Azure Storage credentials."
+            [ "$CANDIDATE_TAG" = "blobfuse2-$LATEST_VERSION" ]
+            SOURCE_DIR=next-src EXPECTED_VERSION="$LATEST_VERSION" bash -euo pipefail -c "$BLOBFUSE_SMOKE"
+          limited_cpu_description: "Built the exact candidate source tag into a Linux/Arm64 CLI, verified the AArch64 binary and exact version, and exercised mount command help plus a scoped config fixture. No Azure/FUSE mounting was attempted; credentials and mount privileges remain untested."
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
-          D1="${{ steps.test1.outputs.duration || '0' }}"
-          D2="${{ steps.test2.outputs.duration || '0' }}"
-          D3="${{ steps.test3.outputs.duration || '0' }}"
-          D4="${{ steps.test4.outputs.duration || '0' }}"
-          D5="${{ steps.test5.outputs.duration || '0' }}"
-          D6="${{ steps.test6.outputs.duration || '0' }}"
+          set -euo pipefail
           PASSED=0
           FAILED=0
-          SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
-              CORE_FAILED=$((CORE_FAILED + 1))
+          DURATION=0
+          check_test() {
+            if [ "$1" = passed ] && [ "$2" = success ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              if [ "$4" = core ]; then
+                CORE_FAILED=$((CORE_FAILED + 1))
+              fi
             fi
-          done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
-            OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
-          else
-            OVERALL_STATUS="failure"
-            BADGE_STATUS="failing"
+            DURATION=$((DURATION + $3))
+          }
+          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outcome }}" "${{ steps.test1.outputs.duration || '0' }}" core
+          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outcome }}" "${{ steps.test2.outputs.duration || '0' }}" core
+          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outcome }}" "${{ steps.test3.outputs.duration || '0' }}" core
+          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outcome }}" "${{ steps.test4.outputs.duration || '0' }}" core
+          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outcome }}" "${{ steps.test5.outputs.duration || '0' }}" core
+          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outcome }}" "${{ steps.test6.outputs.duration || '0' }}" candidate
+          # This workflow pins an available candidate; no skipped result is valid.
+          OVERALL_STATUS=failure
+          BADGE_STATUS=failing
+          if [ "$FAILED" -eq 0 ]; then
+            OVERALL_STATUS=success
+            BADGE_STATUS=passing
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
-          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "skipped=0" >> "$GITHUB_OUTPUT"
           echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0

@@ -95,6 +95,34 @@ jobs:
       EVIDENCE_RE: "ENROOT|container|sandbox|HPC"
       TEST5_MODE: "source"
       PYTHON_TARGETS: ""
+      ENROOT_SMOKE: |
+        set -euo pipefail
+        [ "$(uname -m)" = aarch64 ]
+        cd "$SOURCE_DIR"
+        [ "$(git describe --tags --exact-match HEAD)" = "v$EXPECTED_VERSION" ]
+        # The old Freedesktop transport is unavailable. Keep the original gitlink.
+        if git config -f .gitmodules --get submodule.deps/libbsd.url >/dev/null; then
+          git config submodule.deps/libbsd.url https://git.hadrons.org/git/libbsd.git
+        fi
+        if git config -f .gitmodules --get submodule.deps/musl.url >/dev/null; then
+          git config submodule.deps/musl.url https://git.musl-libc.org/git/musl
+        fi
+        timeout 240s git submodule update --init
+        git submodule foreach 'test "$(git rev-parse HEAD)" = "$sha1"'
+        git submodule status
+        PREFIX="$PWD/_install"
+        export XDG_RUNTIME_DIR="$PREFIX/runtime"
+        export ENROOT_DATA_PATH="$PREFIX/data"
+        mkdir -p "$XDG_RUNTIME_DIR" "$ENROOT_DATA_PATH"
+        timeout 600s make -j2 DESTDIR="$PREFIX" prefix=/usr install
+        ENROOT_BIN="$PREFIX/usr/bin/enroot"
+        file "$PREFIX/usr/bin/enroot-mount" | tee "$PREFIX/elf.log"
+        grep -Eiq 'aarch64|ARM aarch64|ARM64' "$PREFIX/elf.log"
+        bash "$ENROOT_BIN" version | tee "$PREFIX/version.log"
+        grep -Fx "$EXPECTED_VERSION" "$PREFIX/version.log"
+        bash "$ENROOT_BIN" list > "$PREFIX/list.log"
+        [ ! -s "$PREFIX/list.log" ]
+        printf 'source=%s executable=%s version=%s list=empty\n' "$(git rev-parse HEAD)" "$ENROOT_BIN" "$EXPECTED_VERSION"
 
     outputs:
       contract_version: "2.0"
@@ -138,7 +166,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates build-essential pkg-config libbsd-dev squashfs-tools zstd"
+          packages: "git curl jq tar unzip file ca-certificates build-essential pkg-config libbsd-dev squashfs-tools zstd autoconf automake libtool"
           quiet: "true"
 
       - name: Install baseline source or artifact
@@ -316,6 +344,7 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          trap 'rc=$?; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"; if [ "$rc" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; fi' EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           if [ "$MODE" != "github_source" ]; then
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -323,25 +352,9 @@ jobs:
             exit 1
           fi
 
-          cd baseline-src
-          PREFIX="$PWD/_install"
-          export XDG_RUNTIME_DIR="${RUNNER_TEMP}/enroot-runtime"
-          mkdir -p "$XDG_RUNTIME_DIR"
-          make -j2 DESTDIR="$PREFIX" prefix=/usr install
-
-          ENROOT_BIN="$PREFIX/usr/bin/enroot"
-          if bash "$ENROOT_BIN" version >/tmp/enroot-version.log 2>&1 && \
-             grep -Fq "$BASELINE_VERSION" /tmp/enroot-version.log && \
-             bash "$ENROOT_BIN" list >/tmp/enroot-list.log 2>&1; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=Built Enroot from source, installed into a staging prefix, and executed version/list commands on the Arm64 runner." >> "$GITHUB_OUTPUT"
-          else
-            cat /tmp/enroot-version.log || true
-            cat /tmp/enroot-list.log || true
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "note=Enroot source build or staged runtime command failed on Arm64." >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
+          SOURCE_DIR=baseline-src EXPECTED_VERSION="$BASELINE_VERSION" bash -euo pipefail -c "$ENROOT_SMOKE"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Built the exact Enroot baseline and pinned dependencies, verified an AArch64 helper and exact CLI version, and listed an empty isolated data directory. No container import/start or GPU hooks were tested." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -352,63 +365,50 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          next_version_override: "4.2.1"
+          candidate_tag_override: "v4.2.1"
           limited_cpu_probe: |
-            bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential pkg-config libbsd-dev squashfs-tools zstd"
-            cd next-src
-            PREFIX="$PWD/_install"
-            export XDG_RUNTIME_DIR="${RUNNER_TEMP}/enroot-next-runtime"
-            mkdir -p "$XDG_RUNTIME_DIR"
-            make -j2 DESTDIR="$PREFIX" prefix=/usr install
-            bash "$PREFIX/usr/bin/enroot" version | grep -F "$LATEST_VERSION"
-            bash "$PREFIX/usr/bin/enroot" list >/tmp/enroot-next-list.log
-          limited_cpu_description: "Built the next Enroot source candidate into a staging prefix and executed version/list commands on the Arm64 runner. GPU hooks and real container import/start remain out of scope for the generic runner."
-          defer_on_limited_cpu_probe_failure: "true"
+            [ "$CANDIDATE_TAG" = "v$LATEST_VERSION" ]
+            SOURCE_DIR=next-src EXPECTED_VERSION="$LATEST_VERSION" bash -euo pipefail -c "$ENROOT_SMOKE"
+          limited_cpu_description: "The bounded CPU smoke requires a source build with pinned dependencies, an AArch64 helper, the exact requested CLI version, and an empty isolated directory listing. GPU hooks and real container import/start remain out of scope."
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
-          D1="${{ steps.test1.outputs.duration || '0' }}"
-          D2="${{ steps.test2.outputs.duration || '0' }}"
-          D3="${{ steps.test3.outputs.duration || '0' }}"
-          D4="${{ steps.test4.outputs.duration || '0' }}"
-          D5="${{ steps.test5.outputs.duration || '0' }}"
-          D6="${{ steps.test6.outputs.duration || '0' }}"
+          set -euo pipefail
           PASSED=0
           FAILED=0
-          SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
-              CORE_FAILED=$((CORE_FAILED + 1))
+          DURATION=0
+          check_test() {
+            if [ "$1" = passed ] && [ "$2" = success ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              if [ "$4" = core ]; then
+                CORE_FAILED=$((CORE_FAILED + 1))
+              fi
             fi
-          done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
-            OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
-          else
-            OVERALL_STATUS="failure"
-            BADGE_STATUS="failing"
+            DURATION=$((DURATION + $3))
+          }
+          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outcome }}" "${{ steps.test1.outputs.duration || '0' }}" core
+          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outcome }}" "${{ steps.test2.outputs.duration || '0' }}" core
+          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outcome }}" "${{ steps.test3.outputs.duration || '0' }}" core
+          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outcome }}" "${{ steps.test4.outputs.duration || '0' }}" core
+          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outcome }}" "${{ steps.test5.outputs.duration || '0' }}" core
+          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outcome }}" "${{ steps.test6.outputs.duration || '0' }}" candidate
+          # This workflow pins an available candidate; no skipped result is valid.
+          OVERALL_STATUS=failure
+          BADGE_STATUS=failing
+          if [ "$FAILED" -eq 0 ]; then
+            OVERALL_STATUS=success
+            BADGE_STATUS=passing
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
-          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "skipped=0" >> "$GITHUB_OUTPUT"
           echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
