@@ -27,7 +27,8 @@ class KasmVNCWorkflowTests(unittest.TestCase):
         for directory in ('unix', 'common', 'tests'):
             (self.root / directory).mkdir()
         self.stub('curl', 'echo release')
-        self.stub('jq', 'echo https://example.invalid/kasmvnc.deb')
+        # Real jq consumes its input; an early-exiting stub races curl under pipefail.
+        self.stub('jq', 'cat >/dev/null\necho https://example.invalid/kasmvnc.deb')
         self.stub('dpkg-deb', '''
 case "$3" in
   Architecture) echo "${TEST_ARCH:-arm64}" ;;
@@ -184,6 +185,13 @@ fi
         (self.root / 'BUILDING.txt').unlink()
         result, _ = self.run_script(JOB['env']['TEST1_COMMAND'])
         self.assertNotEqual(0, result.returncode)
+
+    def test_release_parser_fixture_consumes_the_producer_stream(self):
+        result, _ = self.run_script(
+            "python3 -c 'import sys; sys.stdout.write(\"release\\n\" * 32768)' | jq -r ignored"
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual('https://example.invalid/kasmvnc.deb', result.stdout.strip())
 
     def test_source_checks_reject_wrong_tag_and_missing_tests(self):
         result, _ = self.run_script(JOB['env']['TEST1_COMMAND'], RESOLVED_TAG='v1.4.0')
