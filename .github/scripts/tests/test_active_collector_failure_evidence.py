@@ -114,6 +114,41 @@ class ActiveCollectorFailureEvidenceTests(unittest.TestCase):
                 need["result"] = state
                 self.assert_rejected(need=need, message="passing result contradicts failure evidence")
 
+    def test_successful_api_steps_cannot_relabel_emitted_skips_as_passes(self):
+        self.need["outputs"].update(tests_passed="5", tests_skipped="1")
+        self.assert_rejected(message="emitted skipped count contradicts test details")
+
+    def test_regression_skip_cannot_hide_additional_baseline_skips(self):
+        self.need["outputs"].update(
+            tests_passed="4", tests_skipped="2", regression_status="skipped",
+            regression_decision="not_applicable_package_manager"
+        )
+        self.assert_rejected(message="emitted skipped count contradicts test details")
+
+    def test_nonstandard_detail_count_cannot_hide_a_failed_detail(self):
+        for count in (5, 7):
+            with self.subTest(count=count):
+                job = copy.deepcopy(self.job)
+                if count == 5:
+                    job["steps"].pop()
+                else:
+                    job["steps"].append({
+                        "name": "Test 7 - Extra check", "number": 7,
+                        "conclusion": "success"
+                    })
+                job["steps"][2]["conclusion"] = "failure"
+                self.assert_rejected(job=job, message="passing result contradicts failure evidence")
+
+    def test_regression_classification_cannot_override_baseline_skips(self):
+        for count in (1, 2):
+            with self.subTest(count=count):
+                need, job = copy.deepcopy(self.need), copy.deepcopy(self.job)
+                need["outputs"].update(tests_passed=str(6 - count), tests_skipped=str(count))
+                for step in job["steps"][:count]:
+                    step["conclusion"] = "skipped"
+                self.assert_rejected(need=need, job=job,
+                                     message="passing result contradicts failure evidence")
+
     def test_failed_workflow_output_cannot_become_passing(self):
         self.need["outputs"]["run_status"] = "failure"
         self.assert_rejected(message="passing result contradicts failure evidence")

@@ -142,7 +142,8 @@ jobs:
             wget -4 --tries=5 --timeout=30 -O "$dest" "$archive_url"
           }
 
-          if ! download_ant_tarball "$PRIMARY_URL" "$ARCHIVE_URL" /tmp/apache-ant.tar.gz; then
+          # The pinned historical release is served by the archive.
+          if ! download_ant_tarball "$ARCHIVE_URL" "$PRIMARY_URL" /tmp/apache-ant.tar.gz; then
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
             echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
             exit 1
@@ -151,11 +152,14 @@ jobs:
           sudo tar -xzf /tmp/apache-ant.tar.gz -C /opt
           sudo ln -sfn "/opt/apache-ant-${BASELINE_VERSION}" /opt/apache-ant-current
           sudo ln -sfn /opt/apache-ant-current/bin/ant /usr/local/bin/ant
+          echo "ANT_HOME=/opt/apache-ant-current" >> "$GITHUB_ENV"
+          echo "/opt/apache-ant-current/bin" >> "$GITHUB_PATH"
           JAVA_BIN=$(readlink -f "$(command -v java)")
           echo "JAVA_HOME=$(dirname "$(dirname "$JAVA_BIN")")" >> "$GITHUB_ENV"
           echo "baseline_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
 
-          if command -v ant &> /dev/null; then
+          INSTALLED_VERSION=$(ANT_HOME=/opt/apache-ant-current /opt/apache-ant-current/bin/ant -version)
+          if [[ "$INSTALLED_VERSION" == "Apache Ant(TM) version ${BASELINE_VERSION} "* ]]; then
             echo "Apache Ant installed successfully"
             echo "install_status=success" >> $GITHUB_OUTPUT
           else
@@ -182,7 +186,8 @@ jobs:
         run: |
           START_TIME=$(date +%s)
 
-          if command -v ant &> /dev/null; then
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" = "success" ] \
+            && [ "$(readlink -f "$(command -v ant)")" = "/opt/apache-ant-${ANT_VERSION}/bin/ant" ]; then
             echo "✓ ant binary found"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -207,7 +212,8 @@ jobs:
             exit 0
           fi
 
-          if ant -version 2>&1 | grep -q "version\|[0-9]"; then
+          ACTUAL_VERSION=$(ant -version 2>&1)
+          if [[ "$ACTUAL_VERSION" == "Apache Ant(TM) version ${ANT_VERSION} "* ]]; then
             echo "✓ ant version command works"
             ant -version
             echo "status=passed" >> $GITHUB_OUTPUT
@@ -306,13 +312,13 @@ jobs:
           NEXT_VERSION="${ANT_NEXT_VERSION}"
           INSTALL_STATUS="${{ steps.install.outputs.install_status || 'failed' }}"
           CORE_FAILURES=0
-          for conclusion in \
-            "${{ steps.test1.conclusion || 'skipped' }}" \
-            "${{ steps.test2.conclusion || 'skipped' }}" \
-            "${{ steps.test3.conclusion || 'skipped' }}" \
-            "${{ steps.test4.conclusion || 'skipped' }}" \
-            "${{ steps.test5.conclusion || 'skipped' }}"; do
-            if [ "$conclusion" = "failure" ]; then
+          for status in \
+            "${{ steps.test1.outputs.status || 'failed' }}" \
+            "${{ steps.test2.outputs.status || 'failed' }}" \
+            "${{ steps.test3.outputs.status || 'failed' }}" \
+            "${{ steps.test4.outputs.status || 'failed' }}" \
+            "${{ steps.test5.outputs.status || 'failed' }}"; do
+            if [ "$status" != "passed" ]; then
               CORE_FAILURES=$((CORE_FAILURES + 1))
             fi
           done
@@ -387,7 +393,7 @@ jobs:
               NEXT_HOME=$(cd "$(dirname "$NEXT_BIN")/.." && pwd)
               NEXT_INSTALLED_VERSION=$(unzip -p "$NEXT_HOME/lib/ant.jar" org/apache/tools/ant/version.txt 2>/dev/null | sed -n 's/^VERSION=//p' | head -n 1 || true)
               if [ -z "$NEXT_INSTALLED_VERSION" ]; then
-                NEXT_INSTALLED_VERSION=$("$NEXT_BIN" -version 2>&1 | sed -n 's/^Apache Ant(TM) version \([^ ]*\).*/\1/p' | head -n 1 || true)
+                NEXT_INSTALLED_VERSION=$(ANT_HOME="$NEXT_HOME" "$NEXT_BIN" -version 2>&1 | sed -n 's/^Apache Ant(TM) version \([^ ]*\).*/\1/p' | head -n 1 || true)
               fi
               cat > "$NEXT_DIR/build.xml" <<'EOF'
           <project name="arm-validation" default="hello">
@@ -396,7 +402,7 @@ jobs:
             </target>
           </project>
           EOF
-              if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_INSTALLED_VERSION" = "$NEXT_VERSION" ] && "$NEXT_BIN" -f "$NEXT_DIR/build.xml" hello > /tmp/apache-ant-next-functional.log 2>&1; then
+              if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_INSTALLED_VERSION" = "$NEXT_VERSION" ] && ANT_HOME="$NEXT_HOME" "$NEXT_BIN" -f "$NEXT_DIR/build.xml" hello > /tmp/apache-ant-next-functional.log 2>&1; then
                 echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
@@ -565,15 +571,13 @@ jobs:
 
           TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
 
-          if [ "$CORE_FAILED" -eq 0 ]; then
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" = "success" ] \
+            && [ "$PASSED" -eq 6 ] && [ "$FAILED" -eq 0 ] && [ "$SKIPPED" -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
             echo "badge_status=failing" >> $GITHUB_OUTPUT
-          fi
-
-          if [ "$CORE_FAILED" -ne 0 ]; then
             exit 1
           fi
       - name: Create test summary
