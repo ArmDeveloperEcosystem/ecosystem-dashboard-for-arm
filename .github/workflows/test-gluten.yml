@@ -85,16 +85,28 @@ jobs:
     env:
       BASELINE_VERSION: "1.1.1"
       PACKAGE_SLUG: "gluten"
-      LANE_KIND: "manual-review"
+      LANE_KIND: "JVM source compilation / CPU preflight"
       DOWNLOAD_URL: "https://gluten.apache.org/downloads/"
       HOMEPAGE_URL: "https://apache.github.io/incubator-gluten/"
       OFFICIAL_DOCS: "https://apache.github.io/incubator-gluten/get-started/Velox.html"
       GITHUB_REPO: "apache/incubator-gluten"
       PACKAGE_PAGE: "content/linux/opensource_packages/gluten.md"
-      SOURCE_GLOBS: ""
+      SOURCE_GLOBS: "pom.xml|gluten-core"
       EVIDENCE_RE: "Gluten|Spark|Substrait|Velox|ClickHouse"
       TEST5_MODE: "external"
       PYTHON_TARGETS: ""
+      GLUTEN_SMOKE: |
+        LOG_DIR=$(mktemp -d "${RUNNER_TEMP:-/tmp}/gluten-compile.XXXXXX")
+        trap 'RESULT=$?; if [ "$RESULT" -ne 0 ]; then cat "$LOG_DIR"/*.log; fi; exit "$RESULT"' EXIT
+        test -f pom.xml
+        test -f gluten-core/pom.xml
+        timeout --kill-after=30s 15m mvn -B \
+          -DskipTests -Dcheckstyle.skip=true -Drat.skip=true \
+          -Dspotless.check.skip=true -Dscalastyle.skip=true \
+          -Pspark-3.4 -pl gluten-core -am clean compile >"$LOG_DIR/build.log" 2>&1
+        CLASS_FILE=$(find gluten-core/target -type f -name '*.class' -print -quit)
+        test -n "$CLASS_FILE"
+        echo "Compiled Gluten JVM class: $CLASS_FILE"
 
     outputs:
       contract_version: "2.0"
@@ -145,39 +157,22 @@ jobs:
         id: install
         run: |
           set -euo pipefail
-          rm -rf baseline-src baseline-external
-          mkdir -p baseline-src baseline-external
-          if [ -n "$GITHUB_REPO" ]; then
-            RESOLVED_TAG=""
-            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
-              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
-                RESOLVED_TAG="$CANDIDATE"
-                break
-              fi
-            done
-            if [ -n "$RESOLVED_TAG" ]; then
-              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
-            else
-              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
+          trap 'RESULT=$?; if [ "$RESULT" -ne 0 ]; then echo "install_status=failed" >> "$GITHUB_OUTPUT"; fi; exit "$RESULT"' EXIT
+          rm -rf baseline-src
+          RESOLVED_TAG=""
+          for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
+            TAG_REF=$(git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE")
+            if [ -n "$TAG_REF" ]; then
+              RESOLVED_TAG="$CANDIDATE"
+              break
             fi
-            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
+          done
+          test -n "$RESOLVED_TAG"
+          git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src
+          test "$(git -C baseline-src describe --tags --exact-match)" = "$RESOLVED_TAG"
+          echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
+          echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get baseline version
         id: version
@@ -268,7 +263,7 @@ jobs:
               exit 1
             fi
             DOC_FOUND=0
-            for PATTERN in README* docs examples; do
+            for PATTERN in 'README*' docs examples; do
               if compgen -G "baseline-src/$PATTERN" > /dev/null; then
                 DOC_FOUND=1
                 break
@@ -310,7 +305,7 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Bounded package-specific smoke
+      - name: Test 5 - Bounded JVM compilation preflight
         id: test5
         continue-on-error: true
         run: |
@@ -324,21 +319,10 @@ jobs:
           fi
 
           cd baseline-src
-          mvn -q \
-            -DskipTests \
-            -Dcheckstyle.skip=true \
-            -Drat.skip=true \
-            -Dspotless.check.skip=true \
-            -Dscalastyle.skip=true \
-            -Pjava-17 \
-            -Pspark-3.5 \
-            -pl gluten-core -am compile >/tmp/gluten-maven-compile.log 2>&1
-
-          if find gluten-core -path '*/target/classes/*' -type f -print -quit | grep -q .; then
+          if bash -euo pipefail -c "$GLUTEN_SMOKE"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
             echo "note=Compiled Gluten JVM core modules on the Arm64 runner. Native Velox/ClickHouse backend runtime remains scoped to a heavier Spark/native integration lane." >> "$GITHUB_OUTPUT"
           else
-            cat /tmp/gluten-maven-compile.log || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             echo "note=Gluten bounded JVM compile did not produce class files on Arm64." >> "$GITHUB_OUTPUT"
             exit 1
@@ -354,26 +338,29 @@ jobs:
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
           limited_cpu_probe: |
-            bash .github/actions/apt-bootstrap/bootstrap.sh --packages "openjdk-17-jdk-headless maven"
             cd next-src
-            test -f pom.xml
-            test -f gluten-core/pom.xml
-            find gluten-core -type f \( -name '*.java' -o -name '*.scala' \) -print -quit | grep -q .
-            grep -Eiq 'gluten-core|spark|velox|clickhouse|substrait' pom.xml gluten-core/pom.xml
-            mvn -q -N help:effective-pom -DskipTests >/tmp/gluten-next-effective-pom.log 2>&1 || { cat /tmp/gluten-next-effective-pom.log; exit 1; }
-          limited_cpu_description: "Test 6 reran a scoped Gluten Arm preflight against the next stable source candidate: Maven project discovery, gluten-core source/module validation, and root effective-POM resolution. Full Spark plus native Velox/ClickHouse backend runtime remains scoped to a heavier integration lane."
+            bash -euo pipefail -c "$GLUTEN_SMOKE"
+          limited_cpu_description: "Both baseline and candidate ran the same bounded Spark 3.4 Gluten JVM core compilation preflight on Arm64. This checks generated class files; it does not execute Spark or the native Velox/ClickHouse backends."
           defer_on_limited_cpu_probe_failure: "false"
 
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -383,27 +370,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -413,3 +404,4 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
