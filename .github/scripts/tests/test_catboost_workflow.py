@@ -17,6 +17,9 @@ import unittest
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import package_observation_migration_audit as observation_audit
+
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github/workflows/test-catboost.yml"
@@ -143,7 +146,7 @@ class CatBoostClassifier:
             return ""
         return re.sub(r"\$\{\{ (.*?) \}\}", expression, script)
 
-    def run_step(self, step, statuses=None, outcomes=None, decision="no_newer_stable_available", **extra):
+    def run_step(self, step, statuses=None, outcomes=None, decision="no_newer_stable_available", durations=None, **extra):
         version = "1.2.10" if step == "candidate" else "1.1.1"
         dist = self.root / "catboost.dist-info"
         dist.mkdir(exist_ok=True)
@@ -154,7 +157,8 @@ class CatBoostClassifier:
         values = {f"steps.{key}.outputs.status": value for key, value in (statuses or {}).items()}
         values.update({f"steps.{key}.outcome": value for key, value in outcomes.items()})
         values["steps.test6.outputs.decision"] = decision
-        values.update({f"steps.test{n}.outputs.duration": "2" for n in range(1, 7)})
+        values.update({f"steps.test{n}.outputs.duration": str((durations or {}).get(f"test{n}", "2"))
+                       for n in range(1, 7)})
         script = (self.steps["test6"]["with"]["limited_cpu_probe"] if step == "candidate"
                   else self.steps[step]["run"])
         output = Path(self.env["GITHUB_OUTPUT"])
@@ -262,6 +266,69 @@ class CatBoostClassifier:
         self.assertNotEqual(0, result.returncode)
         self.assertEqual("failed", outputs["status"])
         self.assertIn("owned volume cleanup failed", result.stderr)
+
+    def test_test5_initial_outputs_are_visible_to_existing_audit(self) -> None:
+        step = self.steps["test5"]
+        defaults = 'echo "status=failed" >> "$GITHUB_OUTPUT"\necho "duration=0" >> "$GITHUB_OUTPUT"\n'
+        self.assertTrue(step["run"].startswith('set -euo pipefail\nSTART_TIME=$(date +%s)\n' + defaults + 'CONTAINER='))
+        for output in ("status", "duration"):
+            with self.subTest(output=output):
+                self.assertTrue(observation_audit._step_emits_output(ROOT, step, output))
+        without_defaults = dict(step, run=step["run"].replace(defaults, "", 1))
+        self.assertTrue(observation_audit._step_emits_output(ROOT, without_defaults, "status"))
+        self.assertFalse(observation_audit._step_emits_output(ROOT, without_defaults, "duration"))
+
+    def test_failure_before_exit_trap_retains_defaults_and_fails_summary(self) -> None:
+        for missing in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+            with self.subTest(missing=missing):
+                previous = self.env.pop(missing)
+                try:
+                    result, outputs = self.run_step("test5")
+                finally:
+                    self.env[missing] = previous
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(missing + ": unbound variable", result.stderr)
+                self.assertEqual({"status": "failed", "duration": "0"}, outputs)
+                self.assertEqual(["status=failed", "duration=0"], Path(self.env["GITHUB_OUTPUT"]).read_text().splitlines())
+                self.assertFalse(Path(self.env["DOCKER_CALLS"]).exists())
+                statuses = {f"test{n}": "passed" for n in range(1, 7)}
+                statuses["test5"] = outputs["status"]
+                outcomes = {f"test{n}": "success" for n in range(1, 7)}
+                outcomes["test5"] = "failure"
+                summary, counted = self.run_step("summary", statuses=statuses, outcomes=outcomes,
+                                                 durations={"test5": outputs["duration"]})
+                self.assertEqual(1, summary.returncode)
+                self.assertEqual("5", counted["passed"])
+                self.assertEqual("1", counted["failed"])
+                self.assertEqual("1", counted["core_failed"])
+                self.assertEqual("0", counted["skipped"])
+                self.assertEqual("10", counted["duration"])
+                self.assertEqual("failure", counted["overall_status"])
+
+    def test_exit_trap_overwrites_initial_duration_after_success_or_failure(self) -> None:
+        date = self.tools / "date"
+        date.write_text('''#!/bin/bash
+set -euo pipefail
+if [ -e "$DATE_CALLED" ]; then
+    echo 1007
+else
+    touch "$DATE_CALLED"
+    echo 1000
+fi
+''')
+        date.chmod(0o755)
+        called = self.root / "date-called"
+        for failure in (None, "DOCKER_FAIL", "CLEANUP_FAIL"):
+            with self.subTest(failure=failure):
+                called.unlink(missing_ok=True)
+                result, outputs = self.run_step("test5", DATE_CALLED=str(called),
+                                                **({failure: "1"} if failure else {}))
+                self.assertEqual(int(failure is not None), result.returncode)
+                self.assertEqual("failed" if failure else "passed", outputs["status"])
+                self.assertEqual("7", outputs["duration"])
+                writes = Path(self.env["GITHUB_OUTPUT"]).read_text().splitlines()
+                self.assertEqual(["status=failed", "duration=0"], writes[:2])
+                self.assertEqual("duration=7", writes[-1])
 
     def test_container_environment_must_be_explicit(self) -> None:
         script = self.steps["test5"]["run"]

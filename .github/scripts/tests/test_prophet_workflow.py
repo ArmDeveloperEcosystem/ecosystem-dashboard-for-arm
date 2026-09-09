@@ -11,6 +11,9 @@ import unittest
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import package_observation_migration_audit as observation_audit
+
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows/test-prophet.yml"
 
@@ -187,6 +190,20 @@ exec(compile(code, '<workflow-runtime-probe>', 'exec'))
     def passing(self):
         return {key: value for i in range(1, 7) for key, value in (
             (f"steps.test{i}.outputs.status", "passed"), (f"steps.test{i}.outcome", "success"))}
+
+    def test_runtime_outputs_are_visible_to_existing_observation_audit(self):
+        step = self.steps["test5"]
+        for output, default in (("status", "failed"), ("duration", "0")):
+            with self.subTest(output=output):
+                self.assertTrue(observation_audit._step_emits_output(
+                    WORKFLOW.parents[2], step, output,
+                ))
+                without_default = dict(step, run=step["run"].replace(
+                    f'echo "{output}={default}" >> "$GITHUB_OUTPUT"\n', "", 1,
+                ))
+                self.assertFalse(observation_audit._step_emits_output(
+                    WORKFLOW.parents[2], without_default, output,
+                ))
 
     def test_runtime_executes_version_bound_fit_and_three_day_forecast(self):
         self.runtime_fixture()
