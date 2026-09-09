@@ -13,6 +13,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import package_observation_migration_audit as observation_audit
+from package_result_policy import expected_regression_metadata
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows/test-cobbler.yml"
@@ -76,13 +77,25 @@ class CobblerWorkflowTests(unittest.TestCase):
         self.assertEqual(
             {
                 ("next_install_failed", "failed"),
-                ("baseline_failed", "failed"),
+                ("baseline_failed", "skipped"),
                 ("next_install_validated", "passed"),
             },
             set(observation_audit._step_literal_pairs(
                 WORKFLOW.parents[2], self.steps["test6"],
             )),
         )
+
+    def test_audited_literal_pairs_are_compatible_with_package_policy(self):
+        for decision, status in observation_audit._step_literal_pairs(
+            WORKFLOW.parents[2], self.steps["test6"],
+        ):
+            with self.subTest(decision=decision):
+                metadata = expected_regression_metadata(
+                    decision=decision, core_failed=1 if decision == "baseline_failed" else 0,
+                )
+                self.assertEqual(metadata["status"], status)
+        with self.assertRaises(ValueError):
+            expected_regression_metadata(decision="baseline_failed", core_failed=0)
 
     def test_same_or_older_configured_candidate_fails_before_installation(self):
         for current, candidate in (("3.3.7", "v3.3.7"), ("3.3.6", "v3.3.5")):
@@ -129,12 +142,27 @@ class CobblerWorkflowTests(unittest.TestCase):
             self.assertEqual(1, result.returncode)
             self.assertEqual("1", outputs["failed"])
 
-    def test_candidate_skip_is_not_supported_without_release_discovery(self):
+    def test_candidate_skip_cannot_pass_with_five_passing_core_checks(self):
         result, outputs = self.run_step("summary")
         self.assertEqual((0, "6", "0", "0"), (result.returncode, outputs["passed"], outputs["failed"], outputs["skipped"]))
         for decision in ("", "baseline_failed", "runtime_validation_not_automated", "no_newer_stable_available"):
             result, outputs = self.run_step("summary", {"steps.test6.outputs.status": "skipped", "steps.test6.outputs.decision": decision})
             self.assertEqual(1, result.returncode)
+            self.assertEqual(("5", "1", "0", "0", "failure"), tuple(outputs[k] for k in ("passed", "failed", "skipped", "core_failed", "overall_status")))
+
+    def test_baseline_skip_requires_matching_decision_and_successful_outcome(self):
+        invalid_pairs = [("baseline_failed", outcome) for outcome in ("failure", "cancelled", "skipped", "")]
+        invalid_pairs += [(decision, "success") for decision in ("", "next_install_failed", "no_newer_stable_available")]
+        for decision, outcome in invalid_pairs:
+            with self.subTest(decision=decision, outcome=outcome):
+                result, outputs = self.run_step("summary", {
+                    "steps.test4.outcome": "failure",
+                    "steps.test6.outputs.status": "skipped",
+                    "steps.test6.outputs.decision": decision,
+                    "steps.test6.outcome": outcome,
+                })
+                self.assertEqual(1, result.returncode)
+                self.assertEqual(("4", "2", "0", "1", "failure"), tuple(outputs[k] for k in ("passed", "failed", "skipped", "core_failed", "overall_status")))
 
     def test_signature_command_failure_preserves_status_and_duration(self):
         self.executable("timeout", 'shift 3\nexec "$@"\n')
@@ -179,13 +207,20 @@ class CobblerWorkflowTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertNotIn("version", outputs)
 
-    def test_candidate_is_failed_not_deferred_after_any_core_failure(self):
+    def test_unexecuted_candidate_is_skipped_but_summary_fails_after_core_failure(self):
         for number in range(1, 6):
-            result, outputs = self.run_step("test6", {f"steps.test{number}.outcome": "failure"})
-            self.assertEqual(1, result.returncode)
-            self.assertEqual("failed", outputs["status"])
+            overrides = {f"steps.test{number}.outcome": "failure"}
+            result, outputs = self.run_step("test6", overrides)
+            self.assertEqual(0, result.returncode)
+            self.assertEqual("skipped", outputs["status"])
             self.assertEqual("baseline_failed", outputs["decision"])
+            self.assertEqual("not_validated", outputs["next_installed_version"])
             self.assertTrue(outputs["duration"].isdigit())
+            overrides.update({f"steps.test6.outputs.{key}": value for key, value in outputs.items()})
+            overrides["steps.test6.outcome"] = "success"
+            result, summary = self.run_step("summary", overrides)
+            self.assertEqual(1, result.returncode)
+            self.assertEqual(("4", "1", "1", "1", "failure", "failing"), tuple(summary[k] for k in ("passed", "failed", "skipped", "core_failed", "overall_status", "badge_status")))
 
     def test_candidate_reported_version_cannot_be_older_or_merely_nonempty(self):
         assertion = next(line.strip() for line in self.steps["test6"]["run"].splitlines()
