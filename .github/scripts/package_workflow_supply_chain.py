@@ -38,7 +38,11 @@ EXACT_RUN_SPEC.loader.exec_module(exact_run)
 EXPECTED_BATCHES = 22
 EXPECTED_WORKFLOWS = 960
 EXPECTED_EXTERNAL_USES = 1130
-EXPECTED_CONTAINER_USES = 8
+EXPECTED_CONTAINER_USES = 9
+SINGLE_MANIFEST_MEDIA_TYPES = frozenset({
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+})
 SOURCE_COMMIT = "73155d0d3a3dc73da08c62bc2bb7eccf281c6008"
 LOCK_NAME = "package_workflow_action_lock.json"
 MAX_SOURCE_ARCHIVE_BYTES = 67_108_864
@@ -193,7 +197,7 @@ def validate_action_lock_entry(entry: object) -> tuple[str, str]:
 
 
 def validate_container_lock_entry(entry: object) -> str:
-    if not isinstance(entry, dict) or set(entry) != {
+    expected_keys = {
         "workflow",
         "original_ref",
         "repository",
@@ -204,7 +208,15 @@ def validate_container_lock_entry(entry: object) -> str:
         "linux_arm64_confirmed",
         "observed_at_utc",
         "arm64_runtime_validation",
-    }:
+    }
+    single_manifest = (
+        isinstance(entry, dict)
+        and isinstance(entry.get("media_type"), str)
+        and entry.get("media_type") in SINGLE_MANIFEST_MEDIA_TYPES
+    )
+    if single_manifest:
+        expected_keys.add("config_digest")
+    if not isinstance(entry, dict) or set(entry) != expected_keys:
         raise ContractError("container lock entry has missing or unexpected evidence")
     workflow = entry.get("workflow")
     original = entry.get("original_ref")
@@ -228,6 +240,7 @@ def validate_container_lock_entry(entry: object) -> str:
         or entry.get("media_type") not in (
             "application/vnd.oci.image.index.v1+json",
             "application/vnd.docker.distribution.manifest.list.v2+json",
+            *SINGLE_MANIFEST_MEDIA_TYPES,
         )
         or entry.get("linux_arm64_confirmed") is not True
         or not isinstance(entry.get("observed_at_utc"), str)
@@ -242,6 +255,12 @@ def validate_container_lock_entry(entry: object) -> str:
         or runtime.get("result") != "passed"
     ):
         raise ContractError(f"invalid container lock entry: {entry!r}")
+    if single_manifest and (
+        arm64_digest != digest
+        or not isinstance(entry.get("config_digest"), str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", entry["config_digest"])
+    ):
+        raise ContractError("single-platform container requires its exact manifest and config digests")
     return workflow
 
 

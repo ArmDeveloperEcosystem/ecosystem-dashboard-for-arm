@@ -83,19 +83,13 @@ jobs:
   test-flyte:
     runs-on: ubuntu-24.04-arm
     env:
-      GODEBUG: "http2client=0"
+      # Catalog 0.8.19 identifies flytectl/v0.8.19, not a Flyte control-plane tag.
       BASELINE_VERSION: "0.8.19"
-      PACKAGE_SLUG: "flyte"
-      LANE_KIND: "github release / source-build-or-tarball"
-      DOWNLOAD_URL: "https://github.com/flyteorg/flyte/releases"
-      HOMEPAGE_URL: "https://flyte.org/"
-      OFFICIAL_DOCS: "https://www.union.ai/docs/v2/flyte/user-guide/getting-started/"
-      GITHUB_REPO: "flyteorg/flyte"
+      CANDIDATE_VERSION: "0.8.20"
+      BASELINE_SHA256: "94859b273802c3179443b047b6a170dbbe784510d55ec208af4dcfbbe70cf6ac"
+      CANDIDATE_SHA256: "b05523b42895d84ebeb97ba55d0f870fd84ff18ec74688ca614917ceeffb226c"
+      FLYTEKIT_VERSION: "1.16.28"
       PACKAGE_PAGE: "content/linux/opensource_packages/flyte.md"
-      SOURCE_GLOBS: "flyteadmin|flytepropeller|charts|docker|go.mod"
-      EVIDENCE_RE: "Flyte|workflow|orchestration|pipeline"
-      TEST5_MODE: "source"
-      PYTHON_TARGETS: ""
 
     outputs:
       contract_version: "2.0"
@@ -139,368 +133,338 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "curl tar file ca-certificates python3-venv"
           quiet: "true"
 
-      - name: Install baseline source or artifact
-        id: install
+      - name: Prepare isolated Flytectl checks
+        id: prepare
         run: |
           set -euo pipefail
-          rm -rf baseline-src baseline-external
-          mkdir -p baseline-src baseline-external
-          if [ -n "$GITHUB_REPO" ]; then
-            RESOLVED_TAG=""
-            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
-              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
-                RESOLVED_TAG="$CANDIDATE"
-                break
-              fi
-            done
-            if [ -n "$RESOLVED_TAG" ]; then
-              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
-            else
-              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
-            fi
-            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
+          FLYTE_WORK=$(mktemp -d "$RUNNER_TEMP/flyte.XXXXXX")
+          echo "FLYTE_WORK=$FLYTE_WORK" >> "$GITHUB_ENV"
+          cat > "$FLYTE_WORK/probe.py" <<'PY'
+          import hashlib
+          import importlib.metadata
+          import io
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import re
+          import subprocess
+          import sys
+          import tarfile
+
+          def run(args, **kwargs):
+              try:
+                  return subprocess.run(args, check=True, text=True, timeout=120, **kwargs)
+              except subprocess.CalledProcessError as error:
+                  if error.stdout:
+                      print(error.stdout, file=sys.stderr)
+                  if error.stderr:
+                      print(error.stderr, file=sys.stderr)
+                  raise
+
+          def version(binary):
+              result = run([str(binary), "version"], stdout=subprocess.PIPE)
+              print(result.stdout, file=sys.stderr)
+              # The CLI prints an upgrade notice before its JSON object.
+              data, _ = json.JSONDecoder().raw_decode(result.stdout[result.stdout.index("{"):])
+              if data.get("App") != "flytectl" or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", data.get("Version", "")):
+                  raise RuntimeError("Missing Flytectl runtime version")
+              return data["Version"]
+
+          def install(expected, digest, destination):
+              if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", expected):
+                  raise RuntimeError("Invalid component release version")
+              destination.mkdir()
+              archive = destination / "flytectl_Linux_arm64.tar.gz"
+              checksums = destination / "checksums.txt"
+              url = f"https://github.com/flyteorg/flyte/releases/download/flytectl/v{expected}"
+              for path in (archive, checksums):
+                  run(["curl", "--fail", "--show-error", "--location", "--retry", "2",
+                       "--max-time", "90", f"{url}/{path.name}", "-o", str(path)])
+              published = [line.split()[0] for line in checksums.read_text().splitlines()
+                           if len(line.split()) == 2 and line.split()[1] == archive.name]
+              if published != [digest] or hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
+                  raise RuntimeError("Release archive checksum mismatch")
+              print(f"Verified flytectl/v{expected}: {url}/{archive.name} sha256={digest}", flush=True)
+              run(["tar", "-xzf", str(archive), "-C", str(destination), "flytectl"])
+              binary = destination / "flytectl"
+              observed = version(binary)
+              if observed != expected:
+                  raise RuntimeError(f"Flytectl runtime version {observed} != {expected}")
+              (destination / "identity.json").write_text(json.dumps({
+                  "component": "flytectl", "release_tag": f"flytectl/v{expected}",
+                  "version": observed, "archive_sha256": digest, "url": url,
+                  "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+              }, indent=2))
+
+          def architecture(binary):
+              if platform.machine() != "aarch64":
+                  raise RuntimeError("Flytectl runtime check requires native AArch64")
+              result = run(["file", str(binary)], stdout=subprocess.PIPE)
+              print(result.stdout, end="")
+              if "ELF 64-bit" not in result.stdout or "ARM aarch64" not in result.stdout:
+                  raise RuntimeError("Installed Flytectl is not an AArch64 ELF binary")
+
+          def help_check(binary):
+              result = run([str(binary), "--help"], stdout=subprocess.PIPE)
+              print(result.stdout, end="")
+              if "flytectl [command]" not in result.stdout or "compile" not in result.stdout:
+                  raise RuntimeError("Missing Flytectl compile command")
+
+          def smoke(binary, expected, destination):
+              from flyteidl.admin.workflow_pb2 import WorkflowSpec
+
+              if version(binary) != expected:
+                  raise RuntimeError("Wrong Flytectl version for workflow compilation")
+              sdk_version = importlib.metadata.version("flytekit")
+              if sdk_version != os.environ["FLYTEKIT_VERSION"]:
+                  raise RuntimeError(f"Wrong companion Flytekit version: {sdk_version}")
+              print(f"Companion SDK flytekit={sdk_version}; installed CLI flytectl={expected}", flush=True)
+              destination.mkdir()
+              source = Path(__file__).with_name("workflow.py")
+              (destination / source.name).write_bytes(source.read_bytes())
+              run([sys.executable, "workflow.py"], cwd=destination)
+              run([str(Path(sys.executable).with_name("pyflyte")), "--pkgs", "workflow",
+                   "package", "--image", "example.invalid/flyte-smoke:local",
+                   "--output", str(destination / "workflow.tgz")], cwd=destination)
+              # Corrupt only the serialized task reference to exercise the real compiler.
+              counts = {"_1.pb": 0, "_2.pb": 0, "_3.pb": 0}
+              with tarfile.open(destination / "workflow.tgz") as source_archive, tarfile.open(destination / "invalid.tgz", "w:gz") as invalid:
+                  for member in source_archive.getmembers():
+                      if not member.isfile():
+                          raise RuntimeError("Unexpected workflow package member")
+                      data = source_archive.extractfile(member).read()
+                      for suffix in counts:
+                          if member.name.endswith(suffix):
+                              counts[suffix] += 1
+                      if member.name.endswith("_2.pb"):
+                          spec = WorkflowSpec.FromString(data)
+                          task_nodes = [node for node in spec.template.nodes if node.HasField("task_node")]
+                          if len(task_nodes) != 1:
+                              raise RuntimeError("Expected exactly one task node")
+                          task_nodes[0].task_node.reference_id.name = "missing.task"
+                          data = spec.SerializeToString()
+                      member.size = len(data)
+                      invalid.addfile(member, io.BytesIO(data))
+              if list(counts.values()) != [1, 1, 1]:
+                  raise RuntimeError(f"Expected one task, workflow and launch plan: {counts}")
+              result = run([str(binary), "compile", "--file", str(destination / "workflow.tgz")],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              (destination / "compile.log").write_text(result.stdout)
+              print(result.stdout, end="")
+              if "All Workflows compiled successfully!" not in result.stdout:
+                  raise RuntimeError("Missing workflow compilation result")
+              for label in ("workflows", "Tasks", "Launch plans"):
+                  if not re.search(rf"(?m)^1\s+{label} found in package$", result.stdout):
+                      raise RuntimeError(f"Incorrect compiled {label} count")
+              invalid_result = subprocess.run(
+                  [str(binary), "compile", "--file", str(destination / "invalid.tgz")],
+                  text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+              (destination / "invalid.log").write_text(invalid_result.stdout)
+              print(invalid_result.stdout, end="")
+              if invalid_result.returncode == 0 or "TaskReferenceNotFound" not in invalid_result.stdout:
+                  raise RuntimeError("Invalid task reference was not rejected by the workflow compiler")
+              print("Validated CLI workflow compilation and invalid-graph rejection; SDK execution is local only.")
+
+          if __name__ == "__main__":
+              command, *args = sys.argv[1:]
+              if command == "install":
+                  install(args[0], args[1], Path(args[2]))
+              elif command == "version":
+                  print(version(Path(args[0])))
+              elif command == "arch":
+                  architecture(Path(args[0]))
+              elif command == "help":
+                  help_check(Path(args[0]))
+              elif command == "smoke":
+                  smoke(Path(args[0]), args[1], Path(args[2]))
+              else:
+                  raise RuntimeError(f"Unknown probe command: {command}")
+          PY
+          cat > "$FLYTE_WORK/workflow.py" <<'PY'
+          from flytekit import task, workflow
+
+          @task
+          def add_one(value: int) -> int:
+              return value + 1
+
+          @workflow
+          def wf(value: int) -> int:
+              return add_one(value=value)
+
+          if __name__ == "__main__":
+              for value in (-1, 0, 41):
+                  actual = wf(value=value)
+                  if actual != value + 1:
+                      raise RuntimeError(f"Workflow result {actual} != {value + 1}")
+              print("Local workflow results: 0, 1, 42")
+          PY
+
+      - name: Install catalog Flytectl component
+        id: install
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "install_status=failed" >> "$GITHUB_OUTPUT"; fi' EXIT
+          python3 "$FLYTE_WORK/probe.py" install "$BASELINE_VERSION" "$BASELINE_SHA256" "$FLYTE_WORK/baseline"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Get installed Flytectl version
+        id: version
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 "$FLYTE_WORK/probe.py" version "$FLYTE_WORK/baseline/flytectl")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          test "$VERSION" = "$BASELINE_VERSION"
+
+      - name: Install pinned companion workflow SDK
+        id: sdk
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python3 -m venv "$FLYTE_WORK/sdk"
+          "$FLYTE_WORK/sdk/bin/python" -m pip install "flytekit==$FLYTEKIT_VERSION"
+          "$FLYTE_WORK/sdk/bin/python" -m pip check
+          "$FLYTE_WORK/sdk/bin/python" -m pip freeze > "$FLYTE_WORK/sdk-requirements.txt"
+
+      - name: Test 1 - Installed Flytectl release
+        id: test1
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          START_TIME=$(date +%s)
+          trap 'rc=$?; STATUS=failed; if [ "$rc" -eq 0 ]; then STATUS=passed; fi; echo "status=$STATUS" >> "$GITHUB_OUTPUT"; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
+          test "${{ steps.install.outputs.install_status }}" = success
+          test -x "$FLYTE_WORK/baseline/flytectl"
+          test -s "$FLYTE_WORK/baseline/identity.json"
+          cat "$FLYTE_WORK/baseline/identity.json"
+
+      - name: Test 2 - Runtime version and catalog component alignment
+        id: test2
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          START_TIME=$(date +%s)
+          trap 'rc=$?; STATUS=failed; if [ "$rc" -eq 0 ]; then STATUS=passed; fi; echo "status=$STATUS" >> "$GITHUB_OUTPUT"; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
+          VERSION=$(python3 "$FLYTE_WORK/probe.py" version "$FLYTE_WORK/baseline/flytectl")
+          echo "observed_version=$VERSION" >> "$GITHUB_OUTPUT"
+          test "$VERSION" = "$BASELINE_VERSION"
+          "$FLYTE_WORK/sdk/bin/python" - <<'PY'
+          import os
+          from pathlib import Path
+          import yaml
+          page = yaml.safe_load(Path(os.environ["PACKAGE_PAGE"]).read_text().split("---", 2)[1])
+          if str(page["supported_minimum_version"]["version_number"]) != os.environ["BASELINE_VERSION"]:
+              raise RuntimeError("Catalog baseline differs from installed Flytectl")
+          release = page["optional_hidden_info"]["release_notes__supported_minimum"]
+          expected = "https://github.com/flyteorg/flyte/releases/tag/flytectl%2Fv" + os.environ["BASELINE_VERSION"]
+          if release != expected:
+              raise RuntimeError("Catalog baseline does not identify the Flytectl component")
+          PY
+
+      - name: Test 3 - Installed CLI commands
+        id: test3
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          START_TIME=$(date +%s)
+          trap 'rc=$?; STATUS=failed; if [ "$rc" -eq 0 ]; then STATUS=passed; fi; echo "status=$STATUS" >> "$GITHUB_OUTPUT"; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
+          python3 "$FLYTE_WORK/probe.py" help "$FLYTE_WORK/baseline/flytectl"
+
+      - name: Test 4 - Native Arm64 binary
+        id: test4
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          START_TIME=$(date +%s)
+          trap 'rc=$?; STATUS=failed; if [ "$rc" -eq 0 ]; then STATUS=passed; fi; echo "status=$STATUS" >> "$GITHUB_OUTPUT"; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
+          python3 "$FLYTE_WORK/probe.py" arch "$FLYTE_WORK/baseline/flytectl"
+
+      - name: Test 5 - Workflow compilation and local execution
+        id: test5
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          START_TIME=$(date +%s)
+          trap 'rc=$?; STATUS=failed; if [ "$rc" -eq 0 ]; then STATUS=passed; fi; echo "status=$STATUS" >> "$GITHUB_OUTPUT"; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
+          test "${{ steps.sdk.outcome }}" = success
+          "$FLYTE_WORK/sdk/bin/python" "$FLYTE_WORK/probe.py" smoke "$FLYTE_WORK/baseline/flytectl" "$BASELINE_VERSION" "$FLYTE_WORK/baseline-smoke"
+          echo "note=Installed Flytectl $BASELINE_VERSION compiled a task/workflow/launch-plan package and rejected an invalid graph. Companion Flytekit $FLYTEKIT_VERSION executed the same workflow locally. No Kubernetes backend execution is claimed." >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Next Flytectl release regression
+        id: test6
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          STATUS=failed
+          DECISION=next_install_failed
+          echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+          START_TIME=$(date +%s)
+          trap 'rc=$?; if [ "$rc" -ne 0 ]; then STATUS=failed; elif [ "$STATUS" != skipped ]; then STATUS=passed; fi; echo "status=$STATUS" >> "$GITHUB_OUTPUT"; echo "decision=$DECISION" >> "$GITHUB_OUTPUT"; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
+          echo "current_version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$CANDIDATE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Flytectl candidate validation did not complete." >> "$GITHUB_OUTPUT"
+          echo "comparison=Compare installed Flytectl $BASELINE_VERSION and $CANDIDATE_VERSION with identical workflow compilation and local SDK checks; no Kubernetes backend execution." >> "$GITHUB_OUTPUT"
+          for RESULT in \
+            "${{ steps.test1.outputs.status }}:${{ steps.test1.outcome }}" \
+            "${{ steps.test2.outputs.status }}:${{ steps.test2.outcome }}" \
+            "${{ steps.test3.outputs.status }}:${{ steps.test3.outcome }}" \
+            "${{ steps.test4.outputs.status }}:${{ steps.test4.outcome }}" \
+            "${{ steps.test5.outputs.status }}:${{ steps.test5.outcome }}"; do
+            if [ "$RESULT" != "passed:success" ]; then
+              STATUS=skipped
+              DECISION=baseline_failed
+              echo "status=skipped" >> "$GITHUB_OUTPUT"
+              echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Flytectl candidate was not attempted because Tests 1-5 did not all pass." >> "$GITHUB_OUTPUT"
               exit 0
             fi
-          fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
+          done
+          python3 - <<'PY'
+          import os
+          baseline, candidate = (tuple(map(int, os.environ[key].split("."))) for key in ("BASELINE_VERSION", "CANDIDATE_VERSION"))
+          if candidate <= baseline:
+              raise RuntimeError("Candidate must be a newer Flytectl component release")
+          PY
+          python3 "$FLYTE_WORK/probe.py" install "$CANDIDATE_VERSION" "$CANDIDATE_SHA256" "$FLYTE_WORK/candidate"
+          VERSION=$(python3 "$FLYTE_WORK/probe.py" version "$FLYTE_WORK/candidate/flytectl")
+          test "$VERSION" = "$CANDIDATE_VERSION"
+          echo "next_installed_version=$VERSION" >> "$GITHUB_OUTPUT"
+          DECISION=limited_cpu_smoke_failed
+          echo "decision=limited_cpu_smoke_failed" >> "$GITHUB_OUTPUT"
+          python3 "$FLYTE_WORK/probe.py" help "$FLYTE_WORK/candidate/flytectl"
+          python3 "$FLYTE_WORK/probe.py" arch "$FLYTE_WORK/candidate/flytectl"
+          test "${{ steps.sdk.outcome }}" = success
+          "$FLYTE_WORK/sdk/bin/python" "$FLYTE_WORK/probe.py" smoke "$FLYTE_WORK/candidate/flytectl" "$CANDIDATE_VERSION" "$FLYTE_WORK/candidate-smoke"
+          DECISION=limited_cpu_smoke_validated
+          echo "decision=limited_cpu_smoke_validated" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Flytectl $VERSION passed native CLI, workflow compilation, invalid-graph rejection, and companion Flytekit $FLYTEKIT_VERSION local execution checks." >> "$GITHUB_OUTPUT"
 
-      - name: Get baseline version
-        id: version
-        run: |
-          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Requested catalog baseline version: $BASELINE_VERSION"
-
-      - name: Test 1 - Baseline package evidence
-        id: test1
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if [ ! -f "$PACKAGE_PAGE" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if [ "$MODE" = "github_source" ]; then
-            FOUND=0
-            IFS='|' read -r -a PATTERNS <<< "$SOURCE_GLOBS"
-            for PATTERN in "${PATTERNS[@]}"; do
-              [ -z "$PATTERN" ] && continue
-              if compgen -G "baseline-src/$PATTERN" > /dev/null; then
-                FOUND=1
-                break
-              fi
-            done
-            if [ "$FOUND" -ne 1 ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          else
-            if [ ! -f baseline-external/metadata.txt ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 2 - Baseline version and release alignment
-        id: test2
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if ! grep -Fq "version_number: $BASELINE_VERSION" "$PACKAGE_PAGE"; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if [ "$MODE" = "github_source" ]; then
-            RESOLVED="${{ steps.install.outputs.resolved_tag || '' }}"
-            SOURCE_COMMIT=$(git -C baseline-src rev-parse --verify HEAD 2>/dev/null || true)
-            echo "source_commit=${SOURCE_COMMIT:-unresolved}" >> "$GITHUB_OUTPUT"
-            printf 'Requested baseline=%s resolved_ref=%s observed_source_commit=%s\n' "$BASELINE_VERSION" "$RESOLVED" "${SOURCE_COMMIT:-unresolved}"
-            if [ "$RESOLVED" != "$BASELINE_VERSION" ] && [ "$RESOLVED" != "v$BASELINE_VERSION" ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Baseline $BASELINE_VERSION is not source-bound: resolved $RESOLVED at ${SOURCE_COMMIT:-unresolved}. Default-branch preflight cannot certify the requested baseline." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            TAG_COMMIT=$(git -C baseline-src rev-parse --verify "refs/tags/$RESOLVED^{commit}" 2>/dev/null || true)
-            if [ -z "$SOURCE_COMMIT" ] || [ -z "$TAG_COMMIT" ] || [ "$SOURCE_COMMIT" != "$TAG_COMMIT" ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Baseline $BASELINE_VERSION tag does not identify the checked-out source commit ${SOURCE_COMMIT:-unresolved}." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "note=External endpoint metadata does not verify a Flyte $BASELINE_VERSION source or binary version." >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 3 - Package-specific source or docs evidence
-        id: test3
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if [ "$MODE" = "github_source" ]; then
-            if ! grep -R -I -Eiq "$EVIDENCE_RE" baseline-src 2>/dev/null; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            DOC_FOUND=0
-            for PATTERN in README* docs examples; do
-              if compgen -G "baseline-src/$PATTERN" > /dev/null; then
-                DOC_FOUND=1
-                break
-              fi
-            done
-            if [ "$DOC_FOUND" -ne 1 ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          else
-            if ! grep -Eiq "$EVIDENCE_RE" "$PACKAGE_PAGE"; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            if ! grep -Fq "$HOMEPAGE_URL" baseline-external/metadata.txt; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 4 - Arm64 support gate
-        id: test4
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          START_TIME=$(date +%s)
-          if [ "$(uname -m)" != "aarch64" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if ! grep -q '^works_on_arm: true' "$PACKAGE_PAGE"; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 5 - Bounded package-specific smoke
-        id: test5
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          START_TIME=$(date +%s)
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; fi; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if [ "$PACKAGE_SLUG" = "flyte" ] && [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            go list ./... >/tmp/flyte-go-packages.txt
-            # Integration TestMain starts envtest even when no test names match.
-            ENVTEST_VERSION=$(go list -m -f '{{ .Version }}' sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $2, $3}')
-            ENVTEST_K8S_VERSION=$(go list -m -f '{{ .Version }}' k8s.io/api | awk -F'[v.]' '{printf "1.%d", $3}')
-            ENVTEST_DIR=$(mktemp -d)
-            GOBIN="$ENVTEST_DIR" go install "sigs.k8s.io/controller-runtime/tools/setup-envtest@$ENVTEST_VERSION"
-            KUBEBUILDER_ASSETS=$("$ENVTEST_DIR/setup-envtest" use "$ENVTEST_K8S_VERSION" --bin-dir "$ENVTEST_DIR/assets" -p path)
-            export KUBEBUILDER_ASSETS
-            printf 'Envtest branch=%s Kubernetes=%s assets=%s\n' "$ENVTEST_VERSION" "$ENVTEST_K8S_VERSION" "$KUBEBUILDER_ASSETS"
-            GOOS=linux GOARCH=arm64 go test -run '^$' ./... >/tmp/flyte-compile-smoke.txt 2>&1 || { cat /tmp/flyte-compile-smoke.txt; exit 1; }
-            CHART="$(find . -path '*/Chart.yaml' -print -quit 2>/dev/null || true)"
-            if [ -n "$CHART" ]; then
-              if ! command -v helm >/dev/null 2>&1; then
-                HELM_VERSION="v3.15.4"
-                curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-arm64.tar.gz" -o /tmp/helm.tgz
-                tar -xzf /tmp/helm.tgz -C /tmp
-                export PATH="/tmp/linux-arm64:$PATH"
-              fi
-              helm dependency build "$(dirname "$CHART")" >/tmp/flyte-helm-deps.txt 2>&1 || true
-              helm template flyte-smoke "$(dirname "$CHART")" >/tmp/flyte-rendered.yaml
-              grep -Eq '^kind: (Deployment|Service|ConfigMap|CustomResourceDefinition|ServiceAccount)' /tmp/flyte-rendered.yaml
-            else
-              find . -type f \( -name '*.yaml' -o -name '*.yml' \) -print0 | xargs -0 grep -Eiq 'flyte|flyteadmin|flytepropeller|CustomResourceDefinition'
-            fi
-            python3 -m venv /tmp/flytekit-smoke
-            . /tmp/flytekit-smoke/bin/activate
-            python -m pip install --upgrade pip
-            python -m pip install flytekit
-            {
-              printf '%s\n' 'from flytekit import task, workflow'
-              printf '%s\n' ''
-              printf '%s\n' '@task'
-              printf '%s\n' 'def add_one(value: int) -> int:'
-              printf '%s\n' '    return value + 1'
-              printf '%s\n' ''
-              printf '%s\n' '@workflow'
-              printf '%s\n' 'def wf(value: int) -> int:'
-              printf '%s\n' '    return add_one(value=value)'
-              printf '%s\n' ''
-              printf '%s\n' 'assert wf(value=41) == 42'
-            } >/tmp/flytekit-smoke.py
-            python /tmp/flytekit-smoke.py
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=Compiled Flyte Go packages for linux/arm64, rendered or validated Flyte Kubernetes manifests, and executed a tiny local flytekit workflow. Kubernetes control-plane deployment remains out of scope." >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "$TEST5_MODE" = "source" ] || [ "$TEST5_MODE" = "external" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "note=Unsupported Flyte preflight mode: the scoped Arm preflight requires a GitHub source checkout so Go compile, manifest render, and local flytekit workflow checks can run." >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          case "$TEST5_MODE" in
-            python)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              FOUND=0
-              IFS='|' read -r -a TARGETS <<< "$PYTHON_TARGETS"
-              for TARGET in "${TARGETS[@]}"; do
-                [ -z "$TARGET" ] && continue
-                if [ -d "baseline-src/$TARGET" ] || [ -f "baseline-src/$TARGET" ]; then
-                  python3 -m compileall -q "baseline-src/$TARGET"
-                  FOUND=1
-                  break
-                fi
-              done
-              if [ "$FOUND" -ne 1 ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package-specific Python sources with compileall without requiring optional accelerator runtimes." >> "$GITHUB_OUTPUT"
-              ;;
-            source)
-              if [ "$MODE" != "github_source" ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              MATCHED=0
-              IFS='|' read -r -a PATTERNS <<< "$SOURCE_GLOBS"
-              for PATTERN in "${PATTERNS[@]}"; do
-                [ -z "$PATTERN" ] && continue
-                if compgen -G "baseline-src/$PATTERN" > /dev/null; then
-                  MATCHED=$((MATCHED + 1))
-                fi
-              done
-              if [ "$MATCHED" -lt 1 ] || ! grep -R -I -Eiq "$EVIDENCE_RE" baseline-src 2>/dev/null; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              if echo "$LANE_KIND" | grep -qi 'gpu\|specialized'; then
-                echo "note=Validated package-specific source layout and documentation on Arm64; GPU or accelerator runtime remains out of scope for generic runners." >> "$GITHUB_OUTPUT"
-              else
-                echo "note=Validated package-specific source layout and documentation on Arm64 without claiming a full runtime build." >> "$GITHUB_OUTPUT"
-              fi
-              ;;
-            external)
-              if [ ! -f baseline-external/metadata.txt ]; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              if ! grep -Fq "download=$DOWNLOAD_URL" baseline-external/metadata.txt || ! grep -Fq "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt || ! grep -Eiq "$EVIDENCE_RE" "$PACKAGE_PAGE"; then
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                exit 1
-              fi
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package metadata, official endpoints, and Arm64 package-page evidence for this external/manual lane." >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-              ;;
-          esac
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 6 - Regression Validation
-        id: test6
-        uses: ./.github/actions/generic-source-regression-check
-        with:
-          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
-          github_repo: ${{ env.GITHUB_REPO }}
-          lane_kind: ${{ env.LANE_KIND }}
-          limited_cpu_probe: |
-            cd next-src
-            go list ./... >/tmp/flyte-next-go-packages.txt
-            mapfile -t FLYTE_SMOKE_PKGS < <(
-              grep -E '^github.com/flyteorg/flyte/v[0-9]+/(flytestdlib|flyteidl2|dataproxy|flyteplugins/go/tasks/pluginmachinery)(/|$)' /tmp/flyte-next-go-packages.txt | grep -Ev '/(test|tests|integration)(/|$)' | head -n 40 || true
-            )
-            [ "${#FLYTE_SMOKE_PKGS[@]}" -gt 0 ]
-            GOOS=linux GOARCH=arm64 go test -run '^$' "${FLYTE_SMOKE_PKGS[@]}" >/tmp/flyte-next-compile-smoke.txt 2>&1 || { cat /tmp/flyte-next-compile-smoke.txt; exit 1; }
-            CHART="$(find . -path '*/Chart.yaml' -print -quit 2>/dev/null || true)"
-            if [ -n "$CHART" ]; then
-              if ! command -v helm >/dev/null 2>&1; then
-                HELM_VERSION="v3.15.4"
-                curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-arm64.tar.gz" -o /tmp/helm.tgz
-                tar -xzf /tmp/helm.tgz -C /tmp
-                export PATH="/tmp/linux-arm64:$PATH"
-              fi
-              helm repo add flyte-docker-registry https://twuni.github.io/docker-registry.helm >/tmp/flyte-next-helm-repo-docker-registry.txt 2>&1 || true
-              helm repo add flyte-knative-serving https://deeploy-knative-serving-charts.storage.googleapis.com/ >/tmp/flyte-next-helm-repo-knative-serving.txt 2>&1 || true
-              helm repo add flyte-rustfs https://rustfs.github.io/helm >/tmp/flyte-next-helm-repo-rustfs.txt 2>&1 || true
-              helm repo update >/tmp/flyte-next-helm-repo-update.txt 2>&1
-              helm dependency build "$(dirname "$CHART")" >/tmp/flyte-next-helm-deps.txt 2>&1
-              helm template flyte-next-smoke "$(dirname "$CHART")" >/tmp/flyte-next-rendered.yaml
-              grep -Eq 'kind:[[:space:]]*(Deployment|Service|ConfigMap|CustomResourceDefinition|ServiceAccount)' /tmp/flyte-next-rendered.yaml
-            else
-              find . -type f \( -name '*.yaml' -o -name '*.yml' \) -print0 | xargs -0 grep -Eiq 'flyte|flyteadmin|flytepropeller|CustomResourceDefinition'
-            fi
-            python3 -m venv /tmp/flytekit-next-smoke
-            . /tmp/flytekit-next-smoke/bin/activate
-            python -m pip install --upgrade pip
-            python -m pip install flytekit
-            {
-              printf '%s\n' 'from flytekit import task, workflow'
-              printf '%s\n' ''
-              printf '%s\n' '@task'
-              printf '%s\n' 'def add_one(value: int) -> int:'
-              printf '%s\n' '    return value + 1'
-              printf '%s\n' ''
-              printf '%s\n' '@workflow'
-              printf '%s\n' 'def wf(value: int) -> int:'
-              printf '%s\n' '    return add_one(value=value)'
-              printf '%s\n' ''
-              printf '%s\n' 'assert wf(value=41) == 42'
-            } >/tmp/flytekit-next-smoke.py
-            python /tmp/flytekit-next-smoke.py
-          limited_cpu_description: "Test 6 reran the scoped Flyte Arm preflight against the next stable source tag: Go package discovery, linux/arm64 compile smoke, chart/manifest validation, and a tiny local Flytekit workflow. A live Flyte control plane and Kubernetes execution backend remain out of scope."
-          defer_on_limited_cpu_probe_failure: "false"
       - name: Calculate test summary
         id: summary
         if: always()
@@ -539,7 +503,9 @@ jobs:
           done
           if [ "$T6:$O6" = "passed:success" ]; then
             PASSED=$((PASSED + 1))
-          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "baseline_failed" ] && [ "$CORE_FAILED" -gt 0 ]; then
+            SKIPPED=1
+          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "no_newer_stable_available" ] && [ "$CORE_FAILED" -eq 0 ]; then
             SKIPPED=1
           else
             FAILED=$((FAILED + 1))
@@ -563,3 +529,11 @@ jobs:
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
           test "$FAILED" -eq 0
+
+      - name: Clean isolated Flytectl resources
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -n "${FLYTE_WORK:-}" ]; then
+            rm -rf -- "$FLYTE_WORK"
+          fi

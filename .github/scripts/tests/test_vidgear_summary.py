@@ -1,4 +1,4 @@
-"""Run VidGear's summary without installing or changing its known-invalid baseline."""
+"""Keep VidGear's six-test summary fail-closed, independently of runtime probes."""
 
 import os
 from pathlib import Path
@@ -109,7 +109,7 @@ class VidGearSummaryTests(unittest.TestCase):
 
     def test_invalid_skip_decisions_and_outcomes_are_failures(self):
         for decision in ("", "runtime_validation_not_automated", "not_applicable_package_manager",
-                         "current_is_latest_stable", "unknown", "no_newer_stable_available"):
+                         "current_is_latest_stable", "unknown", "baseline_failed", "no_newer_stable_available"):
             for outcome in ("success", "", "failure", "cancelled", "skipped"):
                 if decision == "no_newer_stable_available" and outcome == "success":
                     continue
@@ -123,6 +123,25 @@ class VidGearSummaryTests(unittest.TestCase):
             result, fields = self.run_summary({"steps.test6.outputs.status": status,
                 "steps.test6.outputs.decision": "no_newer_stable_available"})
             self.assert_failure(result, fields, core_failed=0)
+
+    def test_successfully_reported_baseline_guard_keeps_the_baseline_failure(self):
+        result, fields = self.run_summary({"steps.test5.outputs.status": "failed",
+            "steps.test5.outcome": "failure", "steps.test6.outputs.status": "skipped",
+            "steps.test6.outputs.decision": "baseline_failed", "steps.test6.outcome": "success"})
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(fields, {"passed": "4", "failed": "1", "skipped": "1", "core_failed": "1",
+                                  "duration": "21", "overall_status": "failure", "badge_status": "failing"})
+
+    def test_baseline_guard_requires_successful_outcome_and_explicit_skipped_status(self):
+        overrides = {"steps.test5.outputs.status": "failed", "steps.test5.outcome": "failure",
+                     "steps.test6.outputs.decision": "baseline_failed"}
+        invalid = [("skipped", outcome) for outcome in ("", "failure", "cancelled", "skipped")]
+        invalid += [(status, "success") for status in ("", "failed", "unknown")]
+        for status, outcome in invalid:
+            with self.subTest(status=status, outcome=outcome):
+                result, fields = self.run_summary({**overrides, "steps.test6.outputs.status": status,
+                                                   "steps.test6.outcome": outcome})
+                self.assert_failure(result, fields, failed=2, core_failed=1)
 
     def test_summary_has_explicit_inputs_and_preserves_baseline(self):
         self.assertEqual(self.job["env"]["BASELINE_VERSION"], "0.1.0")

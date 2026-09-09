@@ -13,6 +13,8 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / ".github/scripts"))
+import package_result_policy as policy  # noqa: E402
 
 
 class ActiveCollectorFailureEvidenceTests(unittest.TestCase):
@@ -171,6 +173,42 @@ class ActiveCollectorFailureEvidenceTests(unittest.TestCase):
         self.assertEqual("failure", payload["run"]["status"])
         self.assertEqual(1, payload["tests"]["failed"])
         self.assertEqual("failed", payload["tests"]["details"][2]["status"])
+
+    def baseline_failed_guard(self):
+        self.need["result"] = self.job["conclusion"] = "failure"
+        self.need["outputs"].update(
+            run_status="failure", tests_passed="4", tests_failed="1",
+            tests_skipped="1", core_failed="1", regression_status="skipped",
+            regression_decision="baseline_failed",
+            regression_next_installed_version="not_installed",
+        )
+        self.job["steps"][4]["conclusion"] = "failure"
+
+    def test_successful_baseline_guard_collects_and_publishes_an_honest_failure(self):
+        self.baseline_failed_guard()
+        process, payload = self.collect()
+        self.assertEqual(0, process.returncode, process.stderr)
+        self.assertEqual((4, 1, 1), tuple(payload["tests"][key] for key in ("passed", "failed", "skipped")))
+        self.assertEqual("failed", payload["tests"]["details"][4]["status"])
+        self.assertEqual("skipped", payload["tests"]["details"][5]["status"])
+        self.assertEqual("failure", policy.validate_publishable_result(payload))
+
+    def test_failing_api_step_cannot_masquerade_as_successful_baseline_guard(self):
+        self.baseline_failed_guard()
+        self.job["steps"][5]["conclusion"] = "failure"
+        self.assert_rejected(message="emitted skipped count contradicts test details")
+
+    def test_failed_raw_status_with_baseline_skip_decision_is_not_publishable(self):
+        self.baseline_failed_guard()
+        self.need["outputs"].update(
+            tests_failed="2", tests_skipped="0", regression_status="failed"
+        )
+        process, payload = self.collect()
+        if process.returncode != 0:
+            self.assertIsNone(payload)
+        else:
+            with self.assertRaises(ValueError):
+                policy.validate_publishable_result(payload)
 
     def test_consistent_six_test_success_is_unchanged(self):
         process, payload = self.collect()

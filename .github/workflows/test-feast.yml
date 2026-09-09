@@ -83,18 +83,141 @@ jobs:
   test-feast:
     runs-on: ubuntu-24.04-arm
     env:
-      BASELINE_VERSION: "0.1.0"
+      # The historical catalog supported-since value is distinct from this tested
+      # runtime baseline. Exact PyPI 0.1.0 has no code; 0.10 introduced local
+      # FeatureStore, and 0.10.4 relaxed old PyArrow/pandas/grpc pins for Arm wheels.
+      # https://github.com/feast-dev/feast/releases/tag/v0.10.4
+      BASELINE_VERSION: "0.10.4"
+      CATALOG_SUPPORTED_SINCE: "0.1.0"
+      BASELINE_SOURCE_COMMIT: "0c7f0e24fde7d142f9e9e9d491322c535341bbb6"
       PACKAGE_SLUG: "feast"
-      LANE_KIND: "github release / source-build-or-tarball"
-      DOWNLOAD_URL: "https://github.com/feast-dev/feast/releases"
-      HOMEPAGE_URL: "https://feast.dev/"
-      OFFICIAL_DOCS: "https://docs.feast.dev/"
+      LANE_KIND: "exact PyPI runtime / verified GitHub release"
       GITHUB_REPO: "feast-dev/feast"
       PACKAGE_PAGE: "content/linux/opensource_packages/feast.md"
-      SOURCE_GLOBS: "sdk/python/feast|examples|docs|infra|Makefile"
-      EVIDENCE_RE: "Feast|feature store|offline|online"
-      TEST5_MODE: "python"
-      PYTHON_TARGETS: "sdk/python/feast"
+      FEAST_TELEMETRY: "False"
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      FEAST_INSTALL_COMMAND: |
+        set -euo pipefail
+        python -m venv "$FEAST_VENV"
+        test -f "$FEAST_VENV/bin/activate"
+        . "$FEAST_VENV/bin/activate"
+        if [ "$SMOKE_VERSION" = "0.10.4" ]; then
+          # Legacy metadata needs pip <24.1; old extension builds need Cython 0.29.
+          timeout 120 python -m pip install pip==24.0 setuptools==57.5.0 wheel==0.37.1 Cython==0.29.37
+          timeout 300 python -m pip install --no-build-isolation \
+            "feast==$SMOKE_VERSION" numpy==1.23.5 pandas==1.5.3 protobuf==3.20.3 \
+            pydantic==1.10.26 pyarrow==12.0.1 mmh3==3.1.0
+        else
+          timeout 300 python -m pip install --only-binary=:all: "feast==$SMOKE_VERSION"
+        fi
+        python -m pip check
+        bash -euo pipefail -c "$FEAST_VERIFY_COMMAND"
+      FEAST_VERIFY_COMMAND: |
+        python - <<'PY'
+        from importlib.metadata import version
+        from pathlib import Path
+        import os
+        import sys
+        import feast
+
+        expected = os.environ["SMOKE_VERSION"]
+        installed = version("feast")
+        assert installed == expected, (installed, expected)
+        assert feast.__version__ == expected, (feast.__version__, expected)
+        module = Path(feast.__file__).resolve()
+        assert module.is_relative_to(Path(sys.prefix).resolve()), module
+        print(installed)
+        PY
+      FEAST_SMOKE_COMMAND: |
+        set -euo pipefail
+        bash -euo pipefail -c "$FEAST_VERIFY_COMMAND"
+        python - <<'PY'
+        from datetime import timedelta
+        from importlib.metadata import version
+        from pathlib import Path
+        import contextlib
+        import json
+        import os
+        import sqlite3
+        import tempfile
+        import pandas as pd
+        from feast import Entity, FeatureStore, FeatureView, FileSource
+
+        expected = os.environ["SMOKE_VERSION"]
+        legacy = expected == "0.10.4"
+        with tempfile.TemporaryDirectory(prefix="feast-runtime-") as directory:
+            root = Path(directory)
+            data = root / "driver.parquet"
+            pd.DataFrame({
+                "driver_id": [1, 1, 2],
+                "event_timestamp": pd.to_datetime(
+                    ["2024-01-01", "2024-01-04", "2024-01-02"], utc=True
+                ),
+                "rating": [4.5, 9.0, 4.8],
+            }).to_parquet(data)
+            (root / "feature_store.yaml").write_text(
+                "project: smoke\n"
+                f"registry: {root}/registry.db\n"
+                "provider: local\n"
+                "online_store:\n"
+                "  type: sqlite\n"
+                f"  path: {root}/online.db\n",
+                encoding="utf-8",
+            )
+            if legacy:
+                from feast import Feature, ValueType
+                source = FileSource(path=str(data), event_timestamp_column="event_timestamp")
+                driver = Entity(name="driver", join_key="driver_id", value_type=ValueType.INT64)
+                ratings = FeatureView(
+                    name="driver_ratings", entities=["driver"], ttl=timedelta(days=10),
+                    features=[Feature(name="rating", dtype=ValueType.FLOAT)], input=source,
+                )
+                references = {"feature_refs": ["driver_ratings:rating"]}
+                entity_rows = [{"driver": 1}]
+            else:
+                from feast import Field
+                from feast.types import Float32, Int64
+                source = FileSource(path=str(data), timestamp_field="event_timestamp")
+                driver = Entity(name="driver", join_keys=["driver_id"], value_type=Int64.to_value_type())
+                ratings = FeatureView(
+                    name="driver_ratings", entities=[driver], ttl=timedelta(days=10),
+                    schema=[Field(name="rating", dtype=Float32)], source=source,
+                )
+                references = {"features": ["driver_ratings:rating"], "full_feature_names": True}
+                entity_rows = [{"driver_id": 1}]
+            store = FeatureStore(repo_path=str(root))
+            store.apply([driver, ratings])
+            features = store.get_historical_features(
+                entity_df=pd.DataFrame({
+                    "driver_id": [1],
+                    "event_timestamp": pd.to_datetime(["2024-01-03"], utc=True),
+                }),
+                **references,
+            ).to_df()
+            assert len(features) == 1, features
+            assert int(features["driver_id"].iloc[0]) == 1, features
+            assert float(features["driver_ratings__rating"].iloc[0]) == 4.5, features
+            store.materialize(
+                pd.Timestamp("2023-12-31", tz="UTC").to_pydatetime(),
+                pd.Timestamp("2024-01-03", tz="UTC").to_pydatetime(),
+            )
+            online = store.get_online_features(entity_rows=entity_rows, **references).to_dict()
+            assert online["driver_ratings__rating"] == [4.5], online
+            database = root / "online.db"
+            assert database.is_file(), database
+            with contextlib.closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as connection:
+                rows = connection.execute(
+                    "SELECT COUNT(*) FROM smoke_driver_ratings WHERE feature_name = 'rating'"
+                ).fetchone()[0]
+            assert rows == 2, rows
+            print(json.dumps({
+                "installed_version": version("feast"),
+                "historical_rating": float(features["driver_ratings__rating"].iloc[0]),
+                "online_rating": online["driver_ratings__rating"][0],
+                "sqlite_rows": rows,
+            }, sort_keys=True))
+        PY
 
     outputs:
       contract_version: "2.0"
@@ -108,7 +231,7 @@ jobs:
       tests_failed: ${{ steps.summary.outputs.failed || '0' }}
       tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
       duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_status: ${{ steps.test6.outputs.status || 'failed' }}
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
@@ -136,300 +259,357 @@ jobs:
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          echo "package_slug=feast" >> "$GITHUB_OUTPUT"
-          echo "dashboard_link=/linux/opensource_packages/feast" >> "$GITHUB_OUTPUT"
+          {
+            echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "package_slug=feast"
+            echo "dashboard_link=/linux/opensource_packages/feast"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates python3-venv"
+          packages: "git ca-certificates build-essential python3-venv"
           quiet: "true"
 
-      - name: Install baseline source or artifact
+      - name: Install exact baseline source and Python runtime
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
-          rm -rf baseline-src baseline-external
-          mkdir -p baseline-src baseline-external
-          if [ -n "$GITHUB_REPO" ]; then
-            RESOLVED_TAG=""
-            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
-              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
-                RESOLVED_TAG="$CANDIDATE"
-                break
-              fi
-            done
-            if [ -n "$RESOLVED_TAG" ]; then
-              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
-            else
-              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
-            fi
-            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
           echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
+          git clone --depth 1 --single-branch --branch "v$BASELINE_VERSION" \
+            "https://github.com/$GITHUB_REPO.git" baseline-src
+          test "$(git -C baseline-src rev-parse HEAD)" = "$BASELINE_SOURCE_COMMIT"
+          test "$(git -C baseline-src rev-parse "refs/tags/v$BASELINE_VERSION^{commit}")" = "$BASELINE_SOURCE_COMMIT"
+          export FEAST_VENV="$PWD/feast-baseline-venv" SMOKE_VERSION="$BASELINE_VERSION"
+          bash -euo pipefail -c "$FEAST_INSTALL_COMMAND"
+          {
+            echo "resolved_tag=v$BASELINE_VERSION"
+            echo "source_commit=$BASELINE_SOURCE_COMMIT"
+            echo "install_status=success"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Get baseline version
+      - name: Get installed baseline version
         id: version
+        continue-on-error: true
         run: |
-          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected baseline version: $BASELINE_VERSION"
+          set -euo pipefail
+          echo "version=unknown" >> "$GITHUB_OUTPUT"
+          test -f feast-baseline-venv/bin/activate
+          . feast-baseline-venv/bin/activate
+          export SMOKE_VERSION="$BASELINE_VERSION"
+          INSTALLED=$(bash -euo pipefail -c "$FEAST_VERIFY_COMMAND")
+          echo "version=$INSTALLED" >> "$GITHUB_OUTPUT"
 
-      - name: Test 1 - Baseline package evidence
+      - name: Test 1 - Installed Feast package
         id: test1
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if [ ! -f "$PACKAGE_PAGE" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if [ "$MODE" = "github_source" ]; then
-            FOUND=0
-            IFS='|' read -r -a PATTERNS <<< "$SOURCE_GLOBS"
-            for PATTERN in "${PATTERNS[@]}"; do
-              [ -z "$PATTERN" ] && continue
-              if compgen -G "baseline-src/$PATTERN" > /dev/null; then
-                FOUND=1
-                break
-              fi
-            done
-            if [ "$FOUND" -ne 1 ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          else
-            if [ ! -f baseline-external/metadata.txt ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          finish() {
+            RC=$?
+            if [ "$RC" -eq 0 ]; then STATUS=passed; else STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          test "${{ steps.install.outputs.install_status }}" = success
+          test -x feast-baseline-venv/bin/feast
+          test -f feast-baseline-venv/bin/activate
+          . feast-baseline-venv/bin/activate
+          export SMOKE_VERSION="$BASELINE_VERSION"
+          bash -euo pipefail -c "$FEAST_VERIFY_COMMAND"
 
-      - name: Test 2 - Baseline version and release alignment
+      - name: Test 2 - Installed version and exact release alignment
         id: test2
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if ! grep -Fq "version_number: $BASELINE_VERSION" "$PACKAGE_PAGE"; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if [ "$MODE" = "github_source" ]; then
-            RESOLVED="${{ steps.install.outputs.resolved_tag || '' }}"
-            if [ -z "$RESOLVED" ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            if [ "$RESOLVED" != "default_branch" ] && [ "$RESOLVED" != "$BASELINE_VERSION" ] && [ "$RESOLVED" != "v$BASELINE_VERSION" ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          else
-            if [ ! -f baseline-external/metadata.txt ] || ! grep -Fq "$DOWNLOAD_URL" baseline-external/metadata.txt; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          finish() {
+            RC=$?
+            if [ "$RC" -eq 0 ]; then STATUS=passed; else STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          test "${{ steps.install.outputs.resolved_tag }}" = "v$BASELINE_VERSION"
+          test "$(git -C baseline-src rev-parse HEAD)" = "$BASELINE_SOURCE_COMMIT"
+          test "$(git -C baseline-src rev-parse "refs/tags/v$BASELINE_VERSION^{commit}")" = "$BASELINE_SOURCE_COMMIT"
+          test -f feast-baseline-venv/bin/activate
+          . feast-baseline-venv/bin/activate
+          export SMOKE_VERSION="$BASELINE_VERSION"
+          bash -euo pipefail -c "$FEAST_VERIFY_COMMAND"
+          REPORTED=$(feast version)
+          test "$REPORTED" = "Feast SDK Version: \"feast $BASELINE_VERSION\""
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import yaml
 
-      - name: Test 3 - Package-specific source or docs evidence
+          page = Path(os.environ["PACKAGE_PAGE"]).read_text(encoding="utf-8")
+          assert page.startswith("---\n"), "Missing package front matter"
+          catalog = yaml.safe_load(page.split("---", 2)[1])
+          supported_since = str(catalog["supported_minimum_version"]["version_number"])
+          assert supported_since == os.environ["CATALOG_SUPPORTED_SINCE"], supported_since
+          print(f"catalog_supported_since={supported_since}")
+          print(f"smoke_tested_baseline={os.environ['SMOKE_VERSION']}")
+          PY
+
+      - name: Test 3 - Installed CLI help
         id: test3
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if [ "$MODE" = "github_source" ]; then
-            if ! grep -R -I -Eiq "$EVIDENCE_RE" baseline-src 2>/dev/null; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            DOC_FOUND=0
-            for PATTERN in README* docs examples; do
-              if compgen -G "baseline-src/$PATTERN" > /dev/null; then
-                DOC_FOUND=1
-                break
-              fi
-            done
-            if [ "$DOC_FOUND" -ne 1 ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          else
-            if ! grep -Eiq "$EVIDENCE_RE" "$PACKAGE_PAGE"; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            if ! grep -Fq "$HOMEPAGE_URL" baseline-external/metadata.txt; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          finish() {
+            RC=$?
+            if [ "$RC" -eq 0 ]; then STATUS=passed; else STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          HELP=$(feast-baseline-venv/bin/feast --help)
+          printf '%s\n' "$HELP"
+          grep -Fq 'materialize' <<< "$HELP"
+          grep -Fq 'apply' <<< "$HELP"
 
-      - name: Test 4 - Arm64 support gate
+      - name: Test 4 - Native Arm64 Python runtime
         id: test4
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if [ "$(uname -m)" != "aarch64" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if ! grep -q '^works_on_arm: true' "$PACKAGE_PAGE"; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          finish() {
+            RC=$?
+            if [ "$RC" -eq 0 ]; then STATUS=passed; else STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          test "$(uname -m)" = aarch64
+          feast-baseline-venv/bin/python - <<'PY'
+          import platform
+          import struct
+          import sys
+          from pathlib import Path
+          import feast
+          assert platform.machine() == "aarch64", platform.machine()
+          assert struct.calcsize("P") == 8
+          assert Path(feast.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
+          print(platform.machine(), sys.executable, feast.__file__)
+          PY
 
-      - name: Test 5 - Bounded package-specific smoke
+      - name: Test 5 - Historical retrieval and SQLite online round trip
         id: test5
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          python -m venv smoke-venv
-          . smoke-venv/bin/activate
-          python -m pip install --upgrade pip setuptools wheel
-          timeout 300 python -m pip install "feast==$BASELINE_VERSION" pandas pyarrow
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-          from feast import Entity, FeatureStore, FeatureView, Field
-          from feast.types import Float32
-          from feast.infra.offline_stores.file_source import FileSource
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          finish() {
+            RC=$?
+            if [ "$RC" -eq 0 ]; then STATUS=passed; else STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          test -f feast-baseline-venv/bin/activate
+          . feast-baseline-venv/bin/activate
+          export SMOKE_VERSION="$BASELINE_VERSION"
+          timeout 120 bash -euo pipefail -c "$FEAST_SMOKE_COMMAND"
+          echo "note=Installed Feast $BASELINE_VERSION: Parquet point-in-time retrieval and SQLite materialization/online retrieval passed on Arm64." >> "$GITHUB_OUTPUT"
 
-          root = Path("feast_smoke")
-          repo = root / "repo"
-          data = root / "driver.parquet"
-          repo.mkdir(parents=True, exist_ok=True)
-          pd.DataFrame(
-              {
-                  "driver_id": [1, 2],
-                  "event_timestamp": pd.to_datetime(["2024-01-01", "2024-01-02"], utc=True),
-                  "rating": [4.5, 4.8],
-              }
-          ).to_parquet(data)
-          (repo / "feature_store.yaml").write_text(
-              "project: smoke\n"
-              "registry: data/registry.db\n"
-              "provider: local\n"
-              "online_store:\n"
-              "  type: sqlite\n"
-              "  path: data/online.db\n",
-              encoding="utf-8",
-          )
-          source = FileSource(path=str(data.resolve()), timestamp_field="event_timestamp")
-          driver = Entity(name="driver", join_keys=["driver_id"])
-          ratings = FeatureView(
-              name="driver_ratings",
-              entities=[driver],
-              schema=[Field(name="rating", dtype=Float32)],
-              source=source,
-          )
-          store = FeatureStore(repo_path=str(repo))
-          store.apply([driver, ratings])
-          features = store.get_historical_features(
-              entity_df=pd.DataFrame(
-                  {
-                      "driver_id": [1],
-                      "event_timestamp": pd.to_datetime(["2024-01-03"], utc=True),
-                  }
-              ),
-              features=["driver_ratings:rating"],
-          ).to_df()
-          assert float(features["rating"].iloc[0]) == 4.5
-          PY
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "note=Installed Feast $BASELINE_VERSION on Arm64 and proved a local file/SQLite feature store with historical retrieval." >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 6 - Regression Validation
-        id: test6
+      - name: Install and exercise the next Feast release
+        id: candidate
+        if: >-
+          steps.test1.outputs.status == 'passed' && steps.test1.outcome == 'success' &&
+          steps.test2.outputs.status == 'passed' && steps.test2.outcome == 'success' &&
+          steps.test3.outputs.status == 'passed' && steps.test3.outcome == 'success' &&
+          steps.test4.outputs.status == 'passed' && steps.test4.outcome == 'success' &&
+          steps.test5.outputs.status == 'passed' && steps.test5.outcome == 'success'
+        continue-on-error: true
         uses: ./.github/actions/generic-source-regression-check
         with:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          defer_on_limited_cpu_probe_failure: "false"
           limited_cpu_probe: |
-            python -m venv next-venv
-            . next-venv/bin/activate
-            python -m pip install --upgrade pip setuptools wheel
-            timeout 300 python -m pip install "feast==$LATEST_VERSION" pandas pyarrow
+            set -euo pipefail
+            test "$(uname -m)" = aarch64
+            test "$CANDIDATE_TAG" = "v$LATEST_VERSION"
+            SOURCE_COMMIT=$(git -C next-src rev-parse HEAD)
+            TAG_COMMIT=$(git -C next-src rev-parse "refs/tags/$CANDIDATE_TAG^{commit}")
+            test -n "$SOURCE_COMMIT"
+            test "$SOURCE_COMMIT" = "$TAG_COMMIT"
             python - <<'PY'
-            from pathlib import Path
-            import pandas as pd
-            from feast import Entity, FeatureStore, FeatureView, Field
-            from feast.types import Float32
-            from feast.infra.offline_stores.file_source import FileSource
-
-            root = Path("next_feast_smoke")
-            repo = root / "repo"
-            data = root / "driver.parquet"
-            repo.mkdir(parents=True, exist_ok=True)
-            pd.DataFrame(
-                {
-                    "driver_id": [1, 2],
-                    "event_timestamp": pd.to_datetime(["2024-01-01", "2024-01-02"], utc=True),
-                    "rating": [4.5, 4.8],
-                }
-            ).to_parquet(data)
-            (repo / "feature_store.yaml").write_text(
-                "project: smoke\n"
-                "registry: data/registry.db\n"
-                "provider: local\n"
-                "online_store:\n"
-                "  type: sqlite\n"
-                "  path: data/online.db\n",
-                encoding="utf-8",
-            )
-            source = FileSource(path=str(data.resolve()), timestamp_field="event_timestamp")
-            driver = Entity(name="driver", join_keys=["driver_id"])
-            ratings = FeatureView(name="driver_ratings", entities=[driver], schema=[Field(name="rating", dtype=Float32)], source=source)
-            store = FeatureStore(repo_path=str(repo))
-            store.apply([driver, ratings])
-            features = store.get_historical_features(
-                entity_df=pd.DataFrame({"driver_id": [1], "event_timestamp": pd.to_datetime(["2024-01-03"], utc=True)}),
-                features=["driver_ratings:rating"],
-            ).to_df()
-            assert float(features["rating"].iloc[0]) == 4.5
+            import os
+            def stable(value):
+                parts = value.split(".")
+                assert len(parts) == 3 and all(part.isdigit() for part in parts), value
+                return tuple(map(int, parts))
+            assert stable(os.environ["LATEST_VERSION"]) > stable(os.environ["BASELINE_VERSION"])
             PY
-          limited_cpu_description: |
-            Installed the next Feast candidate on the Arm64 runner and proved a bounded local file/SQLite feature store with historical retrieval.
+            export FEAST_VENV="$PWD/feast-next-venv" SMOKE_VERSION="$LATEST_VERSION"
+            bash -euo pipefail -c "$FEAST_INSTALL_COMMAND"
+            test -f "$FEAST_VENV/bin/activate"
+            . "$FEAST_VENV/bin/activate"
+            timeout 120 bash -euo pipefail -c "$FEAST_SMOKE_COMMAND"
+          limited_cpu_description: >-
+            The installed candidate must match the selected release and complete Parquet point-in-time retrieval plus SQLite materialization and online retrieval on Arm64.
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        if: always()
+        continue-on-error: true
+        env:
+          CORE_RESULTS: >-
+            ${{ steps.test1.outputs.status }}:${{ steps.test1.outcome }}
+            ${{ steps.test2.outputs.status }}:${{ steps.test2.outcome }}
+            ${{ steps.test3.outputs.status }}:${{ steps.test3.outcome }}
+            ${{ steps.test4.outputs.status }}:${{ steps.test4.outcome }}
+            ${{ steps.test5.outputs.status }}:${{ steps.test5.outcome }}
+          CANDIDATE_STATUS: ${{ steps.candidate.outputs.status }}
+          CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
+          CANDIDATE_DECISION: ${{ steps.candidate.outputs.decision }}
+          CANDIDATE_VERSION: ${{ steps.candidate.outputs.latest_version }}
+          CANDIDATE_INSTALLED: ${{ steps.candidate.outputs.next_installed_version }}
+          CANDIDATE_DURATION: ${{ steps.candidate.outputs.duration }}
+          CANDIDATE_RESULT: ${{ steps.candidate.outputs.regression_result }}
+          CANDIDATE_COMPARISON: ${{ steps.candidate.outputs.comparison }}
+        run: |
+          set -euo pipefail
+          {
+            echo "status=failed"
+            echo "duration=0"
+            echo "decision=next_regression_failed"
+          } >> "$GITHUB_OUTPUT"
+          DECISION_STATUS=$(python - <<'PY'
+          import os
+          from pathlib import Path
+          import sys
+
+          sys.path.insert(0, str(Path(os.environ["GITHUB_WORKSPACE"]) / ".github/scripts"))
+          from package_result_policy import validate_six_test_result
+
+          core = ["passed" if result == "passed:success" else "failed"
+                  for result in os.environ["CORE_RESULTS"].split()]
+          assert len(core) == 5, core
+          status, decision = "failed", "next_regression_failed"
+          latest = os.environ["CANDIDATE_VERSION"] or "unknown"
+          installed = os.environ["CANDIDATE_INSTALLED"] or "not_installed"
+          duration = os.environ["CANDIDATE_DURATION"]
+          duration = int(duration) if duration.isdecimal() else 0
+          result = "Candidate regression did not produce a coherent result"
+          comparison = os.environ["CANDIDATE_COMPARISON"] or result
+          observed = (os.environ["CANDIDATE_STATUS"], os.environ["CANDIDATE_OUTCOME"],
+                      os.environ["CANDIDATE_DECISION"])
+          if "failed" in core:
+              status, decision = "skipped", "baseline_failed"
+              latest, installed, duration = "not_checked", "not_installed", 0
+              result = "Candidate not tested because baseline checks failed"
+              comparison = "Tests 1-5 must pass before a next-release comparison is valid."
+          elif observed == ("passed", "success", "limited_cpu_smoke_validated"):
+              if (installed == latest and latest not in ("unknown", "not_installed", "")
+                      and os.environ["CANDIDATE_DURATION"].isdecimal()):
+                  status, decision = "passed", "limited_cpu_smoke_validated"
+                  result = os.environ["CANDIDATE_RESULT"]
+          elif observed[0:2] == ("failed", "success") and observed[2] in (
+                  "limited_cpu_smoke_failed", "next_install_failed"):
+              decision = observed[2]
+              result = os.environ["CANDIDATE_RESULT"]
+          elif observed == ("skipped", "success", "no_newer_stable_available"):
+              status, decision = "skipped", "no_newer_stable_available"
+              result = os.environ["CANDIDATE_RESULT"]
+          elif observed[2] in ("runtime_validation_not_automated", "metadata_review_required"):
+              decision = "next_lookup_failed"
+              result = "Next stable Feast release could not be resolved for runtime validation"
+          statuses = core + [status]
+          details = [{"name": f"Test {index}", "status": value}
+                     for index, value in enumerate(statuses, 1)]
+          details[-1]["decision"] = decision
+          validate_six_test_result(
+              details=details, passed=statuses.count("passed"), failed=statuses.count("failed"),
+              skipped=statuses.count("skipped"), core_failed=core.count("failed"), decision=decision,
+          )
+          outputs = dict(current_version=os.environ["BASELINE_VERSION"],
+                         latest_version=latest, next_installed_version=installed, duration=duration,
+                         regression_result=result, comparison=comparison)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              for key, value in outputs.items():
+                  print(f"{key}={str(value).replace(chr(10), ' ').replace(chr(13), ' ')}", file=output)
+          print(f"{decision}:{status}")
+          PY
+          )
+          case "$DECISION_STATUS" in
+            limited_cpu_smoke_validated:passed)
+              {
+                echo "decision=limited_cpu_smoke_validated"
+                echo "status=passed"
+              } >> "$GITHUB_OUTPUT"
+              ;;
+            baseline_failed:skipped)
+              {
+                echo "decision=baseline_failed"
+                echo "status=skipped"
+              } >> "$GITHUB_OUTPUT"
+              ;;
+            no_newer_stable_available:skipped)
+              {
+                echo "decision=no_newer_stable_available"
+                echo "status=skipped"
+              } >> "$GITHUB_OUTPUT"
+              ;;
+            limited_cpu_smoke_failed:failed)
+              {
+                echo "decision=limited_cpu_smoke_failed"
+                echo "status=failed"
+              } >> "$GITHUB_OUTPUT"
+              exit 1
+              ;;
+            next_install_failed:failed)
+              {
+                echo "decision=next_install_failed"
+                echo "status=failed"
+              } >> "$GITHUB_OUTPUT"
+              exit 1
+              ;;
+            next_lookup_failed:failed)
+              {
+                echo "decision=next_lookup_failed"
+                echo "status=failed"
+              } >> "$GITHUB_OUTPUT"
+              exit 1
+              ;;
+            next_regression_failed:failed)
+              {
+                echo "decision=next_regression_failed"
+                echo "status=failed"
+              } >> "$GITHUB_OUTPUT"
+              exit 1
+              ;;
+            *)
+              echo "Invalid Feast regression decision/status: $DECISION_STATUS" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Calculate test summary
         id: summary
         if: always()
@@ -468,6 +648,8 @@ jobs:
           done
           if [ "$T6:$O6" = "passed:success" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "baseline_failed" ] && [ "$CORE_FAILED" -gt 0 ]; then
+            SKIPPED=1
           elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
             SKIPPED=1
           else
@@ -484,11 +666,13 @@ jobs:
           else
             BADGE_STATUS="failing"
           fi
-          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
-          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
-          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
-          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
-          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
-          echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
-          echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          {
+            echo "passed=$PASSED"
+            echo "failed=$FAILED"
+            echo "skipped=$SKIPPED"
+            echo "duration=$DURATION"
+            echo "core_failed=$CORE_FAILED"
+            echo "overall_status=$OVERALL_STATUS"
+            echo "badge_status=$BADGE_STATUS"
+          } >> "$GITHUB_OUTPUT"
           test "$FAILED" -eq 0

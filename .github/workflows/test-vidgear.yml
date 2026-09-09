@@ -84,12 +84,139 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       BASELINE_VERSION: "0.1.0"
+      BASELINE_TAG: "videgear-0.1.0"
+      BASELINE_COMMIT: "5e0d04b657e66e25a781aeb8c63e8149b7069eeb"
+      NEXT_VERSION: "0.3.4"
+      NEXT_TAG: "vidgear-0.3.4"
+      NEXT_COMMIT: "84d99c314bb56ab9891fc531222120c18297886c"
       PACKAGE_SLUG: "vidgear"
       LANE_KIND: "github release / source-build-or-tarball"
       DOWNLOAD_URL: "https://github.com/abhiTronix/vidgear/releases"
       HOMEPAGE_URL: "https://abhitronix.github.io/vidgear"
       OFFICIAL_DOCS: "https://abhitronix.github.io/vidgear/latest/installation/pip_install/"
       GITHUB_REPO: "abhiTronix/vidgear"
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      # 0.1.0 predates WriteGear and its reader has no frame queue. Single-frame
+      # clips prove decoding/EOF, not delivery of every frame in a live stream.
+      VIDGEAR_RUNTIME_PROBE: |
+        import importlib.metadata
+        import inspect
+        import json
+        import os
+        from pathlib import Path
+        import subprocess
+        import sys
+        import tempfile
+        import threading
+        import time
+
+        distribution = importlib.metadata.distribution("vidgear")
+        expected_version = os.environ["EXPECTED_VERSION"]
+        assert distribution.version == expected_version, (distribution.version, expected_version)
+        import cv2
+        import numpy as np
+        from vidgear.gears import CamGear
+
+        installed_reader = Path(inspect.getfile(CamGear)).resolve()
+        assert installed_reader == Path(distribution.locate_file("vidgear/gears/camgear.py")).resolve()
+        assert installed_reader.is_relative_to(Path(sys.prefix).resolve()), installed_reader
+        cv2.setNumThreads(1)
+        initial_threads = set(threading.enumerate())
+        thread_errors = []
+        threading.excepthook = lambda args: thread_errors.append(str(args.exc_value))
+
+        def expected_frame(index):
+            frame = np.zeros((48, 80, 3), dtype=np.uint8)
+            frame[:, :, 1] = 30 + index * 30
+            frame[:24, :40, 0] = 200
+            frame[24:, 40:, 2] = 150
+            return frame
+
+        def check_frame(frame, expected):
+            assert frame is not None, "VidGear returned no frame"
+            assert frame.shape == (48, 80, 3), ("wrong dimensions", frame.shape)
+            np.testing.assert_array_equal(frame, expected, err_msg="wrong frame content")
+
+        checked = 0
+        writer_checked = 0
+        with tempfile.TemporaryDirectory(prefix="vidgear-runtime-") as directory:
+            for index in range(6):
+                path = str(Path(directory) / f"fixture-{index}.avi")
+                expected = expected_frame(index)
+                # OpenCV creates fixtures; only CamGear reads count as package proof.
+                fixture = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"FFV1"), 5, (80, 48))
+                try:
+                    assert fixture.isOpened(), "OpenCV fixture writer unavailable"
+                    fixture.write(expected)
+                finally:
+                    fixture.release()
+                assert Path(path).stat().st_size > 0
+                reader = CamGear(source=path)
+                started = False
+                try:
+                    assert reader.stream.get(cv2.CAP_PROP_FRAME_COUNT) == 1, "wrong fixture frame count"
+                    check_frame(reader.read(), expected)
+                    checked += 1
+                    reader.start()
+                    started = True
+                    deadline = time.monotonic() + 5
+                    while reader.read() is not None:
+                        assert time.monotonic() < deadline, "VidGear failed to reach EOF"
+                        time.sleep(0.01)
+                finally:
+                    try:
+                        # The historical reader releases its capture in its worker.
+                        if not started:
+                            reader.start()
+                    finally:
+                        reader.stop()
+                    assert not reader.stream.isOpened(), "VidGear capture leaked"
+                    assert set(threading.enumerate()) == initial_threads, "VidGear thread leaked"
+                assert not thread_errors, thread_errors
+            assert checked == 6, ("wrong reader frame count", checked)
+
+            if os.environ["CHECK_WRITER"] == "1":
+                from vidgear.gears import WriteGear
+                installed_writer = Path(inspect.getfile(WriteGear)).resolve()
+                assert installed_writer == Path(distribution.locate_file("vidgear/gears/writegear.py")).resolve()
+                assert installed_writer.is_relative_to(Path(sys.prefix).resolve())
+                output = str(Path(directory) / "candidate-written.avi")
+                writer = WriteGear(output=output, logging=False, **{"-vcodec": "ffv1", "-threads": 1})
+                process = None
+                try:
+                    for index in range(6):
+                        writer.write(expected_frame(index))
+                        # Pinned 0.3.4 close() waits but does not check FFmpeg's exit.
+                        process = writer._WriteGear__process
+                        assert isinstance(process, subprocess.Popen), "FFmpeg compression was not used"
+                finally:
+                    writer.close()
+                assert process is not None and process.returncode == 0, "VidGear encoder failed"
+                assert Path(output).stat().st_size > 0, "VidGear writer produced no video"
+                capture = cv2.VideoCapture(output)
+                try:
+                    assert capture.isOpened(), "VidGear output could not be decoded"
+                    assert capture.get(cv2.CAP_PROP_FRAME_COUNT) == 6, "wrong writer frame count"
+                    for index in range(6):
+                        ok, frame = capture.read()
+                        assert ok, ("missing writer frame", index)
+                        check_frame(frame, expected_frame(index))
+                        writer_checked += 1
+                    ok, frame = capture.read()
+                    assert not ok and frame is None, "extra writer frame or missing EOF"
+                finally:
+                    capture.release()
+                assert not capture.isOpened(), "writer validation capture leaked"
+                assert writer_checked == 6
+            else:
+                assert os.environ["CHECK_WRITER"] == "0", "invalid writer scope"
+        assert not Path(directory).exists(), "fixture cleanup failed"
+        assert set(threading.enumerate()) == initial_threads, "runtime thread leaked"
+        assert not thread_errors, thread_errors
+        print(json.dumps({"installed_version": distribution.version, "reader_frames_verified": checked,
+                          "writer_frames_verified": writer_checked, "dimensions": [48, 80, 3],
+                          "content": "exact", "eof": True, "cleanup": True}))
 
     outputs:
       contract_version: "2.0"
@@ -141,299 +268,246 @@ jobs:
           packages: "git curl jq tar unzip file ca-certificates python3-venv ffmpeg"
           quiet: "true"
 
-      - name: Install baseline source or artifact
+      - name: Install exact baseline wheel and historical source
         id: install
         run: |
           set -euo pipefail
-          rm -rf baseline-src baseline-external
-          mkdir -p baseline-src baseline-external
-          if [ -n "$GITHUB_REPO" ]; then
-            RESOLVED_TAG=""
-            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
-              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
-                RESOLVED_TAG="$CANDIDATE"
-                break
-              fi
-            done
-            if [ -n "$RESOLVED_TAG" ]; then
-              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
-            else
-              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
-            fi
-            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
           echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
+          VIDGEAR_WORK_DIR=$(mktemp -d "$RUNNER_TEMP/vidgear.XXXXXX")
+          echo "VIDGEAR_WORK_DIR=$VIDGEAR_WORK_DIR" >> "$GITHUB_ENV"
+          VIDGEAR_SOURCE="$VIDGEAR_WORK_DIR/baseline-src"
+          VIDGEAR_PYTHON="$VIDGEAR_WORK_DIR/baseline-venv/bin/python"
+          echo "VIDGEAR_SOURCE=$VIDGEAR_SOURCE" >> "$GITHUB_ENV"
+          echo "VIDGEAR_PYTHON=$VIDGEAR_PYTHON" >> "$GITHUB_ENV"
+          timeout 120 git clone --depth 1 --branch "$BASELINE_TAG" "https://github.com/$GITHUB_REPO.git" "$VIDGEAR_SOURCE"
+          test "$(git -C "$VIDGEAR_SOURCE" rev-parse HEAD)" = "$BASELINE_COMMIT"
+          python -m venv "$VIDGEAR_WORK_DIR/baseline-venv"
+          timeout 300 "$VIDGEAR_PYTHON" -m pip --isolated --disable-pip-version-check install \
+            --index-url https://pypi.org/simple --only-binary=:all: --report "$VIDGEAR_WORK_DIR/baseline-install.json" \
+            "vidgear==$BASELINE_VERSION" numpy==1.26.4 opencv-python-headless==4.11.0.86
+          "$VIDGEAR_PYTHON" -I - "$BASELINE_VERSION" "$VIDGEAR_SOURCE" <<'PY'
+          import importlib.metadata
+          from pathlib import Path
+          import sys
+          distribution = importlib.metadata.distribution("vidgear")
+          assert distribution.version == sys.argv[1], (distribution.version, sys.argv[1])
+          for module in ("camgear.py", "videogear.py"):
+              relative = "vidgear/gears/" + module
+              assert Path(distribution.locate_file(relative)).read_bytes() == (Path(sys.argv[2]) / relative).read_bytes(), relative
+          PY
+          echo "resolved_tag=$BASELINE_TAG" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$BASELINE_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get baseline version
         id: version
         run: |
-          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected baseline version: $BASELINE_VERSION"
+          set -euo pipefail
+          VERSION=$("$VIDGEAR_PYTHON" -I -c 'import importlib.metadata; print(importlib.metadata.version("vidgear"))')
+          test "$VERSION" = "$BASELINE_VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Installed baseline version: $VERSION"
 
       - name: Define package-specific expectations
         id: expectations
         uses: ./.github/actions/derive-package-source-expectations
         with:
           package_slug: ${{ env.PACKAGE_SLUG }}
+          source_dir: ${{ env.VIDGEAR_SOURCE }}
 
       - name: Test 1 - Check package-specific baseline markers
         id: test1
         continue-on-error: true
         run: |
           set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          SOURCE_MARKERS="${{ steps.expectations.outputs.source_markers }}"
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "note=Baseline source or external metadata could not be acquired." >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            FOUND=0
-            HITS=""
-            IFS='|' read -r -a MARKERS <<< "$SOURCE_MARKERS"
-            REQUIRED=${#MARKERS[@]}
-            if [ "$REQUIRED" -gt 2 ]; then
-              REQUIRED=2
-            fi
-            if [ "$REQUIRED" -lt 1 ]; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=No package-specific source markers were derived for the baseline." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            for marker in "${MARKERS[@]}"; do
-              if [ -n "$marker" ] && [ -e "$marker" ]; then
-                FOUND=$((FOUND + 1))
-                if [ -z "$HITS" ]; then
-                  HITS="$marker"
-                else
-                  HITS="$HITS, $marker"
-                fi
-              fi
-            done
-            if [ "$FOUND" -ge "$REQUIRED" ]; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Found package-specific baseline markers: $HITS" >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Expected at least $REQUIRED package-specific markers from: $SOURCE_MARKERS" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          elif [ -f baseline-external/metadata.txt ]; then
-            grep -Fx "download=$DOWNLOAD_URL" baseline-external/metadata.txt >/dev/null
-            grep -Fx "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt >/dev/null
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=Validated external baseline metadata for the published source links." >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "note=External baseline metadata was not emitted." >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          finish() {
+            RC=$?
+            if [ "$RC" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          test "${{ steps.install.outputs.install_status || 'failed' }}" = success
+          test "$(git -C "$VIDGEAR_SOURCE" rev-parse HEAD)" = "$BASELINE_COMMIT"
+          test "$(git -C "$VIDGEAR_SOURCE" describe --tags --exact-match)" = "$BASELINE_TAG"
+          for marker in README.md vidgear/gears/camgear.py vidgear/gears/videogear.py; do
+            test -s "$VIDGEAR_SOURCE/$marker"
+          done
+          echo "note=Historical source markers verified at $BASELINE_TAG ($BASELINE_COMMIT); source evidence only." >> "$GITHUB_OUTPUT"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
 
       - name: Test 2 - Check package-specific version and release evidence
         id: test2
         continue-on-error: true
         run: |
           set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
+          finish() {
+            RC=$?
+            if [ "$RC" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          VERSION=$("$VIDGEAR_PYTHON" -I -c 'import importlib.metadata; print(importlib.metadata.version("vidgear"))')
+          test "$VERSION" = "$BASELINE_VERSION"
           CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
           [ -f "$CONTENT_PAGE" ]
           grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
           grep -Fx "download_url: $DOWNLOAD_URL" "$CONTENT_PAGE" >/dev/null
           grep -Fx "    homepage_url: $HOMEPAGE_URL" "$CONTENT_PAGE" >/dev/null
           grep -Fx "        official_docs: $OFFICIAL_DOCS" "$CONTENT_PAGE" >/dev/null
-          grep -F "version_number: $BASELINE_VERSION" "$CONTENT_PAGE" >/dev/null
+          grep -Fx "    version_number: $VERSION" "$CONTENT_PAGE" >/dev/null
+          echo "note=Installed wheel version $VERSION matches baseline and checked-in package metadata." >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "note=Validated package metadata, baseline version, homepage, and docs alignment from the checked-in package page." >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 3 - Check package-specific docs and entrypoints
         id: test3
         continue-on-error: true
         run: |
           set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          DOC_MARKERS="${{ steps.expectations.outputs.doc_markers }}"
-          ENTRYPOINT_MARKERS="${{ steps.expectations.outputs.entrypoint_markers }}"
-          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            FOUND=0
-            HITS=""
-            IFS='|' read -r -a MARKERS <<< "$DOC_MARKERS"
-            for marker in "${MARKERS[@]}"; do
-              if [ -n "$marker" ] && [ -e "$marker" ]; then
-                FOUND=$((FOUND + 1))
-                if [ -z "$HITS" ]; then
-                  HITS="$marker"
-                else
-                  HITS="$HITS, $marker"
-                fi
-              fi
-            done
-            if [ -n "$IDENTITY_TARGET" ]; then
-              [ -e "$IDENTITY_TARGET" ]
-            fi
-            ENTRY_OK=0
-            if [ -n "$ENTRYPOINT_MARKERS" ]; then
-              IFS='|' read -r -a ENTRYPOINTS <<< "$ENTRYPOINT_MARKERS"
-              for marker in "${ENTRYPOINTS[@]}"; do
-                if [ -n "$marker" ] && [ -e "$marker" ]; then
-                  ENTRY_OK=1
-                  break
-                fi
-              done
-            else
-              ENTRY_OK=1
-            fi
-            if [ "$FOUND" -ge 1 ] && [ "$ENTRY_OK" -eq 1 ]; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Validated package-specific docs and entrypoint markers: $HITS" >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Expected package-specific docs and entrypoint markers from: $DOC_MARKERS / $ENTRYPOINT_MARKERS" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          elif [ -f baseline-external/metadata.txt ]; then
-            grep -Fx "docs=$OFFICIAL_DOCS" baseline-external/metadata.txt >/dev/null
-            grep -Fx "homepage=$HOMEPAGE_URL" baseline-external/metadata.txt >/dev/null
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=Validated external documentation and homepage metadata for the baseline package." >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "note=External documentation metadata was not emitted." >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          finish() {
+            RC=$?
+            if [ "$RC" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          grep -F 'from vidgear.gears import VideoGear' "$VIDGEAR_SOURCE/README.md"
+          "$VIDGEAR_PYTHON" -I - <<'PY'
+          from vidgear.gears import CamGear, VideoGear
+          for reader in (CamGear, VideoGear):
+              for method in ("start", "read", "stop"):
+                  assert callable(getattr(reader, method)), (reader, method)
+          PY
+          echo "note=Historical reader documentation and installed CamGear/VideoGear API imports verified; functional reader behavior is Test 5." >> "$GITHUB_OUTPUT"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
 
       - name: Test 4 - Verify Arm64 runner and lane assumptions
         id: test4
         continue-on-error: true
         run: |
           set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
+          finish() {
+            RC=$?
+            if [ "$RC" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
           CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
           [ "$(uname -m)" = "aarch64" ]
+          "$VIDGEAR_PYTHON" -I -c 'import platform, struct; assert platform.machine() == "aarch64"; assert struct.calcsize("P") == 8'
           grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
+          echo "note=Verified native aarch64 runner and 64-bit installed Python runtime." >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          if echo "$LANE_KIND" | grep -Eiq 'gpu|specialized|manual-review'; then
-            echo "note=Validated Arm64 support metadata on a generic Arm runner; deeper runtime checks for this lane still require the package-specific environment: $LANE_KIND." >> "$GITHUB_OUTPUT"
-          else
-            echo "note=Validated Arm64 runner architecture and published Arm support metadata." >> "$GITHUB_OUTPUT"
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 5 - Run bounded package-specific smoke
         id: test5
         continue-on-error: true
         run: |
           set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
-          python -m venv smoke-venv
-          . smoke-venv/bin/activate
-          python -m pip install --upgrade pip setuptools wheel
-          timeout 300 python -m pip install "vidgear==$BASELINE_VERSION" numpy opencv-python-headless
-          python - <<'PY'
-          from pathlib import Path
-          import numpy as np
-          import cv2
-          try:
-              from vidgear.gears import WriteGear
-          except ImportError:
-              from vidgear.gears.writegear import WriteGear
-
-          def open_writer(path):
-              try:
-                  return WriteGear(output=path, logging=False)
-              except Exception as exc:
-                  if "output_filename" not in str(exc) and "output" not in str(exc):
-                      raise
-                  return WriteGear(output_filename=path, logging=False)
-
-          output = "vidgear_smoke.mp4"
-          writer = open_writer(output)
-          for idx in range(6):
-              frame = np.zeros((64, 64, 3), dtype=np.uint8)
-              frame[:, :, 1] = idx * 30
-              writer.write(frame)
-          writer.close()
-          cap = cv2.VideoCapture(output)
-          ok, frame = cap.read()
-          cap.release()
-          assert ok and frame.shape[0] == 64 and Path(output).stat().st_size > 0
-          PY
+          finish() {
+            RC=$?
+            if [ "$RC" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          EXPECTED_VERSION="$BASELINE_VERSION" CHECK_WRITER=0 timeout --kill-after=5s 60s "$VIDGEAR_PYTHON" -I -c "$VIDGEAR_RUNTIME_PROBE"
+          echo "note=Installed VidGear $BASELINE_VERSION CamGear decoded six distinct single-frame OpenCV fixtures with exact content/dimensions, frame counts, EOF and cleanup. Baseline has no WriteGear; no writer parity or all-frames streaming delivery claim." >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "note=Installed VidGear $BASELINE_VERSION on Arm64 and wrote/read a synthetic video frame path." >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Test 6 - Regression Validation
         id: test6
-        uses: ./.github/actions/generic-source-regression-check
-        with:
-          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
-          github_repo: ${{ env.GITHUB_REPO }}
-          lane_kind: ${{ env.LANE_KIND }}
-          limited_cpu_probe: |
-            python -m venv next-venv
-            . next-venv/bin/activate
-            python -m pip install --upgrade pip setuptools wheel
-            timeout 300 python -m pip install "vidgear==$LATEST_VERSION" numpy opencv-python-headless
-            python - <<'PY'
-            from pathlib import Path
-            import numpy as np
-            import cv2
-            try:
-                from vidgear.gears import WriteGear
-            except ImportError:
-                from vidgear.gears.writegear import WriteGear
-
-            def open_writer(path):
-                try:
-                    return WriteGear(output=path, logging=False)
-                except Exception as exc:
-                    if "output_filename" not in str(exc) and "output" not in str(exc):
-                        raise
-                    return WriteGear(output_filename=path, logging=False)
-
-            output = "vidgear_next_smoke.mp4"
-            writer = open_writer(output)
-            for idx in range(6):
-                frame = np.zeros((64, 64, 3), dtype=np.uint8)
-                frame[:, :, 2] = idx * 30
-                writer.write(frame)
-            writer.close()
-            cap = cv2.VideoCapture(output)
-            ok, frame = cap.read()
-            cap.release()
-            assert ok and frame.shape[0] == 64 and Path(output).stat().st_size > 0
-            PY
-          limited_cpu_description: |
-            Installed the next VidGear candidate on Arm64 and wrote/read a synthetic video frame path.
-          next_version_override: "0.3.4"
-          candidate_tag_override: "vidgear-0.3.4"
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          BASELINE_REJECTED=0
+          START_TIME=$(date +%s)
+          finish() {
+            RC=$?
+            if [ "$RC" -ne 0 ] && [ "$BASELINE_REJECTED" -eq 0 ]; then
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Pinned candidate installation or runtime validation failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=Candidate validation failed; baseline $BASELINE_VERSION has no WriteGear and no writer parity is claimed." >> "$GITHUB_OUTPUT"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+          for RESULT in \
+            "${{ steps.test1.outputs.status || 'failed' }}:${{ steps.test1.outcome || 'failure' }}" \
+            "${{ steps.test2.outputs.status || 'failed' }}:${{ steps.test2.outcome || 'failure' }}" \
+            "${{ steps.test3.outputs.status || 'failed' }}:${{ steps.test3.outcome || 'failure' }}" \
+            "${{ steps.test4.outputs.status || 'failed' }}:${{ steps.test4.outcome || 'failure' }}" \
+            "${{ steps.test5.outputs.status || 'failed' }}:${{ steps.test5.outcome || 'failure' }}"; do
+            if [ "$RESULT" != passed:success ]; then
+              BASELINE_REJECTED=1
+              echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Candidate not run because baseline checks failed" >> "$GITHUB_OUTPUT"
+              echo "comparison=Tests 1-5 must all report passed with successful outcomes before candidate execution. Baseline has no WriteGear; no writer parity is claimed." >> "$GITHUB_OUTPUT"
+              echo "status=skipped" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          python - "$CURRENT" "$NEXT_VERSION" <<'PY'
+          import re
+          import sys
+          def version(value):
+              assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value), value
+              return tuple(map(int, value.split(".")))
+          assert version(sys.argv[2]) > version(sys.argv[1]), "candidate must be newer"
+          PY
+          NEXT_SOURCE="$VIDGEAR_WORK_DIR/next-src"
+          NEXT_PYTHON="$VIDGEAR_WORK_DIR/next-venv/bin/python"
+          timeout 120 git clone --depth 1 --branch "$NEXT_TAG" "https://github.com/$GITHUB_REPO.git" "$NEXT_SOURCE"
+          test "$(git -C "$NEXT_SOURCE" rev-parse HEAD)" = "$NEXT_COMMIT"
+          python -m venv "$VIDGEAR_WORK_DIR/next-venv"
+          timeout 300 "$NEXT_PYTHON" -m pip --isolated --disable-pip-version-check install \
+            --index-url https://pypi.org/simple --only-binary=:all: --report "$VIDGEAR_WORK_DIR/candidate-install.json" \
+            "vidgear==$NEXT_VERSION" numpy==1.26.4 opencv-python-headless==4.11.0.86
+          NEXT_INSTALLED_VERSION=$("$NEXT_PYTHON" -I -c 'import importlib.metadata; print(importlib.metadata.version("vidgear"))')
+          echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+          test "$NEXT_INSTALLED_VERSION" = "$NEXT_VERSION"
+          "$NEXT_PYTHON" -I - "$NEXT_SOURCE" <<'PY'
+          import importlib.metadata
+          from pathlib import Path
+          import sys
+          distribution = importlib.metadata.distribution("vidgear")
+          for module in ("camgear.py", "writegear.py"):
+              relative = "vidgear/gears/" + module
+              # The published wheel uses CRLF; the tag uses LF. Compare text only
+              # after Python's universal-newline decoding, preserving all content.
+              assert Path(distribution.locate_file(relative)).read_text(encoding="utf-8") == (Path(sys.argv[1]) / relative).read_text(encoding="utf-8"), relative
+          PY
+          EXPECTED_VERSION="$NEXT_VERSION" CHECK_WRITER=1 timeout --kill-after=5s 60s "$NEXT_PYTHON" -I -c "$VIDGEAR_RUNTIME_PROBE"
+          echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Pinned candidate $NEXT_INSTALLED_VERSION installed and validated on Arm64" >> "$GITHUB_OUTPUT"
+          echo "comparison=Pinned candidate $NEXT_INSTALLED_VERSION ran the same six single-frame CamGear assertions plus WriteGear six-frame lossless encoding/decoding with exact content/dimensions, frame counts, EOF and cleanup. Baseline $CURRENT has no WriteGear; no writer parity or all-frames streaming delivery claim. Candidate is pinned, not necessarily latest." >> "$GITHUB_OUTPUT"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
       - name: Calculate test summary
         id: summary
         if: always()
@@ -474,6 +548,8 @@ jobs:
             PASSED=$((PASSED + 1))
           elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
             SKIPPED=1
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ] && [ "$DECISION" = "baseline_failed" ] && [ "$CORE_FAILED" -gt 0 ]; then
+            SKIPPED=1
           else
             FAILED=$((FAILED + 1))
           fi
@@ -508,15 +584,26 @@ jobs:
           tests_failed: ${{ steps.summary.outputs.failed || '0' }}
           tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
           duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
-          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
-          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
-          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
-          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
-          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_status: ${{ steps.test1.outputs.status || 'failed' }}
+          test2_status: ${{ steps.test2.outputs.status || 'failed' }}
+          test3_status: ${{ steps.test3.outputs.status || 'failed' }}
+          test4_status: ${{ steps.test4.outputs.status || 'failed' }}
+          test5_status: ${{ steps.test5.outputs.status || 'failed' }}
+          test6_status: ${{ steps.test6.outputs.status || 'failed' }}
           test6_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
           regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
           regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
           regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
           regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
           regression_details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}
+
+      - name: Clean VidGear temporary environments
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -n "${VIDGEAR_WORK_DIR:-}" ]; then
+            test "${VIDGEAR_WORK_DIR%/*}" = "$RUNNER_TEMP"
+            case "${VIDGEAR_WORK_DIR##*/}" in vidgear.*) ;; *) exit 1 ;; esac
+            rm -rf -- "$VIDGEAR_WORK_DIR"
+            test ! -e "$VIDGEAR_WORK_DIR"
+          fi
