@@ -189,19 +189,104 @@ class ActiveCollectorFailureEvidenceTests(unittest.TestCase):
 
     def test_regression_semantics_cannot_hide_an_actual_failed_step(self):
         self.job["steps"][5]["conclusion"] = "failure"
-        self.assert_rejected(message="passing result contradicts failure evidence")
+        self.assert_rejected(message="passing regression contradicts nonpassing evidence")
+
+    def test_raw_regression_failure_survives_missing_or_renamed_detail(self):
+        for detail in ("recognized", "absent", "renamed"):
+            for decision in ("next_install_validated", "not_applicable_package_manager"):
+                with self.subTest(detail=detail, decision=decision):
+                    need, job = copy.deepcopy(self.need), copy.deepcopy(self.job)
+                    need["outputs"].update(regression_status="failed", regression_decision=decision)
+                    if detail == "absent":
+                        job["steps"].pop()
+                    elif detail == "renamed":
+                        job["steps"][5]["name"] = "Candidate validation"
+                    self.assert_rejected(
+                        need=need, job=job,
+                        message="emitted regression failure contradicts normalized result",
+                    )
+
+    def test_api_skipped_or_incomplete_regression_cannot_become_passed(self):
+        for conclusion in ("skipped", "neutral", None, "unexpected"):
+            with self.subTest(conclusion=conclusion):
+                job = copy.deepcopy(self.job)
+                job["steps"][5]["conclusion"] = conclusion
+                self.assert_rejected(
+                    job=job, message="passing regression contradicts nonpassing evidence",
+                )
+
+    def test_nonpassing_regression_status_cannot_become_passed(self):
+        for status in ("skipped", "deferred", "pending", "review", "not_configured", "unknown", "failure"):
+            for detail in ("recognized", "absent", "renamed"):
+                with self.subTest(status=status, detail=detail):
+                    need, job = copy.deepcopy(self.need), copy.deepcopy(self.job)
+                    need["outputs"]["regression_status"] = status
+                    if detail == "absent":
+                        job["steps"].pop()
+                    elif detail == "renamed":
+                        job["steps"][5]["name"] = "Candidate validation"
+                    self.assert_rejected(
+                        need=need, job=job,
+                        message="passing regression contradicts nonpassing evidence",
+                    )
+
+    def test_legacy_omitted_status_uses_actual_successful_regression_step(self):
+        for status in (None, ""):
+            with self.subTest(status=status):
+                need = copy.deepcopy(self.need)
+                need["outputs"]["regression_status"] = status
+                if status is None:
+                    need["outputs"].pop("regression_status")
+                process, payload = self.collect(need=need)
+                self.assertEqual(0, process.returncode, process.stderr)
+                self.assertEqual("success", payload["run"]["status"])
+                self.assertEqual(6, payload["tests"]["passed"])
+                self.assertEqual("passed", payload["metadata"]["regression_status"])
+
+    def test_legacy_omitted_status_cannot_pass_without_actual_regression_proof(self):
+        for detail in ("absent", "renamed", "skipped", "incomplete"):
+            with self.subTest(detail=detail):
+                need, job = copy.deepcopy(self.need), copy.deepcopy(self.job)
+                need["outputs"].pop("regression_status")
+                if detail == "absent":
+                    job["steps"].pop()
+                elif detail == "renamed":
+                    job["steps"][5]["name"] = "Candidate validation"
+                else:
+                    job["steps"][5]["conclusion"] = "skipped" if detail == "skipped" else None
+                self.assert_rejected(
+                    need=need, job=job,
+                    message="passing regression contradicts nonpassing evidence",
+                )
+
+    def test_consistent_regression_failure_remains_failed(self):
+        self.need["result"] = self.job["conclusion"] = "failure"
+        self.need["outputs"].update(
+            run_status="failure", tests_passed="5", tests_failed="1",
+            regression_status="failed", regression_decision="next_install_failed",
+        )
+        self.job["steps"][5]["conclusion"] = "failure"
+        process, payload = self.collect()
+        self.assertEqual(0, process.returncode, process.stderr)
+        self.assertEqual("failure", payload["run"]["status"])
+        self.assertEqual(1, payload["tests"]["failed"])
+        self.assertEqual("failed", payload["metadata"]["regression_status"])
 
     def test_package_manager_not_applicable_remains_five_passed_one_skip(self):
         self.need["outputs"].update(
-            tests_passed="5", regression_status="skipped",
+            tests_passed="5", tests_skipped="1", regression_status="skipped",
             regression_decision="not_applicable_package_manager"
         )
         self.job["steps"][5]["name"] = "Regression applicability - package manager installed"
-        process, payload = self.collect()
-        self.assertEqual(0, process.returncode, process.stderr)
-        self.assertEqual("success", payload["run"]["status"])
-        self.assertEqual(5, payload["tests"]["passed"])
-        self.assertEqual(1, payload["tests"]["skipped"])
+        for conclusion in ("success", "skipped", "neutral"):
+            with self.subTest(conclusion=conclusion):
+                self.job["steps"][5]["conclusion"] = conclusion
+                process, payload = self.collect()
+                self.assertEqual(0, process.returncode, process.stderr)
+                self.assertEqual("success", payload["run"]["status"])
+                self.assertEqual(5, payload["tests"]["passed"])
+                self.assertEqual(1, payload["tests"]["skipped"])
+                self.assertEqual("skipped", payload["tests"]["details"][5]["status"])
 
 
 if __name__ == "__main__":

@@ -259,7 +259,7 @@ runs:
             lowered = str(name or "").strip().lower()
             return lowered.startswith("test 6") or "regression" in lowered
 
-        def extract_test_details(job, regression_details):
+        def extract_test_details(job, regression_details, emitted_regression_status):
             details = []
             if isinstance(job, dict):
                 job_url = str(job.get("html_url") or "").strip()
@@ -298,6 +298,8 @@ runs:
                         ).strip()
                         if actual_status == "failed" or emitted_status == "failed":
                             merged_detail["status"] = "failed"
+                        elif actual_status == "skipped":
+                            merged_detail["status"] = "skipped"
                         else:
                             try:
                                 semantic = expected_regression_metadata(
@@ -312,7 +314,7 @@ runs:
                                 "skipped",
                             }:
                                 merged_detail["status"] = "skipped"
-                            elif emitted_status in {"passed", "skipped"}:
+                            elif emitted_regression_status and emitted_status in {"passed", "skipped"}:
                                 merged_detail["status"] = emitted_status
                         details[index] = merged_detail
                         break
@@ -619,7 +621,12 @@ runs:
             result_path = result_dir / f"{slug}.json"
             regression_policy_info = regression_policy(outputs)
             regression_details = [regression_detail(outputs, regression_policy_info)]
-            test_details = extract_test_details(resolved_job, regression_details)
+            emitted_regression_status = str(
+                outputs.get("regression_status") or ""
+            ).strip().lower()
+            test_details = extract_test_details(
+                resolved_job, regression_details, emitted_regression_status,
+            )
             regression_detail_entry = next(
                 (detail for detail in test_details if is_regression_detail_name(detail.get("name"))),
                 None,
@@ -705,6 +712,24 @@ runs:
                     f"{slug}: emitted skipped count contradicts test details "
                     f"(emitted skipped={emitted_tests_skipped}, details skipped={tests_skipped})"
                 )
+            if emitted_regression_status == "failed" and (
+                regression_status_for_metadata != "failed"
+                or tests_failed < 1
+                or run_status == "success"
+            ):
+                raise ValueError(f"{slug}: emitted regression failure contradicts normalized result")
+            if regression_status_for_metadata == "passed" and (
+                (
+                    emitted_regression_status
+                    and normalize_regression_status(emitted_regression_status) != "passed"
+                )
+                or (not emitted_regression_status and regression_detail_entry is None)
+                or (
+                    isinstance(regression_detail_entry, dict)
+                    and regression_detail_entry.get("status") != "passed"
+                )
+            ):
+                raise ValueError(f"{slug}: passing regression contradicts nonpassing evidence")
             if run_status == "success" and (
                 tests_failed > 0
                 or core_failed > 0
