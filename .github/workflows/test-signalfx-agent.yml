@@ -82,7 +82,12 @@ jobs:
     env:
       SIGNALFX_VERSION: "5.27.0"
       SIGNALFX_NEXT_VERSION: "5.27.1"
-      SIGNALFX_URL: "https://codeload.github.com/signalfx/signalfx-agent/tar.gz/refs/tags/v5.27.0"
+      # Original release commits retained by the Go proxy after upstream became unavailable.
+      SIGNALFX_MODULE: "github.com/signalfx/signalfx-agent"
+      SIGNALFX_SOURCE_VERSION: "v1.0.1-0.20230103220835-3e72f6c1a0be"
+      SIGNALFX_NEXT_SOURCE_VERSION: "v1.0.1-0.20230104182534-9eee411fe305"
+      GOPROXY: "https://proxy.golang.org"
+      GOSUMDB: "sum.golang.org"
 
     outputs:
       contract_version: "2.0"
@@ -129,16 +134,27 @@ jobs:
         id: install
         run: |
           set -euo pipefail
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential ca-certificates curl git"
+          echo "install_status=failed" >> "$GITHUB_OUTPUT"
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential ca-certificates curl file git jq"
           rm -rf /tmp/signalfx-agent
           mkdir -p /tmp/signalfx-agent
           cd /tmp/signalfx-agent
 
-          curl -fsSL -o signalfx-agent.tar.gz "${SIGNALFX_URL}"
-          tar -xzf signalfx-agent.tar.gz
-          SRC_DIR="$(find /tmp/signalfx-agent -maxdepth 2 -type f -name go.mod | head -1 | xargs -r dirname)"
+          # Go verifies both module archives against sum.golang.org. Nested modules
+          # are excluded from the parent archive, so restore the local APM replacement.
+          go mod download -json "${SIGNALFX_MODULE}@${SIGNALFX_SOURCE_VERSION}" \
+            "${SIGNALFX_MODULE}/pkg/apm@v0.0.0-${SIGNALFX_SOURCE_VERSION#v1.0.1-0.}" > sources.json
+          SRC_DIR=/tmp/signalfx-agent/source
+          cp -R "$(jq -er 'select(.Path == env.SIGNALFX_MODULE).Dir' sources.json)/." "$SRC_DIR"
+          mkdir -p "$SRC_DIR/pkg/apm"
+          cp -R "$(jq -er 'select(.Path == (env.SIGNALFX_MODULE + "/pkg/apm")).Dir' sources.json)/." "$SRC_DIR/pkg/apm"
+          chmod -R u+w "$SRC_DIR"
           cd "${SRC_DIR}"
 
+          SOURCE_VERSION="$(bash scripts/current-version 2>/dev/null)"
+          echo "Source release: $SOURCE_VERSION"
+          test "$SOURCE_VERSION" = "$SIGNALFX_VERSION"
+          AGENT_VERSION="$SOURCE_VERSION" bash scripts/make-versions
           go build -o /tmp/signalfx-agent-arm ./cmd/agent
           file /tmp/signalfx-agent-arm | tee /tmp/signalfx-file.log
 
@@ -174,14 +190,17 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          /tmp/signalfx-agent-arm --version 2>&1 | tee /tmp/signalfx-version.log
-          if grep -Fq "agent-version:" /tmp/signalfx-version.log && grep -Fq "collectd-version:" /tmp/signalfx-version.log; then
+          if /tmp/signalfx-agent-arm --version > /tmp/signalfx-version.log 2>&1 &&
+            grep -Fq "agent-version: ${SIGNALFX_VERSION}, collectd-version:" /tmp/signalfx-version.log; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            cat /tmp/signalfx-version.log
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          cat /tmp/signalfx-version.log
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -247,6 +266,10 @@ jobs:
           LATEST_CLEAN="${LATEST#v}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          # Preserve failure outputs if source restoration, metadata validation or build exits early.
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $LATEST"
@@ -265,16 +288,15 @@ jobs:
             exit 1
           fi
 
-          NEXT_URL="https://codeload.github.com/signalfx/signalfx-agent/tar.gz/refs/tags/v${LATEST_CLEAN}"
+          NEXT_URL="https://proxy.golang.org/${SIGNALFX_MODULE}/@v/${SIGNALFX_NEXT_SOURCE_VERSION}.zip"
 
           TMPDIR=$(mktemp -d)
           cleanup() {
             rm -rf "$TMPDIR"
           }
           trap cleanup EXIT
-          ARCHIVE_PATH="$TMPDIR/signalfx-agent-next.tar.gz"
-
-          if curl -fsSL "$NEXT_URL" -o "$ARCHIVE_PATH"; then
+          if (cd "$TMPDIR" && go mod download -json "${SIGNALFX_MODULE}@${SIGNALFX_NEXT_SOURCE_VERSION}" \
+            "${SIGNALFX_MODULE}/pkg/apm@v0.0.0-${SIGNALFX_NEXT_SOURCE_VERSION#v1.0.1-0.}" > sources.json); then
             echo "Next version download status: passed"
           else
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
@@ -290,9 +312,11 @@ jobs:
             exit 1
           fi
 
-          tar -xzf "$ARCHIVE_PATH" -C "$TMPDIR"
-
-          NEXT_SRC_DIR="$(find "$TMPDIR" -maxdepth 2 -type f -name go.mod | head -1 | xargs -r dirname)"
+          NEXT_SRC_DIR="$TMPDIR/source"
+          cp -R "$(jq -er 'select(.Path == env.SIGNALFX_MODULE).Dir' "$TMPDIR/sources.json")/." "$NEXT_SRC_DIR"
+          mkdir -p "$NEXT_SRC_DIR/pkg/apm"
+          cp -R "$(jq -er 'select(.Path == (env.SIGNALFX_MODULE + "/pkg/apm")).Dir' "$TMPDIR/sources.json")/." "$NEXT_SRC_DIR/pkg/apm"
+          chmod -R u+w "$NEXT_SRC_DIR"
           if [ -z "$NEXT_SRC_DIR" ] || [ ! -f "$NEXT_SRC_DIR/go.mod" ]; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
@@ -309,6 +333,10 @@ jobs:
           NEXT_BIN="$TMPDIR/signalfx-agent-next-arm"
           (
             cd "$NEXT_SRC_DIR"
+            SOURCE_VERSION="$(bash scripts/current-version 2>/dev/null)"
+            echo "Source release: $SOURCE_VERSION"
+            test "$SOURCE_VERSION" = "$LATEST_CLEAN"
+            AGENT_VERSION="$SOURCE_VERSION" bash scripts/make-versions
             go build -o "$NEXT_BIN" ./cmd/agent
           )
 
@@ -360,7 +388,10 @@ jobs:
             exit 1
           fi
 
-          NEXT_INSTALLED_VERSION="$LATEST"
+          "$NEXT_BIN" --version > "$TMPDIR/signalfx-next-version.log" 2>&1
+          cat "$TMPDIR/signalfx-next-version.log"
+          grep -Fq "agent-version: ${LATEST_CLEAN}, collectd-version:" "$TMPDIR/signalfx-next-version.log"
+          NEXT_INSTALLED_VERSION="$LATEST_CLEAN"
           echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
 
           if [ "$CURRENT" = "$LATEST" ] || [ "$BASELINE_CLEAN" = "$LATEST_CLEAN" ]; then
@@ -499,4 +530,3 @@ jobs:
             echo "- **Regression install result:** ${REGRESSION_RESULT}"
             echo "- Comparison: ${{ steps.test6.outputs.comparison || 'No regression comparison recorded.' }}"
           } >> "$GITHUB_STEP_SUMMARY"
-
