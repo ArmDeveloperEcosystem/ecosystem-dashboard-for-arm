@@ -512,7 +512,11 @@ class ExactRunAggregationTests(unittest.TestCase):
         payload = contract.topology_payload(topology)
         self.assertEqual(payload["over_capacity_batches"], [])
         self.assertEqual(payload["target_packages_per_batch"], 45)
-        self.assertEqual(len(payload["external_actions"]), 19)
+        self.assertEqual(len(payload["external_actions"]), 20)
+        self.assertIn(
+            "docker://python@sha256:d8fac68ebdc45b8d66d53f1ed6c1532da81109a8f5532a6ca0c951ed31107d70",
+            payload["external_actions"],
+        )
         self.assertEqual(len(payload["local_actions"]), 7)
 
     def test_topology_rejects_unregistered_and_commented_out_contracts(self) -> None:

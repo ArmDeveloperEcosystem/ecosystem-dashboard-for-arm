@@ -76,7 +76,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         remediation = self.report["remediation"]
         self.assertEqual(17, len(remediation["emitter_missing_slug"]))
         self.assertEqual(
-            {"test4": 4, "test5": 35, "test6": 4},
+            {"test4": 4, "test5": 44, "test6": 6},
             {
                 key: len(value)
                 for key, value in remediation["missing_test_duration"].items()
@@ -99,7 +99,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            400,
+            402,
             len(remediation["package_manager_missing_explicit_skip_counter"]),
         )
         self.assertEqual(79, len(remediation["package_manager_non_skipped_status"]))
@@ -199,7 +199,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "ae2f925a7703cf8612ba62d0865727ab5084add377d8ad95d2f6e03f58383c4f",
+            "f024617b1494c89f74f6a94ad28e8e6ea42194cea878c6827a35da4732c86c6f",
             digest,
         )
 

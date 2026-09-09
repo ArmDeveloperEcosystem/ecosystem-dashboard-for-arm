@@ -37,8 +37,8 @@ EXACT_RUN_SPEC.loader.exec_module(exact_run)
 
 EXPECTED_BATCHES = 22
 EXPECTED_WORKFLOWS = 960
-EXPECTED_EXTERNAL_USES = 1130
-EXPECTED_CONTAINER_USES = 4
+EXPECTED_EXTERNAL_USES = 1129
+EXPECTED_CONTAINER_USES = 5
 SOURCE_COMMIT = "73155d0d3a3dc73da08c62bc2bb7eccf281c6008"
 LOCK_NAME = "package_workflow_action_lock.json"
 MAX_SOURCE_ARCHIVE_BYTES = 67_108_864
@@ -225,7 +225,10 @@ def validate_container_lock_entry(entry: object) -> str:
         or entry.get("resolved_ref") != f"{original_repository}@{digest}"
         or not isinstance(arm64_digest, str)
         or not re.fullmatch(r"sha256:[0-9a-f]{64}", arm64_digest)
-        or entry.get("media_type") != "application/vnd.oci.image.index.v1+json"
+        or entry.get("media_type") not in (
+            "application/vnd.oci.image.index.v1+json",
+            "application/vnd.docker.distribution.manifest.list.v2+json",
+        )
         or entry.get("linux_arm64_confirmed") is not True
         or not isinstance(entry.get("observed_at_utc"), str)
         or not re.fullmatch(

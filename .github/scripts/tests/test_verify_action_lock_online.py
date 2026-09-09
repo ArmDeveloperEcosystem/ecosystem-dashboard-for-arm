@@ -291,6 +291,35 @@ class VerifyActionLockOnlineTests(unittest.TestCase):
             container_entry(), container_manifest_payload()
         )
 
+    def test_accepts_matching_docker_manifest_list_evidence(self) -> None:
+        entry = container_entry()
+        payload = container_manifest_payload()
+        entry["media_type"] = "application/vnd.docker.distribution.manifest.list.v2+json"
+        payload["mediaType"] = entry["media_type"]
+        for manifest in payload["manifests"]:
+            manifest["mediaType"] = "application/vnd.docker.distribution.manifest.v2+json"
+        online.validate_live_container_evidence(entry, payload)
+        for digest in ("sha256:" + "0" * 64, "not-a-digest"):
+            with self.subTest(digest=digest):
+                mutated = copy.deepcopy(payload)
+                mutated["manifests"][1]["digest"] = digest
+                with self.assertRaises(online.OnlineEvidenceError):
+                    online.validate_live_container_evidence(entry, mutated)
+
+    def test_single_image_and_unknown_media_types_are_not_indexes(self) -> None:
+        for media_type in (
+            "application/vnd.docker.distribution.manifest.v2+json",
+            "application/vnd.oci.image.manifest.v1+json",
+            "application/json", "", None,
+        ):
+            with self.subTest(media_type=media_type):
+                entry = container_entry()
+                payload = container_manifest_payload()
+                entry["media_type"] = media_type
+                payload["mediaType"] = media_type
+                with self.assertRaises(online.OnlineEvidenceError):
+                    online.validate_live_container_evidence(entry, payload)
+
     def test_container_media_type_mismatch_is_rejected(self) -> None:
         payload = container_manifest_payload()
         payload["mediaType"] = (
