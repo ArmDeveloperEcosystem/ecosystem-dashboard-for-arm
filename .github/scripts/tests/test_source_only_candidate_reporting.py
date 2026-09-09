@@ -7,7 +7,8 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[3]
-SLUGS = ("cloud-native-stack", "cuda-python", "gluten", "ragflow", "wsl", "turbovnc")
+SLUGS = ("amazon-vpc-cni-k8s", "ampere-ai-text-to-sql", "cloud-native-stack",
+         "cuda-python", "gluten", "ragflow", "wsl", "turbovnc")
 SUMMARY_SLUGS = {"ragflow", "wsl", "turbovnc"}
 SUMMARY_ACTION = "./.github/actions/write-package-job-summary"
 INSTALLED_FIELD = "regression_next_installed_version"
