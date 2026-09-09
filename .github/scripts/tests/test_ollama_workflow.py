@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -17,6 +18,9 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / ".github/scripts"))
+
+import package_observation_migration_audit as audit
 
 
 class OllamaWorkflowTests(unittest.TestCase):
@@ -219,6 +223,13 @@ class OllamaWorkflowTests(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertEqual("1", output["failed"])
                 self.assertEqual("1" if number <= 5 else "0", output["core_failed"])
+
+    def test_audit_pairs_only_completed_candidate_decisions_with_their_status(self):
+        self.assertEqual(
+            (("limited_cpu_smoke_validated", "passed"), ("no_newer_stable_available", "skipped")),
+            audit._step_literal_pairs(ROOT, self.steps["test6"]),
+        )
+        self.assertIn('echo "status=failed" >> "$GITHUB_OUTPUT"', self.steps["test6"]["run"])
 
     def test_only_proven_candidate_skip_and_named_outputs(self):
         result, output = self.run_step("summary", self.statuses())
