@@ -133,52 +133,144 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "build-essential cmake git curl jq tar unzip file ca-certificates pkg-config libgsl-dev libx11-dev libxt-dev libxpm-dev tcl-dev tk-dev tcsh yosys magic netgen-lvs autotools-dev python3"
           quiet: "true"
+
+      - name: Prepare native synthesis toolchain and runtime helper
+        id: toolchain
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          TOOLCHAIN="$PWD/qflow-toolchain"
+          mkdir -p "$TOOLCHAIN/bin"
+          git clone --depth 1 --branch 0.1.6 https://github.com/rubund/graywolf.git graywolf-src
+          test "$(git -C graywolf-src rev-parse HEAD)" = 20d5ac4595691e995c8c384dc426de1b464e4d89
+          cmake -S graywolf-src -B graywolf-build -DCMAKE_INSTALL_PREFIX="$TOOLCHAIN" -DCMAKE_C_FLAGS=-fcommon
+          cmake --build graywolf-build -j2
+          cmake --install graywolf-build
+          git clone --depth 1 --branch 1.4.90 https://github.com/RTimothyEdwards/qrouter.git qrouter-src
+          test "$(git -C qrouter-src rev-parse HEAD)" = 4942d280bf630cc86616f901e77a10e9f55ace62
+          (
+            cd qrouter-src
+            cp /usr/share/misc/config.guess config.guess
+            cp /usr/share/misc/config.sub config.sub
+            ./configure --build=aarch64-unknown-linux-gnu --host=aarch64-unknown-linux-gnu --prefix="$TOOLCHAIN"
+            make -j2
+            make install
+          )
+          # Ubuntu's netgen package is a different tool; use the actual LVS executable.
+          NETGEN=$(command -v netgen-lvs)
+          test -x "$NETGEN"
+          ln -s "$NETGEN" "$TOOLCHAIN/bin/netgen"
+          dpkg-query -W -f='${Package} ${Version} ${Architecture}\n' netgen-lvs yosys magic
+          test -x "$TOOLCHAIN/bin/graywolf"
+          test -x "$TOOLCHAIN/bin/qrouter"
+
+          cat > qflow-runtime.sh <<'QFLOW_RUNTIME'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          SOURCE=$1
+          PREFIX=$2
+          EXPECTED_VERSION=$3
+          PROJECT=$4
+          TOOLCHAIN=$5
+          export PATH="$TOOLCHAIN/bin:$PATH"
+          test "$(uname -m)" = aarch64
+          test "$(cat "$SOURCE/VERSION")" = "$EXPECTED_VERSION"
+          test -x "$TOOLCHAIN/bin/netgen"
+          cd "$SOURCE"
+          cp /usr/share/misc/config.guess config.guess
+          cp /usr/share/misc/config.sub config.sub
+          ./configure --build=aarch64-unknown-linux-gnu --host=aarch64-unknown-linux-gnu \
+            --prefix="$PREFIX" --with-netgen="$TOOLCHAIN/bin"
+          make -j2
+          make install
+          QFLOW="$PREFIX/bin/qflow"
+          test -x "$QFLOW"
+          "$QFLOW" --version | tee "$PREFIX/qflow-version.txt"
+          python3 - "$PREFIX/qflow-version.txt" "$EXPECTED_VERSION" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+          match = re.fullmatch(r"Qflow version (\d+\.\d+) revision (\d+)", Path(sys.argv[1]).read_text().strip())
+          assert match and ".".join(match.groups()) == sys.argv[2]
+          PY
+          file "$PREFIX/share/qflow/bin/blif2Verilog" | grep -Eq 'ELF 64-bit.*ARM aarch64'
+          test ! -e "$PROJECT"
+          mkdir -p "$PROJECT/source" "$PROJECT/synthesis"
+          cat > "$PROJECT/source/and2.v" <<'VERILOG'
+          module and2(input a, input b, output y);
+            assign y = a & b;
+          endmodule
+          VERILOG
+          cd "$PROJECT"
+          timeout 120 "$QFLOW" -T osu035 synth and2 | tee qflow-synthesis.log
+          test -s synthesis/and2.rtlnopwr.v
+          # The older flow retains BLIF; 1.4.104 uses mapped Verilog internally.
+          case "$EXPECTED_VERSION" in
+            1.1.23)
+              MAPPED=synthesis/and2.blif
+              test -s "$MAPPED"
+              grep -Eq '^\.model[[:space:]]+and2$' "$MAPPED"
+              grep -Eq '^\.gate[[:space:]]+AND2X[12][[:space:]]' "$MAPPED"
+              ;;
+            1.4.104)
+              MAPPED=synthesis/and2_mapped.v
+              test -s "$MAPPED"
+              ;;
+            *) exit 1 ;;
+          esac
+          yosys -Q -T -p 'read_verilog synthesis/and2.rtlnopwr.v; hierarchy -top and2; write_json and2-netlist.json'
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          module = json.loads(Path("and2-netlist.json").read_text())["modules"]["and2"]
+          assert {name: port["direction"] for name, port in module["ports"].items()} == {"a": "input", "b": "input", "y": "output"}
+          assert all(len(port["bits"]) == 1 for port in module["ports"].values())
+          assert any(cell["type"] in {"AND2X1", "AND2X2"} for cell in module["cells"].values())
+          PY
+          # Prove the untouched final netlist against the supplied Liberty models.
+          # The 1.4.104 converter's port redeclarations are not Icarus-compatible.
+          timeout 30 yosys -Q -T -p "
+            read_liberty $PREFIX/share/qflow/tech/osu035/osu035_stdcells.lib;
+            read_verilog synthesis/and2.rtlnopwr.v;
+            prep -top and2 -flatten;
+            sat -verify -prove y 0 -set a 0 -set b 0 -show-ports;
+            sat -verify -prove y 0 -set a 0 -set b 1 -show-ports;
+            sat -verify -prove y 0 -set a 1 -set b 0 -show-ports;
+            sat -verify -prove y 1 -set a 1 -set b 1 -show-ports;
+          " | tee and2-truth.log
+          echo 'AND_TRUTH_TABLE_PROVED 4/4' | tee -a and2-truth.log
+          sha256sum "$PREFIX/share/qflow/bin/blif2Verilog" synthesis/and2.rtlnopwr.v "$MAPPED" and2-netlist.json and2-truth.log
+          QFLOW_RUNTIME
 
       - name: Install baseline source or artifact
         id: install
         run: |
           set -euo pipefail
-          rm -rf baseline-src baseline-external
-          mkdir -p baseline-src baseline-external
-          if [ -n "$GITHUB_REPO" ]; then
-            RESOLVED_TAG=""
-            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
-              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
-                RESOLVED_TAG="$CANDIDATE"
-                break
-              fi
-            done
-            if [ -n "$RESOLVED_TAG" ]; then
-              git clone --filter=blob:none --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
-            else
-              git clone --filter=blob:none --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
-            fi
-            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
+          UPSTREAM_VERSION=${BASELINE_VERSION%-1}
+          test "$UPSTREAM_VERSION" = 1.1.23
+          curl -fsSL --retry 3 --max-time 120 \
+            "https://opencircuitdesign.com/qflow/archive/qflow-$UPSTREAM_VERSION.tgz" \
+            -o qflow-baseline.tgz
+          echo "125127c781512f09937a74d2be0d2384439d54839502e64f27d3369728e8cca4  qflow-baseline.tgz" | sha256sum -c -
+          mkdir baseline-src
+          tar -xzf qflow-baseline.tgz --strip-components=1 -C baseline-src
+          test "$(cat baseline-src/VERSION)" = "$UPSTREAM_VERSION"
+          echo "resolved_tag=official_archive_$UPSTREAM_VERSION" >> "$GITHUB_OUTPUT"
+          echo "install_mode=source_archive" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get baseline version
         id: version
         run: |
+          set -euo pipefail
+          UPSTREAM_VERSION=$(cat baseline-src/VERSION)
+          test "$UPSTREAM_VERSION" = 1.1.23
+          test "$BASELINE_VERSION" = "$UPSTREAM_VERSION-1"
           echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected baseline version: $BASELINE_VERSION"
+          echo "upstream_version=$UPSTREAM_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Catalog $BASELINE_VERSION maps to verified upstream source $UPSTREAM_VERSION"
 
       - name: Define package-specific expectations
         id: expectations
@@ -427,6 +519,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           SOURCE_MARKERS="${{ steps.expectations.outputs.source_markers }}"
           if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
@@ -434,7 +528,7 @@ jobs:
             echo "note=Baseline source or external metadata could not be acquired." >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          if [ "$MODE" = "github_source" ]; then
+          if [ "$MODE" = "source_archive" ]; then
             cd baseline-src
             FOUND=0
             HITS=""
@@ -476,6 +570,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
           [ -f "$CONTENT_PAGE" ]
           grep -Fx "download_url: $DOWNLOAD_URL" "$CONTENT_PAGE" >/dev/null
@@ -494,10 +590,12 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           DOC_MARKERS="${{ steps.expectations.outputs.doc_markers }}"
           IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
-          if [ "$MODE" = "github_source" ]; then
+          if [ "$MODE" = "source_archive" ]; then
             cd baseline-src
             FOUND=0
             HITS=""
@@ -540,6 +638,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
           [ "$(uname -m)" = "aarch64" ]
           grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
@@ -558,29 +658,12 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          sudo apt-get update
-          if ! apt-cache show qflow >/dev/null 2>&1; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "note=qflow is not available from the configured Ubuntu repositories on this runner, so no honest package-manager CLI smoke can run." >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends qflow yosys magic netgen
-          qflow --version
-          mkdir -p qflow-smoke/source
-          cat > qflow-smoke/source/and2.v <<'EOF'
-          module and2(input a, input b, output y);
-            assign y = a & b;
-          endmodule
-          EOF
-          (
-            cd qflow-smoke
-            qflow -T osu035 synth and2
-            test -s and2_mapped.v
-          )
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          bash "$PWD/qflow-runtime.sh" "$PWD/baseline-src" "$PWD/baseline-install" \
+            "${{ steps.version.outputs.upstream_version }}" "$PWD/baseline-smoke" "$PWD/qflow-toolchain"
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "note=Installed qflow from Ubuntu packages and synthesized a tiny Verilog module through the qflow/yosys path." >> "$GITHUB_OUTPUT"
+          echo "note=Built upstream Qflow 1.1.23 for catalog 1.1.23-1; native ELF/version, osu035 synthesis, BLIF/Verilog outputs and four-case AND truth table passed." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -594,47 +677,30 @@ jobs:
           next_version_override: "1.4.104"
           candidate_tag_override: "1.4.104"
           limited_cpu_probe: |
-            sudo apt-get update -qq
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential cmake git ca-certificates pkg-config libgsl-dev libx11-dev tcl tcsh yosys qrouter magic netgen file >/dev/null
-            cd next-src
-            git clone --depth 1 --branch 0.1.6 https://github.com/rubund/graywolf.git ../graywolf-src
-            cmake -S ../graywolf-src -B ../graywolf-build -DCMAKE_INSTALL_PREFIX="$PWD/toolchain" -DCMAKE_C_FLAGS="-fcommon"
-            cmake --build ../graywolf-build -j2
-            cmake --install ../graywolf-build
-            export PATH="$PWD/toolchain/bin:$PATH"
-            command -v graywolf
-            command -v qrouter
-            ./configure --prefix="$PWD/install"
-            make -j2
-            make install
-            export PATH="$PWD/install/bin:$PATH"
-            if [ -f "$PWD/install/bin/qflow" ]; then
-              chmod +x "$PWD/install/bin/qflow"
-            fi
-            qflow --version
-            mkdir -p qflow-smoke/source
-            cat > qflow-smoke/source/and2.v <<'EOF'
-            module and2(input a, input b, output y);
-              assign y = a & b;
-            endmodule
-            EOF
-            (
-              cd qflow-smoke
-              qflow -T osu035 synth and2
-              test -s and2_mapped.v
-            )
-          limited_cpu_description: "Test 6 built the next qflow source candidate on the Arm64 runner, installed it into a local prefix, ran qflow --version, and synthesized a tiny Verilog module through the qflow/yosys path. Full place/route, DRC, LVS, and foundry-scale EDA flows remain out of scope."
+            set -euo pipefail
+            test "$(git -C next-src rev-parse HEAD)" = cbb751b8a6c0f87a4fa0d499facf041e2cafd38c
+            bash "$PWD/qflow-runtime.sh" "$PWD/next-src" "$PWD/candidate-install" \
+              1.4.104 "$PWD/candidate-smoke" "$PWD/qflow-toolchain"
+          limited_cpu_description: "Test 6 built pinned Qflow 1.4.104 in a private Arm64 prefix and verified its runtime version, ELF, actual osu035 synthesis, mapped/final Verilog and all four AND truth-table cases using the supplied standard-cell models. Full place/route, DRC, LVS and foundry-scale flows remain out of scope."
 
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -644,27 +710,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -674,6 +744,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
 
       - name: Create test summary
         if: always()
