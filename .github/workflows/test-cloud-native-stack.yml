@@ -90,6 +90,93 @@ jobs:
       HOMEPAGE_URL: "https://github.com/NVIDIA/cloud-native-stack"
       OFFICIAL_DOCS: "https://github.com/NVIDIA/cloud-native-stack#getting-started"
       GITHUB_REPO: "NVIDIA/cloud-native-stack"
+      BASELINE_SOURCE_COMMIT: "ad07444eb053fa4819bf23d56060c3363c2241ee"
+      BASELINE_CONFIG: "playbooks/older_versions/cns_values_8.0.yaml"
+      CANDIDATE_SOURCE_COMMIT: "edf02b3cfc382dd2ac8b66cdb9cd4d91924fca27"
+      CANDIDATE_CNS_VERSION: "16.1"
+      CNS_HELM_SMOKE: |
+        set -euo pipefail
+        [ "$(uname -m)" = aarch64 ]
+        [ "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT" ]
+        [ "$(git hash-object "$CONFIG_PATH")" = "$(git rev-parse "HEAD:$CONFIG_PATH")" ]
+        SMOKE_DIR=$(mktemp -d "${RUNNER_TEMP}/cns-helm.XXXXXX")
+        trap 'rm -rf "$SMOKE_DIR"' EXIT
+        /usr/bin/python3 - "$CONFIG_PATH" "$EXPECTED_CNS_VERSION" "$SMOKE_DIR/config.json" <<'PY'
+        import json, re, sys
+        from pathlib import Path
+        import yaml
+        config = yaml.safe_load(Path(sys.argv[1]).read_text())
+        assert str(config['cns_version']) == sys.argv[2], ('wrong CNS config version', config['cns_version'], sys.argv[2])
+        assert config['helm_repository'] == 'https://helm.ngc.nvidia.com/nvidia'
+        assert config['gpu_operator_helm_chart'] == 'nvidia/gpu-operator'
+        for key in ('helm_version', 'gpu_operator_version', 'k8s_version', 'gpu_driver_version'):
+            assert re.fullmatch(r'\d+\.\d+\.\d+', str(config[key])), (key, config[key])
+        Path(sys.argv[3]).write_text(json.dumps(config))
+        print(json.dumps({key: config[key] for key in ('cns_version', 'helm_version', 'gpu_operator_version', 'k8s_version', 'gpu_driver_version', 'helm_repository', 'gpu_operator_helm_chart')}))
+        PY
+        HELM_VERSION=$(jq -r .helm_version "$SMOKE_DIR/config.json")
+        GPU_VERSION=$(jq -r .gpu_operator_version "$SMOKE_DIR/config.json")
+        K8S_VERSION=$(jq -r .k8s_version "$SMOKE_DIR/config.json")
+        DRIVER_VERSION=$(jq -r .gpu_driver_version "$SMOKE_DIR/config.json")
+        HELM_REPOSITORY=$(jq -r .helm_repository "$SMOKE_DIR/config.json")
+        case "$HELM_VERSION" in
+          3.10.0) HELM_SHA256=3b72f5f8a60772fb156d0a4ab93272e8da7ef4d18e6421a7020d7c019f521fc1 ;;
+          4.0.4) HELM_SHA256=16b88acc6503d646b7537a298e7389bef469c5cc9ebadf727547abe9f6a35903 ;;
+          *) echo "Unverified Helm version: $HELM_VERSION" >&2; exit 1 ;;
+        esac
+        curl -fsSL --max-time 120 "https://get.helm.sh/helm-v${HELM_VERSION}-linux-arm64.tar.gz" -o "$SMOKE_DIR/helm.tgz"
+        printf '%s  %s\n' "$HELM_SHA256" "$SMOKE_DIR/helm.tgz" | sha256sum -c -
+        tar -xzf "$SMOKE_DIR/helm.tgz" -C "$SMOKE_DIR"
+        HELM="$SMOKE_DIR/linux-arm64/helm"
+        file "$HELM" | tee "$SMOKE_DIR/helm-elf.txt"
+        grep -Eiq 'aarch64|ARM aarch64|ARM64' "$SMOKE_DIR/helm-elf.txt"
+        ACTUAL_HELM=$("$HELM" version --short)
+        [ "${ACTUAL_HELM%%+*}" = "v$HELM_VERSION" ]
+        export HELM_CONFIG_HOME="$SMOKE_DIR/helm-config" HELM_CACHE_HOME="$SMOKE_DIR/helm-cache" HELM_DATA_HOME="$SMOKE_DIR/helm-data"
+        export KUBECONFIG="$SMOKE_DIR/no-kubeconfig"
+        timeout 180s "$HELM" pull gpu-operator --repo "$HELM_REPOSITORY" --version "v$GPU_VERSION" --untar --untardir "$SMOKE_DIR/chart"
+        CHART="$SMOKE_DIR/chart/gpu-operator"
+        /usr/bin/python3 - "$CHART/Chart.yaml" "$GPU_VERSION" <<'PY'
+        import sys, yaml
+        from pathlib import Path
+        chart = yaml.safe_load(Path(sys.argv[1]).read_text())
+        assert chart['name'] == 'gpu-operator', chart
+        assert str(chart['version']).removeprefix('v') == sys.argv[2], chart
+        assert str(chart['appVersion']).removeprefix('v') == sys.argv[2], chart
+        print('chart=' + chart['name'] + ' version=' + str(chart['version']))
+        PY
+        timeout 120s "$HELM" template cns-smoke "$CHART" --include-crds --kube-version "$K8S_VERSION" --set-string "driver.version=$DRIVER_VERSION" > "$SMOKE_DIR/rendered.yaml"
+        /usr/bin/python3 - "$SMOKE_DIR/rendered.yaml" <<'PY'
+        import json, sys, yaml
+        from pathlib import Path
+        documents = [doc for doc in yaml.safe_load_all(Path(sys.argv[1]).read_text()) if doc is not None]
+        assert documents, 'Helm emitted no Kubernetes documents'
+        for doc in documents:
+            assert isinstance(doc, dict) and doc.get('apiVersion') and doc.get('kind') and doc.get('metadata', {}).get('name'), doc
+        kinds = sorted({doc['kind'] for doc in documents})
+        required = {'Deployment', 'DaemonSet', 'ServiceAccount', 'ClusterRole', 'CustomResourceDefinition', 'ClusterPolicy'}
+        assert required <= set(kinds), ('missing Kubernetes kinds', required - set(kinds))
+        images = set()
+        def inventory(value):
+            if isinstance(value, dict):
+                image = value.get('image')
+                if isinstance(image, str) and image:
+                    if value.get('repository'):
+                        image = value['repository'].rstrip('/') + '/' + image
+                        if value.get('version'):
+                            image += ':' + str(value['version'])
+                    assert '{{' not in image and '}}' not in image, image
+                    images.add(image)
+                for child in value.values():
+                    inventory(child)
+            elif isinstance(value, list):
+                for child in value:
+                    inventory(child)
+        inventory(documents)
+        assert images, 'Helm render contained no images'
+        print(json.dumps({'documents': len(documents), 'kinds': kinds, 'images': sorted(images)}))
+        PY
+        printf 'source=%s config=%s cns=%s helm=%s gpu-operator=%s render=passed\n' "$EXPECTED_COMMIT" "$CONFIG_PATH" "$EXPECTED_CNS_VERSION" "$ACTUAL_HELM" "$GPU_VERSION"
 
     outputs:
       contract_version: "2.0"
@@ -133,46 +220,24 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates python3-yaml"
           quiet: "true"
 
-      - name: Install baseline source or artifact
+      - name: Install archived baseline configuration
         id: install
         run: |
           set -euo pipefail
           rm -rf baseline-src baseline-external
-          mkdir -p baseline-src baseline-external
-          if [ -n "$GITHUB_REPO" ]; then
-            RESOLVED_TAG=""
-            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
-              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
-                RESOLVED_TAG="$CANDIDATE"
-                break
-              fi
-            done
-            if [ -n "$RESOLVED_TAG" ]; then
-              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
-            else
-              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
-            fi
-            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
+          git init baseline-src
+          git -C baseline-src remote add origin "https://github.com/$GITHUB_REPO.git"
+          git -C baseline-src fetch --depth 1 origin "$BASELINE_SOURCE_COMMIT"
+          git -C baseline-src checkout --detach FETCH_HEAD
+          [ "$(git -C baseline-src rev-parse HEAD)" = "$BASELINE_SOURCE_COMMIT" ]
+          [ -f "baseline-src/$BASELINE_CONFIG" ]
+          echo "resolved_tag=archived-config-$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+          echo "CNS $BASELINE_VERSION uses archived config $BASELINE_CONFIG at $BASELINE_SOURCE_COMMIT, not a baseline release tag."
 
       - name: Get baseline version
         id: version
@@ -347,6 +412,7 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; fi; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           RESULT=""
 
@@ -414,20 +480,8 @@ jobs:
                 RESULT="Validated Clara Viz source/Python surface on Arm64; CUDA rendering runtime remains scoped."
                 ;;
               cloud-native-stack)
-                if ! command -v helm >/dev/null 2>&1; then
-                  HELM_VERSION="v3.15.4"
-                  curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-arm64.tar.gz" -o /tmp/helm.tgz
-                  tar -xzf /tmp/helm.tgz -C /tmp
-                  export PATH="/tmp/linux-arm64:$PATH"
-                fi
-                CHART="$(find . -path '*/Chart.yaml' -print -quit 2>/dev/null || true)"
-                [ -n "$CHART" ]
-                helm dependency build "$(dirname "$CHART")" >/tmp/cloud-native-stack-helm-deps.txt 2>&1 || true
-                helm template cloud-native-stack-smoke "$(dirname "$CHART")" >/tmp/cloud-native-stack-rendered.yaml
-                grep -Eq '^kind: (DaemonSet|Deployment|Service|ServiceAccount|ClusterRole|CustomResourceDefinition)' /tmp/cloud-native-stack-rendered.yaml
-                grep -Eio 'image:[[:space:]]*[^[:space:]]+' /tmp/cloud-native-stack-rendered.yaml | awk '{print $2}' | sort -u >/tmp/cloud-native-stack-images.txt
-                [ -s /tmp/cloud-native-stack-images.txt ]
-                RESULT="Rendered the Cloud Native Stack Helm chart on Arm64 and validated Kubernetes resources and referenced image inventory. No Kubernetes deployment or GPU/operator reconciliation is claimed."
+                CONFIG_PATH="$BASELINE_CONFIG" EXPECTED_COMMIT="$BASELINE_SOURCE_COMMIT" EXPECTED_CNS_VERSION="$BASELINE_VERSION" bash -euo pipefail -c "$CNS_HELM_SMOKE"
+                RESULT="Parsed the archived CNS 8.0 config at its pinned historical commit, rendered its pinned GPU Operator 22.9.0 chart using Helm 3.10.0, and validated Kubernetes kinds and image inventory. No CNS installation, cluster deployment, image execution, or GPU reconciliation was tested."
                 ;;
               nvidia-gpu-driver-container)
                 cd ..
@@ -605,75 +659,53 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          next_version_override: "26.6.0"
+          candidate_tag_override: "v26.6.0"
           limited_cpu_probe: |
+            [ "$LATEST_VERSION" = 26.6.0 ]
+            [ "$CANDIDATE_TAG" = "v$LATEST_VERSION" ]
             cd next-src
-            if ! command -v helm >/dev/null 2>&1; then
-              HELM_VERSION="v3.15.4"
-              curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-arm64.tar.gz" -o /tmp/helm.tgz
-              tar -xzf /tmp/helm.tgz -C /tmp
-              export PATH="/tmp/linux-arm64:$PATH"
-            fi
-            CHART="$(find . -path '*/Chart.yaml' -print -quit 2>/dev/null || true)"
-            if [ -n "$CHART" ]; then
-              helm dependency build "$(dirname "$CHART")" >/tmp/cloud-native-stack-next-helm-deps.txt 2>&1 || true
-              if ! helm template cloud-native-stack-next-smoke "$(dirname "$CHART")" >/tmp/cloud-native-stack-next-rendered.yaml 2>/tmp/cloud-native-stack-next-render-error.txt; then
-                find "$(dirname "$CHART")" -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.tpl' \) -print0 | xargs -0r cat > /tmp/cloud-native-stack-next-rendered.yaml
-              fi
-            else
-              find . -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.tpl' \) -print0 | xargs -0r cat > /tmp/cloud-native-stack-next-rendered.yaml
-            fi
-            [ -s /tmp/cloud-native-stack-next-rendered.yaml ]
-            grep -Eq '^[[:space:]]*kind:[[:space:]]*[A-Za-z]' /tmp/cloud-native-stack-next-rendered.yaml
-            grep -Eio 'image:[[:space:]]*[^[:space:]]+' /tmp/cloud-native-stack-next-rendered.yaml | awk '{print $2}' | sort -u >/tmp/cloud-native-stack-next-images.txt
-            [ -s /tmp/cloud-native-stack-next-images.txt ]
-          limited_cpu_description: "Test 6 reran the scoped Cloud Native Stack Arm preflight against the next stable source tag: Helm dependency/build best effort, chart render, Kubernetes resource validation, and image inventory extraction. No cluster deployment or GPU reconciliation is claimed."
-          defer_on_limited_cpu_probe_failure: "true"
+            [ "$(git describe --tags --exact-match HEAD)" = "$CANDIDATE_TAG" ]
+            CONFIG_PATH=playbooks/cns_values.yaml EXPECTED_COMMIT="$CANDIDATE_SOURCE_COMMIT" EXPECTED_CNS_VERSION="$CANDIDATE_CNS_VERSION" bash -euo pipefail -c "$CNS_HELM_SMOKE"
+          limited_cpu_description: "Source release 26.6.0 carries CNS config 16.1, Helm 4.0.4, and GPU Operator 25.10.1. This bounded CPU proof requires the pinned config, a real Helm render of its pinned chart, Kubernetes kinds, and an image inventory. No CNS installation, cluster deployment, image execution, or GPU validation is claimed."
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
-          D1="${{ steps.test1.outputs.duration || '0' }}"
-          D2="${{ steps.test2.outputs.duration || '0' }}"
-          D3="${{ steps.test3.outputs.duration || '0' }}"
-          D4="${{ steps.test4.outputs.duration || '0' }}"
-          D5="${{ steps.test5.outputs.duration || '0' }}"
-          D6="${{ steps.test6.outputs.duration || '0' }}"
+          set -euo pipefail
           PASSED=0
           FAILED=0
-          SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
-              CORE_FAILED=$((CORE_FAILED + 1))
+          DURATION=0
+          check_test() {
+            if [ "$1" = passed ] && [ "$2" = success ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              if [ "$4" = core ]; then
+                CORE_FAILED=$((CORE_FAILED + 1))
+              fi
             fi
-          done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
-            OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
-          else
-            OVERALL_STATUS="failure"
-            BADGE_STATUS="failing"
+            DURATION=$((DURATION + $3))
+          }
+          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outcome }}" "${{ steps.test1.outputs.duration || '0' }}" core
+          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outcome }}" "${{ steps.test2.outputs.duration || '0' }}" core
+          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outcome }}" "${{ steps.test3.outputs.duration || '0' }}" core
+          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outcome }}" "${{ steps.test4.outputs.duration || '0' }}" core
+          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outcome }}" "${{ steps.test5.outputs.duration || '0' }}" core
+          check_test "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outcome }}" "${{ steps.test6.outputs.duration || '0' }}" candidate
+          # This workflow pins an available candidate; no skipped result is valid.
+          OVERALL_STATUS=failure
+          BADGE_STATUS=failing
+          if [ "$FAILED" -eq 0 ]; then
+            OVERALL_STATUS=success
+            BADGE_STATUS=passing
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
-          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "skipped=0" >> "$GITHUB_OUTPUT"
           echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
