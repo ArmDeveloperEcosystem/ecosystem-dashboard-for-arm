@@ -83,6 +83,7 @@ jobs:
   test-flyte:
     runs-on: ubuntu-24.04-arm
     env:
+      GODEBUG: "http2client=0"
       BASELINE_VERSION: "0.8.19"
       PACKAGE_SLUG: "flyte"
       LANE_KIND: "github release / source-build-or-tarball"
@@ -183,7 +184,7 @@ jobs:
         id: version
         run: |
           echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected baseline version: $BASELINE_VERSION"
+          echo "Requested catalog baseline version: $BASELINE_VERSION"
 
       - name: Test 1 - Baseline package evidence
         id: test1
@@ -237,19 +238,24 @@ jobs:
           fi
           if [ "$MODE" = "github_source" ]; then
             RESOLVED="${{ steps.install.outputs.resolved_tag || '' }}"
-            if [ -z "$RESOLVED" ]; then
+            SOURCE_COMMIT=$(git -C baseline-src rev-parse --verify HEAD 2>/dev/null || true)
+            echo "source_commit=${SOURCE_COMMIT:-unresolved}" >> "$GITHUB_OUTPUT"
+            printf 'Requested baseline=%s resolved_ref=%s observed_source_commit=%s\n' "$BASELINE_VERSION" "$RESOLVED" "${SOURCE_COMMIT:-unresolved}"
+            if [ "$RESOLVED" != "$BASELINE_VERSION" ] && [ "$RESOLVED" != "v$BASELINE_VERSION" ]; then
               echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=Baseline $BASELINE_VERSION is not source-bound: resolved $RESOLVED at ${SOURCE_COMMIT:-unresolved}. Default-branch preflight cannot certify the requested baseline." >> "$GITHUB_OUTPUT"
               exit 1
             fi
-            if [ "$RESOLVED" != "default_branch" ] && [ "$RESOLVED" != "$BASELINE_VERSION" ] && [ "$RESOLVED" != "v$BASELINE_VERSION" ]; then
+            TAG_COMMIT=$(git -C baseline-src rev-parse --verify "refs/tags/$RESOLVED^{commit}" 2>/dev/null || true)
+            if [ -z "$SOURCE_COMMIT" ] || [ -z "$TAG_COMMIT" ] || [ "$SOURCE_COMMIT" != "$TAG_COMMIT" ]; then
               echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=Baseline $BASELINE_VERSION tag does not identify the checked-out source commit ${SOURCE_COMMIT:-unresolved}." >> "$GITHUB_OUTPUT"
               exit 1
             fi
           else
-            if [ ! -f baseline-external/metadata.txt ] || ! grep -Fq "$DOWNLOAD_URL" baseline-external/metadata.txt; then
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=External endpoint metadata does not verify a Flyte $BASELINE_VERSION source or binary version." >> "$GITHUB_OUTPUT"
+            exit 1
           fi
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
@@ -316,11 +322,20 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; fi; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           if [ "$PACKAGE_SLUG" = "flyte" ] && [ "$MODE" = "github_source" ]; then
             cd baseline-src
             go list ./... >/tmp/flyte-go-packages.txt
-            GOOS=linux GOARCH=arm64 go test -run '^$' ./... >/tmp/flyte-compile-smoke.txt
+            # Integration TestMain starts envtest even when no test names match.
+            ENVTEST_VERSION=$(go list -m -f '{{ .Version }}' sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $2, $3}')
+            ENVTEST_K8S_VERSION=$(go list -m -f '{{ .Version }}' k8s.io/api | awk -F'[v.]' '{printf "1.%d", $3}')
+            ENVTEST_DIR=$(mktemp -d)
+            GOBIN="$ENVTEST_DIR" go install "sigs.k8s.io/controller-runtime/tools/setup-envtest@$ENVTEST_VERSION"
+            KUBEBUILDER_ASSETS=$("$ENVTEST_DIR/setup-envtest" use "$ENVTEST_K8S_VERSION" --bin-dir "$ENVTEST_DIR/assets" -p path)
+            export KUBEBUILDER_ASSETS
+            printf 'Envtest branch=%s Kubernetes=%s assets=%s\n' "$ENVTEST_VERSION" "$ENVTEST_K8S_VERSION" "$KUBEBUILDER_ASSETS"
+            GOOS=linux GOARCH=arm64 go test -run '^$' ./... >/tmp/flyte-compile-smoke.txt 2>&1 || { cat /tmp/flyte-compile-smoke.txt; exit 1; }
             CHART="$(find . -path '*/Chart.yaml' -print -quit 2>/dev/null || true)"
             if [ -n "$CHART" ]; then
               if ! command -v helm >/dev/null 2>&1; then
@@ -490,12 +505,20 @@ jobs:
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -505,27 +528,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6:$O6" = "passed:success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -535,3 +562,4 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
