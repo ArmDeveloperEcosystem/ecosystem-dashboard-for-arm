@@ -512,9 +512,17 @@ class ExactRunAggregationTests(unittest.TestCase):
         payload = contract.topology_payload(topology)
         self.assertEqual(payload["over_capacity_batches"], [])
         self.assertEqual(payload["target_packages_per_batch"], 45)
-        self.assertEqual(len(payload["external_actions"]), 20)
+        self.assertEqual(len(payload["external_actions"]), 22)
         self.assertIn(
             "docker://python@sha256:d8fac68ebdc45b8d66d53f1ed6c1532da81109a8f5532a6ca0c951ed31107d70",
+            payload["external_actions"],
+        )
+        self.assertIn(
+            "docker://ubuntu@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214",
+            payload["external_actions"],
+        )
+        self.assertIn(
+            "docker://ubuntu@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc",
             payload["external_actions"],
         )
         self.assertEqual(len(payload["local_actions"]), 7)
