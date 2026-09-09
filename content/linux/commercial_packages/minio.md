@@ -1,7 +1,7 @@
 ---
 name: MinIO
 vendor: MinIO
-category: Storage
+category: Data / Memory / State
 description: Minio is a high-performance distributed Object Storage server, which is designed for large-scale private cloud infrastructure.
 product_url: https://min.io/docs/minio/linux/index.html
 works_on_arm: true

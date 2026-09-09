@@ -1,6 +1,6 @@
 ---
 name: Dify
-category: AI/ML
+category: Agent Orchestration
 description: Dify is an open-source platform for building LLM apps, combining agents, RAG, model management, and observability in a simple, production-ready interface.
 download_url: https://github.com/langgenius/dify/releases
 works_on_arm: true

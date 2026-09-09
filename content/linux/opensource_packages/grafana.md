@@ -1,6 +1,6 @@
 ---
 name: Grafana
-category: Monitoring/Observability
+category: Observability
 description: Grafana is an open-source analytics and interactive visualization web application. It allows users to ingest data from various sources, query this data, and display it on customizable charts for easy analysis.
 download_url: https://grafana.com/grafana/download
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: Docker
-category: Containers and Orchestration
+category: Platform / Infrastructure
 description: Docker is an open platform for developing, shipping, and running applications. Docker provides the ability to package and run an application in a loosely isolated environment called a container.
 download_url: https://download.docker.com/linux/ubuntu/dists/jammy/pool/stable/arm64/
 works_on_arm: true

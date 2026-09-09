@@ -1,6 +1,6 @@
 ---
 name: GVisor
-category: Containers and Orchestration
+category: Tool / Action Execution
 description: GVisor is an open-source Linux-compatible sandbox that runs anywhere existing container tooling does. It enables cloud-native container security and portability.
 download_url: https://github.com/google/gvisor/tags
 works_on_arm: true
