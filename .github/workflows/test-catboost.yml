@@ -82,14 +82,37 @@ on:
 jobs:
   test-catboost:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
     env:
       BASELINE_VERSION: "1.1.1"
+      BASELINE_SOURCE_COMMIT: e12502840542f2760dc4e3f3041c9ce8e0814aa4
+      PINNED_CONTAINER_IMAGE_CATBOOST: ubuntu@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc # original: ubuntu:22.04
       PACKAGE_SLUG: "catboost"
       LANE_KIND: "github release / source-build-or-tarball"
       DOWNLOAD_URL: "https://github.com/catboost/catboost/releases"
       HOMEPAGE_URL: "https://catboost.ai/"
       OFFICIAL_DOCS: "https://catboost.ai/docs/en/concepts/python-installation"
       GITHUB_REPO: "catboost/catboost"
+      CATBOOST_CPU_SMOKE: |
+        import importlib.metadata as im
+        import os
+        import platform
+        import catboost
+        import numpy as np
+        from catboost import CatBoostClassifier, Pool
+
+        expected = os.environ["EXPECTED_VERSION"]
+        assert im.version("catboost") == expected
+        assert catboost.__version__ == expected
+        X = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=float)
+        y = np.array([0, 0, 1, 1])
+        model = CatBoostClassifier(iterations=4, depth=2, learning_rate=0.5, loss_function="Logloss", verbose=False, thread_count=1)
+        model.fit(Pool(X, y))
+        preds = model.predict(X)
+        assert preds.shape[0] == 4
+        assert set(int(v) for v in preds.reshape(-1)).issubset({0, 1})
+        print("catboost=%s numpy=%s python=%s machine=%s predictions=%s" % (
+            catboost.__version__, np.__version__, platform.python_version(), platform.machine(), preds.reshape(-1).tolist()))
 
     outputs:
       contract_version: "2.0"
@@ -352,26 +375,117 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          python -m venv smoke-venv
-          . smoke-venv/bin/activate
-          python -m pip install --upgrade pip setuptools wheel
-          timeout 300 python -m pip install --only-binary=:all: "catboost==$BASELINE_VERSION" numpy
+          CONTAINER="catboost-baseline-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          BUILD_VOLUME="catboost-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          CONAN_VOLUME="catboost-conan-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          finish_test() {
+            RC=$?
+            trap - EXIT
+            if docker container inspect "$CONTAINER" >/dev/null 2>&1; then
+              docker rm -f "$CONTAINER" || RC=1
+            fi
+            for VOLUME in "$BUILD_VOLUME" "$CONAN_VOLUME"; do
+              if docker volume inspect "$VOLUME" >/dev/null 2>&1; then
+                docker volume rm "$VOLUME" || RC=1
+              fi
+            done
+            if [ "$RC" -ne 0 ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=CatBoost $BASELINE_VERSION source build, wheel validation, CPU classifier, or cleanup failed; see the command error above." >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish_test EXIT
+          docker volume create "$BUILD_VOLUME"
+          docker volume create "$CONAN_VOLUME"
+          docker run --rm -i --name "$CONTAINER" --cpus=2 --memory=8g --memory-swap=8g --pids-limit=512 \
+            --mount "type=volume,source=$BUILD_VOLUME,target=/work" \
+            --mount "type=volume,source=$CONAN_VOLUME,target=/root/.conan" \
+            -e BASELINE_VERSION="$BASELINE_VERSION" -e BASELINE_SOURCE_COMMIT="$BASELINE_SOURCE_COMMIT" -e CATBOOST_CPU_SMOKE="$CATBOOST_CPU_SMOKE" \
+            "$PINNED_CONTAINER_IMAGE_CATBOOST" bash -se <<'BUILD'
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          export CMAKE_BUILD_PARALLEL_LEVEL=2 CONAN_CPU_COUNT=2 MAKEFLAGS=-j2
+          export CFLAGS=-mno-outline-atomics CXXFLAGS=-mno-outline-atomics
+          test "$(uname -m)" = aarch64
+          test "$BASELINE_VERSION" = 1.1.1
+          timeout 300 apt-get update
+          # Python 2 is only a historical build generator, not the runtime or a production endorsement.
+          timeout 300 apt-get install -y --no-install-recommends ca-certificates git curl build-essential clang-14 lld-14 cmake ninja-build python2 python3-dev python3-venv pkg-config openjdk-11-jdk
+          export PATH=/usr/lib/llvm-14/bin:$PATH
+          export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-arm64
+          python3 -m venv /work/venv
+          . /work/venv/bin/activate
+          timeout 180 python -m pip install 'conan==1.59.0' 'setuptools==65.5.1' 'wheel==0.38.4' 'numpy==1.23.5'
+          if [ ! -d /work/catboost/.git ]; then
+            timeout 180 git clone --depth 1 --branch "v$BASELINE_VERSION" https://github.com/catboost/catboost.git /work/catboost
+          fi
+          test "$(git -C /work/catboost rev-parse HEAD)" = "$BASELINE_SOURCE_COMMIT"
+          test -z "$(git -C /work/catboost status --porcelain)"
+          git -C /work/catboost rev-parse HEAD
+          python --version
+          clang --version
+          ld.lld --version
+          cmake --version
+          dpkg-query -W clang-14 lld-14 cmake ninja-build python2 python3-dev python3-venv openjdk-11-jdk
+          if [ -f /work/build/build.ninja ]; then
+            echo "BUILD_CACHE_PRESENT=yes; reconfiguring and executing the build dependency graph"
+          else
+            echo "BUILD_CACHE_PRESENT=no"
+          fi
+          # Documented shared-library PIC and Arm flags: https://catboost.ai/docs/en/installation/build-native-artifacts
+          cmake -S /work/catboost -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DHAVE_CUDA=OFF -DCATBOOST_MAX_LINK_JOBS=1 -DCMAKE_TOOLCHAIN_FILE=/work/catboost/clang.toolchain -U CMAKE_PROJECT_INCLUDE -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DPython2_EXECUTABLE=/usr/bin/python2 -DPython3_EXECUTABLE=/work/venv/bin/python3 -DCMAKE_ASM_COMPILER=/usr/lib/llvm-14/bin/clang '-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG -mno-outline-atomics' '-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -mno-outline-atomics'
+          ninja -C /work/build -t commands _catboost > /work/verified-commands.txt
           python - <<'PY'
-          import numpy as np
-          from catboost import CatBoostClassifier, Pool
-
-          X = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=float)
-          y = np.array([0, 0, 1, 1])
-          model = CatBoostClassifier(iterations=4, depth=2, learning_rate=0.5, loss_function="Logloss", verbose=False, thread_count=1)
-          model.fit(Pool(X, y))
-          preds = model.predict(X)
-          assert preds.shape[0] == 4
-          assert set(int(v) for v in preds.reshape(-1)).issubset({0, 1})
+          from pathlib import Path
+          import shlex
+          lines = Path('/work/verified-commands.txt').read_text().splitlines()
+          compiles = []
+          for line in lines:
+              args = shlex.split(line)
+              if args and Path(args[0]).name in {'clang', 'clang++'} and '-c' in args:
+                  if Path(args[args.index('-c') + 1]).suffix in {'.c', '.cc', '.cpp', '.cxx'}:
+                      compiles.append(args)
+          assert len(compiles) > 3000, len(compiles)
+          assert all('-mno-outline-atomics' in args for args in compiles)
+          assert all('-fPIC' in args or '-fPIE' in args for args in compiles)
+          assert any('-fuse-ld=lld' in line for line in lines)
+          print('VERIFIED_PIC_AND_ARM_FLAG_COMPILE_COMMANDS=%d' % len(compiles), flush=True)
           PY
+          timeout --signal=INT --kill-after=30s 1800 cmake --build /work/build --target _catboost --parallel 2
+          test -z "$(git -C /work/catboost status --porcelain)"
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          root = Path('/work/catboost')
+          spec = importlib.util.spec_from_file_location('release_mk_wheel', root / 'catboost/python-package/mk_wheel.py')
+          builder = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(builder)
+          version = builder.get_version(str(root / 'catboost/python-package/catboost/version.py'))
+          assert version == '1.1.1', version
+          libraries = list(Path('/work/build/catboost/python-package/catboost').glob('*catboost*.so'))
+          assert len(libraries) == 1, libraries
+          builder.make_wheel('/work/catboost-1.1.1-cp310-none-linux_aarch64.whl', 'catboost', version, str(root), {'_catboost': (str(libraries[0]), '')}, False)
+          PY
+          timeout 300 python -m pip install --only-binary=:all: 'numpy==1.23.5' 'pandas==1.5.3' 'scipy==1.10.1' 'matplotlib==3.7.5' 'plotly==5.24.1' 'graphviz==0.20.1' 'six==1.16.0'
+          timeout 180 python -m pip install --no-deps --force-reinstall /work/catboost-1.1.1-cp310-none-linux_aarch64.whl
+          cd /work
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          import catboost._catboost as extension
+          libraries = list(Path('/work/build/catboost/python-package/catboost').glob('*catboost*.so'))
+          assert len(libraries) == 1, libraries
+          assert hashlib.sha256(libraries[0].read_bytes()).digest() == hashlib.sha256(Path(extension.__file__).read_bytes()).digest()
+          print('INSTALLED_EXTENSION_MATCHES_SOURCE_BUILD=' + hashlib.sha256(libraries[0].read_bytes()).hexdigest())
+          PY
+          EXPECTED_VERSION="$BASELINE_VERSION" python -c "$CATBOOST_CPU_SMOKE"
+          python -m pip list --format=json
+          sha256sum /work/catboost-1.1.1-cp310-none-linux_aarch64.whl
+          BUILD
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "note=Installed CatBoost $BASELINE_VERSION on Arm64, trained a tiny CPU classifier, and produced predictions." >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "note=Built the exact CatBoost $BASELINE_VERSION source on Arm64 without CUDA, installed and matched its wheel, trained a tiny CPU classifier, and checked prediction count and labels." >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
         id: test6
         uses: ./.github/actions/generic-source-regression-check
@@ -380,32 +494,51 @@ jobs:
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
           limited_cpu_probe: |
-            python -m venv next-venv
-            . next-venv/bin/activate
-            python -m pip install --upgrade pip setuptools wheel
-            timeout 300 python -m pip install --only-binary=:all: "catboost==$LATEST_VERSION" numpy
-            python - <<'PY'
-            import numpy as np
-            from catboost import CatBoostClassifier, Pool
-
-            X = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=float)
-            y = np.array([0, 0, 1, 1])
-            model = CatBoostClassifier(iterations=4, depth=2, learning_rate=0.5, loss_function="Logloss", verbose=False, thread_count=1)
-            model.fit(Pool(X, y))
-            assert model.predict(X).shape[0] == 4
-            PY
+            set -euo pipefail
+            CONTAINER="catboost-next-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            finish_candidate() {
+              RC=$?
+              trap - EXIT
+              if docker container inspect "$CONTAINER" >/dev/null 2>&1; then
+                docker rm -f "$CONTAINER" || RC=1
+              fi
+              exit "$RC"
+            }
+            trap finish_candidate EXIT
+            docker run --rm -i --name "$CONTAINER" --cpus=2 --memory=8g --memory-swap=8g --pids-limit=512 \
+              -e EXPECTED_VERSION="$LATEST_VERSION" -e CATBOOST_CPU_SMOKE="$CATBOOST_CPU_SMOKE" \
+              "$PINNED_CONTAINER_IMAGE_CATBOOST" bash -se <<'CANDIDATE'
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            test "$(uname -m)" = aarch64
+            timeout 300 apt-get update
+            timeout 300 apt-get install -y --no-install-recommends ca-certificates python3-venv
+            python3 -m venv /tmp/candidate-venv
+            . /tmp/candidate-venv/bin/activate
+            timeout 300 python -m pip install --only-binary=:all: "catboost==$EXPECTED_VERSION" 'numpy==1.23.5' 'pandas==1.5.3' 'scipy==1.10.1' 'matplotlib==3.7.5' 'plotly==5.24.1' 'graphviz==0.20.1' 'six==1.16.0'
+            python -c "$CATBOOST_CPU_SMOKE"
+            python -m pip list --format=json
+            CANDIDATE
           limited_cpu_description: |
-            Installed the next CatBoost candidate on the Arm64 runner, trained a tiny CPU classifier, and produced predictions.
+            Installed and verified the next CatBoost candidate's distribution and module versions on Arm64, trained the same tiny CPU classifier, and checked prediction count and labels. This is CPU smoke evidence only.
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -415,28 +548,30 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
-            OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
           else
-            OVERALL_STATUS="failure"
-            BADGE_STATUS="failing"
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          OVERALL_STATUS=failure
+          BADGE_STATUS=failing
+          if [ "$FAILED" -eq 0 ]; then
+            OVERALL_STATUS=success
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS=passing
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
@@ -445,3 +580,4 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          [ "$OVERALL_STATUS" = "success" ]
