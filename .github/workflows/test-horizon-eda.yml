@@ -93,11 +93,13 @@ jobs:
       EXTRA_TAG_CANDIDATES: "v1.0.0"
       TEST1_COMMAND: >-
         test -f README.md && test -f Makefile && grep -Fq 'Horizon EDA' README.md && test "$RESOLVED_TAG" = "v1.0.0"
-      TEST3_COMMAND: >-
-        curl -fsL "$OFFICIAL_DOCS" | grep -Eqi 'linux|flatpak|installation'
+      TEST3_COMMAND: |
+        DOC_FILE=$(mktemp "$RUNNER_TEMP/horizon-docs.XXXXXX")
+        curl -fsL "$OFFICIAL_DOCS" -o "$DOC_FILE"
+        grep -Eqi 'linux|flatpak|installation' "$DOC_FILE"
       TEST5_COMMAND: |
         test "$(uname -m)" = "aarch64"
-        cat > /tmp/horizon-stm32.xml <<'XML'
+        cat > "$SMOKE_LOG_DIR/stm32.xml" <<'XML'
         <Mcu xmlns="http://mcd.rou.st.com/modules.php?name=mcu">
           <Pin Name="PA0" Position="1" Type="I/O">
             <Signal Name="GPIO"/>
@@ -107,35 +109,90 @@ jobs:
           <Pin Name="NRST" Position="3" Type="Reset"/>
         </Mcu>
         XML
-        python3 scripts/stm32_to_json.py /tmp/horizon-stm32.xml > /tmp/horizon-stm32.json
+        python3 scripts/stm32_to_json.py "$SMOKE_LOG_DIR/stm32.xml" > "$SMOKE_LOG_DIR/stm32.json"
         python3 - <<'PY'
         import json
+        import os
         from pathlib import Path
 
-        data = json.loads(Path("/tmp/horizon-stm32.json").read_text())
+        data = json.loads((Path(os.environ["SMOKE_LOG_DIR"]) / "stm32.json").read_text())
         assert data["1"] == {"pin": "PA0", "direction": "bidirectional", "alt": ["USART2_CTS"]}
         assert data["2"]["direction"] == "power_input"
         assert data["3"]["direction"] == "input"
         PY
         sudo apt-get update -qq
-        sudo apt-get install -y --no-install-recommends horizon-eda xvfb xauth dbus-x11 >/dev/null
-        HORIZON_IMP="$(command -v horizon-imp)"
-        HORIZON_EDA="$(command -v horizon-eda)"
-        file "$HORIZON_IMP" "$HORIZON_EDA" | tee /tmp/horizon-file.txt
-        grep -Eiq 'aarch64|ARM aarch64' /tmp/horizon-file.txt
-        xvfb-run -a "$HORIZON_IMP" --help > /tmp/horizon-imp-help.txt 2>&1
-        grep -Eiq 'interactive manipulator|schematic|symbol|package|board' /tmp/horizon-imp-help.txt
-        export HOME="$RUNNER_TEMP/horizon-eda-home"
-        mkdir -p "$HOME"
-        set +e
-        timeout --kill-after=5s 15s xvfb-run -a "$HORIZON_EDA" > /tmp/horizon-eda-launch.log 2>&1
-        LAUNCH_RC=$?
-        set -e
-        if [ "$LAUNCH_RC" -ne 124 ]; then
-          cat /tmp/horizon-eda-launch.log
-          exit 1
+        sudo apt-get install -y --no-install-recommends xvfb xauth xdotool x11-utils dbus-x11 \
+          libgtkmm-3.0-1t64 libcurl3t64-gnutls libdxflib3 libepoxy0 librsvg2-2 \
+          libsqlite3-0 libzmq5 libhttp-parser2.9 libssh2-1t64 libfreeimage3 libglu1-mesa libgl2ps1.4 \
+          > "$SMOKE_LOG_DIR/apt.log" 2>&1
+        RUNTIME_DIR=$(mktemp -d "$RUNNER_TEMP/horizon-runtime.XXXXXX")
+        mkdir -p "$RUNTIME_DIR/apt/lists/partial" "$RUNTIME_DIR/apt/cache/archives/partial" "$RUNTIME_DIR/archives"
+        # Keep the historical archive and missing SONAMEs private; never replace Noble's libraries.
+        printf '%s\n' 'deb https://ports.ubuntu.com/ubuntu-ports focal main universe' > "$RUNTIME_DIR/apt/sources.list"
+        APT_OPTIONS=(-o "Dir::Etc::sourcelist=$RUNTIME_DIR/apt/sources.list" -o Dir::Etc::sourceparts=-
+          -o "Dir::State::lists=$RUNTIME_DIR/apt/lists" -o "Dir::Cache=$RUNTIME_DIR/apt/cache")
+        sudo apt-get "${APT_OPTIONS[@]}" update > "$SMOKE_LOG_DIR/archive-index.log" 2>&1
+        cd "$RUNTIME_DIR/archives"
+        apt-get "${APT_OPTIONS[@]}" download "horizon-eda=$BASELINE_VERSION" \
+          libgit2-28 liboce-foundation11 liboce-modeling11 liboce-ocaf-lite11 liboce-ocaf11 \
+          liboce-visualization11 libpodofo0.9.6 libyaml-cpp0.6 libzip5 libmbedcrypto3 \
+          libmbedx509-0 libmbedtls12 libssl1.1 libtiff5 libidn11 libunistring2 libwebp6 \
+          > "$SMOKE_LOG_DIR/archive-download.log" 2>&1
+        HORIZON_DEB="$RUNTIME_DIR/archives/horizon-eda_${BASELINE_VERSION}_arm64.deb"
+        test "$(dpkg-deb -f "$HORIZON_DEB" Package)" = horizon-eda
+        test "$(dpkg-deb -f "$HORIZON_DEB" Version)" = "$BASELINE_VERSION"
+        test "$(dpkg-deb -f "$HORIZON_DEB" Architecture)" = arm64
+        dpkg-deb -f "$HORIZON_DEB" Package Version Architecture > "$SMOKE_LOG_DIR/package.txt"
+        sha256sum ./*.deb > "$SMOKE_LOG_DIR/archive-sha256.txt"
+        for ARCHIVE in ./*.deb; do dpkg-deb -x "$ARCHIVE" "$RUNTIME_DIR/root"; done
+        dpkg-deb -e "$HORIZON_DEB" "$RUNTIME_DIR/control"
+        (cd "$RUNTIME_DIR/root" && md5sum -c "$RUNTIME_DIR/control/md5sums") > "$SMOKE_LOG_DIR/payload-verification.txt"
+        HORIZON_IMP="$RUNTIME_DIR/root/usr/bin/horizon-imp"
+        HORIZON_EDA="$RUNTIME_DIR/root/usr/bin/horizon-eda"
+        test -x "$HORIZON_IMP" && test -x "$HORIZON_EDA"
+        export LD_LIBRARY_PATH="$RUNTIME_DIR/root/lib/aarch64-linux-gnu:$RUNTIME_DIR/root/usr/lib/aarch64-linux-gnu:$RUNTIME_DIR/root/usr/lib"
+        file "$HORIZON_IMP" | tee "$SMOKE_LOG_DIR/imp-file.txt"
+        grep -Eiq 'ELF 64-bit.*(aarch64|ARM aarch64)' "$SMOKE_LOG_DIR/imp-file.txt"
+        file "$HORIZON_EDA" | tee "$SMOKE_LOG_DIR/eda-file.txt"
+        grep -Eiq 'ELF 64-bit.*(aarch64|ARM aarch64)' "$SMOKE_LOG_DIR/eda-file.txt"
+        export HOME="$(mktemp -d "$RUNNER_TEMP/horizon-home.XXXXXX")"
+        export XDG_CONFIG_HOME="$HOME/.config" XDG_CACHE_HOME="$HOME/.cache" XDG_RUNTIME_DIR="$HOME/runtime"
+        # horizon-imp opens automatic_prefs.db before parsing --help.
+        mkdir -p "$XDG_CONFIG_HOME/horizon" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
+        chmod 700 "$XDG_RUNTIME_DIR"
+        timeout --kill-after=3s 30s xvfb-run -a -s '-screen 0 1280x1024x24 -nolisten tcp' \
+          dbus-run-session -- "$HORIZON_IMP" --help > "$SMOKE_LOG_DIR/help.txt" 2>&1
+        grep -Eiq 'interactive manipulator|schematic|symbol|package|board' "$SMOKE_LOG_DIR/help.txt"
+        if timeout --kill-after=5s 15s xvfb-run -a -s '-screen 0 1280x1024x24 -nolisten tcp' \
+          dbus-run-session -- bash -eu -o pipefail -c '
+            "$1" &
+            GUI_PID=$!
+            trap '\''if kill -0 "$GUI_PID" 2>/dev/null; then kill "$GUI_PID"; fi'\'' EXIT
+            for ATTEMPT in $(seq 1 50); do
+              kill -0 "$GUI_PID"
+              if WINDOWS=$(xdotool search --onlyvisible --pid "$GUI_PID"); then
+                for WINDOW in $WINDOWS; do
+                  TITLE=$(xdotool getwindowname "$WINDOW")
+                  case "$TITLE" in *Horizon*) ;; *) continue ;; esac
+                  test "$(xdotool getwindowpid "$WINDOW")" = "$GUI_PID"
+                  xprop -id "$WINDOW" _NET_WM_PID WM_CLASS WM_NAME > "$2"
+                  printf "window_verified pid=%s id=%s title=%s\n" "$GUI_PID" "$WINDOW" "$TITLE" >> "$2"
+                  wait "$GUI_PID"
+                  exit 0
+                done
+              fi
+              sleep 0.2
+            done
+            exit 1
+          ' gui-window "$HORIZON_EDA" "$SMOKE_LOG_DIR/window.txt" > "$SMOKE_LOG_DIR/gui-launch.log" 2>&1; then
+          LAUNCH_RC=0
+        else
+          LAUNCH_RC=$?
         fi
-        echo "note=Ran Horizon STM32 pin-conversion tooling, verified Arm64 horizon-imp help, and held the Horizon EDA GTK GUI under Xvfb. No full PCB editing workflow is claimed." >> "$GITHUB_OUTPUT"
+        test "$LAUNCH_RC" -eq 124
+        grep -Eq '^window_verified pid=[0-9]+ id=[0-9]+ title=.*Horizon' "$SMOKE_LOG_DIR/window.txt"
+        echo "installed_version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+        echo "note=Ran Horizon v1.0.0 STM32 pin-conversion tooling and the authenticated Ubuntu ${BASELINE_VERSION} Arm64 archive with privately extracted legacy libraries: verified its payload, ELF architecture, help, and GUI liveness under Xvfb. No full PCB editing workflow is claimed." >> "$GITHUB_OUTPUT"
 
     outputs:
       contract_version: "2.0"
@@ -155,7 +212,8 @@ jobs:
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
-      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      # Test 6 executes candidate source tools, not an installed candidate GUI package.
+      regression_next_installed_version: 'not_installed'
       regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
@@ -314,9 +372,32 @@ jobs:
       - name: Test 5 - Bounded package-specific smoke
         id: test5
         continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          SMOKE_LOG_DIR=$(mktemp -d "$RUNNER_TEMP/${PACKAGE_SLUG}-logs.XXXXXX")
+          export SMOKE_LOG_DIR
+          finish_smoke() {
+            RC=$?
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            if [ "$RC" -ne 0 ]; then
+              for LOG in "$SMOKE_LOG_DIR"/*; do
+                if [ -f "$LOG" ]; then
+                  printf '%s\n' "Diagnostic: $LOG"
+                  tail -100 "$LOG"
+                fi
+              done
+            fi
+            exit "$RC"
+          }
+          trap finish_smoke EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
@@ -335,7 +416,9 @@ jobs:
           limited_cpu_probe: |
             test "$(uname -m)" = "aarch64"
             cd next-src
-            cat > /tmp/horizon-next-stm32.xml <<'XML'
+            SMOKE_LOG_DIR=$(mktemp -d "$RUNNER_TEMP/horizon-next-logs.XXXXXX")
+            export SMOKE_LOG_DIR
+            cat > "$SMOKE_LOG_DIR/stm32.xml" <<'XML'
             <Mcu xmlns="http://mcd.rou.st.com/modules.php?name=mcu">
               <Pin Name="PB7" Position="11" Type="I/O">
                 <Signal Name="GPIO"/>
@@ -345,12 +428,13 @@ jobs:
               <Pin Name="VDDA" Position="12" Type="Power"/>
             </Mcu>
             XML
-            python3 scripts/stm32_to_json.py /tmp/horizon-next-stm32.xml > /tmp/horizon-next-stm32.json
+            python3 scripts/stm32_to_json.py "$SMOKE_LOG_DIR/stm32.xml" > "$SMOKE_LOG_DIR/stm32.json"
             python3 - <<'PY'
             import json
+            import os
             from pathlib import Path
 
-            data = json.loads(Path("/tmp/horizon-next-stm32.json").read_text())
+            data = json.loads((Path(os.environ["SMOKE_LOG_DIR"]) / "stm32.json").read_text())
             assert data["11"] == {"pin": "PB7", "direction": "bidirectional", "alt": ["I2C1_SDA", "USART1_RX"]}
             assert data["12"]["direction"] == "power_input"
             PY
@@ -370,13 +454,22 @@ jobs:
       - name: Calculate test summary
         id: summary
         if: always()
+        shell: bash
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -386,27 +479,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6:$O6" = "passed:success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           {
@@ -418,3 +515,4 @@ jobs:
             echo "overall_status=$OVERALL_STATUS"
             echo "badge_status=$BADGE_STATUS"
           } >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
