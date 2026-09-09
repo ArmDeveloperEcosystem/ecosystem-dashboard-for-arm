@@ -3,10 +3,14 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import package_observation_migration_audit as observation_audit
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows/test-gerbv.yml"
@@ -70,6 +74,13 @@ class GerbvWorkflowTests(unittest.TestCase):
         self.assertEqual("6", outputs["passed"])
         self.assertEqual("21", outputs["duration"])
         self.assertEqual("0", outputs["failed"])
+
+    def test_export_outputs_are_visible_to_existing_observation_audit(self):
+        for output in ("status", "duration"):
+            with self.subTest(output=output):
+                self.assertTrue(observation_audit._step_emits_output(
+                    WORKFLOW.parents[2], self.steps["test5"], output,
+                ))
 
     def test_every_core_requires_status_and_successful_actual_outcome(self):
         for number in range(1, 6):
