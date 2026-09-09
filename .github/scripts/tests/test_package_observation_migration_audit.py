@@ -39,8 +39,8 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             {
                 "shared_smoke": 13,
                 "emitter_only": 23,
-                "generic_source": 97,
-                "fully_custom": 827,
+                "generic_source": 92,
+                "fully_custom": 832,
             },
             {
                 key: len(value)
@@ -126,7 +126,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             13, len(remediation["shared_smoke_baseline_skip_callers"])
         )
         self.assertEqual(
-            97, len(remediation["generic_source_missing_baseline_facts"])
+            92, len(remediation["generic_source_missing_baseline_facts"])
         )
         self.assertEqual(
             427, len(remediation["package_manager_missing_baseline_guard"])
@@ -197,7 +197,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "fd40a2cc10cd1b3a2f0114b1fbda0ec53d1c8ef424fa482f60d8c91a58241f42",
+            "acb3dbaf36e4d2e0a9a125a9cf2984783ed100ad9fecf478d7820eed5e15cc98",
             digest,
         )
 
