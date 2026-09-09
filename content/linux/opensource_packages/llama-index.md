@@ -1,6 +1,6 @@
 ---
 name: LLama-Index
-category: AI/ML
+category: Agent Orchestration
 description: Llama-Index is a data framework for LLM applications, which involves the chosen set of plugins and the LlamaIndex core framework.
 download_url: https://pypi.org/project/llama-index/#history
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: Firecracker
-category: Containers and Orchestration
+category: Tool / Action Execution
 description: Firecracker is an open-source tool that creates small, efficient virtual machines, providing both speed and security. It's especially useful for running containers in serverless setups.
 download_url: https://github.com/firecracker-microvm/firecracker/releases
 works_on_arm: true

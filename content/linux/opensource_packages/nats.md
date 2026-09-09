@@ -1,6 +1,6 @@
 ---
 name: NATS
-category: Messaging/Comms
+category: Data / Memory / State
 description: NATS is a simple, secure and performant communications system for digital systems, services and devices.
 download_url: https://nats.io/download/
 works_on_arm: true
