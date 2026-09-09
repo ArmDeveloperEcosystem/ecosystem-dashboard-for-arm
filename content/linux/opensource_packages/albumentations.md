@@ -11,7 +11,7 @@ supported_minimum_version:
  
 optional_info:
     homepage_url: https://albumentations.ai/
-    support_caveats:
+    support_caveats: "For the historical 0.0.2 minimum, use NumPy 1.x and opencv-python earlier than 4.12. Its imgaug 0.4.0 dependency calls NumPy APIs removed in NumPy 2, while opencv-python 4.12 and later require NumPy 2 on current Python."
     alternative_options:
     getting_started_resources:
         official_docs: https://albumentations.ai/docs/
@@ -26,6 +26,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info: The release notes for the initial Linux/Arm64 support isn't available. Albumentations version on Pypi, 0.0.2, can be installed for Arm with pip, and python version 3.7.
+    other_info: The release notes for the initial Linux/Arm64 support are not available. Albumentations 0.0.2 can be installed on Arm64 with pip and Python 3.7. The native smoke workflow also exercises a real image transform on Python 3.12 with the compatibility constraints listed above.
  
 ---

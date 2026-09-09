@@ -3,7 +3,7 @@ name: Kettle
 category: Data-format
 description: Pentaho data integration aka kettle, a java-based data extraction, transformation and loading (ETL) application with optional GUI.
 download_url: https://github.com/pentaho/pentaho-kettle/tags
-works_on_arm: true
+works_on_arm: false
 supported_minimum_version:
     version_number: 0.04.17
     release_date: 2013/11/21

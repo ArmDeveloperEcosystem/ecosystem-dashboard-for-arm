@@ -11,7 +11,7 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://rethinkdb.com/
-    support_caveats: Official Arm64 support in version 2.4.0 is community-driven and marked experimental. Users must build from source as no prebuilt Arm binaries are provided.
+    support_caveats: Official Arm64 support in version 2.4.0 is community-driven and marked experimental. Users must build from source because no prebuilt Arm binaries are provided, and newer 2.4.x releases continue to use that source-build path.
     alternative_options:
     getting_started_resources:
         official_docs: https://rethinkdb.com/docs/build/
@@ -26,6 +26,6 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/rethinkdb/rethinkdb/releases/tag/v2.4.0
     release_notes__recommended_minimum:
-    other_info: RethinkDB introduced experimental support for Linux/Arm64 (aarch64) starting with version 2.4.0, requiring a manual build process.No further versions have been released since then.
+    other_info: RethinkDB introduced experimental support for Linux/Arm64 (aarch64) starting with version 2.4.0. Newer 2.4.x releases are available, but Arm64 validation still relies on a manual source-build workflow rather than prebuilt binaries.
 
 ---

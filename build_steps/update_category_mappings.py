@@ -89,6 +89,13 @@ def update_category_mappings(input_file, output_file):
     # Merge the dictionaries
     final_category_dict = {**subcategory_mapping_dict, **group_dict, **group_desc_dict}
 
+    if (
+        output_yaml_absolute_path.is_file()
+        and read_yaml_file(output_yaml_absolute_path) == final_category_dict
+    ):
+        print("   Category mapping unchanged: ", output_yaml_absolute_path)
+        return
+
     write_mapping_to_yaml(final_category_dict, output_yaml_absolute_path)
     print("   Category mapping success. Updated file: ", output_yaml_absolute_path)
 

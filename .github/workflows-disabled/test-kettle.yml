@@ -1,0 +1,490 @@
+name: Test Kettle (Pentaho) on Arm64
+
+on:
+  workflow_call:
+    outputs:
+      contract_version:
+        description: Output contract version
+        value: ${{ jobs.test-kettle.outputs.contract_version }}
+      package_slug:
+        description: Canonical package slug
+        value: ${{ jobs.test-kettle.outputs.package_slug }}
+      package_name:
+        description: Display package name
+        value: ${{ jobs.test-kettle.outputs.package_name }}
+      package_version:
+        description: Baseline version tested in this run
+        value: ${{ jobs.test-kettle.outputs.package_version }}
+      run_status:
+        description: Overall package run status
+        value: ${{ jobs.test-kettle.outputs.run_status }}
+      badge_status:
+        description: Badge status derived from core baseline checks
+        value: ${{ jobs.test-kettle.outputs.badge_status }}
+      core_failed:
+        description: Number of failed baseline core checks (Tests 1-5)
+        value: ${{ jobs.test-kettle.outputs.core_failed }}
+      tests_passed:
+        description: Count of passed tests
+        value: ${{ jobs.test-kettle.outputs.tests_passed }}
+      tests_failed:
+        description: Count of failed tests
+        value: ${{ jobs.test-kettle.outputs.tests_failed }}
+      tests_skipped:
+        description: Count of skipped tests
+        value: ${{ jobs.test-kettle.outputs.tests_skipped }}
+      duration_seconds:
+        description: Total duration across tests
+        value: ${{ jobs.test-kettle.outputs.duration_seconds }}
+      regression_status:
+        description: Regression test status
+        value: ${{ jobs.test-kettle.outputs.regression_status }}
+      regression_decision:
+        description: Regression decision label
+        value: ${{ jobs.test-kettle.outputs.regression_decision }}
+      regression_result:
+        description: Human readable regression result
+        value: ${{ jobs.test-kettle.outputs.regression_result }}
+      regression_comparison:
+        description: Regression comparison note
+        value: ${{ jobs.test-kettle.outputs.regression_comparison }}
+      regression_current_version:
+        description: Baseline version used for regression comparison
+        value: ${{ jobs.test-kettle.outputs.regression_current_version }}
+      regression_latest_version:
+        description: Next candidate version selected for regression validation
+        value: ${{ jobs.test-kettle.outputs.regression_latest_version }}
+      regression_next_installed_version:
+        description: Candidate version reported by installed next artifact
+        value: ${{ jobs.test-kettle.outputs.regression_next_installed_version }}
+      regression_policy:
+        description: Regression applicability policy for this workflow
+        value: ${{ jobs.test-kettle.outputs.regression_policy }}
+      run_id:
+        description: GitHub run id
+        value: ${{ jobs.test-kettle.outputs.run_id }}
+      run_attempt:
+        description: GitHub run attempt
+        value: ${{ jobs.test-kettle.outputs.run_attempt }}
+      job_name:
+        description: GitHub job identifier
+        value: ${{ jobs.test-kettle.outputs.job_name }}
+      dashboard_link:
+        description: Dashboard route for this package
+        value: ${{ jobs.test-kettle.outputs.dashboard_link }}
+      timestamp:
+        description: UTC timestamp for this package run
+        value: ${{ jobs.test-kettle.outputs.timestamp }}
+jobs:
+  test-kettle:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      KETTLE_REPO: "https://github.com/pentaho/pentaho-kettle.git"
+      KETTLE_SETTINGS_URL: "https://raw.githubusercontent.com/pentaho/maven-parent-poms/master/maven-support-files/settings.xml"
+
+    outputs:
+      contract_version: "2.0"
+      package_slug: ${{ steps.metadata.outputs.package_slug }}
+      package_name: 'Kettle (Pentaho)'
+      package_version: ${{ steps.version.outputs.version || steps.install.outputs.tag || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.install.outputs.tag || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || steps.install.outputs.tag || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_policy: "applicable"
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "package_slug=kettle" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/opensource_packages/kettle" >> "$GITHUB_OUTPUT"
+
+      - name: Install Kettle
+        id: install
+        run: |
+          set -euo pipefail
+          if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y git curl
+          fi
+
+          KETTLE_TAG=$(git ls-remote --tags "${KETTLE_REPO}" | awk -F/ '/refs\/tags\/[0-9]/{print $3}' | sed 's/\^{}//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$' | sort -uV | tail -n 1)
+          if [ -z "$KETTLE_TAG" ]; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "tag=$KETTLE_TAG" >> "$GITHUB_OUTPUT"
+
+          # Preflight: verify parent POM endpoint is actually Maven XML before heavy build/setup.
+          POM_PATH="org/pentaho/pentaho-ce-jar-parent-pom/${KETTLE_TAG}/pentaho-ce-jar-parent-pom-${KETTLE_TAG}.pom"
+          LEGACY_POM_URL="https://repo.orl.eng.hitachivantara.com/artifactory/pnt-mvn/${POM_PATH}"
+          JFROG_POM_URL="https://hitachiedge1.jfrog.io/artifactory/pnt-mvn/${POM_PATH}"
+          LEGACY_HEADERS="/tmp/kettle-parent-pom-legacy.headers"
+          LEGACY_BODY="/tmp/kettle-parent-pom-legacy.xml"
+          JFROG_HEADERS="/tmp/kettle-parent-pom-jfrog.headers"
+          JFROG_BODY="/tmp/kettle-parent-pom-jfrog.xml"
+
+          LEGACY_META=$(curl -sS -L --retry 3 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 90 \
+            -H 'Accept: application/xml,text/xml,*/*' \
+            -D "$LEGACY_HEADERS" -o "$LEGACY_BODY" -w '%{http_code}|%{content_type}|%{url_effective}' "$LEGACY_POM_URL" || true)
+          LEGACY_STATUS="${LEGACY_META%%|*}"
+          LEGACY_REST="${LEGACY_META#*|}"
+          LEGACY_CONTENT_TYPE="${LEGACY_REST%%|*}"
+          LEGACY_EFFECTIVE_URL="${LEGACY_META##*|}"
+
+          ACTIVE_POM_URL=""
+          ACTIVE_REPO_BASE="https://repo.orl.eng.hitachivantara.com/artifactory/pnt-mvn"
+          if grep -q '<project' "$LEGACY_BODY"; then
+            ACTIVE_POM_URL="$LEGACY_POM_URL"
+          else
+            JFROG_META=$(curl -sS --retry 3 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 90 \
+              -H 'Accept: application/xml,text/xml,*/*' \
+              -D "$JFROG_HEADERS" -o "$JFROG_BODY" -w '%{http_code}|%{content_type}|%{url_effective}' "$JFROG_POM_URL" || true)
+            JFROG_STATUS="${JFROG_META%%|*}"
+            JFROG_REST="${JFROG_META#*|}"
+            JFROG_CONTENT_TYPE="${JFROG_REST%%|*}"
+
+            if grep -q '<project' "$JFROG_BODY"; then
+              ACTIVE_POM_URL="$JFROG_POM_URL"
+              ACTIVE_REPO_BASE="https://hitachiedge1.jfrog.io/artifactory/pnt-mvn"
+            fi
+          fi
+
+          if [ -z "$ACTIVE_POM_URL" ]; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            if [ "${JFROG_STATUS:-0}" = "401" ] || grep -q '"message" : "Unauthorized"' "$JFROG_BODY" 2>/dev/null; then
+              echo "install_blocker=upstream_pentaho_repo_requires_authentication" >> "$GITHUB_OUTPUT"
+              echo "install_blocker_details=Legacy Pentaho endpoint did not return Maven XML (status: ${LEGACY_STATUS:-unknown}, content-type: ${LEGACY_CONTENT_TYPE:-unknown}, effective URL: ${LEGACY_EFFECTIVE_URL:-unknown}); direct JFrog artifact endpoint returned HTTP 401 Unauthorized for ${JFROG_POM_URL}." >> "$GITHUB_OUTPUT"
+            else
+              echo "install_blocker=upstream_pentaho_repo_returned_non_maven_content" >> "$GITHUB_OUTPUT"
+              echo "install_blocker_details=Pentaho artifact endpoint returned non-Maven content (legacy status: ${LEGACY_STATUS:-unknown}, legacy content-type: ${LEGACY_CONTENT_TYPE:-unknown}, effective URL: ${LEGACY_EFFECTIVE_URL:-unknown}; jfrog status: ${JFROG_STATUS:-unknown}, jfrog content-type: ${JFROG_CONTENT_TYPE:-unknown})." >> "$GITHUB_OUTPUT"
+            fi
+            head -n 30 "$LEGACY_BODY" || true
+            head -n 30 "$JFROG_BODY" || true
+            exit 1
+          fi
+
+          sudo apt-get update
+          sudo apt-get install -y openjdk-11-jdk maven unzip curl git
+
+          mkdir -p "$HOME/.m2"
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 3 "${KETTLE_SETTINGS_URL}" -o "$HOME/.m2/settings.xml"
+          sed -i "s#https://repo.orl.eng.hitachivantara.com/artifactory/pnt-mvn#${ACTIVE_REPO_BASE}#g" "$HOME/.m2/settings.xml"
+
+          rm -rf /tmp/kettle-base /tmp/kettle-dist
+          git clone --depth 1 --branch "$KETTLE_TAG" "${KETTLE_REPO}" /tmp/kettle-base
+          cd /tmp/kettle-base
+
+          BUILD_OK=0
+          for attempt in 1 2; do
+            if timeout 45m mvn -B -s "$HOME/.m2/settings.xml" -Dmaven.wagon.http.retryHandler.count=5 -DskipTests -DskipITs -Dmaven.javadoc.skip=true -pl assemblies/client -am package | tee /tmp/kettle-build.log; then
+              BUILD_OK=1
+              break
+            fi
+            echo "Maven build attempt ${attempt} failed for tag ${KETTLE_TAG}."
+            if [ "$attempt" -lt 2 ]; then
+              sleep 20
+            fi
+          done
+          if [ "$BUILD_OK" -ne 1 ]; then
+            if grep -Eq "status: 401|Return code is: 401|Unauthorized" /tmp/kettle-build.log; then
+              echo "install_blocker=upstream_pentaho_repo_requires_authentication" >> "$GITHUB_OUTPUT"
+              echo "install_blocker_details=Pentaho Maven dependency resolution failed with unauthorized access (HTTP 401) during source build." >> "$GITHUB_OUTPUT"
+            elif grep -q "Expected root element 'project' but found 'html'" /tmp/kettle-build.log; then
+              echo "install_blocker=upstream_pentaho_repo_returned_non_maven_content" >> "$GITHUB_OUTPUT"
+              echo "install_blocker_details=Pentaho Maven dependency resolution returned HTML/non-POM payload during source build." >> "$GITHUB_OUTPUT"
+            fi
+            tail -n 200 /tmp/kettle-build.log || true
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          ZIP_PATH=$(find assemblies/client/target -maxdepth 1 -type f -name 'pdi-ce-*.zip' | head -n 1 || true)
+          if [ -z "$ZIP_PATH" ]; then
+            tail -n 200 /tmp/kettle-build.log || true
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          unzip -q "$ZIP_PATH" -d /tmp/kettle-dist
+          DIST_DIR=$(find /tmp/kettle-dist -maxdepth 1 -type d -name 'data-integration' | head -n 1 || true)
+          if [ -z "$DIST_DIR" ]; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          chmod +x "$DIST_DIR"/*.sh
+          if [ -x "$DIST_DIR/kitchen.sh" ] && [ -x "$DIST_DIR/pan.sh" ]; then
+            echo "tag=$KETTLE_TAG" >> "$GITHUB_OUTPUT"
+            echo "dist_dir=$DIST_DIR" >> "$GITHUB_OUTPUT"
+            echo "zip_path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Get Kettle version
+        id: version
+        if: always()
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.install.outputs.tag || '' }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="unknown"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Test 1 - Check kitchen script exists
+        id: test1
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ -x "${{ steps.install.outputs.dist_dir }}/kitchen.sh" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 2 - Check pan script exists
+        id: test2
+        continue-on-error: true
+        run: |
+          START_TIME=$(date +%s)
+          if [ -x "${{ steps.install.outputs.dist_dir }}/pan.sh" ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 3 - Check kitchen version output
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if timeout 60s "${{ steps.install.outputs.dist_dir }}/kitchen.sh" -version 2>&1 | tee /tmp/kettle-kitchen.log | grep -Eiq 'Kitchen|Pentaho|version'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/kettle-kitchen.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Check pan version output
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          if timeout 60s "${{ steps.install.outputs.dist_dir }}/pan.sh" -version 2>&1 | tee /tmp/kettle-pan.log | grep -Eiq 'Pan|Pentaho|version'; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/kettle-pan.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 5 - Functional validation
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          set +e
+          timeout 60s "${{ steps.install.outputs.dist_dir }}/pan.sh" -file=/tmp/nonexistent.ktr >/tmp/kettle-functional.log 2>&1
+          RC=$?
+          set -e
+          if [ "$(uname -m)" = "aarch64" ] && [ "$RC" -ne 124 ] && grep -Eiq 'Unable to load|not found|Pan' /tmp/kettle-functional.log; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/kettle-functional.log || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 6 - Regression Validation
+        id: test6
+        if: always()
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST="${{ steps.version.outputs.latest || 'unknown' }}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ steps.install.outputs.install_status || '' }}" != "success" ]; then
+            BLOCKER="${{ steps.install.outputs.install_blocker || '' }}"
+            BLOCKER_DETAILS="${{ steps.install.outputs.install_blocker_details || '' }}"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            if [ -n "$BLOCKER" ]; then
+              echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Baseline source build blocked by upstream Pentaho Maven dependency access" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Kettle tag ${CURRENT} could not complete baseline source build/install in this run because upstream dependency fetch returned non-Maven content. ${BLOCKER_DETAILS}" >> "$GITHUB_OUTPUT"
+            else
+              echo "decision=baseline_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Baseline source build/install failed before regression validation" >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Kettle tag ${CURRENT} could not complete baseline source build/install in this run, so a genuine Arm64 next-version regression validation was not possible." >> "$GITHUB_OUTPUT"
+            fi
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
+          echo "regression_result=No newer stable release available for Test 6" >> "$GITHUB_OUTPUT"
+          echo "comparison=This workflow builds the latest numeric Pentaho Kettle tag ${CURRENT} from source on Arm64 and validates the packaged Kitchen and Pan launchers. There is no newer stable tag beyond ${CURRENT} for a genuine Test 6 upgrade check." >> "$GITHUB_OUTPUT"
+          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$last_status" = "failed" ]; then
+            exit 1
+          fi
+      - name: Show regression validation details
+        if: always()
+        run: |
+          echo "=== Regression Validation (Next Version Install) ==="
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
+          echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || 'unknown' }}"
+          echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
+          echo "Regression install result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
+          echo "Details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
+
+      - name: Calculate test summary
+        if: always()
+        id: summary
+        run: |
+          set -euo pipefail
+          PASSED=0
+          FAILED=0
+          CORE_FAILED=0
+          SKIPPED=0
+          TOTAL_DURATION=0
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          TEST6_DECISION="${{ steps.test6.outputs.decision || 'not_configured' }}"
+
+          if [ "$TEST6_DECISION" = "baseline_failed" ] || [ "$TEST6_DECISION" = "baseline_install_failed" ]; then
+            PASSED=0
+            FAILED=1
+            CORE_FAILED=1
+            SKIPPED=5
+            echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+            echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+            echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+            echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+            echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          check_core() {
+            local status="$1"
+            local duration="$2"
+            if [ "$status" = "passed" ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$status" = "skipped" ]; then
+              SKIPPED=$((SKIPPED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + duration))
+          }
+
+          check_core "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+
+          if [ "$TEST6_STATUS" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$TEST6_STATUS" = "skipped" ]; then
+            SKIPPED=$((SKIPPED + 1))
+          elif [ "$TEST6_STATUS" = "failed" ]; then
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+
+          if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## Kettle (Pentaho) Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped || 0 }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Regression Validation (Next Version Install)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version targeted for install validation:** ${{ steps.test6.outputs.latest_version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Next version installed on Arm64:** ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}" >> "$GITHUB_STEP_SUMMARY"
