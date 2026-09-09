@@ -111,12 +111,13 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(8, len(remediation["unsafe_fallback_workflows"]))
         self.assertEqual(["freecad"], remediation["package_manager_missing_decision"])
         self.assertEqual(
-            {"test1": 27, "test2": 34, "test3": 34, "test4": 27, "test5": 31},
+            {"test1": 27, "test2": 33, "test3": 34, "test4": 27, "test5": 31},
             {
                 key: len(value)
                 for key, value in remediation["baseline_literal_skip"].items()
             },
         )
+        self.assertNotIn("signalfx-agent", remediation["baseline_literal_skip"]["test2"])
         baseline_skip_workflows = {
             slug
             for workflows in remediation["baseline_literal_skip"].values()
@@ -198,7 +199,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "5270bf8cf86bbd6bb9d0420de8d420777b695db4d080563fab380d88977e42b5",
+            "bcec754bfcc6b217e61557e9f2df2562123c1407af3e3cc02b67cae2ab8c8dd9",
             digest,
         )
 
