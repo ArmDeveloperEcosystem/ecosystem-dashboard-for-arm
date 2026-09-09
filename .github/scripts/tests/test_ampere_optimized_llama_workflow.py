@@ -27,7 +27,10 @@ import package_observation_migration_audit as audit
 
 class AmpereLlamaWorkflowTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="ampere-llama-tests-")
+        self.create_fixture()
+
+    def create_fixture(self, directory=None):
+        temporary = tempfile.TemporaryDirectory(prefix="ampere-llama-tests-", dir=directory)
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.bin = self.root / "bin"
@@ -67,9 +70,10 @@ case "$1" in
     [[ " $* " == *" --cpus 1 --memory 2g --network none "* ]]
     [[ " $* " == *" $PINNED_CONTAINER_IMAGE_LLAMA "* ]]
     script="${!#}"
+    # Rewrite container /tmp before inserting fixture paths that may contain /tmp/.
+    script="${script//\\/tmp\\//$FIXTURE/}"
     script="${script//\\/llm\\//$FIXTURE/llm/}"
     script="${script//\\/start.sh/$FIXTURE/start.sh}"
-    script="${script//\\/tmp\\//$FIXTURE/}"
     exec bash -euo pipefail -c "$script"
     ;;
   *) exit 99 ;;
@@ -235,10 +239,19 @@ fi
         self.assertEqual(("failed", "unknown"), (output["install_status"], output["artifact_version"]))
 
     def test_five_core_checks_execute_packaged_binaries(self):
+        self.assert_core_checks_execute_packaged_binaries()
+
+    def test_five_core_checks_with_explicit_tmp_fixture_parent(self):
+        self.create_fixture(directory="/tmp")
+        self.assertIn("/tmp/", self.env["FIXTURE"])
+        self.assert_core_checks_execute_packaged_binaries()
+
+    def assert_core_checks_execute_packaged_binaries(self):
         for number in range(1, 6):
-            result, output = self.run_step(f"test{number}")
-            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-            self.assertEqual(("passed", "5"), (output["status"], output["duration"]))
+            with self.subTest(step=f"test{number}", fixture_root=str(self.root)):
+                result, output = self.run_step(f"test{number}")
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertEqual(("passed", "5"), (output["status"], output["duration"]))
         commands = (self.root / "executed").read_text()
         self.assertIn("server", commands)
         self.assertIn("test-sampling", commands)
