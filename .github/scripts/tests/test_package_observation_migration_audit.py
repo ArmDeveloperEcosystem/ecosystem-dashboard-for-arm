@@ -92,7 +92,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"core_failed": 402, "duration": 3, "skipped": 725},
+            {"core_failed": 401, "duration": 3, "skipped": 725},
             {
                 key: len(value)
                 for key, value in remediation["missing_summary_outputs"].items()
@@ -199,7 +199,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "bcec754bfcc6b217e61557e9f2df2562123c1407af3e3cc02b67cae2ab8c8dd9",
+            "b621bf2fa103d7da719ae39023338797ce9c3646ebe647f391d01818a7c0f7f9",
             digest,
         )
 
