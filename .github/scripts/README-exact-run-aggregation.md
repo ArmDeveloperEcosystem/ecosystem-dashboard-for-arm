@@ -89,7 +89,7 @@ any retained package failed; otherwise it records `overall_status=success`.
 - 256 KiB central directory, 512-byte member names and no ZIP64 archives;
 - 32 JSON levels and 100,000 JSON nodes.
 
-The current 22-batch catalog contains 960 package workflows, with no batch above the
+The current 22-batch catalog contains 961 package workflows, with no batch above the
 45-package target. This topology is reviewed independently from the still-dormant
 exact-run publication path.
 
@@ -125,9 +125,9 @@ python3 -m unittest discover -s .github/scripts/tests -p 'test_*.py' -v
 
 ## Reviewed execution lock
 
-`package_workflow_action_lock.json` binds the current 960 registered package
+`package_workflow_action_lock.json` binds the current 961 registered package
 workflows and all 22 batch wrappers to an offline-reviewed dependency inventory.
-The guarded migration pins 1,130 GitHub Action uses, pins the three job/service
+The reviewed inventory pins 1,131 GitHub Action uses, pins the three job/service
 containers to multi-architecture OCI index digests with confirmed Linux Arm64
 manifests, disables persisted checkout credentials, and narrows workflow
 permissions. The validator also binds the resulting workflow-set and exact-run
@@ -140,11 +140,22 @@ changing both the repository and digest in the lock is rejected.
 The lock is intentionally tied to dashboard commit
 `73155d0d3a3dc73da08c62bc2bb7eccf281c6008`. Future package onboarding must
 extend and review the lock rather than reusing mutable tags or silently changing
-the dependency inventory. Pull-request CI passes the authenticated PR base SHA to
+the dependency inventory. A reviewed package addition declares its canonical
+workflow path in `hardened_workflow_transition.added_workflows` and updates the
+explicit workflow/action occurrence counts and both hardened digests. The base
+validator checks the immutable Git tree before permitting that declared new path
+to be absent from the previous snapshot. Existing files, undeclared missing
+workflows, and files hidden by archive attributes are never omitted. Both the
+pre-addition snapshot and the complete post-addition snapshot remain hash-bound;
+the new workflow still passes all ordinary dependency, permission, topology,
+capacity, and identity-catalog checks. Additions do not authorize removed or
+renamed packages, new batch wrappers, or changes to any publication policy.
+
+Pull-request CI passes the authenticated PR base SHA to
 the validator. The initial migration requires that base to equal the reviewed source
 commit so merely retaining an older Git object cannot satisfy guarded derivation.
 On later relevant pull requests, an advanced base is accepted only when the exact
-960-package and 22-batch byte snapshot still matches the reviewed hardened lock;
+reviewed package and 22-batch byte snapshot still matches the hardened lock;
 modified, missing, or malformed base evidence fails closed. The required check has
 no manual-dispatch path: reruns remain bound to the pull request's authenticated base
 SHA.

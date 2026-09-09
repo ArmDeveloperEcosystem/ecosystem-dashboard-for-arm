@@ -501,7 +501,7 @@ class ExactRunAggregationTests(unittest.TestCase):
             contract.topology_payload(topology)["mutable_external_actions"], []
         )
         packages = [package for batch in topology for package in batch.packages]
-        self.assertEqual(len(packages), 960)
+        self.assertEqual(len(packages), 961)
         workflow_root = repository_root / ".github" / "workflows"
         package_files = {
             f".github/workflows/{path.name}"

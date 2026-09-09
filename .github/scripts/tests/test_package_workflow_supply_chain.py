@@ -949,8 +949,8 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
 
     def test_registration_is_exact(self) -> None:
         relative = [path.relative_to(self.root).as_posix() for path in self.workflows]
-        self.assertEqual(960, len(relative))
-        self.assertEqual(960, len(set(relative)))
+        self.assertEqual(961, len(relative))
+        self.assertEqual(961, len(set(relative)))
         self.assertTrue(all(path.is_file() for path in self.workflows))
         self.assertFalse(
             any("test-all-packages-" in Path(path).name for path in relative)
@@ -960,8 +960,8 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         lock = supply_chain.load_lock(self.root)
         self.assertEqual([], lock["unresolved_references"])
         self.assertEqual(supply_chain.SOURCE_COMMIT, lock["source_commit"])
-        self.assertEqual(1130, lock["external_uses"])
-        self.assertEqual(4, lock["container_uses"])
+        self.assertEqual(1131, lock["external_uses"])
+        self.assertEqual(5, lock["container_uses"])
         self.assertEqual(15, len(lock["actions"]))
         self.assertRegex(
             lock["migration_parent_workflow_sha256"],
@@ -969,7 +969,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         transition = lock["hardened_workflow_transition"]
         self.assertEqual(
-            "b58214632e3208b42193347b53c98726581fae29d9191075e9591311c7133901",
+            "a50191dbd1de97fd064a0d05660b196ca1c662e5514f472c1e6f7738800c215b",
             transition["from_sha256"],
         )
         self.assertEqual(
@@ -977,7 +977,10 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             transition["to_sha256"],
         )
         self.assertTrue(transition["reason"].strip())
-        self.assertEqual(4, len(lock["containers"]))
+        self.assertEqual(
+            [".github/workflows/test-katalis.yml"], transition["added_workflows"]
+        )
+        self.assertEqual(5, len(lock["containers"]))
         for entry in lock["actions"]:
             self.assertTrue(entry["github_api_repository_confirmed"])
             self.assertTrue(entry["github_api_commit_confirmed"])
@@ -1194,7 +1197,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                     continue
                 _, _, _, ref = supply_chain.split_github_action(spec)
                 self.assertRegex(ref, r"^[0-9a-f]{40}$")
-        self.assertEqual(1130, external)
+        self.assertEqual(1131, external)
 
     def test_every_checkout_disables_persisted_credentials(self) -> None:
         checkouts = 0
@@ -1217,7 +1220,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                     ),
                     path.relative_to(self.root).as_posix(),
                 )
-        self.assertEqual(982, checkouts)
+        self.assertEqual(983, checkouts)
 
     def test_permissions_are_read_only(self) -> None:
         exceptions = supply_chain.permission_exceptions(
@@ -1264,7 +1267,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
     def test_every_container_is_digest_pinned(self) -> None:
         lock = supply_chain.load_lock(self.root)
         containers = supply_chain.container_lock_by_workflow(lock)
-        self.assertEqual(4, len(containers))
+        self.assertEqual(5, len(containers))
         for relative, entry in containers.items():
             text = (self.root / relative).read_text(encoding="utf-8")
             self.assertIn(entry["resolved_ref"], text)
@@ -1273,12 +1276,12 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
     def test_complete_offline_contract(self) -> None:
         self.assertEqual(
             {
-                "registered_workflows": 960,
+                "registered_workflows": 961,
                 "batch_workflows": 22,
-                "external_uses": 1130,
-                "container_uses": 4,
+                "external_uses": 1131,
+                "container_uses": 5,
                 "unique_original_refs": 15,
-                "checkout_uses": 982,
+                "checkout_uses": 983,
                 "permission_exceptions": 4,
                 "topology_sha256": "dd3b2c7547600d99769b0f8aabf4ca8057334a3ab70e473de59af21750adb69b",
                 "workflow_sha256": "a50191dbd1de97fd064a0d05660b196ca1c662e5514f472c1e6f7738800c215b",

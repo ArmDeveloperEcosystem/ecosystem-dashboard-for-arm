@@ -36,9 +36,9 @@ EXACT_RUN_SPEC.loader.exec_module(exact_run)
 
 
 EXPECTED_BATCHES = 22
-EXPECTED_WORKFLOWS = 960
-EXPECTED_EXTERNAL_USES = 1130
-EXPECTED_CONTAINER_USES = 4
+EXPECTED_WORKFLOWS = 961
+EXPECTED_EXTERNAL_USES = 1131
+EXPECTED_CONTAINER_USES = 5
 SOURCE_COMMIT = "73155d0d3a3dc73da08c62bc2bb7eccf281c6008"
 LOCK_NAME = "package_workflow_action_lock.json"
 MAX_SOURCE_ARCHIVE_BYTES = 67_108_864
@@ -244,12 +244,15 @@ def validate_container_lock_entry(entry: object) -> str:
 
 def validate_hardened_workflow_transition(
     lock: dict[str, object],
-) -> dict[str, str] | None:
+) -> dict[str, object] | None:
     transition = lock.get("hardened_workflow_transition")
     if transition is None:
         return None
     expected_keys = {"from_sha256", "to_sha256", "reason"}
-    if not isinstance(transition, dict) or set(transition) != expected_keys:
+    if not isinstance(transition, dict) or set(transition) not in (
+        expected_keys,
+        expected_keys | {"added_workflows"},
+    ):
         raise ContractError("hardened workflow transition is malformed")
     transition_from = transition.get("from_sha256")
     transition_to = transition.get("to_sha256")
@@ -266,11 +269,29 @@ def validate_hardened_workflow_transition(
         or len(transition_reason) > 512
     ):
         raise ContractError("hardened workflow transition is invalid")
-    return {
+    result: dict[str, object] = {
         "from_sha256": transition_from,
         "to_sha256": transition_to,
         "reason": transition_reason,
     }
+    if "added_workflows" in transition:
+        added = transition["added_workflows"]
+        if (
+            not isinstance(added, list)
+            or not added
+            or len(added) > 45
+            or any(
+                not isinstance(path, str)
+                or re.fullmatch(r"\.github/workflows/test-[a-z0-9][a-z0-9_-]*\.yml", path)
+                is None
+                or path.startswith(".github/workflows/test-all-packages-")
+                for path in added
+            )
+            or added != sorted(set(added))
+        ):
+            raise ContractError("hardened workflow additions are not canonical")
+        result["added_workflows"] = added
+    return result
 
 
 def repository_root() -> Path:
@@ -894,22 +915,52 @@ def validate_idempotence(
 
 
 def source_snapshot(
-    root: Path, paths: Iterable[Path], source_commit: str
+    root: Path,
+    paths: Iterable[Path],
+    source_commit: str,
+    *,
+    allowed_missing: Iterable[str] = (),
 ) -> dict[str, bytes]:
     relative_paths = sorted(path.relative_to(root).as_posix() for path in paths)
+    allowed_missing = set(allowed_missing)
+    if not allowed_missing.issubset(relative_paths):
+        raise ContractError("declared workflow additions are not registered")
     try:
-        archive = subprocess.run(
-            ["git", "-C", str(root), "archive", source_commit, "--", *relative_paths],
+        # Only genuinely absent Git paths may be omitted from an onboarding base.
+        # An export-ignore attribute must not disguise an existing workflow.
+        inventory = subprocess.run(
+            [
+                "git", "--no-replace-objects", "--literal-pathspecs", "-C", str(root),
+                "ls-tree", "-r", "-z", "--name-only", source_commit, "--",
+                *relative_paths,
+            ],
             check=True,
             capture_output=True,
             timeout=30,
         ).stdout
-    except (OSError, subprocess.SubprocessError) as exc:
+        present_paths = set(inventory.decode("utf-8").rstrip("\0").split("\0"))
+        if (
+            not present_paths
+            or "" in present_paths
+            or not present_paths.issubset(relative_paths)
+            or set(relative_paths) - present_paths - allowed_missing
+        ):
+            raise ContractError("reviewed source archive has missing workflows")
+        archive = subprocess.run(
+            [
+                "git", "--no-replace-objects", "--literal-pathspecs", "-C", str(root),
+                "archive", source_commit, "--", *sorted(present_paths),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        ).stdout
+    except (OSError, UnicodeDecodeError, subprocess.SubprocessError) as exc:
         raise ContractError("could not read the reviewed source workflow set") from exc
     if len(archive) > MAX_SOURCE_ARCHIVE_BYTES:
         raise ContractError("reviewed source workflow archive exceeds its bound")
 
-    expected = set(relative_paths)
+    expected = present_paths
     observed: dict[str, bytes] = {}
     try:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as stream:
@@ -1117,8 +1168,14 @@ def validate_authenticated_base(
         or expected_base_commit == "0" * 40
     ):
         raise ContractError("authenticated pull-request base is not a canonical SHA")
+    transition = validate_hardened_workflow_transition(lock)
     try:
-        snapshot = source_snapshot(root, hardened_paths, expected_base_commit)
+        snapshot = source_snapshot(
+            root,
+            hardened_paths,
+            expected_base_commit,
+            allowed_missing=transition.get("added_workflows", ()) if transition else (),
+        )
     except ContractError as error:
         raise ContractError(
             "could not read the authenticated advanced pull-request base"
@@ -1126,7 +1183,6 @@ def validate_authenticated_base(
     digest = workflow_snapshot_sha256(snapshot)
     if digest == lock["hardened_workflow_sha256"]:
         return "current_hardened_snapshot"
-    transition = validate_hardened_workflow_transition(lock)
     if transition is not None and digest == transition["from_sha256"]:
         return "declared_hardened_transition_source"
     raise ContractError(
