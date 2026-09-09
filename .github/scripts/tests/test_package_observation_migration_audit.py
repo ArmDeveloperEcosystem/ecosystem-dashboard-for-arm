@@ -23,8 +23,8 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(
             {
                 "batches": 22,
-                "packages": 960,
-                "custom_summary_workflows": 924,
+                "packages": 961,
+                "custom_summary_workflows": 925,
                 "emitter_workflows": 36,
                 "shared_smoke_workflows": 13,
                 "package_manager_workflows": 431,
@@ -32,7 +32,11 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             self.report["totals"],
         )
         self.assertEqual(
-            {"not_applicable_package_manager": 8, "not_configured": 952},
+            {
+                "next_install_failed": 1,
+                "not_applicable_package_manager": 8,
+                "not_configured": 952,
+            },
             self.report["fallback_counts"],
         )
         self.assertEqual(
@@ -40,7 +44,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
                 "shared_smoke": 13,
                 "emitter_only": 23,
                 "generic_source": 97,
-                "fully_custom": 827,
+                "fully_custom": 828,
             },
             {
                 key: len(value)
@@ -52,8 +56,8 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             for cohort in self.report["migration_cohorts"].values()
             for slug in cohort
         ]
-        self.assertEqual(960, len(cohort_members))
-        self.assertEqual(960, len(set(cohort_members)))
+        self.assertEqual(961, len(cohort_members))
+        self.assertEqual(961, len(set(cohort_members)))
 
     def test_structural_observation_inputs_are_present(self) -> None:
         remediation = self.report["remediation"]
@@ -108,7 +112,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(
             326, len(remediation["package_manager_summary_omits_test6"])
         )
-        self.assertEqual(8, len(remediation["unsafe_fallback_workflows"]))
+        self.assertEqual(9, len(remediation["unsafe_fallback_workflows"]))
         self.assertEqual(["freecad"], remediation["package_manager_missing_decision"])
         self.assertEqual(
             {"test1": 27, "test2": 34, "test3": 34, "test4": 27, "test5": 31},
@@ -133,17 +137,17 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             427, len(remediation["package_manager_missing_baseline_guard"])
         )
         self.assertEqual(
-            960, len(remediation["missing_package_observation_output"])
+            961, len(remediation["missing_package_observation_output"])
         )
         self.assertEqual(
-            960, len(remediation["missing_package_observation_step"])
+            961, len(remediation["missing_package_observation_step"])
         )
         self.assertEqual([], remediation["invalid_package_observation_contract"])
         self.assertEqual(
             [], remediation["invalid_package_observation_input_bindings"]
         )
         self.assertEqual(
-            960,
+            961,
             len(remediation["missing_workflow_call_observation_output"]),
         )
         self.assertEqual(
@@ -155,7 +159,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         )
         self.assertEqual(344, len(remediation["summary_omits_test6_status"]))
         self.assertEqual(
-            952, len(remediation["unsafe_package_version_fallback"])
+            953, len(remediation["unsafe_package_version_fallback"])
         )
         self.assertEqual(
             960, len(remediation["unsafe_regression_narrative_fallback"])
@@ -198,7 +202,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "5270bf8cf86bbd6bb9d0420de8d420777b695db4d080563fab380d88977e42b5",
+            "05e631256e081343f22cfe90cb2bf116b4d603eef6cefd6a19438d8a255a30ae",
             digest,
         )
 
