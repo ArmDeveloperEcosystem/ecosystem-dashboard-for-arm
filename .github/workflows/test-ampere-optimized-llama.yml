@@ -354,6 +354,17 @@ jobs:
             echo "note=Ampere Optimized llama.cpp preflight requires the source checkout for build proof." >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          RESOLVED_TAG="${{ steps.install.outputs.resolved_tag || '' }}"
+          if [ "$RESOLVED_TAG" != "$BASELINE_VERSION" ] && [ "$RESOLVED_TAG" != "v$BASELINE_VERSION" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=No exact $BASELINE_VERSION source tag was resolved; the default branch cannot prove the pinned Ampere llama.cpp build." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ ! -f baseline-src/CMakeLists.txt ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "note=The pinned Ampere llama.cpp source does not contain CMakeLists.txt; no source build was validated." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends build-essential cmake >/dev/null
           cd baseline-src
@@ -395,15 +406,17 @@ jobs:
             export LD_LIBRARY_PATH="$(dirname "$BIN"):${LD_LIBRARY_PATH:-}"
             if ! ("$BIN" --help >/tmp/llama-next-help.txt 2>&1 || "$BIN" -h >/tmp/llama-next-help.txt 2>&1); then
               cat /tmp/llama-next-help.txt
+              exit 1
             fi
-            grep -Eiq 'usage|llama|model|prompt' /tmp/llama-next-help.txt || strings "$BIN" | grep -Eiq 'usage|llama|model|prompt'
+            grep -Eiq 'usage|llama|model|prompt' /tmp/llama-next-help.txt
             SERVER_BIN="$(find "$WORK_DIR" -type f -name llama-server -perm -111 | head -n 1 || true)"
             if [ -n "$SERVER_BIN" ]; then
               file "$SERVER_BIN" | grep -Eiq 'aarch64|arm64'
               if ! ("$SERVER_BIN" --help >/tmp/llama-server-next-help.txt 2>&1 || "$SERVER_BIN" -h >/tmp/llama-server-next-help.txt 2>&1); then
                 cat /tmp/llama-server-next-help.txt
+                exit 1
               fi
-              grep -Eiq 'usage|server|model|host|port' /tmp/llama-server-next-help.txt || strings "$SERVER_BIN" | grep -Eiq 'usage|server|model|host|port'
+              grep -Eiq 'usage|server|model|host|port' /tmp/llama-server-next-help.txt
             fi
           limited_cpu_description: "Test 6 reran a scoped Ampere llama.cpp Arm64 release-artifact preflight against the next stable release: downloaded the official AIO tarball, verified the included llama binaries are AArch64, and ran CLI/server help on the Arm64 runner. No source build, GGUF model inference, model quality, or performance claim is made."
           defer_on_limited_cpu_probe_failure: "false"
@@ -411,12 +424,20 @@ jobs:
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -426,27 +447,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -456,3 +481,4 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
