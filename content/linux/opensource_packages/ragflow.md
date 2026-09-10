@@ -1,6 +1,6 @@
 ---
 name: RAGflow
-category: AI/ML
+category: RAG / Vector Search
 description: RAGFlow is an open-source Retrieval-Augmented Generation engine that combines deep document understanding with agent capabilities, enabling accurate, citation-backed question answering and streamlined workflows for building production-ready AI systems.
 download_url: https://github.com/infiniflow/ragflow/releases
 works_on_arm: true

@@ -1,6 +1,6 @@
 ---
 name: Pandas
-category: Miscellaneous
+category: AI / Data Processing
 description: Pandas is a powerful open-source Python library used for data manipulation and analysis.
 download_url: https://github.com/pandas-dev/pandas/releases
 works_on_arm: true

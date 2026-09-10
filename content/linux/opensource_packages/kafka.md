@@ -1,6 +1,6 @@
 ---
 name: Kafka
-category: Databases - noSQL
+category: Data / Memory / State
 description: Kafka is an event streaming platform. It is a distributed system consisting of servers and clients that communicate via a high-performance TCP network protocol.
 download_url: https://kafka.apache.org/downloads
 works_on_arm: true

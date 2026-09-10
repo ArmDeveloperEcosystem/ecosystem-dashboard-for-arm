@@ -1,6 +1,6 @@
 ---
 name: Ampere AI Text-to-SQL
-category: AI/ML
+category: Tool / Action Execution
 description: Ampere AI Text-to-SQL is a reference AI application that enables users to query databases using natural language by integrating large language models with Open WebUI and LlamaIndex, optimized for deployment on Ampere CPU-based systems using Docker.
 download_url: https://github.com/orgs/AmpereComputingAI/packages/container/package/ampere-ai-text2sql
 works_on_arm: true
