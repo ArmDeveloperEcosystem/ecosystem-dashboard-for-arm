@@ -1,7 +1,7 @@
-# Diagnostic branch only. Do not merge this replacement batch file.
+# Diagnostic branch only. Never merge this replacement batch file.
 # No batch registration, result collection, artifact publication or deployment.
-name: Freedesktop SDK Native Diagnostic
-run-name: SDK native diagnostic (not batch certification)
+name: Repaired Native Workflow Diagnostic
+run-name: Repaired workflows diagnostic (not batch certification)
 
 on:
   workflow_dispatch:
@@ -14,42 +14,106 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  sdk-diagnostic:
+  provenance:
     if: github.ref == 'refs/heads/diagnostic/sdk-native-september10'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 35
+    timeout-minutes: 5
     steps:
-      - name: Checkout exact diagnostic source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-
-      - name: Bind diagnostic provenance
+      - name: Bind exact diagnostic sources
         env:
           EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          printf 'diagnostic_sha=%s\nrun_id=%s\nrun_attempt=%s\n' "$EXPECTED_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
-          uname -a
           test "$(uname -m)" = aarch64
-          sha256sum .github/scripts/sdk-native-diagnostic.sh .github/scripts/sdk-native-smoke.c
-          df -h "$RUNNER_TEMP"
+          printf 'diagnostic_sha=%s\nrun_id=%s\nrun_attempt=%s\n' "$EXPECTED_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          sha256sum .github/workflows/test-{gdb,vue,openmetrics,maas,freedesktop-sdk}.yml
 
-      - name: Install runner-side Flatpak tooling
-        run: bash .github/actions/apt-bootstrap/bootstrap.sh --packages "flatpak bubblewrap dbus-x11 file"
+  gdb:
+    needs: provenance
+    uses: ./.github/workflows/test-gdb.yml
+  vue:
+    needs: provenance
+    uses: ./.github/workflows/test-vue.yml
+  openmetrics:
+    needs: provenance
+    uses: ./.github/workflows/test-openmetrics.yml
+  maas:
+    needs: provenance
+    uses: ./.github/workflows/test-maas.yml
+  sdk:
+    needs: provenance
+    uses: ./.github/workflows/test-freedesktop-sdk.yml
 
-      - name: Compile and run with the actual SDK
-        run: dbus-run-session -- bash .github/scripts/sdk-native-diagnostic.sh
-
-      - name: Remove diagnostic-owned temporary storage
-        if: always()
+  inspect-outputs:
+    if: always() && github.ref == 'refs/heads/diagnostic/sdk-native-september10'
+    needs: [gdb, vue, openmetrics, maas, sdk]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - name: Assert actual reusable workflow outputs without publishing
+        env:
+          OBSERVED: ${{ toJSON(needs) }}
         run: |
-          set -euo pipefail
-          scope="$RUNNER_TEMP/sdk-native-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          if [ -d "$scope" ]; then
-            test ! -L "$scope"
-            chmod -R u+w -- "$scope"
-            rm -rf -- "$scope"
-          fi
+          python3 -I - <<'PY'
+          import json
+          import os
+          observed = json.loads(os.environ['OBSERVED'])
+          print(json.dumps(observed, indent=2, sort_keys=True))
+          expected = {'gdb': 'gdb', 'vue': 'vue', 'openmetrics': 'openmetrics',
+                      'maas': 'maas', 'sdk': 'freedesktop-sdk'}
+          assert set(observed) == set(expected)
+          for name, slug in expected.items():
+              job = observed[name]
+              outputs = job['outputs']
+              assert job['result'] == 'success', (name, job['result'])
+              assert outputs['package_slug'] == slug
+              assert outputs['contract_version'] == '2.0'
+              assert outputs['run_id'] == os.environ['GITHUB_RUN_ID']
+              assert outputs['run_attempt'] == os.environ['GITHUB_RUN_ATTEMPT']
+              assert outputs['run_status'] == 'success'
+              assert outputs['badge_status'] == 'passing'
+              assert [outputs[key] for key in ('tests_passed', 'tests_failed', 'tests_skipped', 'core_failed')] == ['5', '0', '1', '0']
+              assert outputs['regression_status'] == 'skipped'
+              assert outputs['regression_decision'] == 'not_applicable_package_manager'
+              assert outputs['package_version'] not in ('', 'unknown', 'not_installed')
+              assert outputs['duration_seconds'].isdecimal()
+          print('Five reusable workflow outputs verified; no batch or publication certification.')
+          PY
+
+  kvm-capability:
+    name: Inspect KVM device and API, not guest execution
+    needs: provenance
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - name: Read-only KVM capability probe
+        run: |
+          python3 -I - <<'PY'
+          import fcntl
+          import json
+          import os
+          import platform
+          import stat
+          import sys
+          print(json.dumps({'machine': platform.machine(), 'kernel': platform.release(),
+                            'uid': os.getuid(), 'groups': os.getgroups()}), flush=True)
+          assert platform.machine() == 'aarch64'
+          try:
+              device = os.stat('/dev/kvm')
+              assert stat.S_ISCHR(device.st_mode)
+              fd = os.open('/dev/kvm', os.O_RDWR | os.O_CLOEXEC)
+          except (OSError, AssertionError) as error:
+              print(f'KVM capability unavailable: {error}', flush=True)
+              sys.exit(78)
+          try:
+              api_version = fcntl.ioctl(fd, 0xAE00, 0)
+              print(json.dumps({'kvm_api_version': api_version, 'guest_executed': False}), flush=True)
+              assert api_version == 12
+          finally:
+              os.close(fd)
+          PY
