@@ -55,7 +55,8 @@ cp .github/scripts/sdk-native-smoke.c "$app/files/src/sdk-native-smoke.c"
 timeout --kill-after=5s 120s flatpak build --unshare=network "$app" sh -euc '
   cat /usr/lib/os-release
   . /usr/lib/os-release
-  case "$ID" in org.freedesktop.Sdk|org.freedesktop.Platform) ;; *) exit 71 ;; esac
+  test "$ID" = org.freedesktop.platform || exit 71
+  test "$VERSION_ID" = 26.08 || exit 71
   test "$(uname -m)" = aarch64
   gcc --version
   target=$(gcc -dumpmachine)
