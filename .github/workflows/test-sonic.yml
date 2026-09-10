@@ -141,7 +141,7 @@ jobs:
         from pathlib import Path
         import platform
         import sys
-        from ipaddress import ip_address, ip_interface
+        from ipaddress import ip_address
 
         lane, mode = sys.argv[1:]
         pins = json.loads(os.environ['SONIC_PINS'])
@@ -202,13 +202,28 @@ jobs:
                     nhopself=0, holdtime='180', asn=asn, keepalive='60')
             assert result['BGP_NEIGHBOR'] == expected_neighbors
             large = seed()
-            large['PORT'] = {'Ethernet' + str(i * 4): {} for i in range(130)}
+            ports = ['Ethernet' + str(i * 4) for i in range(130)]
+            large['PORT'] = {port: {} for port in ports}
             large = module.generate_sample_config(large, 't1')
-            assert 'Ethernet512|10.0.1.0/31' in large['INTERFACE']
-            assert len(large['BGP_NEIGHBOR']) == 130
-            for peer, neighbor in large['BGP_NEIGHBOR'].items():
-                assert ip_address(peer) in ip_interface(neighbor['local_addr'] + '/31').network
-            return result
+            assert large['DEVICE_METADATA'] == result['DEVICE_METADATA']
+            assert large['LOOPBACK_INTERFACE'] == result['LOOPBACK_INTERFACE']
+            assert large['DEVICE_NEIGHBOR'] == {}
+            assert large['PORT'] == {port: {'admin_status': 'up', 'mtu': '9100'} for port in ports}
+            interfaces = {}
+            neighbors = {}
+            for index, port in enumerate(ports):
+                local = ip_address('10.0.0.0') + index * 2
+                peer = local + 1
+                uplink = index < 65
+                ordinal = index + 1 if uplink else index - 64
+                interfaces[f'{port}|{local}/31'] = {}
+                neighbors[str(peer)] = dict(rrclient=0,
+                    name=f'ARISTA{ordinal:02d}' + ('T2' if uplink else 'T0'),
+                    local_addr=str(local), nhopself=0, holdtime='180',
+                    asn='65200' if uplink else str(64000 + ordinal), keepalive='60')
+            assert large['INTERFACE'] == interfaces, 'Large T1 interface configuration mismatch'
+            assert large['BGP_NEIGHBOR'] == neighbors, 'Large T1 BGP configuration mismatch'
+            return {'small': result, 'large': large}
 
         def other():
             empty = module.generate_sample_config({'DEVICE_METADATA': {'localhost': {}}, 'PORT': {}}, 'empty')
@@ -243,15 +258,16 @@ jobs:
             result = {'l2': l2(), 't1': t1(), 'other': other()}
             common = {'ACL': {'FLEX_COUNTER_STATUS': 'disable',
                              'FLEX_COUNTER_DELAY_STATUS': 'true', 'POLL_INTERVAL': '10000'}}
-            for data in [result['l2'], result['t1'], result['other']['l1'], result['other']['l3']]:
+            for data in [result['l2'], result['t1']['small'], result['t1']['large'],
+                         result['other']['l1'], result['other']['l3']]:
                 assert data['FLEX_COUNTER_TABLE'] == common
             if lane == 'candidate':
                 data = seed()
                 dpus = {'dpu0': {'midplane_interface': 'dpu0'}, 'dpu1': {'midplane_interface': 'dpu1'}}
                 data['DPUS'] = dpus
                 smart = module.generate_sample_config(data, 't1-smartswitch')
-                expected_smart = dict(result['t1'], DPUS=dpus,
-                    DEVICE_METADATA={'localhost': dict(result['t1']['DEVICE_METADATA']['localhost'], subtype='SmartSwitch')},
+                expected_smart = dict(result['t1']['small'], DPUS=dpus,
+                    DEVICE_METADATA={'localhost': dict(result['t1']['small']['DEVICE_METADATA']['localhost'], subtype='SmartSwitch')},
                     MID_PLANE_BRIDGE={'GLOBAL': {'bridge': 'bridge_midplane', 'ip_prefix': '169.254.200.254/24'}},
                     DHCP_SERVER_IPV4={'bridge_midplane': {
                         'gateway': '169.254.200.254', 'lease_time': '3600', 'mode': 'PORT',
