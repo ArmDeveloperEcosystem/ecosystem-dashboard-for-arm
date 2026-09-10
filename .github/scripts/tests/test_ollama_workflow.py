@@ -30,7 +30,7 @@ class OllamaWorkflowTests(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         self.job = yaml.safe_load((ROOT / ".github/workflows/test-ollama.yml").read_text())["jobs"]["test-ollama"]
         self.steps = {step["id"]: step for step in self.job["steps"] if "id" in step}
-        self.artifact, self.runtime = re.findall(r"^python3 - <<'PY'\n(.*?)^PY$", self.job["env"]["OLLAMA_SMOKE_COMMAND"], re.M | re.S)
+        self.asset_selection, self.artifact, self.runtime = re.findall(r"^python3 - <<'PY'\n(.*?)^PY$", self.job["env"]["OLLAMA_SMOKE_COMMAND"], re.M | re.S)
 
     def run_step(self, name, values=None, **environment):
         values = values or {}
@@ -118,7 +118,9 @@ class OllamaWorkflowTests(unittest.TestCase):
         proof = self.execute_runtime(expected="0.32.5")
         self.assertEqual({"version": "0.32.5"}, proof["api_version"])
         for arguments in ({"api_version": "0.1.0"}, {"missing_api": True}, {"tags": {"models": None}},
-                          {"unsupported_version": True}, {"artifact_version": "0.1.0"}):
+                          {"unsupported_version": True}, {"artifact_version": "0.1.0"},
+                          {"cli": "0.32.5-rc1"}, {"cli": "0.32.5.1"}, {"cli": "0.32.5+local"},
+                          {"api_version": "0.32.5-rc1"}, {"tags": {"models": [{"name": "unexpected"}]}}):
             with self.subTest(arguments=arguments), self.assertRaises((AssertionError, urllib.error.HTTPError)):
                 self.execute_runtime(expected="0.32.5", **arguments)
 
@@ -128,8 +130,11 @@ class OllamaWorkflowTests(unittest.TestCase):
         url = "https://github.com/ollama/ollama/releases/download/v0.33.3/" + name
         (self.root / name).write_bytes(data)
         for change in ({}, {"tag_name": "v0.2.0"}, {"draft": True}, {"prerelease": True},
-                       {"browser_download_url": "https://example.invalid/binary"}, {"size": 1}, {"digest": "sha256:bad"}):
+                       {"browser_download_url": "https://example.invalid/binary"}, {"size": 1},
+                       {"digest": "sha256:bad"}, {"digest": "sha256:" + "0" * 64},
+                       {"digest": None}, {"digest": ""}):
             with self.subTest(change=change):
+                (self.root / "artifact-proof.json").unlink(missing_ok=True)
                 asset = {"id": 123, "name": name, "browser_download_url": url, "size": len(data),
                          "digest": "sha256:" + hashlib.sha256(data).hexdigest()}
                 release = {"tag_name": "v0.33.3", "draft": False, "prerelease": False, "assets": [asset]}
@@ -140,6 +145,7 @@ class OllamaWorkflowTests(unittest.TestCase):
                     if change:
                         with self.assertRaises(AssertionError):
                             exec(compile(self.artifact, "ollama-artifact", "exec"), {})
+                        self.assertFalse((self.root / "artifact-proof.json").exists())
                     else:
                         exec(compile(self.artifact, "ollama-artifact", "exec"), {})
                         self.assertEqual(hashlib.sha256(data).hexdigest(), json.loads((self.root / "artifact-proof.json").read_text())["sha256"])
@@ -189,27 +195,96 @@ class OllamaWorkflowTests(unittest.TestCase):
         self.assertEqual("failed", output["status"])
         self.assertIn("duration", output)
 
-    def test_candidate_lookup_failure_or_missing_baseline_is_not_a_skip(self):
+    def release_fixture(self, tag="v0.33.3", **changes):
+        release = {"id": 380898665, "tag_name": tag, "draft": False, "prerelease": False,
+                   "published_at": "2026-09-02T00:11:33Z",
+                   "url": "https://api.github.com/repos/ollama/ollama/releases/380898665",
+                   "html_url": f"https://github.com/ollama/ollama/releases/tag/{tag}"}
+        release.update(changes)
+        return release
+
+    def candidate_lookup_fixture(self):
         binary = self.root / "bin"
         binary.mkdir()
-        git = binary / "git"
-        git.write_text('#!/bin/sh\nprintf "%s\\n" "$TAG_OUTPUT"\nexit "$GIT_EXIT"\n')
+        curl = binary / "curl"
+        curl.write_text('#!/bin/sh\n[ "$6" = "https://api.github.com/repos/ollama/ollama/releases/latest" ] || exit 90\n'
+                        '[ "$7" = "-o" ] || exit 91\nprintf "%s" "$RELEASE_JSON" > "$8"\nexit "${CURL_EXIT:-0}"\n')
+        curl.chmod(0o755)
+        return str(binary) + os.pathsep + os.environ["PATH"]
+
+    def test_selects_official_stable_release_despite_higher_numeric_tag(self):
+        path = self.candidate_lookup_fixture()
+        git = self.root / "bin/git"
+        git.write_text('#!/bin/sh\nprintf "%s\\n" "abc refs/tags/v0.1.0" "def refs/tags/v0.34.0"\n')
         git.chmod(0o755)
-        for tags, exit_code, status in (("", "1", "failed"), ("", "0", "failed"),
-                ("abc refs/tags/v0.32.5", "0", "failed"), ("abc refs/tags/v0.1.0", "0", "skipped")):
-            with self.subTest(tags=tags, exit_code=exit_code):
-                result, output = self.run_step("test6", PATH=str(binary) + os.pathsep + os.environ["PATH"],
-                                               TAG_OUTPUT=tags, GIT_EXIT=exit_code, OLLAMA_SMOKE_COMMAND="exit 0")
-                self.assertEqual(status, output["status"])
-                self.assertEqual(status == "skipped", result.returncode == 0)
+        result, output = self.run_step("test6", PATH=path, RELEASE_JSON=json.dumps(self.release_fixture()),
+                                      OLLAMA_SMOKE_COMMAND='test "$SMOKE_VERSION" = 0.33.3; test -s "$OLLAMA_RELEASE_JSON"')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("passed", output["status"])
+        self.assertEqual("0.33.3", output["latest_version"])
+        self.assertEqual("0.33.3", output["next_installed_version"])
+        self.assertIn('"release_id": 380898665', result.stderr)
+
+    def test_invalid_release_lookup_cannot_skip_or_start_runtime(self):
+        path = self.candidate_lookup_fixture()
+        cases = [("", "22"), ("", "0"), ("[]", "0"), ("{}", "0"), ("not JSON", "0")]
+        for change in ({"tag_name": "v0.34.0", "prerelease": True}, {"draft": True},
+                       {"prerelease": None}, {"draft": 0}, {"published_at": None},
+                       {"tag_name": "v0.34.0-rc1"}, {"tag_name": "v0.34.0.1"},
+                       {"tag_name": "v0.34.0+build"}, {"tag_name": "v0.34.0\ninjected=1"},
+                       {"html_url": "https://github.com/other/ollama/releases/tag/v0.33.3"},
+                       {"url": "https://api.github.com/repos/other/ollama/releases/380898665"}):
+            cases.append((json.dumps(self.release_fixture(**change)), "0"))
+        cases.append((json.dumps(self.release_fixture(tag="v0.0.9")), "0"))
+        for payload, exit_code in cases:
+            with self.subTest(payload=payload, exit_code=exit_code):
+                result, output = self.run_step("test6", PATH=path, RELEASE_JSON=payload, CURL_EXIT=exit_code,
+                                              OLLAMA_SMOKE_COMMAND="touch runtime-started")
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual("failed", output["status"])
+                self.assertNotIn("decision", output)
+                self.assertNotIn("next_installed_version", output)
+                self.assertFalse((self.root / "runtime-started").exists())
+
+    def test_only_current_published_stable_release_allows_skip(self):
+        result, output = self.run_step("test6", PATH=self.candidate_lookup_fixture(),
+                                      RELEASE_JSON=json.dumps(self.release_fixture(tag="v0.1.0")),
+                                      OLLAMA_SMOKE_COMMAND="touch runtime-started")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("skipped", output["status"])
+        self.assertEqual("no_newer_stable_available", output["decision"])
+        self.assertEqual("n/a", output["next_installed_version"])
+        self.assertFalse((self.root / "runtime-started").exists())
+
+    def test_asset_selection_requires_published_arm_asset_and_digest(self):
+        name = "ollama-linux-arm64.tar.zst"
+        asset = {"name": name, "size": 12, "digest": "sha256:" + "a" * 64,
+                 "browser_download_url": "https://github.com/ollama/ollama/releases/download/v0.33.3/" + name}
+        cases = [({}, [asset], True), ({"prerelease": True}, [asset], False),
+                 ({"draft": True}, [asset], False), ({"published_at": None}, [asset], False),
+                 ({"tag_name": "v0.34.0"}, [asset], False), ({}, [], False),
+                 ({}, [asset, asset], False)]
+        for change in ({"name": "ollama-linux-amd64.tar.zst"}, {"name": "../ollama-linux-arm64"},
+                       {"browser_download_url": "https://example.invalid/binary"}, {"size": 0},
+                       {"digest": None}, {"digest": ""}, {"digest": "sha256:bad"}):
+            cases.append(({}, [{**asset, **change}], False))
+        for change, assets, passed in cases:
+            with self.subTest(change=change, assets=assets):
+                selected = self.root / "asset-name.txt"
+                selected.unlink(missing_ok=True)
+                (self.root / "release.json").write_text(json.dumps(self.release_fixture(assets=assets, **change)))
+                with patch.dict(os.environ, WORKDIR=str(self.root), SMOKE_VERSION="0.33.3"), contextlib.redirect_stdout(io.StringIO()):
+                    if passed:
+                        exec(compile(self.asset_selection, "ollama-asset-selection", "exec"), {})
+                        self.assertEqual(name, selected.read_text())
+                    else:
+                        with self.assertRaises(AssertionError):
+                            exec(compile(self.asset_selection, "ollama-asset-selection", "exec"), {})
+                        self.assertFalse(selected.exists())
 
     def test_failed_candidate_cannot_claim_installed_version(self):
-        binary = self.root / "bin"
-        binary.mkdir()
-        git = binary / "git"
-        git.write_text('#!/bin/sh\nprintf "%s\\n" "abc refs/tags/v0.1.0" "def refs/tags/v0.32.5"\n')
-        git.chmod(0o755)
-        result, output = self.run_step("test6", PATH=str(binary) + os.pathsep + os.environ["PATH"], OLLAMA_SMOKE_COMMAND="exit 31")
+        result, output = self.run_step("test6", PATH=self.candidate_lookup_fixture(),
+                                      RELEASE_JSON=json.dumps(self.release_fixture()), OLLAMA_SMOKE_COMMAND="exit 31")
         self.assertEqual(31, result.returncode)
         self.assertEqual("failed", output["status"])
         self.assertEqual("not_installed", output["next_installed_version"])
@@ -223,6 +298,8 @@ class OllamaWorkflowTests(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertEqual("1", output["failed"])
                 self.assertEqual("1" if number <= 5 else "0", output["core_failed"])
+                self.assertEqual("failure", output["overall_status"])
+                self.assertEqual("failing", output["badge_status"])
 
     def test_audit_pairs_only_completed_candidate_decisions_with_their_status(self):
         self.assertEqual(
@@ -234,6 +311,7 @@ class OllamaWorkflowTests(unittest.TestCase):
     def test_only_proven_candidate_skip_and_named_outputs(self):
         result, output = self.run_step("summary", self.statuses())
         self.assertEqual((0, "6"), (result.returncode, output["passed"]))
+        self.assertEqual("passing", output["badge_status"])
         for outcome in ("success", "failure", "cancelled", ""):
             values = self.statuses()
             values.update({"steps.test6.outputs.status": "skipped", "steps.test6.outcome": outcome,
@@ -241,6 +319,7 @@ class OllamaWorkflowTests(unittest.TestCase):
             result, output = self.run_step("summary", values)
             self.assertEqual(outcome == "success", result.returncode == 0)
             self.assertEqual("1" if outcome == "success" else "0", output["skipped"])
+            self.assertEqual("passing" if outcome == "success" else "failing", output["badge_status"])
         for number in range(1, 7):
             self.assertIn('echo "status=failed" >> "$GITHUB_OUTPUT"', self.steps[f"test{number}"]["run"])
             self.assertIn('echo "duration=0" >> "$GITHUB_OUTPUT"', self.steps[f"test{number}"]["run"])

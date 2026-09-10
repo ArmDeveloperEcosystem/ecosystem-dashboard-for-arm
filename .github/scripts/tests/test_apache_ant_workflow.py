@@ -1,7 +1,9 @@
 """Keep Ant's pinned installations and six required checks honest."""
+import hashlib
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -28,6 +30,13 @@ class ApacheAntWorkflowTests(unittest.TestCase):
                             "steps.version.outputs.version": "1.10.14"})
         self.stub("ant", 'echo "Apache Ant(TM) version ${ACTUAL_VERSION:-1.10.14} compiled on test"\n')
         self.stub("readlink", 'echo "${ACTUAL_PATH:-/opt/apache-ant-1.10.14/bin/ant}"\n')
+        self.stub("curl", "exit 97\n")
+        self.stub("wget", "exit 97\n")
+        if not shutil.which("sha512sum"):
+            self.stub("sha512sum", 'exec shasum -a 512 "$@"\n')
+        bootstrap = self.root / ".github/actions/apt-bootstrap/bootstrap.sh"
+        bootstrap.parent.mkdir(parents=True)
+        bootstrap.write_text("exit 0\n")
 
     def stub(self, name, script):
         path = self.bin / name
@@ -50,6 +59,105 @@ class ApacheAntWorkflowTests(unittest.TestCase):
             capture_output=True, text=True, timeout=15,
         )
         return result, dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+    def stub_download(self):
+        content = "verified Ant download fixture\n"
+        digest = hashlib.sha512(content.encode()).hexdigest()
+        self.env.update(ANT_SHA512=digest, ANT_NEXT_SHA512=digest,
+                        ARTIFACT_CONTENT=content, DOWNLOAD_LOG=str(self.root / "downloads"))
+        self.stub("curl", '''
+destination=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) destination="$2"; shift 2 ;;
+    *) url="$1"; shift ;;
+  esac
+done
+echo "$url" >> "$DOWNLOAD_LOG"
+case "${DOWNLOAD_MODE:-success}" in
+  unavailable) printf 'partial download' > "$destination"; exit 28 ;;
+  corrupt) printf 'corrupt archive' > "$destination"; exit 0 ;;
+  fallback|corrupt_primary)
+    if [[ "$url" != https://repo.huaweicloud.com/* ]]; then
+      printf 'partial or corrupt archive' > "$destination"
+      if [ "$DOWNLOAD_MODE" = corrupt_primary ]; then exit 0; fi
+      exit 28
+    fi ;;
+esac
+printf '%s' "$ARTIFACT_CONTENT" > "$destination"
+''')
+
+    def test_both_downloaders_verify_bytes_and_recover_from_failed_or_corrupt_sources(self):
+        self.stub_download()
+        destination = self.root / "download.tar.gz"
+        for step_id in ("install", "test6"):
+            helper = re.search(r"(?ms)^download_ant_tarball\(\) \{.*?^\}",
+                               self.steps[step_id]["run"])[0]
+            self.steps["download"] = {"run": helper + '''
+download_ant_tarball https://archive.apache.org/ant.tar.gz \\
+  https://downloads.apache.org/ant.tar.gz "$DESTINATION" \\
+  https://repo.huaweicloud.com/apache/ant/ant.tar.gz "$ANT_SHA512"
+'''}
+            for mode in ("success", "fallback", "corrupt_primary", "unavailable", "corrupt"):
+                with self.subTest(step=step_id, mode=mode):
+                    destination.write_text("stale successful download")
+                    Path(str(destination) + ".part").write_text("stale partial download")
+                    (self.root / "downloads").write_text("")
+                    result, _ = self.run_step("download", DOWNLOAD_MODE=mode,
+                                              DESTINATION=str(destination))
+                    passed = mode in ("success", "fallback", "corrupt_primary")
+                    self.assertEqual(passed, result.returncode == 0, result.stderr)
+                    self.assertEqual(passed, destination.exists())
+                    self.assertFalse(Path(str(destination) + ".part").exists())
+                    if passed:
+                        self.assertEqual(self.env["ARTIFACT_CONTENT"], destination.read_text())
+                    calls = (self.root / "downloads").read_text().splitlines()
+                    self.assertEqual(1 if mode == "success" else 3, len(calls))
+                    if mode != "success":
+                        self.assertIn("repo.huaweicloud.com", calls[-1])
+
+    def test_baseline_download_failure_or_corruption_remains_a_core_failure(self):
+        self.stub_download()
+        self.stub("tar", 'touch "$TMPDIR/extracted"; exit 99\n')
+        for mode in ("unavailable", "corrupt"):
+            with self.subTest(mode=mode):
+                result, output = self.run_step("install", DOWNLOAD_MODE=mode)
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual("failed", output["install_status"])
+                self.assertEqual("baseline_download_failed", output["install_blocker"])
+                self.assertFalse((self.root / "extracted").exists())
+                self.values["steps.install.outputs.install_status"] = "failed"
+                for index in (1, 2, 3, 5, 6):
+                    _, check = self.run_step(f"test{index}")
+                    self.values[f"steps.test{index}.outputs.status"] = check["status"]
+                result, summary = self.run_step("summary")
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(("1", "1", "1", "4", "failure"),
+                                 tuple(summary[key] for key in
+                                       ("passed", "failed", "core_failed", "skipped", "overall_status")))
+
+    def test_candidate_download_failure_or_corruption_remains_a_failed_regression(self):
+        self.stub_download()
+        self.stub("tar", 'touch "$TMPDIR/extracted"; exit 99\n')
+        for mode in ("unavailable", "corrupt"):
+            with self.subTest(mode=mode):
+                result, output = self.run_step("test6", DOWNLOAD_MODE=mode)
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual("failed", output["status"])
+                self.assertEqual("next_install_failed", output["decision"])
+                self.assertFalse((self.root / "extracted").exists())
+                self.values["steps.test6.outputs.status"] = output["status"]
+                result, summary = self.run_step("summary")
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(("5", "1", "0", "0", "failure"),
+                                 tuple(summary[key] for key in
+                                       ("passed", "failed", "core_failed", "skipped", "overall_status")))
+
+    def test_baseline_functional_failure_is_not_a_pass(self):
+        self.stub("ant", "exit 7\n")
+        result, output = self.run_step("test5")
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("failed", output["status"])
 
     def test_preinstalled_binary_cannot_mask_failed_install(self):
         self.values["steps.install.outputs.install_status"] = "failed"
@@ -110,7 +218,7 @@ class ApacheAntWorkflowTests(unittest.TestCase):
         self.assertEqual("0", output["skipped"])
 
     def test_candidate_uses_its_own_home_and_propagates_functional_failure(self):
-        self.stub("curl", "exit 0\n")
+        self.stub_download()
         self.stub("tar", '''
 destination="${@: -1}"
 mkdir -p "$destination/apache-ant-1.10.15/bin"
@@ -118,11 +226,14 @@ printf '#!/bin/bash\\ntest "$ANT_HOME" = "$(cd "$(dirname "$0")/.." && pwd)" || 
 chmod +x "$destination/apache-ant-1.10.15/bin/ant"
 ''')
         self.stub("unzip", 'echo "VERSION=${CANDIDATE_VERSION:-1.10.15}"\n')
-        for version, code in (("1.10.15", "0"), ("1.10.14", "0"), ("1.10.15", "7")):
-            with self.subTest(version=version, code=code):
+        for version, code, mode in (("1.10.15", "0", "success"),
+                                    ("1.10.15", "0", "fallback"),
+                                    ("1.10.14", "0", "fallback"),
+                                    ("1.10.15", "7", "fallback")):
+            with self.subTest(version=version, code=code, mode=mode):
                 result, output = self.run_step(
                     "test6", ANT_HOME="/wrong-baseline-home", FUNCTIONAL_EXIT=code,
-                    CANDIDATE_VERSION=version,
+                    CANDIDATE_VERSION=version, DOWNLOAD_MODE=mode,
                 )
                 passed = version == "1.10.15" and code == "0"
                 self.assertEqual(passed, result.returncode == 0, result.stdout + result.stderr)

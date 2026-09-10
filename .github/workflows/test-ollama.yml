@@ -88,18 +88,47 @@ jobs:
         test "$(uname -m)" = aarch64
         WORKDIR=$(mktemp -d "$PWD/ollama-smoke.XXXXXX")
         export WORKDIR
-        ASSET_URL=""
-        for ASSET in ollama-linux-arm64.tgz ollama-linux-arm64.tar.zst ollama-linux-arm64; do
-          URL="https://github.com/ollama/ollama/releases/download/v${SMOKE_VERSION}/$ASSET"
-          if curl -fsLI "$URL" >/dev/null 2>&1; then
-            ASSET_URL="$URL"
+        if [ -n "${OLLAMA_RELEASE_JSON:-}" ]; then
+          cp "$OLLAMA_RELEASE_JSON" "$WORKDIR/release.json"
+        else
+          curl -fsSL --retry 3 --max-time 60 "https://api.github.com/repos/ollama/ollama/releases/tags/v${SMOKE_VERSION}" -o "$WORKDIR/release.json"
+        fi
+        python3 - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+        import re
+        root = Path(os.environ["WORKDIR"])
+        expected = os.environ["SMOKE_VERSION"]
+        release = json.loads((root / "release.json").read_text())
+        assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", expected), expected
+        assert release["tag_name"] == f"v{expected}", release["tag_name"]
+        assert release["draft"] is False and release["prerelease"] is False, f"Not a stable published release: {release['tag_name']} draft={release['draft']} prerelease={release['prerelease']}"
+        assert release["published_at"], "Release has no publication timestamp"
+        names = ("ollama-linux-arm64",) if expected == "0.1.0" else (
+            "ollama-linux-arm64.tgz", "ollama-linux-arm64.tar.zst", "ollama-linux-arm64")
+        for name in names:
+            assets = [asset for asset in release["assets"] if asset["name"] == name]
+            if not assets:
+                continue
+            assert len(assets) == 1, f"Ambiguous release asset: {name}"
+            asset = assets[0]
+            assert asset["browser_download_url"] == f"https://github.com/ollama/ollama/releases/download/v{expected}/{name}", asset
+            assert asset["size"] > 0, asset
+            if expected != "0.1.0":
+                assert re.fullmatch(r"sha256:[0-9a-f]{64}", asset.get("digest") or ""), "Candidate requires a publisher SHA256 digest"
+            (root / "asset-name.txt").write_text(name)
+            print(json.dumps({"release_id": release["id"], "tag": release["tag_name"],
+                              "published_at": release["published_at"], "asset": asset["name"],
+                              "publisher_digest": asset.get("digest")}), flush=True)
             break
-          fi
-        done
-        test -n "$ASSET_URL"
+        else:
+            raise AssertionError("Stable release has no supported Linux Arm64 asset")
+        PY
+        ASSET=$(<"$WORKDIR/asset-name.txt")
+        ASSET_URL="https://github.com/ollama/ollama/releases/download/v${SMOKE_VERSION}/$ASSET"
         export ASSET_URL ASSET
         curl -fsSL --retry 3 --max-time 600 "$ASSET_URL" -o "$WORKDIR/$ASSET"
-        curl -fsSL --retry 3 --max-time 60 "https://api.github.com/repos/ollama/ollama/releases/tags/v${SMOKE_VERSION}" -o "$WORKDIR/release.json"
         python3 - <<'PY'
         import hashlib
         import json
@@ -108,7 +137,8 @@ jobs:
         root = Path(os.environ["WORKDIR"])
         expected = os.environ["SMOKE_VERSION"]
         release = json.loads((root / "release.json").read_text())
-        assert release["tag_name"] == f"v{expected}" and not release["draft"] and not release["prerelease"]
+        assert release["tag_name"] == f"v{expected}", release["tag_name"]
+        assert release["draft"] is False and release["prerelease"] is False, f"Not a stable published release: {release['tag_name']} draft={release['draft']} prerelease={release['prerelease']}"
         assets = [asset for asset in release["assets"] if asset["name"] == os.environ["ASSET"]]
         assert len(assets) == 1
         asset = assets[0]
@@ -124,8 +154,8 @@ jobs:
             assert asset["name"] == "ollama-linux-arm64", asset["name"]
             # This historical release has no embedded version or publisher digest.
             assert digest.hexdigest() == "16cb9f8021f79cae616e0a34959d827972f6805a2cf6a36f55e66b37d5e4d572", "Baseline release asset differs from the reviewed bytes"
-        if asset.get("digest"):
-            assert asset["digest"] == f"sha256:{digest.hexdigest()}"
+        if expected != "0.1.0" or asset.get("digest"):
+            assert asset.get("digest") == f"sha256:{digest.hexdigest()}", "Publisher SHA256 digest is missing or does not match the downloaded asset"
         proof = {"release_tag": release["tag_name"], "asset_id": asset["id"], "url": url,
                  "size": asset["size"], "sha256": digest.hexdigest(), "publisher_digest": asset.get("digest")}
         (root / "artifact-proof.json").write_text(json.dumps(proof, indent=2))
@@ -199,7 +229,7 @@ jobs:
                     cli = error.output
                     version_basis = "official_release_asset_only; embedded_version_unavailable"
                 else:
-                    versions = set(re.findall(r"\bversion(?: is)?\s+v?([0-9]+(?:\.[0-9]+){2})\b", cli))
+                    versions = set(re.findall(r"\bversion(?: is)?\s+v?(\S+)", cli))
                     assert versions == {expected}, cli
                 with urllib.request.urlopen(base + "/api/tags", timeout=5) as response:
                     tags = json.load(response)
@@ -744,29 +774,39 @@ jobs:
           trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           CURRENT="$BASELINE_VERSION"
           export CURRENT
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          curl -fsSL --retry 3 --max-time 60 https://api.github.com/repos/ollama/ollama/releases/latest -o ollama-candidate-release.json
           NEXT_VERSION=$(python3 - <<'PY'
+          import json
           import os
+          from pathlib import Path
           import re
-          import subprocess
+          import sys
           current = os.environ["CURRENT"]
-          tags = subprocess.check_output(["git", "ls-remote", "--tags", "--refs", "https://github.com/ollama/ollama.git"], text=True)
-          versions = {}
-          for line in tags.splitlines():
-              match = re.search(r"refs/tags/v?([0-9]+(?:\.[0-9]+)+)$", line)
-              if match:
-                  versions[tuple(map(int, match[1].split(".")))] = match[1]
+          # A numeric Git tag can still be a prerelease; use the publisher's stable release.
+          source = "https://api.github.com/repos/ollama/ollama/releases/latest"
+          release = json.loads(Path("ollama-candidate-release.json").read_text())
+          tag = release["tag_name"]
+          match = re.fullmatch(r"v([0-9]+\.[0-9]+\.[0-9]+)", tag)
+          assert match, f"Latest release has a non-stable version tag: {tag}"
+          assert release["draft"] is False and release["prerelease"] is False, f"Latest release is not stable: {tag} draft={release['draft']} prerelease={release['prerelease']}"
+          assert release["published_at"], "Latest release has no publication timestamp"
+          assert release["html_url"] == f"https://github.com/ollama/ollama/releases/tag/{tag}", release["html_url"]
+          assert release["url"] == f"https://api.github.com/repos/ollama/ollama/releases/{release['id']}", release["url"]
           baseline = tuple(map(int, current.split(".")))
-          assert baseline in versions, "The baseline stable tag was not present in the resolved tag list"
-          newer = sorted(key for key in versions if key > baseline)
-          print(versions[newer[-1]] if newer else "")
+          candidate = tuple(map(int, match[1].split(".")))
+          assert candidate >= baseline, "Latest stable release is older than the baseline; cannot prove no newer release"
+          print(json.dumps({"source": source, "release_id": release["id"], "tag": tag,
+                            "draft": release["draft"], "prerelease": release["prerelease"],
+                            "published_at": release["published_at"]}), file=sys.stderr, flush=True)
+          print(match[1] if candidate > baseline else "")
           PY
           )
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           if [ -z "$NEXT_VERSION" ]; then
             echo "latest_version=$CURRENT" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=n/a" >> "$GITHUB_OUTPUT"
             echo "regression_result=No newer stable public release is available" >> "$GITHUB_OUTPUT"
-            echo "comparison=The complete successful stable-tag lookup contained baseline $CURRENT and no newer stable candidate." >> "$GITHUB_OUTPUT"
+            echo "comparison=The official latest stable published release equals baseline $CURRENT; no newer stable candidate is available." >> "$GITHUB_OUTPUT"
             {
               echo "decision=no_newer_stable_available"
               echo "status=skipped"
@@ -774,7 +814,7 @@ jobs:
           else
             echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-            SMOKE_VERSION="$NEXT_VERSION" bash -euo pipefail -c "$OLLAMA_SMOKE_COMMAND"
+            SMOKE_VERSION="$NEXT_VERSION" OLLAMA_RELEASE_JSON="$PWD/ollama-candidate-release.json" bash -euo pipefail -c "$OLLAMA_SMOKE_COMMAND"
             echo "next_installed_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
             echo "regression_result=Arm preflight proof passed on Arm64" >> "$GITHUB_OUTPUT"
             echo "comparison=Verified the exact next official Arm64 CLI version, root liveness, /api/tags, /api/version, and ollama list with an isolated local server. No model inference or GPU validation is claimed." >> "$GITHUB_OUTPUT"
@@ -835,7 +875,7 @@ jobs:
           else
             OVERALL_STATUS="failure"
           fi
-          if [ "$CORE_FAILED" -eq 0 ]; then
+          if [ "$FAILED" -eq 0 ]; then
             BADGE_STATUS="passing"
           else
             BADGE_STATUS="failing"
