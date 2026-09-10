@@ -81,7 +81,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"test3": 1, "test4": 1, "test5": 2, "test6": 334},
+            {"test3": 1, "test4": 1, "test5": 2, "test6": 325},
             {
                 key: len(value)
                 for key, value in remediation[
@@ -90,21 +90,21 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"core_failed": 392, "duration": 3, "skipped": 715},
+            {"core_failed": 385, "duration": 3, "skipped": 708},
             {
                 key: len(value)
                 for key, value in remediation["missing_summary_outputs"].items()
             },
         )
         self.assertEqual(
-            402,
+            400,
             len(remediation["package_manager_missing_explicit_skip_counter"]),
         )
         self.assertEqual(79, len(remediation["package_manager_non_skipped_status"]))
         self.assertEqual(285, len(remediation["literal_pair_contradictions"]))
         self.assertEqual(21, len(remediation["no_literal_decision"]))
         self.assertEqual(
-            317, len(remediation["package_manager_summary_omits_test6"])
+            310, len(remediation["package_manager_summary_omits_test6"])
         )
         self.assertEqual(8, len(remediation["unsafe_fallback_workflows"]))
         self.assertEqual(["freecad"], remediation["package_manager_missing_decision"])
@@ -129,7 +129,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             92, len(remediation["generic_source_missing_baseline_facts"])
         )
         self.assertEqual(
-            425, len(remediation["package_manager_missing_baseline_guard"])
+            410, len(remediation["package_manager_missing_baseline_guard"])
         )
         self.assertEqual(
             960, len(remediation["missing_package_observation_output"])
@@ -152,7 +152,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             369,
             len(remediation["non_package_manager_missing_baseline_guard"]),
         )
-        self.assertEqual(335, len(remediation["summary_omits_test6_status"]))
+        self.assertEqual(328, len(remediation["summary_omits_test6_status"]))
         self.assertEqual(
             952, len(remediation["unsafe_package_version_fallback"])
         )
@@ -197,7 +197,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "0223c56609086131e0ff0627f474d0d9262c3e2bf5f31db8fc5890d5ab7df00d",
+            "eae1fa55515f9c065ef49a064c734804621370a8ff011674943ca865938e9783",
             digest,
         )
 
