@@ -1,7 +1,7 @@
 # Diagnostic branch only. Never merge this replacement batch file.
 # No batch registration, result collection, artifact publication or deployment.
-name: Repaired Native Workflow Diagnostic
-run-name: Repaired workflows diagnostic (not batch certification)
+name: SONiC and KVM Native Workflow Diagnostic
+run-name: SONiC and KVM diagnostic (not batch certification)
 
 on:
   workflow_dispatch:
@@ -31,31 +31,22 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           test "$(uname -m)" = aarch64
           printf 'diagnostic_sha=%s\nrun_id=%s\nrun_attempt=%s\n' "$EXPECTED_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
-          sha256sum .github/workflows/test-{gdb,vue,openmetrics,maas,freedesktop-sdk}.yml
+          sha256sum .github/workflows/test-{sonic,kvm}.yml
 
-  gdb:
+  sonic:
     needs: provenance
-    uses: ./.github/workflows/test-gdb.yml
-  vue:
+    uses: ./.github/workflows/test-sonic.yml
+  kvm:
     needs: provenance
-    uses: ./.github/workflows/test-vue.yml
-  openmetrics:
-    needs: provenance
-    uses: ./.github/workflows/test-openmetrics.yml
-  maas:
-    needs: provenance
-    uses: ./.github/workflows/test-maas.yml
-  sdk:
-    needs: provenance
-    uses: ./.github/workflows/test-freedesktop-sdk.yml
+    uses: ./.github/workflows/test-kvm.yml
 
   inspect-outputs:
     if: always() && github.ref == 'refs/heads/diagnostic/sdk-native-september10'
-    needs: [gdb, vue, openmetrics, maas, sdk]
+    needs: [sonic, kvm]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:
-      - name: Assert actual reusable workflow outputs without publishing
+      - name: Verify outcome accounting without declaring failed packages green
         env:
           OBSERVED: ${{ toJSON(needs) }}
         run: |
@@ -64,56 +55,41 @@ jobs:
           import os
           observed = json.loads(os.environ['OBSERVED'])
           print(json.dumps(observed, indent=2, sort_keys=True))
-          expected = {'gdb': 'gdb', 'vue': 'vue', 'openmetrics': 'openmetrics',
-                      'maas': 'maas', 'sdk': 'freedesktop-sdk'}
+          expected = {'sonic': 'sonic', 'kvm': 'kvm'}
           assert set(observed) == set(expected)
           for name, slug in expected.items():
               job = observed[name]
               outputs = job['outputs']
-              assert job['result'] == 'success', (name, job['result'])
               assert outputs['package_slug'] == slug
               assert outputs['contract_version'] == '2.0'
               assert outputs['run_id'] == os.environ['GITHUB_RUN_ID']
               assert outputs['run_attempt'] == os.environ['GITHUB_RUN_ATTEMPT']
-              assert outputs['run_status'] == 'success'
-              assert outputs['badge_status'] == 'passing'
-              assert [outputs[key] for key in ('tests_passed', 'tests_failed', 'tests_skipped', 'core_failed')] == ['5', '0', '1', '0']
-              assert outputs['regression_status'] == 'skipped'
-              assert outputs['regression_decision'] == 'not_applicable_package_manager'
-              assert outputs['package_version'] not in ('', 'unknown', 'not_installed')
               assert outputs['duration_seconds'].isdecimal()
-          print('Five reusable workflow outputs verified; no batch or publication certification.')
-          PY
-
-  kvm-capability:
-    name: Inspect KVM device and API, not guest execution
-    needs: provenance
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 5
-    steps:
-      - name: Read-only KVM capability probe
-        run: |
-          python3 -I - <<'PY'
-          import fcntl
-          import json
-          import os
-          import platform
-          import stat
-          import sys
-          print(json.dumps({'machine': platform.machine(), 'kernel': platform.release(),
-                            'uid': os.getuid(), 'groups': os.getgroups()}), flush=True)
-          assert platform.machine() == 'aarch64'
-          try:
-              device = os.stat('/dev/kvm')
-              assert stat.S_ISCHR(device.st_mode)
-              fd = os.open('/dev/kvm', os.O_RDWR | os.O_CLOEXEC)
-          except (OSError, AssertionError) as error:
-              print(f'KVM capability unavailable: {error}', flush=True)
-              sys.exit(78)
-          try:
-              api_version = fcntl.ioctl(fd, 0xAE00, 0)
-              print(json.dumps({'kvm_api_version': api_version, 'guest_executed': False}), flush=True)
-              assert api_version == 12
-          finally:
-              os.close(fd)
+              count_keys = ('tests_passed', 'tests_failed', 'tests_skipped', 'core_failed')
+              assert all(outputs[key].isdecimal() for key in count_keys)
+              passed, failed, skipped, core_failed = [int(outputs[key]) for key in count_keys]
+              assert passed + failed + skipped == 6
+              assert 0 <= core_failed <= failed
+              if job['result'] == 'success':
+                  assert outputs['run_status'] == 'success'
+                  assert outputs['badge_status'] == 'passing'
+                  assert failed == core_failed == 0
+                  assert outputs['package_version'] not in ('', 'unknown', 'not_installed')
+                  if slug == 'kvm':
+                      assert (passed, failed, skipped) == (5, 0, 1)
+                      assert outputs['regression_status'] == 'skipped'
+                      assert outputs['regression_decision'] == 'not_applicable_package_manager'
+                  else:
+                      assert (passed, failed, skipped) == (6, 0, 0)
+                      assert outputs['regression_status'] == 'passed'
+              else:
+                  assert job['result'] == 'failure', (name, job['result'])
+                  assert outputs['run_status'] == 'failure'
+                  assert outputs['badge_status'] == 'failing'
+                  assert failed > 0
+                  if core_failed:
+                      assert outputs['regression_status'] == 'skipped'
+                      assert outputs['regression_decision'] in ('baseline_failed', 'baseline_install_failed')
+              print(f'{slug}: actual workflow conclusion={job["result"]}, counts={passed}/{failed}/{skipped}')
+          print('Outcome accounting checked. Failed package jobs remain failed; no batch or publication certification.')
           PY
