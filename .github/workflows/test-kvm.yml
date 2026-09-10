@@ -1,4 +1,4 @@
-name: Test KVM on Arm64
+name: Test KVM Arm64 build and ABI compatibility
 
 permissions:
   contents: read
@@ -86,7 +86,7 @@ jobs:
     outputs:
       contract_version: "2.0"
       package_slug: ${{ steps.metadata.outputs.package_slug }}
-      package_name: 'KVM'
+      package_name: 'KVM Arm64 build/ABI smoke (VM execution not tested)'
       package_version: ${{ steps.version.outputs.version || 'unknown' }}
       run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
       badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
@@ -120,7 +120,7 @@ jobs:
           echo "package_slug=kvm" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/kvm" >> "$GITHUB_OUTPUT"
           echo "KVM_SMOKE_DIR=$RUNNER_TEMP/kvm-smoke-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_ENV"
-      - name: Prepare native KVM API harness
+      - name: Prepare package-owned KVM build and ABI smoke
         id: install
         continue-on-error: true
         run: |
@@ -131,182 +131,72 @@ jobs:
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "gcc libc6-dev linux-libc-dev python3"
           mkdir -p "$KVM_SMOKE_DIR"
           cat > "$KVM_SMOKE_DIR/smoke.c" <<'C'
-          #define _GNU_SOURCE
           #include <errno.h>
-          #include <fcntl.h>
           #include <inttypes.h>
           #include <linux/kvm.h>
-          #include <signal.h>
           #include <stddef.h>
           #include <stdint.h>
           #include <stdio.h>
           #include <stdlib.h>
           #include <string.h>
-          #include <sys/ioctl.h>
-          #include <sys/mman.h>
-          #include <sys/stat.h>
-          #include <sys/utsname.h>
-          #include <unistd.h>
           #if !defined(__aarch64__) || __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
           #error Native little-endian AArch64 is required
           #endif
 
-          /* ABI: https://docs.kernel.org/virt/kvm/api.html
-           * Register IDs/reset state follow Linux v6.8 KVM selftests, lib/aarch64/processor.c.
-           * This MMU-off EL1 guest needs no disk, network, firmware or irqchip. */
-          #define GPA UINT64_C(0x100000)
-          #define RESULT_OFFSET 4096
-          #define MMIO UINT64_C(0x200000)
-          #define REG(member) (KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_CORE | \
-                              (offsetof(struct kvm_regs, member) / sizeof(uint32_t)))
-          extern const unsigned char guest_start[], guest_end[];
-          __asm__(".pushsection .rodata\n"
-                  ".balign 4\n"
-                  "guest_start:\n"
-                  "add x0, x0, #7\n"
-                  "str x0, [x1]\n"
-                  "dsb sy\n"
-                  "str x0, [x2]\n"
-                  "b .\n"
-                  "guest_end:\n"
-                  ".popsection\n");
+          /* Packaged userspace ABI checks only: no device, ioctl call or guest.
+           * Layout and request definitions: https://docs.kernel.org/virt/kvm/api.html */
+          #define CORE_REG(member) (KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_CORE | \
+                                    (offsetof(struct kvm_regs, member) / sizeof(uint32_t)))
+          _Static_assert(KVM_API_VERSION == 12, "Unsupported KVM header ABI");
+          _Static_assert(sizeof(struct kvm_userspace_memory_region) == 32, "Memory region ABI");
+          _Static_assert(sizeof(struct kvm_one_reg) == 16, "One-reg ABI");
+          _Static_assert(sizeof(struct kvm_vcpu_init) == 32, "Arm vCPU-init ABI");
 
-          static void require(int ok, const char *operation) {
-              if (!ok) {
-                  fprintf(stderr, "KVM smoke failed: %s (errno=%d: %s)\n",
-                          operation, errno, strerror(errno));
-                  exit(EXIT_FAILURE);
-              }
-          }
-
-          static void deadline(int signal_number) {
-              (void)signal_number;
-              static const char message[] = "KVM smoke failed: execution timeout\n";
-              ssize_t written = write(STDERR_FILENO, message, sizeof(message) - 1);
-              (void)written;
-              _exit(124);
-          }
-
-          static void set_reg(int vcpu, uint64_t id, uint64_t value) {
-              struct kvm_one_reg reg = {.id = id, .addr = (uintptr_t)&value};
-              require(ioctl(vcpu, KVM_SET_ONE_REG, &reg) == 0, "KVM_SET_ONE_REG");
-          }
-
-          static uint64_t get_reg(int vcpu, uint64_t id) {
+          static uint64_t read_le(const unsigned char *bytes, size_t count)
+          {
               uint64_t value = 0;
-              struct kvm_one_reg reg = {.id = id, .addr = (uintptr_t)&value};
-              require(ioctl(vcpu, KVM_GET_ONE_REG, &reg) == 0, "KVM_GET_ONE_REG");
+              for (size_t i = 0; i < count; ++i)
+                  value |= (uint64_t)bytes[i] << (8 * i);
               return value;
           }
 
-          int main(int argc, char **argv) {
-              require(argc == 2 || argc == 3, "mode argument");
-              const char *mode = argv[1];
-              require(!strcmp(mode, "api") || !strcmp(mode, "vcpu") ||
-                      !strcmp(mode, "invalid-memory") || !strcmp(mode, "guest"), "known mode");
-              uint64_t input = 0;
-              if (!strcmp(mode, "guest")) {
-                  require(argc == 3 && argv[2][0] >= '0' && argv[2][0] <= '9', "guest input");
-                  char *end = NULL;
-                  errno = 0;
-                  input = strtoull(argv[2], &end, 10);
-                  require(!errno && end && !*end && input <= UINT32_MAX, "bounded guest input");
-              } else {
-                  require(argc == 2, "no extra arguments");
-              }
-              struct utsname host;
-              require(uname(&host) == 0, "uname");
-              require(!strcmp(host.sysname, "Linux") && !strcmp(host.machine, "aarch64"),
-                      "native Linux AArch64 host");
-              struct sigaction action = {.sa_handler = deadline};
-              require(sigemptyset(&action.sa_mask) == 0, "sigemptyset");
-              require(sigaction(SIGALRM, &action, NULL) == 0, "sigaction");
-              alarm(8);
-              int kvm = open("/dev/kvm", O_RDWR | O_CLOEXEC);
-              require(kvm >= 0, "/dev/kvm missing or not accessible (read/write required)");
-              struct stat device;
-              require(fstat(kvm, &device) == 0 && S_ISCHR(device.st_mode), "/dev/kvm character device");
-              int api = ioctl(kvm, KVM_GET_API_VERSION, 0);
-              require(api == KVM_API_VERSION && api == 12, "KVM API version 12");
-              require(ioctl(kvm, KVM_CHECK_EXTENSION, KVM_CAP_USER_MEMORY) > 0, "KVM_CAP_USER_MEMORY");
-              require(ioctl(kvm, KVM_CHECK_EXTENSION, KVM_CAP_ONE_REG) > 0, "KVM_CAP_ONE_REG");
-              int vm = -1, vcpu = -1;
-              void *memory = MAP_FAILED;
-              struct kvm_run *run = MAP_FAILED;
-              size_t memory_size = 0, run_size = 0;
-              uint64_t value = 12, mmio_value = 0, memory_value = 0;
-              if (strcmp(mode, "api")) {
-                  vm = ioctl(kvm, KVM_CREATE_VM, 0);
-                  require(vm >= 0, "KVM_CREATE_VM");
-                  long page_size = sysconf(_SC_PAGESIZE);
-                  require(page_size >= 4096 && page_size <= 65536, "host page size");
-                  memory_size = (size_t)page_size * 2;
-                  memory = mmap(NULL, memory_size, PROT_READ | PROT_WRITE,
-                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-                  require(memory != MAP_FAILED, "guest RAM allocation");
-                  struct kvm_userspace_memory_region region = {
-                      .slot = 0, .guest_phys_addr = GPA, .memory_size = memory_size,
-                      .userspace_addr = (uintptr_t)memory,
-                  };
-                  if (!strcmp(mode, "invalid-memory")) {
-                      region.guest_phys_addr = GPA + 1;
-                      errno = 0;
-                      int rc = ioctl(vm, KVM_SET_USER_MEMORY_REGION, &region);
-                      require(rc == -1 && errno == EINVAL, "unaligned guest RAM must fail with EINVAL");
-                      region.guest_phys_addr = GPA;
-                      require(ioctl(vm, KVM_SET_USER_MEMORY_REGION, &region) == 0,
-                              "aligned guest RAM after negative case");
-                      value = EINVAL;
-                  } else {
-                      require(ioctl(vm, KVM_SET_USER_MEMORY_REGION, &region) == 0,
-                              "KVM_SET_USER_MEMORY_REGION");
-                      struct kvm_vcpu_init init = {0};
-                      require(ioctl(vm, KVM_ARM_PREFERRED_TARGET, &init) == 0, "KVM_ARM_PREFERRED_TARGET");
-                      vcpu = ioctl(vm, KVM_CREATE_VCPU, 0);
-                      require(vcpu >= 0, "KVM_CREATE_VCPU");
-                      require(ioctl(vcpu, KVM_ARM_VCPU_INIT, &init) == 0, "KVM_ARM_VCPU_INIT");
-                      set_reg(vcpu, REG(regs.pc), GPA);
-                      set_reg(vcpu, REG(regs.pstate), 0x3c5); /* EL1h, D/A/I/F masked. */
-                      set_reg(vcpu, REG(regs.regs[0]), !strcmp(mode, "guest") ? input : 0x1234);
-                      set_reg(vcpu, REG(regs.regs[1]), GPA + RESULT_OFFSET);
-                      set_reg(vcpu, REG(regs.regs[2]), MMIO);
-                      require(get_reg(vcpu, REG(regs.pc)) == GPA, "initial guest PC");
-                      require(get_reg(vcpu, REG(regs.pstate)) == 0x3c5, "initial guest PSTATE");
-                      value = get_reg(vcpu, REG(regs.regs[0]));
-                      require(value == (!strcmp(mode, "guest") ? input : 0x1234), "initial x0");
-                      if (!strcmp(mode, "guest")) {
-                          size_t code_size = (uintptr_t)guest_end - (uintptr_t)guest_start;
-                          require(code_size > 0 && code_size < RESULT_OFFSET, "guest code bounds");
-                          memcpy(memory, guest_start, code_size);
-                          __builtin___clear_cache(memory, (char *)memory + code_size);
-                          volatile uint64_t *result = (uint64_t *)((char *)memory + RESULT_OFFSET);
-                          *result = UINT64_MAX;
-                          int mmap_size = ioctl(kvm, KVM_GET_VCPU_MMAP_SIZE, 0);
-                          require(mmap_size >= (int)sizeof(*run), "KVM_GET_VCPU_MMAP_SIZE");
-                          run_size = (size_t)mmap_size;
-                          run = mmap(NULL, run_size, PROT_READ | PROT_WRITE, MAP_SHARED, vcpu, 0);
-                          require(run != MAP_FAILED, "vcpu run mapping");
-                          require(ioctl(vcpu, KVM_RUN, 0) == 0, "KVM_RUN");
-                          require(run->exit_reason == KVM_EXIT_MMIO, "guest MMIO exit");
-                          require(run->mmio.is_write == 1 && run->mmio.len == sizeof(uint64_t) &&
-                                  run->mmio.phys_addr == MMIO, "guest completion address/width/direction");
-                          memcpy(&mmio_value, run->mmio.data, sizeof(mmio_value));
-                          memory_value = *result;
-                          value = get_reg(vcpu, REG(regs.regs[0]));
-                          require(value == input + 7 && memory_value == value && mmio_value == value,
-                                  "guest x0, shared RAM and MMIO result");
-                      }
-                  }
-              }
-              if (run != MAP_FAILED) require(munmap(run, run_size) == 0, "unmap vcpu");
-              if (vcpu >= 0) require(close(vcpu) == 0, "close vcpu");
-              if (vm >= 0) require(close(vm) == 0, "close VM");
-              if (memory != MAP_FAILED) require(munmap(memory, memory_size) == 0, "unmap RAM");
-              require(close(kvm) == 0, "close KVM");
-              alarm(0);
-              printf("{\"mode\":\"%s\",\"api\":%d,\"value\":%" PRIu64
-                     ",\"input\":%" PRIu64 ",\"memory\":%" PRIu64 ",\"mmio\":%" PRIu64 "}\n",
-                     mode, api, value, input, memory_value, mmio_value);
+          int main(int argc, char **argv)
+          {
+              if (argc != 2 || !argv[1][0] || argv[1][0] == '-')
+                  return EXIT_FAILURE;
+              errno = 0;
+              char *end = NULL;
+              uintmax_t input = strtoumax(argv[1], &end, 10);
+              if (errno || !end || *end || input > UINT32_MAX)
+                  return EXIT_FAILURE;
+              uint64_t address = ((uint64_t)input + 1) << 12;
+              struct kvm_userspace_memory_region region = {
+                  .slot = (uint32_t)input, .flags = KVM_MEM_LOG_DIRTY_PAGES,
+                  .guest_phys_addr = address, .memory_size = 4096,
+                  .userspace_addr = address + 8192
+              };
+              struct kvm_one_reg reg = { .id = CORE_REG(regs.pc), .addr = address };
+              unsigned char memory_bytes[sizeof(region)], reg_bytes[sizeof(reg)];
+              memcpy(memory_bytes, &region, sizeof(region));
+              memcpy(reg_bytes, &reg, sizeof(reg));
+              printf("{\"scope\":\"build-abi-only\",\"header_api\":%d,"
+                     "\"memory_size\":%zu,\"one_reg_size\":%zu,\"vcpu_init_size\":%zu,"
+                     "\"x0_id\":%" PRIu64 ",\"pc_id\":%" PRIu64 ",\"pstate_id\":%" PRIu64 ","
+                     "\"get_api_request\":%lu,\"create_vm_request\":%lu,"
+                     "\"set_memory_request\":%lu,\"set_one_reg_request\":%lu,"
+                     "\"input\":%" PRIuMAX ",\"slot\":%" PRIu64 ",\"flags\":%" PRIu64 ","
+                     "\"guest_address\":%" PRIu64 ",\"region_bytes\":%" PRIu64 ","
+                     "\"userspace_address\":%" PRIu64 ",\"register_id\":%" PRIu64 ","
+                     "\"register_address\":%" PRIu64 "}\n",
+                     KVM_API_VERSION, sizeof(region), sizeof(reg), sizeof(struct kvm_vcpu_init),
+                     (uint64_t)CORE_REG(regs.regs[0]), (uint64_t)CORE_REG(regs.pc),
+                     (uint64_t)CORE_REG(regs.pstate), (unsigned long)KVM_GET_API_VERSION,
+                     (unsigned long)KVM_CREATE_VM, (unsigned long)KVM_SET_USER_MEMORY_REGION,
+                     (unsigned long)KVM_SET_ONE_REG, input,
+                     read_le(memory_bytes, 4), read_le(memory_bytes + 4, 4),
+                     read_le(memory_bytes + 8, 8), read_le(memory_bytes + 16, 8),
+                     read_le(memory_bytes + 24, 8), read_le(reg_bytes, 8),
+                     read_le(reg_bytes + 8, 8));
               return EXIT_SUCCESS;
           }
           C
@@ -322,12 +212,15 @@ jobs:
           import subprocess
           import sys
 
+          SCOPE = "build-abi@"
+          HEADER_PATHS = ("/usr/include/linux/kvm.h", "/usr/include/aarch64-linux-gnu/asm/kvm.h")
+
           def command(*args):
               result = subprocess.run(args, capture_output=True, text=True, timeout=12)
               print(f"{args!r}: exit={result.returncode}\n{result.stdout}{result.stderr}", file=sys.stderr)
               result.check_returncode()
               if result.stderr:
-                  raise ValueError("Unexpected diagnostic from identity/KVM probe")
+                  raise ValueError("Unexpected diagnostic from identity/ABI check")
               return result.stdout
 
           def host_release():
@@ -343,25 +236,26 @@ jobs:
                   raise ValueError("Running kernel release disagrees with procfs")
               return host.release
 
-          def identity():
-              release = host_release()
-              image = f"/boot/vmlinuz-{release}"
-              if not Path(image).is_file():
-                  raise ValueError("Running kernel image is missing")
-              owner = command("dpkg-query", "-S", image)
-              match = re.fullmatch(
-                  r"(linux-image-(?:unsigned-)?" + re.escape(release) + r")(?::arm64)?: "
-                  + re.escape(image) + r"\n", owner)
+          def owned(path, allowed):
+              if not Path(path).is_file():
+                  raise ValueError("Required package file is missing")
+              owner = command("dpkg-query", "-S", path)
+              match = re.fullmatch(r"(" + allowed + r")(?::arm64)?: " + re.escape(path) + r"\n", owner)
               if not match:
-                  raise ValueError("Running kernel image has no unique matching dpkg owner")
+                  raise ValueError("File has no unique allowed dpkg owner")
               package = match[1]
               row = command("dpkg-query", "-W",
                             "-f=${Package}\t${Version}\t${Architecture}\t${Status}\n", package)
               record = re.fullmatch(re.escape(package) +
                   r"\t([0-9][0-9A-Za-z.+:~\-]*)\tarm64\tinstall ok installed\n", row)
               if not record:
-                  raise ValueError("Kernel package is not installed for arm64")
-              revision = record[1]
+                  raise ValueError("Owning package is not installed for arm64")
+              return package, record[1]
+
+          def identity():
+              release = host_release()
+              package, revision = owned(f"/boot/vmlinuz-{release}",
+                                       r"linux-image-(?:unsigned-)?" + re.escape(release))
               base, abi, flavor = release.split("-", 2)
               if not re.fullmatch(re.escape(f"{base}-{abi}") + r"\.[0-9]+(?:\.[0-9]+)*(?:~[0-9.]+)?", revision):
                   raise ValueError("Kernel package version disagrees with running release")
@@ -369,42 +263,78 @@ jobs:
               if not re.fullmatch(r"Ubuntu " + re.escape(f"{revision}-{flavor}") +
                                   r" [0-9]+\.[0-9]+\.[0-9]+\n", signature):
                   raise ValueError("Ubuntu running-kernel signature disagrees with installed package")
-              return release, package, revision
+              return SCOPE + release, package, revision
+
+          def baseline():
+              actual = identity()
+              expected = tuple(os.environ[key] for key in
+                  ("EXPECTED_VERSION", "EXPECTED_KERNEL_PACKAGE", "EXPECTED_PACKAGE_VERSION"))
+              if actual != expected:
+                  raise ValueError("Verified kernel identity changed")
+              return actual
+
+          def config():
+              version, _, revision = baseline()
+              release = version.removeprefix(SCOPE)
+              path = f"/boot/config-{release}"
+              owner, config_revision = owned(path,
+                  r"linux-(?:image-(?:unsigned-)?|modules-)" + re.escape(release))
+              if config_revision != revision:
+                  raise ValueError("Kernel configuration package revision mismatch")
+              rows = Path(path).read_text().splitlines()
+              for key in ("CONFIG_ARM64", "CONFIG_KVM"):
+                  definitions = [row for row in rows if row.startswith(key + "=") or
+                                 row == f"# {key} is not set"]
+                  if definitions != [key + "=y"]:
+                      raise ValueError(f"Expected one built-in {key}=y configuration")
+              print(json.dumps(dict(config_owner=owner, kernel_revision=revision,
+                                    scope="kernel-build-configuration-only")))
+
+          def headers():
+              baseline()
+              owners = [owned(path, "linux-libc-dev") for path in HEADER_PATHS]
+              if owners[0] != owners[1]:
+                  raise ValueError("KVM generic and Arm64 headers have different package identities")
+              digests = [hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in HEADER_PATHS]
+              print(json.dumps(dict(package=owners[0][0], version=owners[0][1],
+                                    architecture="arm64", paths=HEADER_PATHS, sha256=digests)))
 
           def unique_object(pairs):
               result = {}
               for key, value in pairs:
                   if key in result:
-                      raise ValueError("Duplicate KVM result key")
+                      raise ValueError("Duplicate ABI result key")
                   result[key] = value
               return result
 
-          def probe(mode):
-              release = host_release()
-              if release != os.environ["EXPECTED_VERSION"]:
-                  raise ValueError("Running kernel changed after identity validation")
+          def probe():
+              baseline()
               binary = Path(os.environ["KVM_SMOKE_DIR"]) / "smoke"
               raw = binary.read_bytes()
               digest = os.environ["KVM_HARNESS_SHA256"]
               if (not re.fullmatch(r"[0-9a-f]{64}", digest)
                       or hashlib.sha256(raw).hexdigest() != digest):
-                  raise ValueError("KVM harness digest changed after compilation")
-              if (len(raw) < 64 or raw[:6] != b"\x7fELF\x02\x01"
+                  raise ValueError("ABI binary changed after compilation")
+              if (len(raw) < 64 or raw[:7] != b"\x7fELF\x02\x01\x01"
+                      or struct.unpack_from("<H", raw, 16)[0] not in (2, 3)
                       or struct.unpack_from("<H", raw, 18)[0] != 183):
-                  raise ValueError("KVM harness must be an AArch64 ELF executable")
-              inputs = [secrets.randbelow(2**31), 2**32 - 1] if mode == "guest" else [0]
-              for value in inputs:
-                  args = [str(binary), mode]
-                  if mode == "guest":
-                      args.append(str(value))
-                  actual = json.loads(command(*args), object_pairs_hook=unique_object)
-                  expected = dict(mode=mode, api=12, value={"api": 12, "vcpu": 0x1234,
-                                  "invalid-memory": 22, "guest": value + 7}[mode],
-                                  input=value, memory=value + 7 if mode == "guest" else 0,
-                                  mmio=value + 7 if mode == "guest" else 0)
+                  raise ValueError("ABI probe must be an AArch64 ELF executable")
+              # Independent Linux ioctl encodings and fixed Arm64 UAPI layout, not live capabilities.
+              constants = dict(scope="build-abi-only", header_api=12, memory_size=32,
+                  one_reg_size=16, vcpu_init_size=32, x0_id=0x6030000000100000,
+                  pc_id=0x6030000000100040, pstate_id=0x6030000000100042,
+                  get_api_request=0xAE00, create_vm_request=0xAE01,
+                  set_memory_request=0x4020AE46, set_one_reg_request=0x4010AEAC)
+              for value in (0, secrets.randbelow(2**32), 2**32 - 1):
+                  address = (value + 1) << 12
+                  expected = dict(constants, input=value, slot=value, flags=1,
+                      guest_address=address, region_bytes=4096, userspace_address=address + 8192,
+                      register_id=constants["pc_id"], register_address=address)
+                  actual = json.loads(command(str(binary), str(value)), object_pairs_hook=unique_object)
                   if (actual != expected or not isinstance(actual, dict)
                           or any(type(actual[key]) is not type(item) for key, item in expected.items())):
-                      raise ValueError("KVM probe returned missing, malformed or wrong guest evidence")
+                      raise ValueError("Incorrect native userspace ABI evidence")
+              print("Native KVM header ABI checks passed. VM execution is not tested.")
 
           def main():
               if len(sys.argv) != 2:
@@ -412,22 +342,24 @@ jobs:
               mode = sys.argv[1]
               if mode == "identity":
                   print("\t".join(identity()))
-              elif mode in {"api", "vcpu", "invalid-memory", "guest"}:
-                  probe(mode)
+              elif mode == "baseline":
+                  print("\t".join(baseline()))
+              elif mode == "config":
+                  config()
+              elif mode == "headers":
+                  headers()
+              elif mode == "abi":
+                  probe()
               else:
-                  raise ValueError("Unknown KVM check mode")
+                  raise ValueError("Unknown build/ABI check mode")
 
           if __name__ == "__main__":
               main()
 
           PY
-          gcc -std=gnu11 -O2 -Wall -Wextra -Werror "$KVM_SMOKE_DIR/smoke.c" -o "$KVM_SMOKE_DIR/smoke"
-          test -x "$KVM_SMOKE_DIR/smoke"
-          DIGEST=$(sha256sum "$KVM_SMOKE_DIR/smoke")
-          echo "harness_sha256=${DIGEST%% *}" >> "$GITHUB_OUTPUT"
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
-      - name: Identify package owning the running KVM kernel
+      - name: Identify running kernel package (build/ABI scope)
         id: version
         continue-on-error: true
         run: |
@@ -444,7 +376,7 @@ jobs:
           echo "status=passed" >> "$GITHUB_OUTPUT"
           echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 1 - Open KVM device and validate API
+      - name: Test 1 - KVM build/ABI - Verify native kernel package identity
         id: test1
         continue-on-error: true
         timeout-minutes: 2
@@ -452,7 +384,6 @@ jobs:
           EXPECTED_VERSION: ${{ steps.version.outputs.version }}
           EXPECTED_KERNEL_PACKAGE: ${{ steps.version.outputs.kernel_package }}
           EXPECTED_PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
-          KVM_HARNESS_SHA256: ${{ steps.install.outputs.harness_sha256 }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -461,11 +392,11 @@ jobs:
           test "${{ steps.install.outputs.install_status }}" = success
           test "${{ steps.version.outcome }}" = success
           test "${{ steps.version.outputs.status }}" = passed
-          python3 "$KVM_SMOKE_DIR/check.py" api
+          python3 "$KVM_SMOKE_DIR/check.py" baseline
           echo "status=passed" >> "$GITHUB_OUTPUT"
           echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 2 - Verify running kernel package identity
+      - name: Test 2 - KVM build/ABI - Verify packaged Arm64 KVM build configuration
         id: test2
         continue-on-error: true
         timeout-minutes: 2
@@ -473,7 +404,6 @@ jobs:
           EXPECTED_VERSION: ${{ steps.version.outputs.version }}
           EXPECTED_KERNEL_PACKAGE: ${{ steps.version.outputs.kernel_package }}
           EXPECTED_PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
-          KVM_HARNESS_SHA256: ${{ steps.install.outputs.harness_sha256 }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -482,12 +412,11 @@ jobs:
           test "${{ steps.install.outputs.install_status }}" = success
           test "${{ steps.version.outcome }}" = success
           test "${{ steps.version.outputs.status }}" = passed
-          IDENTITY=$(python3 "$KVM_SMOKE_DIR/check.py" identity)
-          test "$IDENTITY" = "$EXPECTED_VERSION"$'\t'"$EXPECTED_KERNEL_PACKAGE"$'\t'"$EXPECTED_PACKAGE_VERSION"
+          python3 "$KVM_SMOKE_DIR/check.py" config
           echo "status=passed" >> "$GITHUB_OUTPUT"
           echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Create VM and initialize AArch64 vCPU
+      - name: Test 3 - KVM build/ABI - Verify package-owned Arm64 UAPI headers
         id: test3
         continue-on-error: true
         timeout-minutes: 2
@@ -495,7 +424,6 @@ jobs:
           EXPECTED_VERSION: ${{ steps.version.outputs.version }}
           EXPECTED_KERNEL_PACKAGE: ${{ steps.version.outputs.kernel_package }}
           EXPECTED_PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
-          KVM_HARNESS_SHA256: ${{ steps.install.outputs.harness_sha256 }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -504,11 +432,12 @@ jobs:
           test "${{ steps.install.outputs.install_status }}" = success
           test "${{ steps.version.outcome }}" = success
           test "${{ steps.version.outputs.status }}" = passed
-          python3 "$KVM_SMOKE_DIR/check.py" vcpu
+          python3 "$KVM_SMOKE_DIR/check.py" headers > "$KVM_SMOKE_DIR/headers.json"
+          cat "$KVM_SMOKE_DIR/headers.json"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 4 - Reject invalid guest memory mapping
+      - name: Test 4 - KVM build/ABI - Compile native userspace ABI probe
         id: test4
         continue-on-error: true
         timeout-minutes: 2
@@ -516,7 +445,6 @@ jobs:
           EXPECTED_VERSION: ${{ steps.version.outputs.version }}
           EXPECTED_KERNEL_PACKAGE: ${{ steps.version.outputs.kernel_package }}
           EXPECTED_PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
-          KVM_HARNESS_SHA256: ${{ steps.install.outputs.harness_sha256 }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -525,11 +453,21 @@ jobs:
           test "${{ steps.install.outputs.install_status }}" = success
           test "${{ steps.version.outcome }}" = success
           test "${{ steps.version.outputs.status }}" = passed
-          python3 "$KVM_SMOKE_DIR/check.py" invalid-memory
+          test "${{ steps.test3.outcome }}" = success
+          test "${{ steps.test3.outputs.status }}" = passed
+          python3 "$KVM_SMOKE_DIR/check.py" headers > "$KVM_SMOKE_DIR/headers-before.json"
+          cmp "$KVM_SMOKE_DIR/headers.json" "$KVM_SMOKE_DIR/headers-before.json"
+          unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH
+          gcc -std=gnu11 -O2 -Wall -Wextra -Werror "$KVM_SMOKE_DIR/smoke.c" -o "$KVM_SMOKE_DIR/smoke"
+          test -x "$KVM_SMOKE_DIR/smoke"
+          python3 "$KVM_SMOKE_DIR/check.py" headers > "$KVM_SMOKE_DIR/headers-after.json"
+          cmp "$KVM_SMOKE_DIR/headers.json" "$KVM_SMOKE_DIR/headers-after.json"
+          DIGEST=$(sha256sum "$KVM_SMOKE_DIR/smoke")
+          echo "harness_sha256=${DIGEST%% *}" >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 5 - Execute AArch64 guest and verify shared memory
+      - name: Test 5 - KVM build/ABI - Run native ABI layout checks (VM execution not tested)
         id: test5
         continue-on-error: true
         timeout-minutes: 2
@@ -537,7 +475,7 @@ jobs:
           EXPECTED_VERSION: ${{ steps.version.outputs.version }}
           EXPECTED_KERNEL_PACKAGE: ${{ steps.version.outputs.kernel_package }}
           EXPECTED_PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
-          KVM_HARNESS_SHA256: ${{ steps.install.outputs.harness_sha256 }}
+          KVM_HARNESS_SHA256: ${{ steps.test4.outputs.harness_sha256 }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -546,11 +484,13 @@ jobs:
           test "${{ steps.install.outputs.install_status }}" = success
           test "${{ steps.version.outcome }}" = success
           test "${{ steps.version.outputs.status }}" = passed
-          python3 "$KVM_SMOKE_DIR/check.py" guest
+          test "${{ steps.test4.outcome }}" = success
+          test "${{ steps.test4.outputs.status }}" = passed
+          python3 "$KVM_SMOKE_DIR/check.py" abi
           echo "status=passed" >> "$GITHUB_OUTPUT"
           echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Regression applicability - package manager installed kernel
+      - name: Regression applicability - package manager installed kernel and headers
         id: test6
         if: always()
         run: |
@@ -562,10 +502,10 @@ jobs:
           if [ "${{ steps.install.outcome }}" != success ] || [ "${{ steps.install.outputs.install_status }}" != success ]; then
             echo "decision=baseline_install_failed" >> "$GITHUB_OUTPUT"
             echo "status=skipped" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Regression skipped: KVM harness setup failed." >> "$GITHUB_OUTPUT"
-            echo "comparison=No successfully prepared KVM baseline is available." >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression skipped: build/ABI setup failed. VM execution is not tested." >> "$GITHUB_OUTPUT"
+            echo "comparison=No build/ABI baseline is available. VM execution is not tested." >> "$GITHUB_OUTPUT"
           elif [ "${{ steps.version.outcome }}" = success ] && [ "${{ steps.version.outputs.status }}" = passed ] && \
-               [ "$CURRENT" != unknown ] && [ -n "$CURRENT" ] && \
+               [[ "$CURRENT" = build-abi@?* ]] && \
                [ -n "${{ steps.version.outputs.kernel_package }}" ] && [ -n "${{ steps.version.outputs.package_version }}" ] && \
                [ "${{ steps.test1.outcome }}" = success ] && [ "${{ steps.test1.outputs.status }}" = passed ] && \
                [ "${{ steps.test2.outcome }}" = success ] && [ "${{ steps.test2.outputs.status }}" = passed ] && \
@@ -574,13 +514,13 @@ jobs:
                [ "${{ steps.test5.outcome }}" = success ] && [ "${{ steps.test5.outputs.status }}" = passed ]; then
             echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
             echo "status=skipped" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Regression not applicable: the tested running kernel is owned by an installed Arm64 Ubuntu kernel package." >> "$GITHUB_OUTPUT"
-            echo "comparison=All five KVM checks passed against the package manager installed kernel; the locally compiled API harness is only a test driver." >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression not applicable: the kernel and UAPI headers are package-manager owned. VM execution is not tested." >> "$GITHUB_OUTPUT"
+            echo "comparison=KVM Arm64 build/ABI smoke only. Hardware-assisted virtualization and VM execution are not tested. The local C program checks userspace headers, not a running hypervisor." >> "$GITHUB_OUTPUT"
           else
             echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
             echo "status=skipped" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Regression skipped: genuine KVM baseline validation failed." >> "$GITHUB_OUTPUT"
-            echo "comparison=All five core checks, including actual guest execution, must pass before package manager applicability can be established." >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression skipped: basic build/ABI validation failed. VM execution is not tested." >> "$GITHUB_OUTPUT"
+            echo "comparison=All five scoped build/ABI checks must pass before package-manager applicability is established. VM execution is not tested." >> "$GITHUB_OUTPUT"
           fi
           echo "duration=0" >> "$GITHUB_OUTPUT"
 
@@ -599,7 +539,7 @@ jobs:
             PREREQUISITES=failed
             EXPECTED_DECISION=baseline_install_failed
           elif [ "${{ steps.version.outcome }}" != success ] || [ "${{ steps.version.outputs.status }}" != passed ] || \
-               [ -z "${{ steps.version.outputs.version }}" ] || [ "${{ steps.version.outputs.version }}" = unknown ] || \
+               [[ "${{ steps.version.outputs.version }}" != build-abi@?* ]] || \
                [ -z "${{ steps.version.outputs.kernel_package }}" ] || [ -z "${{ steps.version.outputs.package_version }}" ]; then
             PREREQUISITES=failed
             EXPECTED_DECISION=baseline_failed
@@ -656,11 +596,13 @@ jobs:
             exit 1
           fi
 
-      - name: Create test summary
+      - name: Create scoped build and ABI test summary
         if: always()
         run: |
           {
-            echo "## KVM Test Results"
+            echo "## KVM Arm64 Build/ABI Smoke Results"
+            echo "- **Scope: basic kernel-build and userspace ABI compatibility only. Hardware-assisted virtualization and VM execution are not tested.**"
+            echo "- Free runner: ubuntu-24.04-arm. No additional runner or nested virtualization is required."
             echo ""
             echo "- Running kernel: ${{ steps.version.outputs.version || 'unknown' }}"
             echo "- Kernel package: ${{ steps.version.outputs.kernel_package || 'unverified' }}"
@@ -672,10 +614,10 @@ jobs:
             echo ""
             echo "| Test | Status | Outcome |"
             echo "| --- | --- | --- |"
-            echo "| Test 1 - KVM device/API | ${{ steps.test1.outputs.status || 'failed' }} | ${{ steps.test1.outcome }} |"
-            echo "| Test 2 - Running kernel identity | ${{ steps.test2.outputs.status || 'failed' }} | ${{ steps.test2.outcome }} |"
-            echo "| Test 3 - VM/vCPU initialization | ${{ steps.test3.outputs.status || 'failed' }} | ${{ steps.test3.outcome }} |"
-            echo "| Test 4 - Invalid memory rejection | ${{ steps.test4.outputs.status || 'failed' }} | ${{ steps.test4.outcome }} |"
-            echo "| Test 5 - AArch64 guest/shared RAM | ${{ steps.test5.outputs.status || 'failed' }} | ${{ steps.test5.outcome }} |"
+            echo "| Test 1 - Native kernel identity | ${{ steps.test1.outputs.status || 'failed' }} | ${{ steps.test1.outcome }} |"
+            echo "| Test 2 - Packaged KVM build configuration | ${{ steps.test2.outputs.status || 'failed' }} | ${{ steps.test2.outcome }} |"
+            echo "| Test 3 - Package-owned Arm64 UAPI headers | ${{ steps.test3.outputs.status || 'failed' }} | ${{ steps.test3.outcome }} |"
+            echo "| Test 4 - Native ABI probe compilation | ${{ steps.test4.outputs.status || 'failed' }} | ${{ steps.test4.outcome }} |"
+            echo "| Test 5 - Native ABI checks (VM execution not tested) | ${{ steps.test5.outputs.status || 'failed' }} | ${{ steps.test5.outcome }} |"
             echo "| Regression applicability | ${{ steps.test6.outputs.status || 'failed' }} | ${{ steps.test6.outputs.decision || 'missing' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
