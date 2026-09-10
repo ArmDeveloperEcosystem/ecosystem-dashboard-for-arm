@@ -969,7 +969,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         transition = lock["hardened_workflow_transition"]
         self.assertEqual(
-            "14e857ebdc96a95c85926b3bbda1a19dbb7d166e2652e43fb59aa628cd369e0a",
+            "c756fd2e7bba16232c69bed31ba54fdf78d91ef2dfd0916359bdbee7f9dc149e",
             transition["from_sha256"],
         )
         self.assertEqual(
