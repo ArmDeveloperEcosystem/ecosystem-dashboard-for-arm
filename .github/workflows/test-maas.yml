@@ -79,8 +79,136 @@ on:
 jobs:
   test-maas:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     env:
-      MAAS_VENV: /tmp/maas-venv
+      MAAS_CONTAINER: maas-api-${{ github.run_id }}-${{ github.run_attempt }}
+      MAAS_VERSION: '3.6.5'
+      MAAS_DEB_VERSION: '1:3.6.5-17655-g.474ecb517-0ubuntu1~24.04.1'
+      MAAS_SOURCE_REVISION: '474ecb5177f27fbf0a9a8d56c28fa50edd329ec4'
+      # Bounded production API frontend and private database, not provisioning
+      # or the catalog's historical minimum. The official Noble PPA publishes
+      # these server packages and Temporal dependencies for arm64.
+      MAAS_IDENTITY: |
+        import importlib.metadata
+        import os
+        from pathlib import Path
+        import subprocess
+        import maasserver
+        from provisioningserver.utils.version import get_running_version
+
+        expected = os.environ['MAAS_DEB_VERSION']
+        for package in ('maas-region-api', 'python3-django-maas', 'python3-maas-provisioningserver'):
+            result = subprocess.run(['dpkg-query', '-W',
+                '-f=${Package}\t${Status}\t${Version}\t${Architecture}\t${source:Package}\n',
+                package], check=True, capture_output=True, text=True)
+            assert not result.stderr, result.stderr
+            assert result.stdout == f'{package}\tinstall ok installed\t{expected}\tall\tmaas\n', result.stdout
+        for path, owner in (
+            ('/usr/sbin/maas-region', 'maas-region-api'),
+            (maasserver.__file__, 'python3-django-maas'),
+        ):
+            assert Path(path).is_file(), path
+            result = subprocess.run(['dpkg-query', '-S', path], check=True, capture_output=True, text=True)
+            assert not result.stderr and result.stdout.strip() == f'{owner}: {path}', result
+        assert Path(maasserver.__file__).resolve() == Path('/usr/lib/python3/dist-packages/maasserver/__init__.py')
+        version = get_running_version()
+        assert version.short_version == os.environ['MAAS_VERSION'], version
+        assert version.git_rev == os.environ['MAAS_SOURCE_REVISION'][:9], version
+        assert maasserver.__version__ == version.short_version
+        assert importlib.metadata.version('maas') == version.short_version
+        print(f'version={version.short_version}')
+        print(f'package_version={expected}')
+        print('installation_method=deb')
+        print('source_revision=' + os.environ['MAAS_SOURCE_REVISION'])
+      MAAS_API_SERVER: |
+        import os
+        import sys
+        os.environ['DJANGO_SETTINGS_MODULE'] = 'maasserver.djangosettings.settings'
+        import crochet
+        import django
+        from twisted.internet import reactor
+        from twisted.internet.defer import inlineCallbacks
+        from twisted.web.resource import Resource
+        from twisted.web.server import Site
+        from twisted.web.wsgi import WSGIResource
+        from maasserver.utils import threads
+        from provisioningserver import logger
+
+        logger.configure(verbosity=2, mode=logger.LoggingMode.COMMAND)
+        threads.install_default_pool(maxthreads=2)
+        threads.install_database_pool(maxthreads=2)
+        django.setup()
+        crochet.no_setup()
+        from maasserver.start_up import start_up
+        from maasserver.utils.orm import disable_all_database_connections
+        from maasserver.utils.views import WebApplicationHandler
+
+        # Use regiond's production handler, database pool, URL mount and
+        # initialization. No API views, auth, models or migrations are replaced.
+        root = Resource()
+        root.putChild(b'MAAS', WSGIResource(reactor, reactor.threadpoolForDatabase, WebApplicationHandler()))
+        @inlineCallbacks
+        def start():
+            disable_all_database_connections()
+            yield start_up(master=True)
+            reactor.listenTCP(5240, Site(root), interface='127.0.0.1')
+            print('MAAS production API frontend ready', flush=True)
+        def failed(failure):
+            failure.printTraceback(file=sys.stderr)
+            reactor.stop()
+        reactor.callWhenRunning(lambda: start().addErrback(failed))
+        reactor.run()
+      MAAS_API_PROOF: |
+        import json
+        import os
+        from pathlib import Path
+        import uuid
+        from oauthlib.oauth1 import Client, SIGNATURE_PLAINTEXT
+        import psycopg2
+        import requests
+
+        base = 'http://127.0.0.1:5240/MAAS/api/2.0/'
+        key = Path('/smoke/api-key.txt').read_text().strip().split(':')
+        assert len(key) == 3 and all(key)
+        oauth = Client(key[0], resource_owner_key=key[1], resource_owner_secret=key[2],
+                       signature_method=SIGNATURE_PLAINTEXT)
+        name = 'maas-smoke-' + uuid.uuid4().hex
+        def request(method, path, status, data=None, auth=True):
+            url = base + path
+            headers = oauth.sign(url, http_method=method)[1] if auth else {}
+            response = requests.request(method, url, headers=headers,
+                files={k: (None, v) for k, v in data.items()} if data else None,
+                timeout=15, allow_redirects=False)
+            print(json.dumps({'method': method, 'path': path, 'authenticated': auth,
+                'status': response.status_code, 'body': response.text}), flush=True)
+            assert response.status_code == status, response.text
+            return response.json() if response.content and 'application/json' in response.headers.get('Content-Type', '') else response.text
+        def persisted(expected):
+            with psycopg2.connect(host='/smoke/pgsocket', port=55432, dbname='maas_smoke', user='maas') as db:
+                with db.cursor() as cursor:
+                    cursor.execute('SELECT name, comment, definition FROM maasserver_tag WHERE name IN (%s, %s) ORDER BY name',
+                                   (name, name + '-denied'))
+                    rows = cursor.fetchall()
+                    print(json.dumps({'postgres_rows': rows}), flush=True)
+                    assert rows == expected, rows
+        version = request('GET', 'version/', 200, auth=False)
+        assert version['version'] == os.environ['MAAS_VERSION'], version
+        assert 'authenticate-api' in version['capabilities'], version
+        request('POST', 'tags/', 401, {'name': name + '-denied'}, auth=False)
+        created = request('POST', 'tags/', 200, {'name': name, 'definition': '', 'comment': 'created'})
+        assert created['name'] == name and created['comment'] == 'created' and created['definition'] == '', created
+        read = request('GET', 'tags/' + name + '/', 200)
+        assert read['name'] == name and read['comment'] == 'created', read
+        persisted([(name, 'created', '')])
+        updated = request('PUT', 'tags/' + name + '/', 200, {'comment': 'persisted-update'})
+        assert updated['comment'] == 'persisted-update', updated
+        read = request('GET', 'tags/' + name + '/', 200)
+        assert read['name'] == name and read['comment'] == 'persisted-update' and read['definition'] == '', read
+        persisted([(name, 'persisted-update', '')])
+        request('DELETE', 'tags/' + name + '/', 204)
+        request('GET', 'tags/' + name + '/', 404)
+        persisted([])
+        print('MAAS_API_POSTGRES_PROOF_PASSED', flush=True)
 
     outputs:
       contract_version: "2.0"
@@ -118,171 +246,368 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=maas" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/maas" >> "$GITHUB_OUTPUT"
-      - name: Install MAAS CLI
+      - name: Install actual MAAS region API from the official Noble PPA
         id: install
         run: |
           set -euo pipefail
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "python3-pip python3-venv"
-          rm -rf "${MAAS_VENV}"
-          python3 -m venv "${MAAS_VENV}"
-          . "${MAAS_VENV}/bin/activate"
-          pip install --upgrade pip >/dev/null
-          pip install python-libmaas
-
-          if command -v maas >/dev/null 2>&1; then
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-          else
-            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+          test "$(uname -m)" = aarch64
+          if docker container inspect "$MAAS_CONTAINER" >/dev/null 2>&1; then
+            echo 'Refusing to reuse an existing container' >&2
             exit 1
           fi
+          docker run -d --name "$MAAS_CONTAINER" --label "maas-smoke-owner=$MAAS_CONTAINER" \
+            --platform linux/arm64 --cpus 2 --memory 3g --memory-swap 3g --pids-limit 512 \
+            ubuntu:24.04 sleep 1200
+          docker inspect "$MAAS_CONTAINER"
+          docker exec -i -e "MAAS_DEB_VERSION=$MAAS_DEB_VERSION" "$MAAS_CONTAINER" bash -seuo pipefail <<'INSTALL'
+          export DEBIAN_FRONTEND=noninteractive LC_ALL=C.UTF-8 LANG=C.UTF-8 TZ=UTC
+          mkdir /smoke
+          printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+          chmod 755 /usr/sbin/policy-rc.d
+          test "$(dpkg --print-architecture)" = arm64
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl gnupg file binutils sudo lsb-release
+          curl -fLsS --max-time 60 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x3AB6DCF1F234E78DAA9C104204E7FDC5684D4A1C' -o /smoke/maas-key.asc
+          test "$(gpg --show-keys --with-colons /smoke/maas-key.asc | awk -F: '$1=="fpr" {print $10; exit}')" = 3AB6DCF1F234E78DAA9C104204E7FDC5684D4A1C
+          gpg --dearmor < /smoke/maas-key.asc > /usr/share/keyrings/maas-smoke.gpg
+          printf '%s\n' 'deb [arch=arm64 signed-by=/usr/share/keyrings/maas-smoke.gpg] https://ppa.launchpadcontent.net/maas/3.6/ubuntu noble main' > /etc/apt/sources.list.d/maas-smoke.list
+          apt-get update
+          apt-cache policy maas-region-api python3-django-maas python3-temporalio temporal postgresql-16
+          apt-get install -y --no-install-recommends "maas-region-api=$MAAS_DEB_VERSION" postgresql-16
+          dpkg-query -W -f='${binary:Package}\t${Version}\t${Architecture}\t${db:Status-Abbrev}\n' > /smoke/installed-packages.tsv
+          INSTALL
+          echo "installation_method=deb" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get MAAS version
         id: version
         run: |
           set -euo pipefail
-          . "${MAAS_VENV}/bin/activate"
-          VERSION=$(python3 -c 'import importlib.metadata as metadata; print(metadata.version("python-libmaas"))')
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          IDENTITY=$(printf '%s\n' "$MAAS_IDENTITY" | docker exec -i \
+            -e "MAAS_VERSION=$MAAS_VERSION" -e "MAAS_DEB_VERSION=$MAAS_DEB_VERSION" \
+            -e "MAAS_SOURCE_REVISION=$MAAS_SOURCE_REVISION" "$MAAS_CONTAINER" python3 -)
+          printf '%s\n' "$IDENTITY"
+          VERSION=$(printf '%s\n' "$IDENTITY" | python3 -c 'import sys; print(dict(line.rstrip("\n").split("=", 1) for line in sys.stdin)["version"])')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "package_version=$MAAS_DEB_VERSION" >> "$GITHUB_OUTPUT"
+          echo "source_revision=$MAAS_SOURCE_REVISION" >> "$GITHUB_OUTPUT"
+          echo "installation_method=deb" >> "$GITHUB_OUTPUT"
 
-      - name: Test 1 - Check MAAS CLI exists
+      - name: Test 1 - Actual server executable and package ownership
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          . "${MAAS_VENV}/bin/activate"
-          if command -v maas >/dev/null 2>&1; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          finish() {
+            rc=$?
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap finish EXIT
+          docker exec "$MAAS_CONTAINER" bash -seuo pipefail -c '
+            test -x /usr/sbin/maas-region
+            test -f /usr/lib/python3/dist-packages/maasserver/api/tags.py
+            test "$(dpkg-query -S /usr/sbin/maas-region)" = "maas-region-api: /usr/sbin/maas-region"
+            test "$(dpkg-query -S /usr/lib/python3/dist-packages/maasserver/api/tags.py)" = "python3-django-maas: /usr/lib/python3/dist-packages/maasserver/api/tags.py"
+          '
+          finish
 
-      - name: Test 2 - Check installed MAAS version metadata
+      - name: Test 2 - Server runtime version bound to the installed deb and source
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          . "${MAAS_VENV}/bin/activate"
-          VERSION=$(python3 -c 'import importlib.metadata as metadata; print(metadata.version("python-libmaas"))')
-          if printf '%s\n' "${VERSION}" | grep -qE '^[0-9]+\.[0-9]+'; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            printf '%s\n' "${VERSION}"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          finish() {
+            rc=$?
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap finish EXIT
+          printf '%s\n' "$MAAS_IDENTITY" | docker exec -i \
+            -e "MAAS_VERSION=$MAAS_VERSION" -e "MAAS_DEB_VERSION=$MAAS_DEB_VERSION" \
+            -e "MAAS_SOURCE_REVISION=$MAAS_SOURCE_REVISION" "$MAAS_CONTAINER" python3 -
+          finish
 
-      - name: Test 3 - Check MAAS help output
+      - name: Test 3 - Installed region database management command
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          . "${MAAS_VENV}/bin/activate"
-          HELP_OUTPUT=$(maas --help 2>&1)
-          if printf '%s\n' "${HELP_OUTPUT}" | grep -q "MAAS provides complete automation" && \
-             printf '%s\n' "${HELP_OUTPUT}" | grep -q "login"; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            printf '%s\n' "${HELP_OUTPUT}"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          finish() {
+            rc=$?
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap finish EXIT
+          HELP_OUTPUT=$(docker exec "$MAAS_CONTAINER" maas-region dbupgrade --help)
+          printf '%s\n' "$HELP_OUTPUT"
+          printf '%s\n' "$HELP_OUTPUT" | grep -Fq 'Upgrades database schema for MAAS regiond.'
+          printf '%s\n' "$HELP_OUTPUT" | grep -Fq -- '--database'
+          finish
 
       - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ "$(uname -m)" = "aarch64" ]; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          finish() {
+            rc=$?
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap finish EXIT
+          test "$(uname -m)" = aarch64
+          docker exec -i "$MAAS_CONTAINER" bash -seuo pipefail <<'ARCH'
+          test "$(uname -m)" = aarch64
+          test "$(dpkg --print-architecture)" = arm64
+          for package in python3.12-minimal postgresql-16 python3-psycopg2 python3-temporalio temporal; do
+            test "$(dpkg-query -W -f='${Status}:${Architecture}' "$package")" = 'install ok installed:arm64'
+          done
+          python3 -c 'import psycopg2._psycopg, temporalio.bridge.temporal_sdk_bridge; print(psycopg2._psycopg.__file__); print(temporalio.bridge.temporal_sdk_bridge.__file__)' > /smoke/native-modules.txt
+          printf '%s\n' /usr/bin/python3.12 /usr/lib/postgresql/16/bin/postgres /usr/bin/temporal-sql-tool >> /smoke/native-modules.txt
+          while IFS= read -r binary; do
+            file "$binary"
+            readelf -h "$binary" > /smoke/elf-header.txt
+            grep -Eq 'Machine: +AArch64$' /smoke/elf-header.txt
+          done < /smoke/native-modules.txt
+          ARCH
+          finish
 
-      - name: Test 5 - Functional Validation
+      - name: Test 5 - Real MAAS API, PostgreSQL migrations and authenticated tag persistence
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          . "${MAAS_VENV}/bin/activate"
-          PROFILES_OUTPUT=$(maas profiles 2>&1)
-          if printf '%s\n' "${PROFILES_OUTPUT}" | grep -q "Profile" && \
-             python3 -c 'from maas.client.flesh import main; print("libmaas-import-ok")' >/dev/null; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            printf '%s\n' "${PROFILES_OUTPUT}"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
+          finish() {
+            rc=$?
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap finish EXIT
+          docker exec -i -e "MAAS_VERSION=$MAAS_VERSION" -e "MAAS_API_SERVER=$MAAS_API_SERVER" \
+            -e "MAAS_API_PROOF=$MAAS_API_PROOF" "$MAAS_CONTAINER" bash -seuo pipefail <<'SMOKE'
+          export LC_ALL=C.UTF-8 LANG=C.UTF-8 TZ=UTC MAAS_REGION_CONFIG=/smoke/regiond.conf
+          server_pid=
+          cleanup() {
+            rc=$?
+            trap - EXIT
+            if [ -n "$server_pid" ]; then
+              kill "$server_pid" 2>/dev/null || true
+              for attempt in $(seq 1 10); do
+                if ! kill -0 "$server_pid" 2>/dev/null; then break; fi
+                sleep 1
+              done
+              if kill -0 "$server_pid" 2>/dev/null; then kill -KILL "$server_pid"; rc=1; fi
+              wait "$server_pid" || true
+            fi
+            if [ -f /smoke/pgdata/postmaster.pid ]; then
+              runuser -u postgres -- /usr/lib/postgresql/16/bin/pg_ctl -D /smoke/pgdata -m fast -w -t 15 stop || rc=1
+            fi
+            if [ -f /smoke/api-server.log ]; then cat /smoke/api-server.log; fi
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          test ! -e /smoke/pgdata
+          mkdir /smoke/pgdata /smoke/pgsocket
+          chown postgres:postgres /smoke/pgdata /smoke/pgsocket
+          runuser -u postgres -- /usr/lib/postgresql/16/bin/initdb -D /smoke/pgdata --auth-local=trust --auth-host=reject --encoding=UTF8 --locale=C.UTF-8
+          runuser -u postgres -- /usr/lib/postgresql/16/bin/pg_ctl -D /smoke/pgdata -l /smoke/pgdata/server.log -o '-k /smoke/pgsocket -p 55432 -c listen_addresses= -c max_connections=30 -c shared_buffers=128MB' -w start
+          runuser -u postgres -- /usr/lib/postgresql/16/bin/createuser -h /smoke/pgsocket -p 55432 maas
+          runuser -u postgres -- /usr/lib/postgresql/16/bin/createdb -h /smoke/pgsocket -p 55432 -O maas maas_smoke
+          printf '%s\n' 'database_host: /smoke/pgsocket' 'database_port: 55432' \
+            'database_name: maas_smoke' 'database_user: maas' "database_pass: ''" \
+            'maas_url: http://127.0.0.1:5240/MAAS' 'num_workers: 1' 'debug: false' > /smoke/regiond.conf
+          chmod 640 /smoke/regiond.conf
+          chgrp maas /smoke/regiond.conf
+          timeout --signal=TERM --kill-after=10s 300s maas-region dbupgrade
+          timeout 30s maas-region migrate --check
+          maas-region showmigrations --plan > /smoke/migration-plan.txt
+          psql -h /smoke/pgsocket -p 55432 -U maas -d maas_smoke -X -v ON_ERROR_STOP=1 -c 'SELECT version(); SELECT count(*) FROM django_migrations;' > /smoke/database-proof.txt
+          timeout 30s maas-region createadmin --username maas-smoke --password local-disposable-smoke --email smoke@example.invalid
+          timeout 30s maas-region apikey --username maas-smoke > /smoke/api-key.txt
+          printf '%s\n' "$MAAS_API_SERVER" > /smoke/api-server.py
+          printf '%s\n' "$MAAS_API_PROOF" > /smoke/api-proof.py
+          sha256sum /smoke/api-server.py /smoke/api-proof.py
+          python3 -u /smoke/api-server.py > /smoke/api-server.log 2>&1 &
+          server_pid=$!
+          ready=0
+          for attempt in $(seq 1 60); do
+            kill -0 "$server_pid"
+            if curl -fsS --max-time 2 http://127.0.0.1:5240/MAAS/api/2.0/version/ > /smoke/version-response.json; then ready=1; break; fi
+            sleep 1
+          done
+          test "$ready" = 1
+          timeout --signal=TERM --kill-after=5s 90s python3 -u /smoke/api-proof.py
+          SMOKE
+          finish
 
       - name: Regression applicability - package manager installed
         id: test6
+        if: always()
         run: |
           set -euo pipefail
+          START_TIME=$(date +%s)
+          finish() {
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+          }
+          trap finish EXIT
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
           echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.install.outcome }}" != success ] || [ "${{ steps.install.outputs.installation_method }}" != deb ]; then
+            echo "decision=baseline_install_failed" >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "regression_result=The actual MAAS server package installation failed." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${{ steps.version.outcome }}" != success ] || [ "${{ steps.version.outputs.installation_method }}" != deb ] || \
+             [ "${{ steps.test1.outcome }}:${{ steps.test1.outputs.status }}" != success:passed ] || \
+             [ "${{ steps.test2.outcome }}:${{ steps.test2.outputs.status }}" != success:passed ] || \
+             [ "${{ steps.test3.outcome }}:${{ steps.test3.outputs.status }}" != success:passed ] || \
+             [ "${{ steps.test4.outcome }}:${{ steps.test4.outputs.status }}" != success:passed ] || \
+             [ "${{ steps.test5.outcome }}:${{ steps.test5.outputs.status }}" != success:passed ]; then
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "regression_result=The actual MAAS server baseline did not pass." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s\n' "$MAAS_IDENTITY" | docker exec -i \
+            -e "MAAS_VERSION=$MAAS_VERSION" -e "MAAS_DEB_VERSION=$MAAS_DEB_VERSION" \
+            -e "MAAS_SOURCE_REVISION=$MAAS_SOURCE_REVISION" "$MAAS_CONTAINER" python3 -
+          test "$CURRENT" = "$MAAS_VERSION"
+          echo "installation_method=deb" >> "$GITHUB_OUTPUT"
           echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
+          echo "regression_result=Regression validation not applicable: the actual MAAS server was installed as verified deb packages." >> "$GITHUB_OUTPUT"
+          echo "comparison=Package-manager installation; bounded API/database smoke only. Provisioning and the catalog minimum were not tested." >> "$GITHUB_OUTPUT"
           echo "status=skipped" >> "$GITHUB_OUTPUT"
-          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap - EXIT
+          finish
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
+          CORE_FAILED=0
           TOTAL_DURATION=0
-
+          INSTALL_OK=0
+          if [ "${{ steps.install.outcome }}:${{ steps.install.outputs.installation_method }}" = success:deb ]; then INSTALL_OK=1; fi
+          PROVENANCE=0
+          if [ "$INSTALL_OK" = 1 ] && \
+             [ "${{ steps.version.outcome }}:${{ steps.version.outputs.installation_method }}" = success:deb ] && \
+             [ "${{ steps.version.outputs.version }}" = "$MAAS_VERSION" ]; then PROVENANCE=1; fi
           check_test() {
-            local status="$1"
-            local duration="$2"
-            if [ "${status}" = "passed" ]; then
+            local status="$1" outcome="$2" duration="$3"
+            if [[ "$duration" =~ ^[0-9]{1,7}$ ]]; then
+              TOTAL_DURATION=$((TOTAL_DURATION + 10#$duration))
+            else
+              status=failed
+            fi
+            if [ "$status" = passed ] && [ "$outcome" = success ] && [ "$PROVENANCE" = 1 ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
             fi
-            TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
-
-          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
-
+          check_test "${{ steps.test1.outputs.status }}" "${{ steps.test1.outcome }}" "${{ steps.test1.outputs.duration }}"
+          check_test "${{ steps.test2.outputs.status }}" "${{ steps.test2.outcome }}" "${{ steps.test2.outputs.duration }}"
+          check_test "${{ steps.test3.outputs.status }}" "${{ steps.test3.outcome }}" "${{ steps.test3.outputs.duration }}"
+          check_test "${{ steps.test4.outputs.status }}" "${{ steps.test4.outcome }}" "${{ steps.test4.outputs.duration }}"
+          check_test "${{ steps.test5.outputs.status }}" "${{ steps.test5.outcome }}" "${{ steps.test5.outputs.duration }}"
+          REGRESSION_VALID=0
+          if [ "${{ steps.test6.outcome }}:${{ steps.test6.outputs.status }}" = success:skipped ]; then
+            case "${{ steps.test6.outputs.decision }}" in
+              not_applicable_package_manager)
+                if [ "$CORE_FAILED" = 0 ] && [ "$PROVENANCE" = 1 ] && [ "${{ steps.test6.outputs.installation_method }}" = deb ]; then REGRESSION_VALID=1; fi ;;
+              baseline_install_failed)
+                if [ "$CORE_FAILED" -gt 0 ] && [ "$INSTALL_OK" = 0 ]; then REGRESSION_VALID=1; fi ;;
+              baseline_failed)
+                if [ "$CORE_FAILED" -gt 0 ] && [ "$INSTALL_OK" = 1 ]; then REGRESSION_VALID=1; fi ;;
+            esac
+          fi
+          DURATION="${{ steps.test6.outputs.duration }}"
+          if [[ "$DURATION" =~ ^[0-9]{1,7}$ ]]; then
+            TOTAL_DURATION=$((TOTAL_DURATION + 10#$DURATION))
+          else
+            REGRESSION_VALID=0
+          fi
+          if [ "$REGRESSION_VALID" = 1 ]; then
+            SKIPPED=$((SKIPPED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
           echo "passed=${PASSED}" >> "$GITHUB_OUTPUT"
           echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+          echo "skipped=${SKIPPED}" >> "$GITHUB_OUTPUT"
+          echo "core_failed=${CORE_FAILED}" >> "$GITHUB_OUTPUT"
           echo "duration=${TOTAL_DURATION}" >> "$GITHUB_OUTPUT"
-
-          if [ "${FAILED}" -eq 0 ]; then
-            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          if [ "$FAILED" = 0 ]; then
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "${FAILED}" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             exit 1
+          fi
+
+      - name: Remove owned MAAS container
+        if: always()
+        run: |
+          set -euo pipefail
+          if docker container inspect "$MAAS_CONTAINER" >/dev/null 2>&1; then
+            OWNER=$(docker inspect --format '{{ index .Config.Labels "maas-smoke-owner" }}' "$MAAS_CONTAINER")
+            test "$OWNER" = "$MAAS_CONTAINER"
+            docker rm -f "$MAAS_CONTAINER"
           fi
 
       - name: Create test summary
         if: always()
         run: |
           echo "## MAAS Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Scope:** MAAS production API frontend, upstream initialization, private PostgreSQL migrations and authenticated empty-tag CRUD. No provisioning, full region/rack deployment, or catalog-minimum claim." >> "$GITHUB_STEP_SUMMARY"
           echo "- **Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"

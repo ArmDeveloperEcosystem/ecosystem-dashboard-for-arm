@@ -11,6 +11,8 @@ import unittest
 
 import yaml
 
+from test_guacamole_workflow import PMDecisionChecks
+
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows/test-krb5.yml"
 BANNER = "Kerberos 5 version "
@@ -18,7 +20,9 @@ VERSION = "1.20.1"
 PACKAGE_VERSION = "1.20.1-6ubuntu2.6"
 
 
-class Krb5WorkflowTests(unittest.TestCase):
+class Krb5WorkflowTests(PMDecisionChecks, unittest.TestCase):
+    workflow_path = WORKFLOW
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="krb5-workflow-")
         self.addCleanup(temp.cleanup)
@@ -195,13 +199,13 @@ esac
         self.assertTrue(self.steps["version"]["continue-on-error"])
 
     def test_package_manager_regression_skip_and_success_summary(self):
-        result, regression = self.run_step("test6", self.verified())
+        values = self.summary_values()
+        result, regression = self.run_step("test6", values)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(regression["status"], "skipped")
         self.assertEqual(regression["decision"], "not_applicable_package_manager")
         self.assertEqual(regression["current_version"], VERSION)
-        values = {f"steps.test{i}.outputs.status": "passed" for i in range(1, 6)}
-        values["steps.test6.outputs.status"] = regression["status"]
+        values.update({f"steps.test6.outputs.{key}": value for key, value in regression.items()})
         result, outputs = self.run_step("summary", values)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(outputs, {"passed": "5", "failed": "0", "core_failed": "0",
@@ -211,9 +215,9 @@ esac
     def test_core_failure_or_missing_status_has_consistent_summary(self):
         for status in ("failed", ""):
             with self.subTest(status=status):
-                values = {f"steps.test{i}.outputs.status": "passed" for i in range(1, 6)}
+                values = self.summary_values()
                 values["steps.test3.outputs.status"] = status
-                values["steps.test6.outputs.status"] = "skipped"
+                self.pm_guard(values)
                 result, outputs = self.run_step("summary", values)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(outputs["passed"], "4")

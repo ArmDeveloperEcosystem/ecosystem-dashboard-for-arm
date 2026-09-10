@@ -12,19 +12,23 @@ import unittest
 
 import yaml
 
+from test_guacamole_workflow import PMDecisionChecks
+
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows/test-mysql.yml"
 VERSION = "8.0.46"
 PACKAGE_VERSION = "8.0.46-0ubuntu0.24.04.4"
 
 
-class MySQLWorkflowTests(unittest.TestCase):
+class MySQLWorkflowTests(PMDecisionChecks, unittest.TestCase):
+    workflow_path = WORKFLOW
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="mysql-workflow-")
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
-        self.steps = {step["id"]: step for step in
-                      yaml.safe_load(WORKFLOW.read_text())["jobs"]["test-mysql"]["steps"] if "id" in step}
+        self.job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["test-mysql"]
+        self.steps = {step["id"]: step for step in self.job["steps"] if "id" in step}
         self.bin = self.root / "bin"
         self.bin.mkdir()
         for name, executable in (("python3", sys.executable), ("date", shutil.which("date")),
@@ -285,23 +289,17 @@ while True:
             self.assert_rejected("test5", MYSQL_VERSION=version)
 
     def test_package_manager_skip_and_five_pass_summary(self):
-        result, regression = self.run_step("test6")
+        values = self.summary_values()
+        result, regression = self.run_step("test6", values)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(regression["status"], "skipped")
         self.assertEqual(regression["decision"], "not_applicable_package_manager")
         self.assertEqual(regression["current_version"], VERSION)
-        values = self.summary_values()
+        values.update({f"steps.test6.outputs.{key}": value for key, value in regression.items()})
         result, output = self.run_step("summary", values)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output, {"passed": "5", "failed": "0", "core_failed": "0", "skipped": "1",
                     "duration": "0", "overall_status": "success", "badge_status": "passing"})
-
-    def summary_values(self):
-        values = {f"steps.test{i}.outputs.status": "passed" for i in range(1, 6)}
-        values.update({f"steps.test{i}.outcome": "success" for i in range(1, 7)})
-        values.update({"steps.test6.outputs.status": "skipped",
-                       "steps.test6.outputs.decision": "not_applicable_package_manager"})
-        return values
 
     def test_every_failed_or_missing_baseline_status_fails_summary(self):
         for i in range(1, 6):
@@ -309,6 +307,7 @@ while True:
                 with self.subTest(test=i, status=status):
                     values = self.summary_values()
                     values[f"steps.test{i}.outputs.status"] = status
+                    self.pm_guard(values)
                     result, output = self.run_step("summary", values)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertEqual(output["passed"], "4")
@@ -332,6 +331,7 @@ while True:
         values["steps.test6.outputs.duration"] = "0"
         values["steps.test5.outcome"] = "failure"
         values["steps.test5.outputs.status"] = "failed"
+        self.pm_guard(values)
         result, output = self.run_step("summary", values)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(output["duration"], "15")
@@ -342,6 +342,7 @@ while True:
                 with self.subTest(test=i, outcome=outcome):
                     values = self.summary_values()
                     values[f"steps.test{i}.outcome"] = outcome
+                    self.pm_guard(values)
                     result, output = self.run_step("summary", values)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertEqual(output["passed"], "4")

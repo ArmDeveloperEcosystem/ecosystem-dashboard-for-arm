@@ -15,6 +15,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import package_observation_migration_audit as audit
+from test_edot_dotnet_sdk_workflow import PackageManagerDecisionChecks
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows/test-robot-framework.yml"
@@ -269,15 +270,17 @@ def run_cli():
         self.assertIn("if robot --outputdir results smoke_test.robot; then", script)
         self.assertNotIn("status=skipped", script)
 
-    def test_package_manager_regression_classification_is_preserved(self):
-        result, outputs = self.run_step("test6", expected="7.4.2")
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual("7.4.2", outputs["current_version"])
-        self.assertEqual("not_applicable_package_manager", outputs["decision"])
-        self.assertEqual("skipped", outputs["status"])
-        self.assertEqual("not_applicable", outputs["latest_version"])
-        self.assertEqual("not_applicable", outputs["next_installed_version"])
-        self.assertEqual("0", outputs["duration"])
+
+class RobotPackageManagerDecisionTests(PackageManagerDecisionChecks, unittest.TestCase):
+    slug = 'robot-framework'
+    version = '7.4.2'
+    workflow = WORKFLOW
+
+    def test_successful_prerelease_baselines_keep_the_pm_decision(self):
+        for version in ('7.5rc1', '7.5.dev1'):
+            with self.subTest(version=version):
+                self.values['steps.version.outputs.version'] = version
+                self.assert_summary(*self.decision_summary('not_applicable_package_manager'), (5, 0, 1, 0))
 
 
 if __name__ == "__main__":

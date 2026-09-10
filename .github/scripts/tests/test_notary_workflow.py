@@ -14,6 +14,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import package_observation_migration_audit as observation_audit
+import package_result_policy as result_policy
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows/test-notary.yml"
@@ -47,6 +48,7 @@ class WorkflowHarness:
             "PM_FORMAT": FORMAT,
         }
         self.values = {
+            "steps.install.outcome": "success",
             "steps.version.outputs.version": VERSION,
             "steps.version.outputs.package_version": REVISION,
             "steps.version.outputs.status": "passed",
@@ -142,9 +144,11 @@ class ContractChecks:
                     "overall_status", "badge_status"):
             self.assertTrue(observation_audit._step_emits_output(
                 self.workflow.parents[2], self.steps["summary"], key))
-        self.assertEqual(("not_applicable_package_manager",),
-                         observation_audit._step_literal_outputs(
-                             self.workflow.parents[2], self.steps["test6"], "decision"))
+        self.assertEqual({("not_applicable_package_manager", "skipped"),
+                          ("baseline_failed", "skipped"),
+                          ("baseline_install_failed", "skipped")},
+                         set(observation_audit._step_literal_pairs(
+                             self.workflow.parents[2], self.steps["test6"])))
 
     def test_five_core_checks_and_meaningful_package_manager_skip(self):
         result, outputs = self.run_step("test6")
@@ -169,6 +173,11 @@ class ContractChecks:
                 with self.subTest(test=i, status=status, outcome=outcome):
                     self.values[f"steps.test{i}.outputs.status"] = status
                     self.values[f"steps.test{i}.outcome"] = outcome
+                    guard, regression = self.run_step("test6")
+                    self.assertEqual(0, guard.returncode, guard.stderr)
+                    self.assertEqual("baseline_failed", regression["decision"])
+                    self.values.update({f"steps.test6.outputs.{key}": value
+                                        for key, value in regression.items()})
                     result, outputs = self.run_step("summary")
                     self.assertNotEqual(0, result.returncode)
                     self.assertEqual(("4", "1", "1", "1", "failure", "failing"),
@@ -233,7 +242,216 @@ class ContractChecks:
         self.rejected("test2")
 
 
-class NotaryWorkflowTests(WorkflowHarness, ContractChecks, unittest.TestCase):
+def render_pm_expression(text, values):
+    def expression(match):
+        for term in match[1].split("||"):
+            term = term.strip()
+            if term.startswith("'") and term.endswith("'"):
+                return term[1:-1]
+            if term.isdigit():
+                return term
+            if values.get(term):
+                return str(values[term])
+        return ""
+    return re.sub(r"\$\{\{\s*(.*?)\s*\}\}", expression, text)
+
+
+class PMDecisionChecks:
+    """Shared Test6/summary checks with the active, unmodified collector."""
+
+    def pm_values(self):
+        values = {"steps.install.outcome": "success", "steps.version.outcome": "success",
+                  "steps.version.outputs.status": "passed",
+                  "steps.version.outputs.version": "1.2.3"}
+        for i in range(1, 6):
+            values.update({f"steps.test{i}.outputs.status": "passed",
+                           f"steps.test{i}.outcome": "success",
+                           f"steps.test{i}.outputs.duration": "2"})
+        return values
+
+    def pm_run_step(self, name, values):
+        self.values = dict(values)
+        return self.run_step(name)
+
+    def pm_guard(self, values):
+        process, outputs = self.pm_run_step("test6", values)
+        self.assertEqual(0, process.returncode, process.stdout + process.stderr)
+        self.assertEqual("skipped", outputs["status"])
+        self.assertEqual("0", outputs["duration"])
+        values.update({f"steps.test6.outputs.{key}": value for key, value in outputs.items()})
+        values["steps.test6.outcome"] = "success"
+        return outputs
+
+    def pm_summary(self, values):
+        process, outputs = self.pm_run_step("summary", values)
+        self.assertEqual(0 if outputs["overall_status"] == "success" else 1, process.returncode)
+        values.update({f"steps.summary.outputs.{key}": value for key, value in outputs.items()})
+        return outputs
+
+    def pm_collect(self, values, api_overrides=None):
+        root = self.workflow.parents[2]
+        document = yaml.safe_load(self.workflow.read_text())
+        job_id, job = next(iter(document["jobs"].items()))
+        slug = self.workflow.stem.removeprefix("test-")
+        inputs = {"steps.metadata.outputs.package_slug": slug,
+                  "steps.metadata.outputs.dashboard_link": f"/opensource_packages/{slug}",
+                  "steps.metadata.outputs.timestamp": "2026-09-09T00:00:00Z",
+                  "github.job": job_id, "github.run_id": "123", "github.run_attempt": "1",
+                  **values}
+        outputs = {key: render_pm_expression(str(value), inputs)
+                   for key, value in job["outputs"].items()}
+        api_steps = [{"name": self.steps[f"test{i}"]["name"], "number": i,
+                      "conclusion": (api_overrides or {}).get(i, values.get(f"steps.test{i}.outcome"))}
+                     for i in range(1, 7)]
+        api_steps.append({"name": self.steps["summary"]["name"], "number": 7,
+                          "conclusion": outputs["run_status"]})
+        api_job = {"id": 456, "name": f"{job_id} / {job_id}", "steps": api_steps,
+                   "conclusion": outputs["run_status"],
+                   "html_url": "https://github.com/example/project/actions/runs/123/job/456"}
+        action = yaml.safe_load((root / ".github/actions/collect-batch-results/action.yml").read_text())
+        source = action["runs"]["steps"][0]["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="pm-collector-") as temporary:
+            work = Path(temporary)
+            (work / ".github").mkdir()
+            (work / ".github/scripts").symlink_to(root / ".github/scripts")
+            environment = dict(os.environ, PYTHONDONTWRITEBYTECODE="1",
+                NEEDS_JSON=json.dumps({job_id: {"result": outputs["run_status"], "outputs": outputs}}),
+                RUN_JOBS_JSON=json.dumps({"jobs": [api_job]}), BATCH_NUMBER="1", BATCH_TITLE="Batch 1",
+                GH_TOKEN="", GITHUB_SERVER_URL="https://github.com", GITHUB_API_URL="https://api.github.com",
+                GITHUB_REPOSITORY="example/project", GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="1",
+                GITHUB_OUTPUT=str(work / "outputs"), GITHUB_STEP_SUMMARY=str(work / "summary"))
+            process = subprocess.run([sys.executable, "-B", "-c", source], cwd=work,
+                                     env=environment, capture_output=True, text=True, timeout=30)
+            path = work / f"test-results/{slug}-test-results/{slug}.json"
+            return process, json.loads(path.read_text()) if path.exists() else None
+
+    def pm_assert_counts(self, summary, expected):
+        self.assertEqual(tuple(map(str, expected)), tuple(summary[key] for key in
+                         ("passed", "failed", "skipped", "core_failed")))
+        self.assertEqual("failing" if expected[1] else "passing", summary["badge_status"])
+
+    def pm_assert_publishable(self, values, summary, expected, api_overrides=None):
+        process, payload = self.pm_collect(values, api_overrides)
+        self.assertEqual(0, process.returncode, process.stdout + process.stderr)
+        tests, metadata = payload["tests"], payload["metadata"]
+        self.assertEqual(expected, result_policy.validate_six_test_result(
+            details=tests["details"], passed=tests["passed"], failed=tests["failed"],
+            skipped=tests["skipped"], core_failed=metadata["core_failed"],
+            decision=metadata["regression_decision"]))
+        self.assertEqual(expected, result_policy.validate_publishable_result(payload))
+        for key in ("passed", "failed", "skipped"):
+            self.assertEqual(int(summary[key]), tests[key])
+        self.assertEqual(int(summary["core_failed"]), metadata["core_failed"])
+        self.assertEqual(summary["badge_status"], metadata["badge_status"])
+        return payload
+
+    def test_pm_positive_and_each_failed_core_reach_unchanged_publisher(self):
+        for failed in range(6):
+            with self.subTest(failed=failed):
+                values = self.pm_values()
+                if failed:
+                    values.update({f"steps.test{failed}.outputs.status": "failed",
+                                   f"steps.test{failed}.outcome": "failure"})
+                guard = self.pm_guard(values)
+                self.assertEqual("baseline_failed" if failed else "not_applicable_package_manager",
+                                 guard["decision"])
+                summary = self.pm_summary(values)
+                self.pm_assert_counts(summary, (4, 1, 1, 1) if failed else (5, 0, 1, 0))
+                self.assertEqual("10", summary["duration"])
+                self.pm_assert_publishable(values, summary, "failure" if failed else "success")
+                if failed:
+                    process, payload = self.pm_collect(values, {failed: "success"})
+                    self.assertNotEqual(0, process.returncode)
+                    self.assertIn("emitted failure counts contradict test details", process.stderr)
+                    self.assertIsNone(payload)
+
+    def test_pm_install_failure_has_priority_and_publishes_failed_row(self):
+        for outcome in ("failure", "cancelled", "skipped", ""):
+            with self.subTest(outcome=outcome):
+                values = self.pm_values()
+                values.update({"steps.install.outcome": outcome, "steps.version.outcome": "failure"})
+                for i in range(1, 6):
+                    values[f"steps.test{i}.outputs.status"] = "failed"
+                    values[f"steps.test{i}.outcome"] = "failure"
+                self.assertEqual("baseline_install_failed", self.pm_guard(values)["decision"])
+                summary = self.pm_summary(values)
+                self.pm_assert_counts(summary, (0, 5, 1, 5))
+                self.pm_assert_publishable(values, summary, "failure")
+                values["steps.test6.outputs.decision"] = "baseline_failed"
+                self.pm_assert_counts(self.pm_summary(values), (0, 6, 0, 5))
+
+    def test_pm_unavailable_prerequisites_and_impossible_passes_fail_closed(self):
+        faults = [("steps.install.outcome", value) for value in ("failure", "cancelled", "skipped", "")]
+        faults += [(f"steps.version.{key}", value) for key, value in (
+            ("outcome", "failure"), ("outcome", "cancelled"), ("outcome", "skipped"), ("outcome", ""),
+            ("outputs.status", "failed"), ("outputs.status", ""),
+            ("outputs.version", "unknown"), ("outputs.version", ""))]
+        for field, value in faults:
+            with self.subTest(field=field, value=value):
+                values = self.pm_values()
+                values[field] = value
+                decision = "baseline_install_failed" if field.startswith("steps.install.") else "baseline_failed"
+                self.assertEqual(decision, self.pm_guard(values)["decision"])
+                summary = self.pm_summary(values)
+                self.pm_assert_counts(summary, (5, 1, 0, 0))
+                process, payload = self.pm_collect(values)
+                self.assertNotEqual(0, process.returncode)
+                self.assertIn("emitted failure counts contradict", process.stderr)
+                self.assertIsNone(payload)
+                values.update({"steps.test2.outputs.status": "failed", "steps.test2.outcome": "failure"})
+                self.pm_guard(values)
+                summary = self.pm_summary(values)
+                self.pm_assert_counts(summary, (4, 1, 1, 1))
+                self.pm_assert_publishable(values, summary, "failure")
+
+    def test_pm_contradictory_decisions_are_red_and_rejected(self):
+        for failed, wrong_decisions in ((False, ("baseline_failed", "baseline_install_failed")),
+                                       (True, ("not_applicable_package_manager", "baseline_install_failed"))):
+            for wrong in wrong_decisions:
+                with self.subTest(failed=failed, decision=wrong):
+                    values = self.pm_values()
+                    if failed:
+                        values.update({"steps.test5.outputs.status": "failed", "steps.test5.outcome": "failure"})
+                    self.pm_guard(values)
+                    values["steps.test6.outputs.decision"] = wrong
+                    summary = self.pm_summary(values)
+                    self.pm_assert_counts(summary, (4, 2, 0, 1) if failed else (5, 1, 0, 0))
+                    process, payload = self.pm_collect(values)
+                    self.assertNotEqual(0, process.returncode)
+                    self.assertIn("emitted failure counts contradict", process.stderr)
+                    self.assertIsNone(payload)
+
+    def test_pm_missing_and_malformed_durations_fail_with_terminal_outputs(self):
+        for step in ("test1", "test6"):
+            for duration in ("", "bad", "-1", "1.5", "1000000", "1+1"):
+                with self.subTest(step=step, duration=duration):
+                    values = self.pm_values()
+                    self.pm_guard(values)
+                    values[f"steps.{step}.outputs.duration"] = duration
+                    summary = self.pm_summary(values)
+                    self.pm_assert_counts(summary, (4, 2, 0, 1) if step == "test1" else (5, 1, 0, 0))
+                    self.assertEqual("8" if step == "test1" else "10", summary["duration"])
+        values = self.pm_values()
+        self.pm_guard(values)
+        values.update({"steps.test1.outputs.duration": "08", "steps.test6.outputs.duration": "08"})
+        summary = self.pm_summary(values)
+        self.pm_assert_counts(summary, (5, 0, 1, 0))
+        self.assertEqual("24", summary["duration"])
+
+    def test_pm_auditor_sees_each_literal_status_decision_pair(self):
+        root = self.workflow.parents[2]
+        self.assertEqual("always()", self.steps["test6"]["if"])
+        self.assertEqual({("not_applicable_package_manager", "skipped"),
+                          ("baseline_failed", "skipped"), ("baseline_install_failed", "skipped")},
+                         set(observation_audit._step_literal_pairs(root, self.steps["test6"])))
+        for step, fields in (("test6", ("status", "decision", "duration")),
+                             ("summary", ("passed", "failed", "skipped", "core_failed", "duration",
+                                          "overall_status", "badge_status"))):
+            for field in fields:
+                self.assertTrue(observation_audit._step_emits_output(root, self.steps[step], field))
+
+
+class NotaryWorkflowTests(WorkflowHarness, ContractChecks, PMDecisionChecks, unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.env.update(CLI_STDOUT=BANNER, CLI_STDERR="", CLI_RC="0",

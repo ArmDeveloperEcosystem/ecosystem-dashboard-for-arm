@@ -292,7 +292,9 @@ sys.exit(int(os.environ.get("HASH_RC", "0")))
                 self.assert_result(name, False, MUTATE_DURING_READ="1")
 
     def summary_values(self):
-        values = {}
+        values = {"steps.install.outcome": "success", "steps.install.outputs.install_status": "success",
+                  "steps.version.outcome": "success", "steps.version.outputs.status": "passed",
+                  "steps.version.outputs.version": "1.15.0"}
         for i in range(1, 7):
             values[f"steps.test{i}.outcome"] = "success"
             values[f"steps.test{i}.outputs.status"] = "passed" if i < 6 else "skipped"
@@ -314,6 +316,7 @@ sys.exit(int(os.environ.get("HASH_RC", "0")))
                     with self.subTest(test=i, field=field, value=value):
                         values = self.summary_values()
                         values[f"steps.test{i}.{field}"] = value
+                        values["steps.test6.outputs.decision"] = "baseline_failed"
                         result, outputs = self.run_step("summary", values)
                         self.assertNotEqual(0, result.returncode)
                         self.assertEqual(("4", "1", "1", "1", "failure", "failing"),
@@ -340,7 +343,7 @@ sys.exit(int(os.environ.get("HASH_RC", "0")))
                                                         ("passed", "failed", "core_failed", "skipped", "duration")))
 
     def test_maven_regression_is_explicitly_skipped(self):
-        result, outputs = self.run_step("test6")
+        result, outputs = self.run_step("test6", self.summary_values())
         self.assertEqual(0, result.returncode)
         self.assertEqual("skipped", outputs["status"])
         self.assertEqual("not_applicable_package_manager", outputs["decision"])
@@ -429,33 +432,18 @@ sys.exit(int(os.environ.get("HASH_RC", "0")))
                     self.assertTrue(audit._step_emits_output(ROOT, self.steps[name], field))
         for field in ("passed", "failed", "core_failed", "skipped", "duration", "overall_status", "badge_status"):
             self.assertTrue(audit._step_emits_output(ROOT, self.steps["summary"], field))
-        self.assertEqual(("not_applicable_package_manager",),
+        self.assertEqual(("baseline_failed", "baseline_install_failed", "not_applicable_package_manager"),
                          audit._step_literal_outputs(ROOT, self.steps["test6"], "decision"))
         unreachable = copy.deepcopy(self.steps["test1"])
         unreachable["run"] = unreachable["run"].replace("finish 0", "")
         self.assertFalse(audit._step_emits_output(ROOT, unreachable, "status"))
 
-    def test_repository_auditor_has_no_parquet_output_or_accounting_gaps(self):
+    def test_scoped_auditor_sees_all_parquet_decision_status_pairs(self):
         sys.path.insert(0, str(ROOT / ".github/scripts"))
         import package_observation_migration_audit as audit
-        remediation = audit.audit_repository(ROOT)["remediation"]
-        fields = ("missing_test_steps", "missing_test_status", "missing_test_duration",
-                  "missing_summary_outputs", "missing_summary_step", "invalid_test_names",
-                  "baseline_literal_skip", "baseline_dynamic_skip", "no_literal_decision",
-                  "summary_missing_duration_reference", "package_manager_missing_decision",
-                  "package_manager_missing_explicit_skip_counter", "package_manager_non_skipped_status",
-                  "package_manager_summary_omits_test6", "literal_pair_contradictions")
-
-        def contains_parquet(value):
-            if isinstance(value, dict):
-                return any(contains_parquet(item) for item in value.values())
-            if isinstance(value, list):
-                return any(contains_parquet(item) for item in value)
-            return value == "parquet"
-
-        for field in fields:
-            with self.subTest(field=field):
-                self.assertFalse(contains_parquet(remediation[field]), remediation[field])
+        self.assertEqual({("baseline_failed", "skipped"), ("baseline_install_failed", "skipped"),
+                          ("not_applicable_package_manager", "skipped")},
+                         set(audit._step_literal_pairs(ROOT, self.steps["test6"])))
 
 
 if __name__ == "__main__":

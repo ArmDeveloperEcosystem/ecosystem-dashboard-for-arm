@@ -3,7 +3,7 @@
 from pathlib import Path
 import unittest
 
-from test_notary_workflow import ContractChecks, WorkflowHarness
+from test_notary_workflow import ContractChecks, PMDecisionChecks, WorkflowHarness
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows/test-libjpeg.yml"
@@ -11,7 +11,7 @@ VERSION = "2.1.5"
 REVISION = "2.1.5-2ubuntu2"
 
 
-class LibjpegWorkflowTests(WorkflowHarness, ContractChecks, unittest.TestCase):
+class LibjpegWorkflowTests(WorkflowHarness, ContractChecks, PMDecisionChecks, unittest.TestCase):
     workflow = WORKFLOW
 
     def setUp(self):

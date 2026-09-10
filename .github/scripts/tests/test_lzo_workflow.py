@@ -11,11 +11,17 @@ import unittest
 
 import yaml
 
+from test_notary_workflow import PMDecisionChecks
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows/test-LZO.yml"
 
 
-class LzoWorkflowTests(unittest.TestCase):
+class LzoWorkflowTests(PMDecisionChecks, unittest.TestCase):
+    workflow = WORKFLOW
+
+    def pm_run_step(self, name, values):
+        return self.run_step(name, values)
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="lzo-workflow-")
         self.addCleanup(temp.cleanup)
@@ -214,6 +220,7 @@ sys.exit(int(os.environ.get(phase + "_RC", "0")))
 
     def summary_values(self):
         values = self.verified()
+        values.update({"steps.install.outcome": "success", "steps.version.outcome": "success"})
         for index in range(1, 6):
             values.update({f"steps.test{index}.outputs.status": "passed",
                            f"steps.test{index}.outputs.duration": "2", f"steps.test{index}.outcome": "success"})
@@ -227,7 +234,7 @@ sys.exit(int(os.environ.get(phase + "_RC", "0")))
         self.assertEqual(result.returncode, 0)
         self.assertEqual(output, {"passed": "5", "failed": "0", "core_failed": "0", "skipped": "1",
                                   "duration": "10", "overall_status": "success", "badge_status": "passing"})
-        result, output = self.run_step("test6")
+        result, output = self.run_step("test6", self.summary_values())
         self.assertEqual(result.returncode, 0)
         self.assertEqual(output["status"], "skipped")
         self.assertEqual(output["decision"], "not_applicable_package_manager")
@@ -238,6 +245,7 @@ sys.exit(int(os.environ.get(phase + "_RC", "0")))
                                    ("outcome", "failure"), ("outcome", "")):
                 values = self.summary_values()
                 values[f"steps.test{index}.{field}"] = invalid
+                self.pm_guard(values)
                 result, output = self.run_step("summary", values)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual((output["passed"], output["failed"], output["core_failed"], output["duration"]),

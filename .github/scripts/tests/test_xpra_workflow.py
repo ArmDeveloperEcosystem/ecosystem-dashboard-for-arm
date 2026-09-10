@@ -138,7 +138,7 @@ class XpraWorkflowTests(unittest.TestCase):
             "steps.test5.outputs.status": fields["status"],
             "steps.test5.outcome": "failure" if result.returncode else "success",
             "steps.test6.outputs.status": "skipped",
-            "steps.test6.outputs.decision": "not_applicable_package_manager",
+            "steps.test6.outputs.decision": "baseline_failed",
         })
         result, fields = self.run_summary(values)
         self.assertNotEqual(result.returncode, 0)
@@ -148,6 +148,9 @@ class XpraWorkflowTests(unittest.TestCase):
         self.assertEqual(fields["badge_status"], "failing")
 
     def run_summary(self, values):
+        values = {"steps.install.outcome": "success", "steps.install.outputs.status": "passed",
+                  "steps.version.outcome": "success", "steps.version.outputs.version": "3.1.5",
+                  **values}
         def replace(match):
             for term in match[1].split("||"):
                 term = term.strip()

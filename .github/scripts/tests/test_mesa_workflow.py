@@ -4,6 +4,8 @@ These fixtures test rejection/accounting behavior, not native Mesa support.
 The deterministic model must also be exercised with the real PyPI installation.
 """
 
+from datetime import datetime, timedelta
+import json
 import os
 from pathlib import Path
 import re
@@ -21,7 +23,11 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github/workflows/test-mesa.yml"
 sys.path.insert(0, str(ROOT / ".github/scripts"))
 import package_observation_migration_audit as audit
-from package_result_policy import expected_regression_metadata
+from package_result_policy import (
+    expected_regression_metadata,
+    validate_publishable_result,
+    validate_six_test_result,
+)
 
 BASH = shutil.which("bash")
 VERSION = "3.5.1"
@@ -97,6 +103,8 @@ class MesaWorkflowTests(unittest.TestCase):
 
     def values(self):
         return {"steps.install.outputs.install_status": "success",
+                "steps.install.outcome": "success",
+                "steps.version.outcome": "success",
                 "steps.version.outputs.status": "passed",
                 "steps.version.outputs.version": VERSION}
 
@@ -154,6 +162,12 @@ class MesaWorkflowTests(unittest.TestCase):
                 with self.subTest(step=name, field=field):
                     self.assertTrue(audit._step_emits_output(ROOT, self.steps[name], field))
         self.assertIn("baseline_failed", audit._step_literal_outputs(ROOT, self.steps["test6"], "decision"))
+
+    def test_actual_auditor_sees_all_three_inline_decision_status_pairs(self):
+        self.assertEqual({("baseline_install_failed", "skipped"),
+                          ("baseline_failed", "skipped"),
+                          ("not_applicable_package_manager", "skipped")},
+                         set(audit._step_literal_pairs(ROOT, self.steps["test6"])))
 
     def test_metadata_uses_canonical_dashboard_route(self):
         result, fields = self.run_step("metadata")
@@ -296,6 +310,171 @@ class MesaWorkflowTests(unittest.TestCase):
         values.update({"steps.test6.outputs.status": "skipped",
                        "steps.test6.outputs.decision": "not_applicable_package_manager"})
         return values
+
+    def collect_result(self, values, api_outcomes=None):
+        values = dict(values)
+        result, metadata = self.run_step("metadata")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values.update({f"steps.metadata.outputs.{key}": value for key, value in metadata.items()})
+        values.update({"github.job": "test-mesa", "github.run_id": "123", "github.run_attempt": "1"})
+        result, regression = self.run_step("test6", values=values)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values.update({f"steps.test6.outputs.{key}": value for key, value in regression.items()})
+        values["steps.test6.outcome"] = "success"
+        summary, fields = self.run_step("summary", values=values)
+        values.update({f"steps.summary.outputs.{key}": value for key, value in fields.items()})
+        outputs = {key: render(value, values) for key, value in self.job["outputs"].items()}
+        outcome = "failure" if summary.returncode else "success"
+        api_steps = []
+        for number, step in enumerate(self.job["steps"], 1):
+            name = step.get("id", "")
+            if not re.fullmatch(r"test[1-6]", name):
+                continue
+            duration = int(values.get(f"steps.{name}.outputs.duration", "0"))
+            api_steps.append({"name": step["name"], "number": number,
+                              "conclusion": (api_outcomes or {}).get(name, "success"),
+                              "started_at": "2026-09-10T00:00:00Z",
+                              "completed_at": (datetime(2026, 9, 10) + timedelta(seconds=duration)).isoformat() + "Z"})
+        jobs = {"jobs": [{"name": "test-mesa", "id": 456, "conclusion": outcome,
+                          "html_url": "https://github.com/fixture/repo/actions/runs/123/job/456",
+                          "steps": api_steps}]}
+        action = yaml.safe_load((ROOT / ".github/actions/collect-batch-results/action.yml").read_text())
+        shell = action["runs"]["steps"][0]["run"]
+        program = shell.split("python3 - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
+        # Execute the active collector unchanged with controlled Jobs API records.
+        with tempfile.TemporaryDirectory(prefix="mesa-collector-") as temporary:
+            root = Path(temporary)
+            (root / ".github/scripts").mkdir(parents=True)
+            shutil.copy2(ROOT / ".github/scripts/package_result_policy.py", root / ".github/scripts")
+            (root / "test-results").mkdir()
+            env = {"PATH": os.defpath, "PYTHONDONTWRITEBYTECODE": "1", "GH_TOKEN": "",
+                   "NEEDS_JSON": json.dumps({"test-mesa": {"result": outcome, "outputs": outputs}}),
+                   "RUN_JOBS_JSON": json.dumps(jobs), "BATCH_NUMBER": "1", "BATCH_TITLE": "Mesa PM fixture",
+                   "GITHUB_SERVER_URL": "https://github.com", "GITHUB_API_URL": "https://api.github.com",
+                   "GITHUB_REPOSITORY": "fixture/repo", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+                   "GITHUB_OUTPUT": str(root / "output"), "GITHUB_STEP_SUMMARY": str(root / "summary")}
+            collected = subprocess.run([sys.executable, "-B", "-c", program], cwd=root, env=env,
+                                       capture_output=True, text=True, timeout=15)
+            path = root / "test-results/mesa-test-results/mesa.json"
+            row = json.loads(path.read_text()) if path.exists() else None
+        return regression, summary, fields, collected, row
+
+    def test_actual_collector_and_publisher_accept_positive_and_baseline_failures(self):
+        for failed in (None, "test5", "install"):
+            with self.subTest(failed=failed):
+                values = self.summary_values()
+                values.update({f"steps.test{i}.outputs.duration": str(i) for i in range(1, 6)})
+                api = {}
+                expected_decision = "not_applicable_package_manager"
+                failures = 0
+                if failed:
+                    expected_decision = "baseline_failed"
+                    failed_steps = ("test5",)
+                    if failed == "install":
+                        values["steps.install.outcome"] = "failure"
+                        values["steps.install.outputs.install_status"] = "failed"
+                        expected_decision = "baseline_install_failed"
+                        failed_steps = tuple(f"test{i}" for i in range(1, 6))
+                    for name in failed_steps:
+                        values[f"steps.{name}.outputs.status"] = "failed"
+                        values[f"steps.{name}.outcome"] = "failure"
+                        values[f"steps.{name}.conclusion"] = "success"
+                        api[name] = "failure"
+                    failures = len(failed_steps)
+                regression, summary, fields, collected, row = self.collect_result(values, api)
+                self.assertEqual(regression["decision"], expected_decision)
+                self.assertEqual(summary.returncode, int(bool(failures)))
+                self.assertEqual(tuple(fields[key] for key in ("passed", "failed", "skipped", "core_failed")),
+                                 (str(5 - failures), str(failures), "1", str(failures)))
+                self.assertEqual(fields["duration"], "15")
+                self.assertEqual(collected.returncode, 0, collected.stderr)
+                tests = row["tests"]
+                expected = "failure" if failures else "success"
+                self.assertEqual(validate_six_test_result(
+                    details=tests["details"], passed=tests["passed"], failed=tests["failed"],
+                    skipped=tests["skipped"], core_failed=row["metadata"]["core_failed"],
+                    decision=tests["details"][5]["decision"]), expected)
+                self.assertEqual(validate_publishable_result(row), expected)
+                self.assertEqual(row["metadata"]["badge_status"], "failing" if failures else "passing")
+
+    def test_failed_install_outcome_with_success_output_and_five_passes_is_rejected(self):
+        values = self.summary_values()
+        values["steps.install.outcome"] = "failure"
+        values["steps.install.conclusion"] = "success"
+        regression, summary, fields, collected, row = self.collect_result(values)
+        self.assertEqual(regression["decision"], "baseline_install_failed")
+        self.assertEqual(summary.returncode, 1)
+        self.assertEqual(fields, {"passed": "5", "failed": "1", "core_failed": "0", "skipped": "0",
+                                 "duration": "0", "overall_status": "failure", "badge_status": "failing"})
+        self.assertEqual(collected.returncode, 1)
+        self.assertIn("emitted failure counts contradict test details", collected.stderr)
+        self.assertIsNone(row)
+
+    def test_masked_core_failure_is_rejected_by_actual_collector(self):
+        values = self.summary_values()
+        values.update({"steps.test5.outputs.status": "failed", "steps.test5.outcome": "failure",
+                       "steps.test5.conclusion": "success"})
+        regression, summary, fields, collected, row = self.collect_result(values)
+        self.assertEqual(regression["decision"], "baseline_failed")
+        self.assertEqual(summary.returncode, 1)
+        self.assertEqual(fields["core_failed"], "1")
+        self.assertEqual(collected.returncode, 1)
+        self.assertIn("emitted failure counts contradict test details", collected.stderr)
+        self.assertIsNone(row)
+
+    def test_prerequisite_guards_use_the_existing_outputs_and_original_outcomes(self):
+        cases = [("steps.install.outcome", value, "baseline_install_failed")
+                 for value in ("", "failure", "cancelled", "skipped")]
+        cases += [("steps.install.outputs.install_status", value, "baseline_install_failed")
+                  for value in ("", "failed")]
+        cases += [("steps.version.outcome", value, "baseline_failed")
+                  for value in ("", "failure", "cancelled", "skipped")]
+        cases += [("steps.version.outputs.status", value, "baseline_failed") for value in ("", "failed")]
+        cases += [("steps.version.outputs.version", "", "baseline_failed")]
+        for key, value, decision in cases:
+            for core_failure in (False, True):
+                with self.subTest(key=key, value=value, core_failure=core_failure):
+                    values = self.summary_values()
+                    values[key] = value
+                    if core_failure:
+                        values["steps.test5.outputs.status"] = "failed"
+                        values["steps.test5.outcome"] = "failure"
+                    result, regression = self.run_step("test6", values=values)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(regression["decision"], decision)
+                    values.update({f"steps.test6.outputs.{k}": v for k, v in regression.items()})
+                    result, fields = self.run_step("summary", values=values)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(fields["core_failed"], str(int(core_failure)))
+                    self.assertEqual(fields["failed"], "1")
+                    self.assertEqual(fields["skipped"], str(int(core_failure)))
+                    self.assertEqual(fields["badge_status"], "failing")
+
+    def test_summary_requires_install_priority_and_the_exact_baseline_relationship(self):
+        for install_failed in (False, True):
+            for version_failed in (False, True):
+                for core_failed in (False, True):
+                    values = self.summary_values()
+                    if install_failed:
+                        values["steps.install.outcome"] = "failure"
+                    if version_failed:
+                        values["steps.version.outcome"] = "failure"
+                    if core_failed:
+                        values["steps.test5.outcome"] = "failure"
+                    expected = ("baseline_install_failed" if install_failed else
+                                "baseline_failed" if version_failed or core_failed else
+                                "not_applicable_package_manager")
+                    for decision in ("baseline_install_failed", "baseline_failed", "not_applicable_package_manager"):
+                        with self.subTest(install_failed=install_failed, version_failed=version_failed,
+                                          core_failed=core_failed, decision=decision):
+                            values["steps.test6.outputs.decision"] = decision
+                            result, fields = self.run_step("summary", values=values)
+                            skipped = decision == expected and (core_failed or expected == "not_applicable_package_manager")
+                            failures = int(core_failed) + int(not skipped)
+                            self.assertEqual(fields["skipped"], str(int(skipped)))
+                            self.assertEqual(fields["failed"], str(failures))
+                            self.assertEqual(fields["core_failed"], str(int(core_failed)))
+                            self.assertEqual(result.returncode, int(failures > 0))
 
     def test_package_manager_skip_and_five_core_summary(self):
         result, fields = self.run_step("test6", values=self.summary_values())
