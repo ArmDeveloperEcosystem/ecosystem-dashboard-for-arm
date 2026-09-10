@@ -4,6 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -81,11 +82,23 @@ class MyhdlWorkflowTests(unittest.TestCase):
 
     def test_simulation_is_network_disabled_and_resource_bounded(self):
         script = self.steps["test5"]["run"]
-        for flag in ("--network none", "--read-only", "--cpus 2", "--memory 1g", "--memory-swap 1g", "--no-index", "--no-deps", "--platform linux/arm64"):
+        for flag in ("--network none", "--read-only", "--cap-drop ALL", "--security-opt no-new-privileges", "--cpus 2", "--memory 1g", "--memory-swap 1g", "--no-index", "--no-deps", "--platform linux/arm64"):
             self.assertIn(flag, script)
         self.assertIn('"$WORKDIR:/inputs:ro"', script)
         self.assertNotIn("docker.sock", script)
         self.assertNotIn("status=skipped", script)
+
+    def test_container_uses_private_staging_directory_owner(self):
+        result, outputs = self.run_step("test5", **self.docker_fixture())
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("passed", outputs["status"])
+        commands = (self.root / "calls").read_text().splitlines()
+        command = shlex.split(next(line for line in commands if line.startswith("docker run ")))
+        self.assertIn("--user", command)
+        self.assertEqual(f"{os.getuid()}:{os.getgid()}", command[command.index("--user") + 1])
+        self.assertEqual(1, command.count("--user"))
+        self.assertTrue(command[command.index("-v") + 1].endswith(":/inputs:ro"))
+        self.assertFalse(list(self.root.glob("myhdl-baseline.*")))
 
     def test_baseline_wrong_version_fails_with_duration(self):
         result, outputs = self.run_step("test5", BASELINE_VERSION="0.9", **self.docker_fixture())
@@ -172,21 +185,27 @@ class MyhdlWorkflowTests(unittest.TestCase):
                     result, outputs = self.run_step("summary", {f"steps.test{number}.outcome": outcome})
                     self.assertEqual(1, result.returncode)
                     self.assertEqual("1", outputs["failed"])
+                    self.assertEqual("failure", outputs["overall_status"])
+                    self.assertEqual("failing", outputs["badge_status"])
 
     def test_missing_status_and_deferred_candidate_are_failures(self):
         for number in range(1, 7):
             result, outputs = self.run_step("summary", {f"steps.test{number}.outputs.status": ""})
             self.assertEqual(1, result.returncode)
             self.assertEqual("1", outputs["failed"])
+            self.assertEqual("failing", outputs["badge_status"])
         result, outputs = self.run_step("summary", {"steps.test6.outputs.status": "skipped", "steps.test6.outputs.decision": "runtime_validation_not_automated"})
         self.assertEqual(1, result.returncode)
         self.assertEqual("0", outputs["skipped"])
+        self.assertEqual("failing", outputs["badge_status"])
 
     def test_six_passes_and_only_explicit_no_newer_na(self):
         result, outputs = self.run_step("summary")
         self.assertEqual((0, "6", "0", "0"), (result.returncode, outputs["passed"], outputs["failed"], outputs["skipped"]))
+        self.assertEqual("passing", outputs["badge_status"])
         result, outputs = self.run_step("summary", {"steps.test6.outputs.status": "skipped", "steps.test6.outputs.decision": "no_newer_stable_available"})
         self.assertEqual((0, "5", "0", "1"), (result.returncode, outputs["passed"], outputs["failed"], outputs["skipped"]))
+        self.assertEqual("passing", outputs["badge_status"])
 
 
 if __name__ == "__main__":

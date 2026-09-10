@@ -1,40 +1,9 @@
-# Package Test Template
-#
-# This is a TEMPLATE file stored in the tests/ directory - it will not run as a workflow.
-# To use it:
-# 1. Copy this file to .github/workflows/test-<your-package>.yml
-# 2. Replace all Parquet placeholders with your package name (e.g., "Redis")
-# 3. Replace all parquet placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the appropriate trigger(s) in the 'on:' section
-#
-# See .github/workflows/test-nginx.yml and test-envoy.yml for real examples. Template
-#
-# This is a TEMPLATE file - it will not run automatically.
-# To use it:
-# 1. Copy this file to test-<your-package>.yml
-# 2. Replace all Parquet placeholders with your package name (e.g., "Redis")
-# 3. Replace all parquet placeholders with your package slug (lowercase, e.g., "redis")
-# 4. Update the install commands for your package
-# 5. Update the version detection command
-# 6. Add/modify/remove test steps as needed
-# 7. Update package metadata in the JSON generation step
-# 8. Uncomment the 'push:' trigger section below (remove the workflow_dispatch if desired)
-#
-# See test-nginx.yml and test-envoy.yml for real examples.
-
 name: Test Parquet on Arm64
 
-# This is a TEMPLATE - it has no triggers and will not run.
-# When you copy this file, uncomment the appropriate triggers below:
 permissions:
   contents: read
 
 on:
-  # workflow_dispatch:  # Uncomment for manual testing
   workflow_call:
     outputs:
       contract_version:
@@ -109,6 +78,7 @@ on:
 jobs:
   test-parquet:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     
     outputs:
       contract_version: "2.0"
@@ -146,231 +116,545 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=parquet" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/parquet" >> "$GITHUB_OUTPUT"
-      - name: Install Parquet
+      - name: Install Apache Parquet Java with Maven
         id: install
         run: |
-          echo "Installing Parquet Tools..."
-          
-          # Install parquet-tools via pip
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "python3-pip"
-          if pip3 install parquet-tools --break-system-packages; then
-            echo "parquet-tools installed successfully"
-            echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-            echo "parquet-tools installation failed"
-            echo "install_status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-      
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
-      - name: Get Parquet version
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "maven openjdk-17-jdk-headless"
+          export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64
+          export PATH="$JAVA_HOME/bin:$PATH"
+          test "$(command -v java)" = "$JAVA_HOME/bin/java"
+          test "$(command -v javac)" = "$JAVA_HOME/bin/javac"
+          "$JAVA_HOME/bin/java" -version
+          "$JAVA_HOME/bin/javac" -version
+          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME/bin" >> "$GITHUB_PATH"
+          WORK=$(mktemp -d "$RUNNER_TEMP/parquet-java.XXXXXX")
+          echo "work_dir=$WORK" >> "$GITHUB_OUTPUT"
+          cat > "$WORK/pom.xml" <<'XML'
+          <project xmlns="http://maven.apache.org/POM/4.0.0">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>local.smoke</groupId><artifactId>parquet-arm-smoke</artifactId><version>1</version>
+            <dependencies>
+              <dependency>
+                <groupId>org.apache.parquet</groupId><artifactId>parquet-hadoop</artifactId><version>1.15.0</version>
+              </dependency>
+              <dependency>
+                <groupId>org.apache.hadoop</groupId><artifactId>hadoop-client-api</artifactId><version>3.3.6</version>
+              </dependency>
+              <dependency>
+                <groupId>org.apache.hadoop</groupId><artifactId>hadoop-client-runtime</artifactId><version>3.3.6</version>
+              </dependency>
+            </dependencies>
+          </project>
+          XML
+          # Maven resolves the official release and its runtime dependencies into a private repository.
+          MAVEN_OPTS="-Xmx512m" timeout 600s mvn -B -ntp -C -f "$WORK/pom.xml" \
+            -Dmaven.repo.local="$WORK/repository" \
+            org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath \
+            -Dmdep.outputFile="$WORK/classpath" -DincludeScope=runtime
+          test -s "$WORK/classpath"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve Apache Parquet release identity
         id: version
+        continue-on-error: true
+        env:
+          WORK: ${{ steps.install.outputs.work_dir }}
         run: |
-          VERSION=$(pip3 show parquet-tools | grep Version | awk '{print $2}')
-          if [ -z "$VERSION" ]; then VERSION="unknown"; fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Parquet version: $VERSION"
-      
-      # ============================================================
-      # ADD YOUR TESTS BELOW
-      # Each test should:
-      # 1. Have a unique id (test1, test2, etc.)
-      # 2. Track start/end time for duration
-      # 3. Set status=passed or status=failed
-      # 4. Exit 1 on failure
-      # ============================================================
-      
-      - name: Test 1 - Check parquet-tools binary
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import xml.etree.ElementTree as ET
+          import zipfile
+
+          work = Path(os.environ["WORK"])
+          repository = (work / "repository").resolve(strict=True)
+          paths = (work / "classpath").read_text().strip().split(os.pathsep)
+          if not paths or len(paths) != len(set(paths)):
+              raise SystemExit("Empty or duplicate Maven classpath")
+          releases = {}
+          ns = {"m": "http://maven.apache.org/POM/4.0.0"}
+          for entry in paths:
+              jar = Path(entry).resolve(strict=True)
+              if not jar.is_relative_to(repository) or jar.suffix != ".jar":
+                  raise SystemExit(f"Artifact outside the resolved Maven repository: {jar}")
+              if not jar.is_relative_to(repository / "org/apache/parquet"):
+                  continue
+              artifact, release, filename = jar.relative_to(repository / "org/apache/parquet").parts
+              if filename != f"{artifact}-{release}.jar" or artifact in releases:
+                  raise SystemExit(f"Duplicate or invalid Parquet artifact: {jar}")
+              pom = ET.parse(jar.with_suffix(".pom")).getroot()
+              group = pom.findtext("m:groupId", namespaces=ns) or pom.findtext("m:parent/m:groupId", namespaces=ns)
+              version = pom.findtext("m:version", namespaces=ns) or pom.findtext("m:parent/m:version", namespaces=ns)
+              if (group, pom.findtext("m:artifactId", namespaces=ns), version) != ("org.apache.parquet", artifact, release):
+                  raise SystemExit(f"POM identity mismatch: {jar}")
+              with zipfile.ZipFile(jar) as archive:
+                  text = archive.read(f"META-INF/maven/org.apache.parquet/{artifact}/pom.properties").decode("ascii")
+              properties = {}
+              for line in text.splitlines():
+                  if line and not line.startswith(("#", "!")):
+                      key, value = line.split("=", 1)
+                      if key in properties:
+                          raise SystemExit(f"Duplicate JAR property: {key}")
+                      properties[key] = value
+              if any(properties.get(key) != value for key, value in
+                     (("groupId", group), ("artifactId", artifact), ("version", version))):
+                  raise SystemExit(f"JAR/POM identity mismatch: {jar}")
+              if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+                  raise SystemExit("Parquet artifact is not a stable release")
+              releases[artifact] = version
+              print(f"Resolved {group}:{artifact}:{version} from {jar}")
+          required = {"parquet-hadoop", "parquet-column", "parquet-common", "parquet-encoding",
+                      "parquet-format-structures", "parquet-jackson"}
+          if set(releases) != required or set(releases.values()) != {"1.15.0"}:
+              raise SystemExit(f"Unexpected Parquet dependency set: {releases}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={releases['parquet-hadoop']}\n")
+          PY
+          finish 0
+
+      - name: Test 1 - Compile and verify loaded Apache Parquet Java artifacts
         id: test1
         continue-on-error: true
+        env:
+          WORK: ${{ steps.install.outputs.work_dir }}
+          VERSION_STATUS: ${{ steps.version.outputs.status }}
+          PARQUET_VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # pip installs to ~/.local/bin or /usr/local/bin
-          export PATH=$PATH:$HOME/.local/bin
-          
-          if command -v parquet-tools &> /dev/null; then
-            echo "✓ parquet-tools binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ parquet-tools binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Check parquet-tools help
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          test "$VERSION_STATUS" = passed
+          cat > "$WORK/ParquetSmoke.java" <<'JAVA'
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.nio.file.attribute.PosixFilePermissions;
+          import java.util.Arrays;
+          import java.util.Properties;
+          import java.util.jar.JarFile;
+          import org.apache.parquet.Version;
+          import org.apache.parquet.conf.PlainParquetConfiguration;
+          import org.apache.parquet.example.data.Group;
+          import org.apache.parquet.example.data.simple.SimpleGroupFactory;
+          import org.apache.parquet.hadoop.ParquetFileReader;
+          import org.apache.parquet.hadoop.ParquetFileWriter;
+          import org.apache.parquet.hadoop.ParquetReader;
+          import org.apache.parquet.hadoop.ParquetWriter;
+          import org.apache.parquet.hadoop.api.ReadSupport;
+          import org.apache.parquet.hadoop.example.ExampleParquetWriter;
+          import org.apache.parquet.hadoop.example.GroupReadSupport;
+          import org.apache.parquet.hadoop.metadata.CompressionCodecName;
+          import org.apache.parquet.io.LocalInputFile;
+          import org.apache.parquet.io.LocalOutputFile;
+          import org.apache.parquet.schema.MessageType;
+          import org.apache.parquet.schema.MessageTypeParser;
+
+          public final class ParquetSmoke {
+            private static final MessageType SCHEMA = MessageTypeParser.parseMessageType(
+                "message arm_smoke { required int64 id; required binary name (UTF8); optional int32 score; }");
+            private static final long[] IDS = {7L, 42L, 9000000000L};
+            private static final String[] NAMES = {"arm", "parquet", "java"};
+            private static final Integer[] SCORES = {10, null, -3};
+
+            private static void require(boolean condition, String message) {
+              if (!condition) throw new IllegalStateException(message);
+            }
+
+            private static void identity(Class<?> type, String artifact, String expected, Path work) throws Exception {
+              Path location = Path.of(type.getProtectionDomain().getCodeSource().getLocation().toURI()).toRealPath();
+              Path resolved = work.resolve("repository/org/apache/parquet/" + artifact + "/" + expected
+                  + "/" + artifact + "-" + expected + ".jar").toRealPath();
+              require(location.equals(resolved), "Loaded class outside resolved artifact: " + type);
+              Properties properties = new Properties();
+              try (JarFile jar = new JarFile(location.toFile());
+                   var input = jar.getInputStream(jar.getJarEntry(
+                       "META-INF/maven/org.apache.parquet/" + artifact + "/pom.properties"))) {
+                properties.load(input);
+              }
+              require("org.apache.parquet".equals(properties.getProperty("groupId")), "Wrong Java implementation");
+              require(artifact.equals(properties.getProperty("artifactId")), "Wrong artifact");
+              require(expected.equals(properties.getProperty("version")), "Loaded JAR version mismatch");
+              System.out.println(type.getName() + "=" + properties.getProperty("version") + " " + location);
+            }
+
+            private static void write(Path file) throws Exception {
+              require(!Files.exists(file), "Fixture already exists");
+              SimpleGroupFactory groups = new SimpleGroupFactory(SCHEMA);
+              try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
+                  .withConf(new PlainParquetConfiguration()).withType(SCHEMA)
+                  .withWriteMode(ParquetFileWriter.Mode.CREATE)
+                  .withCompressionCodec(CompressionCodecName.UNCOMPRESSED)
+                  .withRowGroupSize(1024 * 1024).withPageSize(1024).withValidation(true).build()) {
+                for (int i = 0; i < IDS.length; i++) {
+                  Group row = groups.newGroup().append("id", IDS[i]).append("name", NAMES[i]);
+                  if (SCORES[i] != null) row.append("score", SCORES[i]);
+                  writer.write(row);
+                }
+              }
+              byte[] bytes = Files.readAllBytes(file);
+              byte[] magic = {'P', 'A', 'R', '1'};
+              require(bytes.length > 12, "Empty Parquet file");
+              require(Arrays.equals(Arrays.copyOfRange(bytes, 0, 4), magic), "Invalid header magic");
+              require(Arrays.equals(Arrays.copyOfRange(bytes, bytes.length - 4, bytes.length), magic), "Invalid footer magic");
+              Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("r--r--r--"));
+              System.out.println("Wrote 3 rows to " + file + " (" + bytes.length + " bytes)");
+            }
+
+            private static void metadata(Path file, String expected) throws Exception {
+              try (ParquetFileReader reader = ParquetFileReader.open(new LocalInputFile(file))) {
+                var footer = reader.getFooter();
+                require(SCHEMA.equals(footer.getFileMetaData().getSchema()), "Schema mismatch");
+                require(reader.getRecordCount() == 3L, "Footer row count mismatch");
+                require(footer.getBlocks().size() == 1, "Unexpected row groups");
+                var block = footer.getBlocks().get(0);
+                require(block.getRowCount() == 3 && block.getColumns().size() == 3, "Invalid column metadata");
+                for (var column : block.getColumns()) {
+                  require(column.getCodec() == CompressionCodecName.UNCOMPRESSED, "Unexpected codec");
+                }
+                require(footer.getFileMetaData().getCreatedBy().startsWith("parquet-mr version " + expected + " "),
+                    "Footer writer release mismatch");
+                System.out.println(footer.getFileMetaData().getSchema());
+                System.out.println("Verified 3 rows, 3 columns, 1 row group, writer " + footer.getFileMetaData().getCreatedBy());
+              }
+            }
+
+            private static void read(Path file) throws Exception {
+              try (ParquetReader<Group> reader = new ParquetReader.Builder<Group>(
+                  new LocalInputFile(file), new PlainParquetConfiguration()) {
+                @Override protected ReadSupport<Group> getReadSupport() { return new GroupReadSupport(); }
+              }.build()) {
+                for (int i = 0; i < IDS.length; i++) {
+                  Group row = reader.read();
+                  require(row != null, "Missing row " + i);
+                  require(SCHEMA.equals(row.getType()), "Read schema mismatch");
+                  require(row.getLong("id", 0) == IDS[i], "ID mismatch at row " + i);
+                  require(row.getString("name", 0).equals(NAMES[i]), "Name mismatch at row " + i);
+                  require(row.getFieldRepetitionCount("score") == (SCORES[i] == null ? 0 : 1),
+                      "Null/value mismatch at row " + i);
+                  if (SCORES[i] != null) require(row.getInteger("score", 0) == SCORES[i], "Score mismatch at row " + i);
+                }
+                require(reader.read() == null, "Unexpected extra row");
+              }
+              System.out.println("Verified exact ordered IDs, UTF8 names, nullable scores and EOF");
+            }
+
+            public static void main(String[] args) throws Exception {
+              require(args.length == 3, "Expected mode, work directory and resolved release");
+              Path work = Path.of(args[1]).toRealPath();
+              Path file = work.resolve("rows.parquet");
+              switch (args[0]) {
+                case "identity":
+                  identity(ParquetWriter.class, "parquet-hadoop", args[2], work);
+                  identity(MessageType.class, "parquet-column", args[2], work);
+                  identity(Version.class, "parquet-common", args[2], work);
+                  require(Version.VERSION_NUMBER.equals(args[2]), "Runtime release mismatch");
+                  break;
+                case "architecture":
+                  require("Linux".equals(System.getProperty("os.name")), "JVM is not Linux");
+                  require("aarch64".equals(System.getProperty("os.arch")), "JVM is not native Arm64");
+                  require("64".equals(System.getProperty("sun.arch.data.model")), "JVM is not 64-bit");
+                  System.out.println("Native Linux aarch64 JVM: " + System.getProperty("java.runtime.version"));
+                  break;
+                case "write": write(file); break;
+                case "metadata": metadata(file, args[2]); break;
+                case "read": read(file); break;
+                default: throw new IllegalArgumentException("Unknown check: " + args[0]);
+              }
+            }
+          }
+          JAVA
+          CLASSPATH=$(< "$WORK/classpath")
+          timeout 60s javac -J-Xmx256m -cp "$CLASSPATH" -d "$WORK/classes" "$WORK/ParquetSmoke.java"
+          timeout 30s java -Xmx256m -cp "$WORK/classes:$CLASSPATH" ParquetSmoke identity "$WORK" "$PARQUET_VERSION"
+          finish 0
+
+      - name: Test 2 - Verify native Arm64 Java execution
         id: test2
         continue-on-error: true
+        env:
+          WORK: ${{ steps.install.outputs.work_dir }}
+          PARQUET_VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          export PATH=$PATH:$HOME/.local/bin
-          
-          if parquet-tools --help 2>&1 | grep -qi "usage"; then
-            echo "✓ parquet-tools help command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ parquet-tools help command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 3 - Check python import (optional)
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          test "$(uname -m)" = aarch64
+          CLASSPATH=$(< "$WORK/classpath")
+          timeout 30s java -Xmx256m -cp "$WORK/classes:$CLASSPATH" ParquetSmoke architecture "$WORK" "$PARQUET_VERSION"
+          finish 0
+
+      - name: Test 3 - Write a deterministic local Parquet file
         id: test3
         continue-on-error: true
+        env:
+          WORK: ${{ steps.install.outputs.work_dir }}
+          PARQUET_VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # parquet-tools is a CLI, but let's check if we can import it just in case
-          if python3 -c "import parquet_tools" 2>/dev/null; then
-            echo "✓ parquet_tools import successful"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ parquet_tools import failed (not critical for CLI tool)"
-            # We mark it passed if CLI works, but let's just pass this for now as it's optional
-            echo "status=passed" >> $GITHUB_OUTPUT
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 4 - Architecture Verification
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          CLASSPATH=$(< "$WORK/classpath")
+          timeout 30s java -Xmx256m -cp "$WORK/classes:$CLASSPATH" ParquetSmoke write "$WORK" "$PARQUET_VERSION"
+          sha256sum "$WORK/rows.parquet" > "$WORK/rows.sha256"
+          finish 0
+
+      - name: Test 4 - Verify Parquet schema and footer metadata
         id: test4
         continue-on-error: true
+        env:
+          WORK: ${{ steps.install.outputs.work_dir }}
+          PARQUET_VERSION: ${{ steps.version.outputs.version }}
+          WRITE_STATUS: ${{ steps.test3.outputs.status }}
+          WRITE_OUTCOME: ${{ steps.test3.outcome }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          echo "Checking system architecture..."
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          test "$WRITE_STATUS" = passed
+          test "$WRITE_OUTCOME" = success
+          sha256sum --check "$WORK/rows.sha256"
+          CLASSPATH=$(< "$WORK/classpath")
+          timeout 30s java -Xmx256m -cp "$WORK/classes:$CLASSPATH" ParquetSmoke metadata "$WORK" "$PARQUET_VERSION"
+          sha256sum --check "$WORK/rows.sha256"
+          finish 0
 
-      - name: Test 5 - Functional Validation
+      - name: Test 5 - Read exact Parquet rows and null values
         id: test5
         continue-on-error: true
+        env:
+          WORK: ${{ steps.install.outputs.work_dir }}
+          PARQUET_VERSION: ${{ steps.version.outputs.version }}
+          WRITE_STATUS: ${{ steps.test3.outputs.status }}
+          WRITE_OUTCOME: ${{ steps.test3.outcome }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          export PATH=$PATH:$HOME/.local/bin
-          
-          # Basic functional check: run inspect command on empty (will fail but check if it runs)
-          if parquet-tools inspect --help > /dev/null 2>&1; then
-            echo "✓ Functional check passed (inspect command exists)"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ Functional check failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          test "$WRITE_STATUS" = passed
+          test "$WRITE_OUTCOME" = success
+          sha256sum --check "$WORK/rows.sha256"
+          CLASSPATH=$(< "$WORK/classpath")
+          timeout 30s java -Xmx256m -cp "$WORK/classes:$CLASSPATH" ParquetSmoke read "$WORK" "$PARQUET_VERSION"
+          sha256sum --check "$WORK/rows.sha256"
+          finish 0
 
-          END_TIME=$(date +%s)
-
-      - name: Regression applicability - package manager installed
+      - name: Regression applicability - Maven package manager
         id: test6
+        if: always()
         run: |
           set -euo pipefail
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
           echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.install.outcome }}" != success ] || [ "${{ steps.install.outputs.install_status }}" != success ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression skipped: the Maven baseline installation failed or is unavailable." >> "$GITHUB_OUTPUT"
+            echo "comparison=No valid installed baseline is available for comparison." >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.version.outcome }}:${{ steps.version.outputs.status }}" = success:passed ] && \
+               [ -n "${{ steps.version.outputs.version }}" ] && \
+               [ "${{ steps.test1.outcome }}:${{ steps.test1.outputs.status }}" = success:passed ] && \
+               [ "${{ steps.test2.outcome }}:${{ steps.test2.outputs.status }}" = success:passed ] && \
+               [ "${{ steps.test3.outcome }}:${{ steps.test3.outputs.status }}" = success:passed ] && \
+               [ "${{ steps.test4.outcome }}:${{ steps.test4.outputs.status }}" = success:passed ] && \
+               [ "${{ steps.test5.outcome }}:${{ steps.test5.outputs.status }}" = success:passed ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation not applicable: Apache Parquet Java was installed via Maven for Tests 1-5." >> "$GITHUB_OUTPUT"
+            echo "comparison=The Maven-installed baseline has bounded Java artifact and local Parquet IO smoke coverage; no version-to-version comparison or whole upstream test suite was run." >> "$GITHUB_OUTPUT"
+          else
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression skipped: Apache Parquet Java baseline validation failed or is unavailable." >> "$GITHUB_OUTPUT"
+            echo "comparison=Version detection and all five core checks must succeed before the package-manager skip applies." >> "$GITHUB_OUTPUT"
+          fi
           echo "duration=0" >> "$GITHUB_OUTPUT"
+
+      - name: Remove isolated Parquet workspace
+        if: always()
+        env:
+          WORK: ${{ steps.install.outputs.work_dir }}
+        run: |
+          set -euo pipefail
+          if [ -n "$WORK" ]; then
+            case "$WORK" in
+              "$RUNNER_TEMP"/parquet-java.*) rm -rf -- "$WORK" ;;
+              *) echo "Refusing unexpected cleanup path"; exit 1 ;;
+            esac
+          fi
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
-
-          # Check parquet-tools binary
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test1.outcome }}" = "success" ] && [ "${{ steps.test1.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Check parquet-tools help
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test2.outcome }}" = "success" ] && [ "${{ steps.test2.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Check python import (optional)
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test3.outcome }}" = "success" ] && [ "${{ steps.test3.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Architecture Verification
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test4.outcome }}" = "success" ] && [ "${{ steps.test4.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
-          # Functional Validation
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test5.outcome }}" = "success" ] && [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          CORE_FAILED=$FAILED
+          EXPECTED_DECISION=not_applicable_package_manager
+          if [ "${{ steps.install.outcome }}" != success ] || [ "${{ steps.install.outputs.install_status }}" != success ]; then
+            EXPECTED_DECISION=baseline_install_failed
+          elif [ "$CORE_FAILED" -gt 0 ] || [ "${{ steps.version.outcome }}:${{ steps.version.outputs.status }}" != success:passed ] || \
+               [ -z "${{ steps.version.outputs.version }}" ]; then
+            EXPECTED_DECISION=baseline_failed
+          fi
+          if [ "${{ steps.test6.outcome }}" = "success" ] && \
+             [ "${{ steps.test6.outputs.status }}" = "skipped" ] && \
+             [ "${{ steps.test6.outputs.decision }}" = "$EXPECTED_DECISION" ] && \
+             { [ "$CORE_FAILED" -gt 0 ] || [ "$EXPECTED_DECISION" = not_applicable_package_manager ]; }; then
+            SKIPPED=$((SKIPPED + 1))
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            FAILED=$((FAILED + 1))
+          fi
+          for VALUE in "${{ steps.test1.outputs.duration || '0' }}" "${{ steps.test2.outputs.duration || '0' }}" \
+                       "${{ steps.test3.outputs.duration || '0' }}" "${{ steps.test4.outputs.duration || '0' }}" \
+                       "${{ steps.test5.outputs.duration || '0' }}" "${{ steps.test6.outputs.duration || '0' }}"; do
+            if [[ ! "$VALUE" =~ ^[0-9]{1,9}$ ]]; then
+              echo "Invalid test duration" >&2
+              exit 1
+            fi
+            TOTAL_DURATION=$((TOTAL_DURATION + 10#$VALUE))
+          done
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## Parquet Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check parquet binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check parquet version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check parquet help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
-          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          {
+            echo "## Apache Parquet Java Test Results"
+            echo ""
+            echo "- **Version:** ${{ steps.version.outputs.version || 'unknown' }}"
+            echo "- **Status:** ${{ steps.summary.outputs.overall_status }}"
+            echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}"
+            echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}"
+            echo "- **Core Failed:** ${{ steps.summary.outputs.core_failed }}"
+            echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped }}"
+            echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s"
+            echo "- **Runner:** ubuntu-24.04-arm"
+            echo ""
+            echo "Bounded Maven artifact and local Parquet IO smoke checks, not the whole upstream test suite."
+            echo ""
+            echo "1. Loaded Apache Java artifact identity: ${{ steps.test1.outputs.status || 'failed' }}"
+            echo "2. Native Arm64 JVM: ${{ steps.test2.outputs.status || 'failed' }}"
+            echo "3. Deterministic Parquet file write: ${{ steps.test3.outputs.status || 'failed' }}"
+            echo "4. Schema and footer metadata: ${{ steps.test4.outputs.status || 'failed' }}"
+            echo "5. Exact rows, nulls and EOF: ${{ steps.test5.outputs.status || 'failed' }}"
+            echo "6. Maven regression applicability: ${{ steps.test6.outputs.status || 'failed' }} (${{ steps.test6.outputs.decision || 'not_configured' }})"
+          } >> "$GITHUB_STEP_SUMMARY"
