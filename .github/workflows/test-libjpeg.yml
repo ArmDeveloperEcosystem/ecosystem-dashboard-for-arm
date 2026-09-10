@@ -120,74 +120,294 @@ jobs:
         id: install
         run: |
           set -euo pipefail
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential libjpeg-dev"
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential libjpeg-turbo8-dev python3"
           test -f /usr/include/jpeglib.h
           ldconfig -p | grep -q 'libjpeg\.so'
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get Libjpeg-turbo version
         id: version
+        continue-on-error: true
         run: |
           set -euo pipefail
-          VERSION=$(dpkg-query -W -f='${Version}' libjpeg-dev | sed 's/^[0-9]\\+://' | cut -d- -f1)
+          START_TIME=$(date +%s)
+          finish() {
+            rc=$1
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish $?' EXIT
+          export LC_ALL=C
+          IDENTITY=$(python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+          import tempfile
+
+          def run(*args):
+              result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                      text=True, timeout=30)
+              print(f"{args!r} (exit {result.returncode}):\n{result.stdout}", file=sys.stderr)
+              result.check_returncode()
+              return result.stdout
+
+          def package(name):
+              row = run("dpkg-query", "-W",
+                        "-f=${Package}\t${Status}\t${Version}\t${Architecture}\t${source:Package}\t${source:Upstream-Version}\n",
+                        name)
+              match = re.fullmatch(re.escape(name) +
+                                   r"\tinstall ok installed\t([0-9][0-9A-Za-z.+:~\-]*)\tarm64\tlibjpeg-turbo\t"
+                                   r"([0-9]+(?:\.[0-9]+){2})\n", row)
+              if not match:
+                  raise SystemExit(f"Invalid arm64 libjpeg-turbo package identity: {name}")
+              revision, upstream = match.groups()
+              if not re.fullmatch(r"(?:[0-9]+:)?" + re.escape(upstream) + r"-[0-9A-Za-z.+~]+", revision):
+                  raise SystemExit("libjpeg-turbo revision disagrees with source upstream version")
+              files = {Path(p).resolve() for p in run("dpkg-query", "-L", name).splitlines() if p.startswith("/")}
+              return revision, upstream, files
+
+          revision, version, headers = package("libjpeg-turbo8-dev")
+          runtime_revision, runtime_version, libraries = package("libjpeg-turbo8")
+          if (revision, version) != (runtime_revision, runtime_version):
+              raise SystemExit("libjpeg-turbo development and runtime packages disagree")
+          include_dirs = set()
+          for name in ("jpeglib.h", "jconfig.h"):
+              matches = [p for p in headers if p.name == name and p.is_file()]
+              if len(matches) != 1:
+                  raise SystemExit(f"Expected one installed libjpeg-turbo8-dev header: {name}")
+              include_dirs.add(str(matches[0].parent))
+          with tempfile.TemporaryDirectory(prefix="libjpeg-identity-", dir=os.environ["RUNNER_TEMP"]) as temp:
+              source = Path(temp) / "identity.c"
+              binary = Path(temp) / "identity"
+              source.write_text(r'''
+          #define _GNU_SOURCE
+          #include <stddef.h>
+          #include <stdio.h>
+          #include <jpeglib.h>
+          #include <dlfcn.h>
+          #ifndef LIBJPEG_TURBO_VERSION
+          #error Expected libjpeg-turbo headers
+          #endif
+          #define STRINGIFY_INNER(x) #x
+          #define STRINGIFY(x) STRINGIFY_INNER(x)
+          int main(void) {
+              struct jpeg_error_mgr error;
+              Dl_info library;
+              if (jpeg_std_error(&error) != &error ||
+                  !dladdr((void *)jpeg_std_error, &library) || !library.dli_fname) return 1;
+              printf("libjpeg-turbo\t%s\t%s\n", STRINGIFY(LIBJPEG_TURBO_VERSION), library.dli_fname);
+              return 0;
+          }
+          ''')
+              includes = [flag for directory in sorted(include_dirs) for flag in ("-I", directory)]
+              run("cc", "-Wall", "-Wextra", "-Werror", *includes, str(source), "-ljpeg", "-ldl", "-o", str(binary))
+              banner = run(str(binary))
+          match = re.fullmatch(r"libjpeg-turbo\t([0-9]+(?:\.[0-9]+){2})\t(/[^\t\n]+)\n", banner)
+          if not match or match[1] != version:
+              raise SystemExit("Native libjpeg-turbo header version disagrees with package")
+          if Path(match[2]).resolve() not in libraries:
+              raise SystemExit("Loaded JPEG library is not owned by libjpeg-turbo8")
+          if os.environ.get("VERIFY_BASELINE") == "1":
+              if (os.environ["VERSION_STATUS"] != "passed" or os.environ["VERSION_OUTCOME"] != "success"
+                      or os.environ["EXPECTED_VERSION"] != version
+                      or os.environ["EXPECTED_PACKAGE_VERSION"] != revision):
+                  raise SystemExit("libjpeg-turbo identity changed or the baseline version probe failed")
+          print(f"{version}\t{revision}\t{version}\tnative_header_and_dpkg")
+          PY
+          )
+          IFS=$'\t' read -r VERSION PACKAGE_VERSION UPSTREAM VERSION_SOURCE <<< "$IDENTITY"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "source_upstream_version=$UPSTREAM" >> "$GITHUB_OUTPUT"
+          echo "version_source=$VERSION_SOURCE" >> "$GITHUB_OUTPUT"
+          finish 0
 
       - name: Test 1 - Check header installation
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ -f /usr/include/jpeglib.h ]; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          finish() {
+            rc=$1
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish $?' EXIT
+          export LC_ALL=C
+          test -f /usr/include/jpeglib.h
+          finish 0
 
-      - name: Test 2 - Check version metadata
+      - name: Test 2 - Verify native libjpeg-turbo version identity
         id: test2
         continue-on-error: true
+        env:
+          VERIFY_BASELINE: '1'
+          VERSION_STATUS: ${{ steps.version.outputs.status }}
+          VERSION_OUTCOME: ${{ steps.version.outcome }}
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+          EXPECTED_PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if dpkg-query -W -f='${Version}' libjpeg-dev | grep -Eq '[0-9]'; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          finish() {
+            rc=$1
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish $?' EXIT
+          export LC_ALL=C
+          IDENTITY=$(python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+          import tempfile
+
+          def run(*args):
+              result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                      text=True, timeout=30)
+              print(f"{args!r} (exit {result.returncode}):\n{result.stdout}", file=sys.stderr)
+              result.check_returncode()
+              return result.stdout
+
+          def package(name):
+              row = run("dpkg-query", "-W",
+                        "-f=${Package}\t${Status}\t${Version}\t${Architecture}\t${source:Package}\t${source:Upstream-Version}\n",
+                        name)
+              match = re.fullmatch(re.escape(name) +
+                                   r"\tinstall ok installed\t([0-9][0-9A-Za-z.+:~\-]*)\tarm64\tlibjpeg-turbo\t"
+                                   r"([0-9]+(?:\.[0-9]+){2})\n", row)
+              if not match:
+                  raise SystemExit(f"Invalid arm64 libjpeg-turbo package identity: {name}")
+              revision, upstream = match.groups()
+              if not re.fullmatch(r"(?:[0-9]+:)?" + re.escape(upstream) + r"-[0-9A-Za-z.+~]+", revision):
+                  raise SystemExit("libjpeg-turbo revision disagrees with source upstream version")
+              files = {Path(p).resolve() for p in run("dpkg-query", "-L", name).splitlines() if p.startswith("/")}
+              return revision, upstream, files
+
+          revision, version, headers = package("libjpeg-turbo8-dev")
+          runtime_revision, runtime_version, libraries = package("libjpeg-turbo8")
+          if (revision, version) != (runtime_revision, runtime_version):
+              raise SystemExit("libjpeg-turbo development and runtime packages disagree")
+          include_dirs = set()
+          for name in ("jpeglib.h", "jconfig.h"):
+              matches = [p for p in headers if p.name == name and p.is_file()]
+              if len(matches) != 1:
+                  raise SystemExit(f"Expected one installed libjpeg-turbo8-dev header: {name}")
+              include_dirs.add(str(matches[0].parent))
+          with tempfile.TemporaryDirectory(prefix="libjpeg-identity-", dir=os.environ["RUNNER_TEMP"]) as temp:
+              source = Path(temp) / "identity.c"
+              binary = Path(temp) / "identity"
+              source.write_text(r'''
+          #define _GNU_SOURCE
+          #include <stddef.h>
+          #include <stdio.h>
+          #include <jpeglib.h>
+          #include <dlfcn.h>
+          #ifndef LIBJPEG_TURBO_VERSION
+          #error Expected libjpeg-turbo headers
+          #endif
+          #define STRINGIFY_INNER(x) #x
+          #define STRINGIFY(x) STRINGIFY_INNER(x)
+          int main(void) {
+              struct jpeg_error_mgr error;
+              Dl_info library;
+              if (jpeg_std_error(&error) != &error ||
+                  !dladdr((void *)jpeg_std_error, &library) || !library.dli_fname) return 1;
+              printf("libjpeg-turbo\t%s\t%s\n", STRINGIFY(LIBJPEG_TURBO_VERSION), library.dli_fname);
+              return 0;
+          }
+          ''')
+              includes = [flag for directory in sorted(include_dirs) for flag in ("-I", directory)]
+              run("cc", "-Wall", "-Wextra", "-Werror", *includes, str(source), "-ljpeg", "-ldl", "-o", str(binary))
+              banner = run(str(binary))
+          match = re.fullmatch(r"libjpeg-turbo\t([0-9]+(?:\.[0-9]+){2})\t(/[^\t\n]+)\n", banner)
+          if not match or match[1] != version:
+              raise SystemExit("Native libjpeg-turbo header version disagrees with package")
+          if Path(match[2]).resolve() not in libraries:
+              raise SystemExit("Loaded JPEG library is not owned by libjpeg-turbo8")
+          if os.environ.get("VERIFY_BASELINE") == "1":
+              if (os.environ["VERSION_STATUS"] != "passed" or os.environ["VERSION_OUTCOME"] != "success"
+                      or os.environ["EXPECTED_VERSION"] != version
+                      or os.environ["EXPECTED_PACKAGE_VERSION"] != revision):
+                  raise SystemExit("libjpeg-turbo identity changed or the baseline version probe failed")
+          print(f"{version}\t{revision}\t{version}\tnative_header_and_dpkg")
+          PY
+          )
+          IFS=$'\t' read -r VERSION PACKAGE_VERSION UPSTREAM VERSION_SOURCE <<< "$IDENTITY"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "source_upstream_version=$UPSTREAM" >> "$GITHUB_OUTPUT"
+          echo "version_source=$VERSION_SOURCE" >> "$GITHUB_OUTPUT"
+          finish 0
 
       - name: Test 3 - Check shared library registration
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if ldconfig -p | grep -q 'libjpeg\.so'; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          finish() {
+            rc=$1
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish $?' EXIT
+          export LC_ALL=C
+          LIBRARIES=$(ldconfig -p)
+          printf '%s\n' "$LIBRARIES"
+          grep -E 'libjpeg\.so[^ ]* .*AArch64.* => ' <<< "$LIBRARIES"
+          finish 0
 
       - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          finish() {
+            rc=$1
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish $?' EXIT
+          export LC_ALL=C
+          test "$(uname -m)" = aarch64
+          finish 0
 
       - name: Test 5 - Functional Validation
         id: test5
@@ -195,7 +415,21 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          cat > /tmp/libjpeg-test.c <<'C'
+          finish() {
+            rc=$1
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish $?' EXIT
+          export LC_ALL=C
+          TEST_DIR=$(mktemp -d "$RUNNER_TEMP/libjpeg-roundtrip.XXXXXX")
+          cat > "$TEST_DIR/roundtrip.c" <<'C'
           #include <stddef.h>
           #include <stdio.h>
           #include <stdlib.h>
@@ -236,23 +470,19 @@ jobs:
             jpeg_destroy_decompress(&dinfo);
             free(jpeg_buf);
             if (output[0] == 0 && output[1] == 0 && output[2] == 0) return 4;
-            printf("libjpeg-roundtrip-ok:%d\n", JPEG_LIB_VERSION);
+            printf("libjpeg-roundtrip-ok\n");
             return 0;
           }
           C
-          cc /tmp/libjpeg-test.c -ljpeg -o /tmp/libjpeg-test
-          if /tmp/libjpeg-test | grep -q '^libjpeg-roundtrip-ok:'; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
+          cc "$TEST_DIR/roundtrip.c" -ljpeg -o "$TEST_DIR/roundtrip"
+          ROUNDTRIP=$("$TEST_DIR/roundtrip")
+          printf '%s\n' "$ROUNDTRIP"
+          test "$ROUNDTRIP" = libjpeg-roundtrip-ok
+          finish 0
 
       - name: Regression applicability - package manager installed
         id: test6
+        if: always()
         run: |
           set -euo pipefail
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
@@ -269,26 +499,46 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
-          check_test() {
-            local status="$1"
-            local duration="$2"
-            if [ "$status" = "passed" ]; then
+          check_core() {
+            local status="$1" outcome="$2" duration="$3"
+            if [[ "$duration" =~ ^[0-9]{1,6}$ ]]; then
+              TOTAL_DURATION=$((TOTAL_DURATION + 10#$duration))
+            else
+              status=failed
+            fi
+            if [ "$status" = "passed" ] && [ "$outcome" = "success" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
             fi
-            TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
-          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_core "${{ steps.test1.outputs.status }}" "${{ steps.test1.outcome }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_core "${{ steps.test2.outputs.status }}" "${{ steps.test2.outcome }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_core "${{ steps.test3.outputs.status }}" "${{ steps.test3.outcome }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_core "${{ steps.test4.outputs.status }}" "${{ steps.test4.outcome }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_core "${{ steps.test5.outputs.status }}" "${{ steps.test5.outcome }}" "${{ steps.test5.outputs.duration || 0 }}"
+          CORE_FAILED=$FAILED
+          DURATION6="${{ steps.test6.outputs.duration || 0 }}"
+          if [ "${{ steps.test6.outputs.status }}" = "skipped" ] &&
+             [ "${{ steps.test6.outputs.decision }}" = "not_applicable_package_manager" ] &&
+             [ "${{ steps.test6.outcome }}" = "success" ] &&
+             [[ "$DURATION6" =~ ^[0-9]{1,6}$ ]]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          if [[ "$DURATION6" =~ ^[0-9]{1,6}$ ]]; then
+            TOTAL_DURATION=$((TOTAL_DURATION + 10#$DURATION6))
+          fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
           if [ "$FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
@@ -306,16 +556,19 @@ jobs:
             echo "## Libjpeg-turbo Test Results"
             echo ""
             echo "- **Version:** ${{ steps.version.outputs.version || 'unknown' }}"
+            echo "- **Version source:** ${{ steps.version.outputs.version_source }}"
             echo "- **Status:** ${{ steps.summary.outputs.overall_status || 'failure' }}"
             echo "- **Tests Passed:** ${{ steps.summary.outputs.passed || 0 }}"
             echo "- **Tests Failed:** ${{ steps.summary.outputs.failed || 0 }}"
+            echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped || 0 }}"
             echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s"
             echo "- **Runner:** ubuntu-24.04 (arm64)"
             echo ""
             echo "### Test Details"
             echo "1. Test 1 - Check header installation: ${{ steps.test1.outputs.status || 'skipped' }}"
-            echo "2. Test 2 - Check version metadata: ${{ steps.test2.outputs.status || 'skipped' }}"
+            echo "2. Test 2 - Verify native libjpeg-turbo version identity: ${{ steps.test2.outputs.status || 'skipped' }}"
             echo "3. Test 3 - Check shared library registration: ${{ steps.test3.outputs.status || 'skipped' }}"
             echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}"
             echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}"
+            echo "6. Package manager regression applicability: ${{ steps.test6.outputs.status }} (${{ steps.test6.outputs.decision }})"
           } >> "$GITHUB_STEP_SUMMARY"

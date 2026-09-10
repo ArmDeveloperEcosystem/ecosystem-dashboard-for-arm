@@ -149,15 +149,13 @@ jobs:
       - name: Install LZO (Lempel-Ziv-Oberhumer)
         id: install
         run: |
-          echo "Installing LZO (via lzop)..."
-          
+          set -euo pipefail
           sudo apt-get update
-          if sudo apt-get install -y lzop 2>/dev/null; then
-            echo "Lzop installed successfully"
-            echo "install_status=success" >> $GITHUB_OUTPUT
+          if sudo apt-get install -y lzop liblzo2-2; then
+            echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
-            echo "WARNING: lzop package not found in apt. Skipping installation."
-            echo "install_status=skipped" >> $GITHUB_OUTPUT
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
       
       # ============================================================
@@ -165,14 +163,57 @@ jobs:
       # ============================================================
       - name: Get LZO (Lempel-Ziv-Oberhumer) version
         id: version
+        continue-on-error: true
         run: |
-          # Adjust this command based on how your package reports version
-          VERSION=$(lzop --version 2>&1 | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 || true)
-          if [ -z "$VERSION" ]; then
-            VERSION="unknown"
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected LZO (Lempel-Ziv-Oberhumer) version: $VERSION"
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          export LC_ALL=C
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+
+          def run(*args):
+              result = subprocess.run(args, check=True, capture_output=True, text=True, timeout=15)
+              if result.stderr:
+                  raise SystemExit(f"Unexpected diagnostics: {result.stderr!r}")
+              return result.stdout
+
+          binary = shutil.which("lzop")
+          if not binary:
+              raise SystemExit("lzop is missing")
+          versions = {}
+          for name in ("lzop", "liblzo2-2"):
+              row = run("dpkg-query", "-W", "-f=${Package}\t${Status}\t${Version}\t${Architecture}\t${source:Upstream-Version}\n", name)
+              match = re.fullmatch(re.escape(name) + r"\tinstall ok installed\t([0-9][0-9A-Za-z.+:~\-]*)\tarm64\t([0-9]+\.[0-9]+)\n", row)
+              if not match or match[1].split(":")[-1].rsplit("-", 1)[0] != match[2]:
+                  raise SystemExit(f"Invalid Arm package identity: {row!r}")
+              versions[name] = match[2]
+          owned = {Path(p).resolve() for p in run("dpkg-query", "-L", "lzop").splitlines() if p.startswith("/")}
+          if Path(binary).resolve() not in owned:
+              raise SystemExit("The lzop executable is not owned by its package")
+          banner = run(binary, "--version").splitlines()
+          if len(banner) != 3 or banner[0] != f"lzop {versions['lzop']}" or banner[1] != f"LZO library {versions['liblzo2-2']}" or not banner[2].startswith("Copyright "):
+              raise SystemExit(f"Wrapper/library identity mismatch: {banner!r}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={versions['liblzo2-2']}\nwrapper_version={versions['lzop']}\nbinary={binary}\n")
+          print(f"Verified LZO library {versions['liblzo2-2']} through lzop {versions['lzop']} (arm64)")
+          PY
+          finish 0
       
       # ============================================================
       # ADD YOUR TESTS BELOW
@@ -201,29 +242,51 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 2 - Check lzo version command
+      - name: Test 2 - Check LZO library identity
         id: test2
         continue-on-error: true
+        env:
+          VERSION_STATUS: ${{ steps.version.outputs.status }}
+          LZO_VERSION: ${{ steps.version.outputs.version }}
+          WRAPPER_VERSION: ${{ steps.version.outputs.wrapper_version }}
+          LZOP_BINARY: ${{ steps.version.outputs.binary }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if lzop --version 2>&1 | grep -q "version\|[0-9]"; then
-            echo "✓ lzo version command works"
-            lzop --version
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ lzo version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          if os.environ["VERSION_STATUS"] != "passed":
+              raise SystemExit("LZO identity was not verified")
+          version, wrapper = os.environ["LZO_VERSION"], os.environ["WRAPPER_VERSION"]
+          if not all(re.fullmatch(r"[0-9]+\.[0-9]+", value) for value in (version, wrapper)):
+              raise SystemExit("Missing or invalid LZO identity")
+          result = subprocess.run([os.environ["LZOP_BINARY"], "--version"], check=True,
+                                  capture_output=True, text=True, timeout=15)
+          banner = result.stdout.splitlines()
+          if result.stderr or len(banner) != 3 or banner[:2] != [f"lzop {wrapper}", f"LZO library {version}"] or not banner[2].startswith("Copyright "):
+              raise SystemExit("The LZO library/wrapper version changed")
+          PY
+          finish 0
       
       - name: Test 3 - Check lzo help output
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
           
           if lzop --help 2>&1 | grep -qi "usage\|help\|options"; then
@@ -270,22 +333,42 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
 
-      - name: Test 5 - Functional Validation
+      - name: Test 5 - LZO compression round trips
         id: test5
         continue-on-error: true
+        env:
+          VERSION_STATUS: ${{ steps.version.outputs.status }}
+          LZOP_BINARY: ${{ steps.version.outputs.binary }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Basic functional check: try to run with --version or --help and check exit code
-          if lzop --version > /dev/null 2>&1 || lzop --help > /dev/null 2>&1; then
-            echo "✓ Basic functional check passed"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ Basic functional check failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-          END_TIME=$(date +%s)
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          test "$VERSION_STATUS" = passed
+          test "$(uname -m)" = aarch64
+          python3 - <<'PY'
+          import os
+          import subprocess
+          binary = os.environ["LZOP_BINARY"]
+          for name, data in (("empty", b""), ("repeated", b"Arm LZO roundtrip\n" * 4096),
+                             ("binary", bytes(range(256)) * 257)):
+              compressed = subprocess.run([binary, "-c"], input=data, capture_output=True, check=True, timeout=15)
+              restored = subprocess.run([binary, "-d", "-c"], input=compressed.stdout, capture_output=True, check=True, timeout=15)
+              if compressed.stderr or restored.stderr or not compressed.stdout or restored.stdout != data:
+                  raise SystemExit(f"LZO {name} roundtrip failed")
+              print(f"LZO {name}: {len(data)} bytes roundtripped")
+          PY
+          finish 0
 
       - name: Regression applicability - package manager installed
         id: test6
@@ -307,10 +390,11 @@ jobs:
         run: |
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
 
           # Check lzo binary exists
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test1.outputs.status }}" = "passed" ] && [ "${{ steps.test1.outcome }}" = "success" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -318,7 +402,7 @@ jobs:
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
           # Check lzo version command
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test2.outputs.status }}" = "passed" ] && [ "${{ steps.test2.outcome }}" = "success" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -326,7 +410,7 @@ jobs:
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
           # Check lzo help output
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test3.outputs.status }}" = "passed" ] && [ "${{ steps.test3.outcome }}" = "success" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -334,7 +418,7 @@ jobs:
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
           # Architecture Verification
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test4.outputs.status }}" = "passed" ] && [ "${{ steps.test4.outcome }}" = "success" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -342,15 +426,26 @@ jobs:
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
           # Functional Validation
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test5.outputs.status }}" = "passed" ] && [ "${{ steps.test5.outcome }}" = "success" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
+          CORE_FAILED=$FAILED
+          if [ "${{ steps.test6.outputs.status }}" = "skipped" ] &&
+             [ "${{ steps.test6.outcome }}" = "success" ] &&
+             [ "${{ steps.test6.outputs.decision }}" = "not_applicable_package_manager" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
           if [ $FAILED -eq 0 ]; then
@@ -370,13 +465,14 @@ jobs:
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Test Details" >> $GITHUB_STEP_SUMMARY
           echo "1. Check lzo binary exists: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check lzo version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check LZO library identity: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "3. Check lzo help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
 
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Test 5 - LZO compression round trips: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY

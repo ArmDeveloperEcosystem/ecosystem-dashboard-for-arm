@@ -79,6 +79,12 @@ on:
 jobs:
   test-dqlite:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    env:
+      BASELINE_VERSION: '1.18.2'
+      BASELINE_COMMIT: '559328ca8bdeca27cb24967ec632a2f1c68c9f18'
+      CANDIDATE_VERSION: '1.18.7'
+      CANDIDATE_COMMIT: '91e3e2f90874e4ec3b45cde965f266342846531b'
     
     outputs:
       contract_version: "2.0"
@@ -92,7 +98,7 @@ jobs:
       tests_failed: ${{ steps.summary.outputs.failed || '0' }}
       tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
       duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_status: ${{ steps.test6.outputs.status || 'failed' }}
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
@@ -118,278 +124,461 @@ jobs:
           echo "dashboard_link=/opensource_packages/dqlite" >> "$GITHUB_OUTPUT"
       - name: Install Dependencies
         run: |
-          echo "Installing dependencies..."
           sudo apt-get update
-          sudo apt-get install -y software-properties-common build-essential pkg-config libuv1-dev libsqlite3-dev git
-      
-      - name: Install Dqlite
+          sudo apt-get install -y build-essential pkg-config autoconf automake libtool \
+            libuv1-dev libsqlite3-dev liblz4-dev git python3
+
+      - name: Prepare pinned source verification
+        id: prepare
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/dqlite-tools"
+          cat > "$RUNNER_TEMP/dqlite-tools/check.py" <<'PY'
+          import ctypes
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          OFFICIAL = "https://github.com/canonical/dqlite.git"
+
+          def require(condition, message):
+              if not condition:
+                  raise RuntimeError(message)
+
+          def run(args, *, cwd=None, env=None, timeout=60):
+              print("+ " + " ".join(map(str, args)), flush=True)
+              result = subprocess.run(args, cwd=cwd, env=env, text=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      timeout=timeout)
+              print(result.stdout, end="", flush=True)
+              print(result.stderr, end="", file=sys.stderr, flush=True)
+              result.check_returncode()
+              return result.stdout.strip()
+
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          class Release:
+              def __init__(self, version, commit):
+                  require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version), "Invalid version")
+                  require(re.fullmatch(r"[0-9a-f]{40}", commit), "Invalid commit")
+                  self.version, self.commit = version, commit
+                  self.root = Path(os.environ["RUNNER_TEMP"]) / ("dqlite-" + version)
+                  self.source = self.root / "source"
+                  self.prefix = self.root / "installed"
+                  self.library = self.prefix / "lib/libdqlite.so"
+                  self.binary = self.source / "integration-test"
+                  self.env = dict(os.environ, LC_ALL="C",
+                                  LD_LIBRARY_PATH=str(self.prefix / "lib"),
+                                  PKG_CONFIG_PATH="",
+                                  PKG_CONFIG_LIBDIR=str(self.prefix / "lib/pkgconfig"))
+                  self.env.pop("LD_PRELOAD", None)
+
+              def git(self, *args):
+                  return run(["git", "-C", str(self.source), *args])
+
+              def source_identity(self):
+                  require(self.git("remote", "get-url", "origin") == OFFICIAL,
+                          "Source is not from the official repository")
+                  require(self.git("rev-parse", "HEAD") == self.commit, "Wrong source commit")
+                  require(self.git("rev-parse", "refs/tags/v" + self.version + "^{commit}")
+                          == self.commit, "Release tag does not match reviewed commit")
+                  require(not self.git("status", "--porcelain", "--untracked-files=no"),
+                          "Tracked source changed after checkout")
+
+              def build(self):
+                  require(os.uname().machine == "aarch64", "Native AArch64 required")
+                  self.root.mkdir()
+                  self.source.mkdir()
+                  run(["git", "init", str(self.source)])
+                  self.git("remote", "add", "origin", OFFICIAL)
+                  tag = "refs/tags/v" + self.version
+                  self.git("fetch", "--depth=1", "origin", tag + ":" + tag)
+                  require(self.git("rev-parse", tag + "^{commit}") == self.commit,
+                          "Official tag changed: refusing to build")
+                  self.git("checkout", "--detach", self.commit)
+                  self.source_identity()
+                  run(["autoreconf", "-fi"], cwd=self.source, timeout=120)
+                  run(["./configure", "--prefix=" + str(self.prefix),
+                       "--libdir=" + str(self.prefix / "lib")],
+                      cwd=self.source, timeout=120)
+                  run(["make", "-j2"], cwd=self.source, timeout=600)
+                  run(["make", "install"], cwd=self.source, timeout=120)
+                  run(["make", "-j2", "integration-test"], cwd=self.source, timeout=600)
+                  self.ownership()
+
+              def ownership(self):
+                  self.source_identity()
+                  library = self.library.resolve(strict=True)
+                  require(library.parent == self.prefix / "lib", "Unowned installed library")
+                  built = self.source / ".libs" / library.name
+                  require(digest(library) == digest(built),
+                          "Installed library differs from this source build")
+                  elf = library.read_bytes()[:20]
+                  require(elf[:6] == b"\x7fELF\x02\x01"
+                          and int.from_bytes(elf[18:20], "little") == 183,
+                          "Installed library is not a 64-bit AArch64 ELF")
+                  print("source_release=" + self.version, flush=True)
+                  print("source_commit=" + self.commit, flush=True)
+                  print("installed_library=" + str(library), flush=True)
+                  print("installed_sha256=" + digest(library), flush=True)
+
+              def runtime(self):
+                  self.ownership()
+                  library = ctypes.CDLL(str(self.library.resolve(strict=True)))
+                  library.dqlite_version_number.argtypes = []
+                  library.dqlite_version_number.restype = ctypes.c_int
+                  number = library.dqlite_version_number()
+                  actual = f"{number // 10000}.{number // 100 % 100}.{number % 100}"
+                  print("actual_library_version=" + actual, flush=True)
+                  require(actual == self.version,
+                          f"Installed library reports {actual}; expected release {self.version}")
+                  return actual
+
+              def metadata(self):
+                  self.ownership()
+                  header = self.prefix / "include/dqlite.h"
+                  require(header.read_bytes() == (self.source / "include/dqlite.h").read_bytes(),
+                          "Installed header differs from the verified source")
+                  parts = []
+                  for field in ("MAJOR", "MINOR", "RELEASE"):
+                      matches = re.findall(r"^#define DQLITE_VERSION_" + field
+                                           + r" ([0-9]+)$", header.read_text(), re.M)
+                      require(len(matches) == 1, "Invalid installed version header")
+                      parts.append(matches[0])
+                  require(".".join(parts) == self.version, "Header/release version mismatch")
+                  require(run(["pkg-config", "--modversion", "dqlite"], env=self.env)
+                          == self.version, "Pkg-config/release version mismatch")
+                  for key, expected in (("prefix", self.prefix),
+                                        ("libdir", self.prefix / "lib"),
+                                        ("includedir", self.prefix / "include")):
+                      require(run(["pkg-config", "--variable=" + key, "dqlite"], env=self.env)
+                              == str(expected), "Pkg-config points to another installation")
+
+              def linkage(self):
+                  self.ownership()
+                  linked = run(["ldd", str(self.binary)], env=self.env)
+                  paths = re.findall(r"^\s*libdqlite\.so\S* => (\S+) ", linked, re.M)
+                  require(len(paths) == 1 and Path(paths[0]).resolve() == self.library.resolve(),
+                          "SQL test does not load this installed library")
+
+              def sql(self):
+                  self.linkage()
+                  # Upstream single-node test creates a table, inserts 17, and asserts
+                  # the returned column, integer value and absence of additional rows.
+                  output = run(["timeout", "--kill-after=5s", "60s", str(self.binary),
+                                "client/semicolons"], cwd=self.root, env=self.env, timeout=70)
+                  require(re.search(r"\b1 of 1 \([^)]+\) tests successful, 0 \([^)]+\) test skipped",
+                                    output), "SQL test did not execute exactly one passing case")
+                  print("Single-node SQL create/insert/select validated. "
+                        "Replication and failover were not exercised.", flush=True)
+
+          if __name__ == "__main__":
+              mode, version, commit = sys.argv[1:]
+              require(mode in {"build", "ownership", "runtime", "metadata", "linkage", "sql"},
+                      "Unknown verification mode")
+              getattr(Release(version, commit), mode)()
+          PY
+
+      - name: Build and install pinned Dqlite library
         id: install
+        continue-on-error: true
         run: |
-          # Try PPA first
-          if sudo add-apt-repository -y ppa:dqlite/stable && sudo apt-get update && sudo apt-get install -y dqlite-tools libdqlite-dev; then
-             echo "Dqlite installed from PPA"
-             echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-             echo "PPA install failed or package missing. Attempting source build..."
-             
-             # Install Go for building the CLI tool
-             sudo apt-get install -y golang
-             
-             # Install Raft (dependency for libdqlite)
-             git clone https://github.com/canonical/raft.git
-             cd raft
-             autoreconf -i
-             ./configure
-             make || exit 1
-             sudo make install
-             cd ..
-             
-             # Install Libdqlite (C library)
-             git clone https://github.com/canonical/dqlite.git
-             cd dqlite
-             autoreconf -i
-             ./configure
-             make || exit 1
-             sudo make install
-             sudo ldconfig
-             cd ..
-             
-             # Install Dqlite CLI (from go-dqlite)
-             echo "Building dqlite CLI from go-dqlite..."
-             export CGO_LDFLAGS="-L/usr/local/lib"
-             export CGO_CFLAGS="-I/usr/local/include"
-             export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
-             
-             # Clone go-dqlite to build the cmd/dqlite
-             git clone https://github.com/canonical/go-dqlite.git
-             cd go-dqlite
-             go mod tidy
-             go build -v -o dqlite ./cmd/dqlite || exit 1
-             sudo cp dqlite /usr/local/bin/
-             cd ..
-             
-             echo "Dqlite built from source (C libs + Go CLI)"
-             echo "install_status=success" >> $GITHUB_OUTPUT
-          fi
-      
-      - name: Get Dqlite version
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/dqlite-tools/check.py" build "$BASELINE_VERSION" "$BASELINE_COMMIT"
+          echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Verify installed Dqlite version
         id: version
+        continue-on-error: true
+        env:
+          INSTALL_STATUS: ${{ steps.install.outputs.install_status }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
         run: |
-          VERSION="unknown"
-          
-          if command -v dqlite >/dev/null; then
-             # Try to get version from binary if possible
-             # dqlite --version might not work or output weird stuff
-             RAW_VERSION=$(dqlite --version 2>&1 || true)
-             
-             # Check if output looks like a version (numbers and dots)
-             if echo "$RAW_VERSION" | grep -qE "[0-9]+\.[0-9]+"; then
-                VERSION=$(echo "$RAW_VERSION" | awk '{print $1}')
+          set -euo pipefail
+          finish() {
+            rc=$1
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+              echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
             else
-                # Fallback for source builds that might not have version info embedded
-                VERSION="source-build"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-             
-             # If installed via apt, prefer dpkg version
-             if dpkg -s dqlite-tools >/dev/null 2>&1; then
-                VERSION=$(dpkg -s dqlite-tools | grep Version | awk '{print $2}')
-            fi
-          fi
-          
-          # Final sanitization to ensure no invalid chars for JSON
-          VERSION=$(echo "$VERSION" | tr -cd '[:alnum:]._-')
-          if [ -z "$VERSION" ]; then VERSION="unknown"; fi
-          
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Dqlite version: $VERSION"
-      
-      - name: Test 1 - Check Binary
+            exit "$rc"
+          }
+          trap 'finish $?' EXIT
+          test "$INSTALL_STATUS:$INSTALL_OUTCOME" = "success:success"
+          python3 "$RUNNER_TEMP/dqlite-tools/check.py" runtime "$BASELINE_VERSION" "$BASELINE_COMMIT"
+          python3 "$RUNNER_TEMP/dqlite-tools/check.py" metadata "$BASELINE_VERSION" "$BASELINE_COMMIT"
+          finish 0
+
+      - name: Test 1 - Installed AArch64 library source ownership
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if which dqlite; then
-            echo "✓ dqlite binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ dqlite binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
+          finish() {
+            rc=$1
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Run Help
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish $?' EXIT
+          python3 "$RUNNER_TEMP/dqlite-tools/check.py" ownership "$BASELINE_VERSION" "$BASELINE_COMMIT"
+          finish 0
+
+      - name: Test 2 - Actual installed library version
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # Ensure libs are found
-          export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
-          
-          if dqlite --help; then
-             echo "✓ dqlite help works"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ dqlite failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
+          finish() {
+            rc=$1
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish $?' EXIT
+          python3 "$RUNNER_TEMP/dqlite-tools/check.py" runtime "$BASELINE_VERSION" "$BASELINE_COMMIT"
+          finish 0
 
-      - name: Test 3 - Check Library File
+      - name: Test 3 - Installed header and pkg-config identity
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # Check standard paths and /usr/local/lib (for source build)
-          if find /usr/lib /usr/local/lib -name "libdqlite.so*" | grep -q .; then
-             echo "✓ libdqlite.so found"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ libdqlite.so missing"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
+          finish() {
+            rc=$1
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish $?' EXIT
+          python3 "$RUNNER_TEMP/dqlite-tools/check.py" metadata "$BASELINE_VERSION" "$BASELINE_COMMIT"
+          finish 0
 
-      - name: Test 4 - Check Pkg-Config
+      - name: Test 4 - SQL test loads the installed library
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # Ensure /usr/local/lib/pkgconfig is in path for source builds
-          export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:/usr/local/lib/pkgconfig
-          
-          if pkg-config --exists dqlite; then
-             echo "✓ pkg-config finds dqlite"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ pkg-config cannot find dqlite"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
+          finish() {
+            rc=$1
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT      
-      - name: Test 5 - Architecture Verification
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish $?' EXIT
+          python3 "$RUNNER_TEMP/dqlite-tools/check.py" linkage "$BASELINE_VERSION" "$BASELINE_COMMIT"
+          finish 0
+
+      - name: Test 5 - Bounded single-node SQL create insert select
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Functional Validation
-          ARCH=$(uname -m)
+          finish() {
+            rc=$1
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish $?' EXIT
+          python3 "$RUNNER_TEMP/dqlite-tools/check.py" sql "$BASELINE_VERSION" "$BASELINE_COMMIT"
+          finish 0
 
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-
-      - name: Regression applicability - package manager installed
+      - name: Test 6 - Build and run reviewed newer source release
         id: test6
+        if: always()
+        continue-on-error: true
+        env:
+          INSTALL_STATUS: ${{ steps.install.outputs.install_status }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          INSTALL_MODE: ${{ steps.install.outputs.install_mode }}
+          VERSION_STATUS: ${{ steps.version.outputs.status }}
+          VERSION_OUTCOME: ${{ steps.version.outcome }}
+          CURRENT: ${{ steps.version.outputs.version }}
+          CORE1: ${{ steps.test1.outputs.status }}:${{ steps.test1.outcome }}
+          CORE2: ${{ steps.test2.outputs.status }}:${{ steps.test2.outcome }}
+          CORE3: ${{ steps.test3.outputs.status }}:${{ steps.test3.outcome }}
+          CORE4: ${{ steps.test4.outputs.status }}:${{ steps.test4.outcome }}
+          CORE5: ${{ steps.test5.outputs.status }}:${{ steps.test5.outcome }}
         run: |
           set -euo pipefail
-          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
-          echo "duration=0" >> "$GITHUB_OUTPUT"
+          START_TIME=$(date +%s)
+          STATE=next_install_failed
+          NEXT_INSTALLED=not_installed
+          RESULT="Candidate source build did not complete."
+          finish() {
+            rc=$1
+            trap - EXIT
+            case "$STATE:$rc" in
+              baseline_install_failed:0)
+                echo "decision=baseline_install_failed" >> "$GITHUB_OUTPUT"
+                echo "status=skipped" >> "$GITHUB_OUTPUT"
+                ;;
+              baseline_failed:0)
+                echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+                echo "status=skipped" >> "$GITHUB_OUTPUT"
+                ;;
+              validated_next_release:0)
+                echo "decision=validated_next_release" >> "$GITHUB_OUTPUT"
+                echo "status=passed" >> "$GITHUB_OUTPUT"
+                ;;
+              *)
+                echo "decision=next_regression_failed" >> "$GITHUB_OUTPUT"
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                rc=1
+                ;;
+            esac
+            echo "current_version=${CURRENT:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "latest_version=$CANDIDATE_VERSION" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=$NEXT_INSTALLED" >> "$GITHUB_OUTPUT"
+            echo "regression_result=$RESULT" >> "$GITHUB_OUTPUT"
+            echo "comparison=Reviewed source releases $BASELINE_VERSION to $CANDIDATE_VERSION; installed library identity and single-node SQL only. No replication, failover or in-place upgrade claim." >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish $?' EXIT
+          if [ "$INSTALL_STATUS:$INSTALL_OUTCOME:$INSTALL_MODE" != "success:success:github_source" ]; then
+            STATE=baseline_install_failed
+            RESULT="Baseline source installation was not verified; candidate not attempted."
+            finish 0
+          fi
+          if [ "$VERSION_STATUS:$VERSION_OUTCOME:$CURRENT" != "passed:success:$BASELINE_VERSION" ] ||
+             [ "$CORE1" != "passed:success" ] || [ "$CORE2" != "passed:success" ] ||
+             [ "$CORE3" != "passed:success" ] || [ "$CORE4" != "passed:success" ] ||
+             [ "$CORE5" != "passed:success" ]; then
+            STATE=baseline_failed
+            RESULT="Baseline library identity or core validation failed; candidate not attempted."
+            finish 0
+          fi
+          python3 -c 'import os; assert tuple(map(int, os.environ["CANDIDATE_VERSION"].split("."))) > tuple(map(int, os.environ["BASELINE_VERSION"].split(".")))'
+          python3 "$RUNNER_TEMP/dqlite-tools/check.py" build "$CANDIDATE_VERSION" "$CANDIDATE_COMMIT"
+          RESULT="Candidate installed library identity validation failed."
+          python3 "$RUNNER_TEMP/dqlite-tools/check.py" runtime "$CANDIDATE_VERSION" "$CANDIDATE_COMMIT"
+          python3 "$RUNNER_TEMP/dqlite-tools/check.py" metadata "$CANDIDATE_VERSION" "$CANDIDATE_COMMIT"
+          NEXT_INSTALLED=$CANDIDATE_VERSION
+          RESULT="Candidate single-node SQL runtime validation failed."
+          python3 "$RUNNER_TEMP/dqlite-tools/check.py" sql "$CANDIDATE_VERSION" "$CANDIDATE_COMMIT"
+          STATE=validated_next_release
+          RESULT="Pinned candidate built, installed library version verified, and single-node SQL passed."
+          finish 0
 
       - name: Calculate test summary
         if: always()
         id: summary
         run: |
+          set -euo pipefail
+          CORE1='${{ steps.test1.outputs.status }}:${{ steps.test1.outcome }}'
+          CORE2='${{ steps.test2.outputs.status }}:${{ steps.test2.outcome }}'
+          CORE3='${{ steps.test3.outputs.status }}:${{ steps.test3.outcome }}'
+          CORE4='${{ steps.test4.outputs.status }}:${{ steps.test4.outcome }}'
+          CORE5='${{ steps.test5.outputs.status }}:${{ steps.test5.outcome }}'
+          DURATION1='${{ steps.test1.outputs.duration }}'
+          DURATION2='${{ steps.test2.outputs.duration }}'
+          DURATION3='${{ steps.test3.outputs.duration }}'
+          DURATION4='${{ steps.test4.outputs.duration }}'
+          DURATION5='${{ steps.test5.outputs.duration }}'
+          DURATION6='${{ steps.test6.outputs.duration }}'
+          REGRESSION='${{ steps.test6.outputs.status }}:${{ steps.test6.outcome }}:${{ steps.test6.outputs.decision }}'
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
-
-          # Check Binary
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+          for i in 1 2 3 4 5; do
+            core=CORE$i
+            duration=DURATION$i
+            if [ "${!core}" = "passed:success" ] && [[ "${!duration}" =~ ^[0-9]{1,6}$ ]]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+            fi
+          done
+          CORE_FAILED=$FAILED
+          if [[ "$DURATION6" =~ ^[0-9]{1,6}$ ]] &&
+             [ "$REGRESSION" = "passed:success:validated_next_release" ] && [ "$CORE_FAILED" -eq 0 ]; then
             PASSED=$((PASSED + 1))
+          elif [[ "$DURATION6" =~ ^[0-9]{1,6}$ ]] && [ "$CORE_FAILED" -gt 0 ] &&
+               { [ "$REGRESSION" = "skipped:success:baseline_failed" ] ||
+                 [ "$REGRESSION" = "skipped:success:baseline_install_failed" ]; }; then
+            SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
-
-          # Run Help
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
+          for duration in "$DURATION1" "$DURATION2" "$DURATION3" "$DURATION4" "$DURATION5" "$DURATION6"; do
+            if [[ "$duration" =~ ^[0-9]{1,6}$ ]]; then
+              TOTAL_DURATION=$((TOTAL_DURATION + 10#$duration))
+            fi
+          done
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
-
-          # Check Library File
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Check Pkg-Config
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Architecture Verification
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
-          else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
       - name: Create test summary
         if: always()
+        env:
+          VERSION: ${{ steps.version.outputs.version || 'unverified' }}
+          STATUS: ${{ steps.summary.outputs.overall_status || 'failure' }}
+          PASSED: ${{ steps.summary.outputs.passed || '0' }}
+          FAILED: ${{ steps.summary.outputs.failed || '6' }}
+          SKIPPED: ${{ steps.summary.outputs.skipped || '0' }}
+          DURATION: ${{ steps.summary.outputs.duration || '0' }}
+          RESULT: ${{ steps.test6.outputs.regression_result || 'Regression step did not produce a result.' }}
         run: |
-          echo "## Dqlite Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check Binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Run Help: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check Library File: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Check Pkg-Config: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          {
+            echo "## Dqlite Test Results"
+            echo "- Verified library version: $VERSION"
+            echo "- Source baseline: v$BASELINE_VERSION ($BASELINE_COMMIT)"
+            echo "- Status: $STATUS"
+            echo "- Passed: $PASSED; failed: $FAILED; skipped: $SKIPPED"
+            echo "- Duration: ${DURATION}s"
+            echo "- Regression: $RESULT"
+            echo "- Scope: installed AArch64 library, source identity, single-node SQL."
+            echo "- Replication, failover and in-place upgrades were not tested."
+          } >> "$GITHUB_STEP_SUMMARY"

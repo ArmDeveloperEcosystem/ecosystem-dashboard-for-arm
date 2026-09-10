@@ -77,6 +77,7 @@ on:
 jobs:
   test-mesa:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
     outputs:
       contract_version: "2.0"
       package_slug: ${{ steps.metadata.outputs.package_slug }}
@@ -112,179 +113,378 @@ jobs:
         run: |
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=mesa" >> "$GITHUB_OUTPUT"
-          echo "dashboard_link=/opensource_packages/mesa" >> "$GITHUB_OUTPUT"
-      - name: Install Mesa Utils
+          echo "dashboard_link=/linux/opensource_packages/mesa" >> "$GITHUB_OUTPUT"
+      - name: Install Python Mesa from PyPI
         id: install
+        continue-on-error: true
         run: |
-          echo "Installing Mesa Utils..."
-          
-          # Install via apt
-          sudo apt-get update
-          if sudo apt-get install -y mesa-utils; then
-             echo "Mesa Utils installed successfully"
-             echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-             echo "Mesa Utils installation failed"
-             echo "install_status=failed" >> $GITHUB_OUTPUT
-             exit 1
-          fi
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "install_status=success" >> "$GITHUB_OUTPUT"
+            else
+              echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          sudo timeout --kill-after=10s 180s apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo timeout --kill-after=10s 180s apt-get install -y --no-install-recommends python3-venv
+          VENV=$(mktemp -d "$RUNNER_TEMP/mesa-venv.XXXXXX")
+          timeout --kill-after=5s 60s python3 -I -m venv "$VENV"
+          # Mesa imports its network-space module during package import.
+          timeout --kill-after=10s 300s "$VENV/bin/python" -I -m pip --isolated install --index-url https://pypi.org/simple --only-binary=:all: --disable-pip-version-check --no-input --retries 2 --timeout 30 'mesa[network]'
+          echo "MESA_PYTHON=$VENV/bin/python" >> "$GITHUB_ENV"
+          finish 0
 
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
-      - name: Get Mesa version
+      - name: Get owned Python Mesa version
         id: version
+        if: always()
+        continue-on-error: true
         run: |
-          # glxinfo usually provides version info
-          # It might require a display, but let's try running it
-          # If it fails due to no display, we can try to find package version
-          
-          if command -v glxinfo &> /dev/null; then
-             # Try to get version string, might fail without display
-             VERSION=$(glxinfo 2>&1 | grep "OpenGL version string" | awk '{print $4}' || echo "unknown")
-          else
-             VERSION="unknown"
-          fi
-          
-          if [ "$VERSION" = "unknown" ] || [ -z "$VERSION" ]; then
-             # Fallback to dpkg
-             VERSION=$(dpkg -s mesa-utils | grep "Version:" | awk '{print $2}')
-          fi
-          
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Mesa version: $VERSION"
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          VERSION=$(timeout --kill-after=5s 30s "$MESA_PYTHON" -I - <<'PY'
+          import importlib.metadata as metadata
+          import inspect
+          import os
+          from pathlib import Path
+          import re
+          import sys
+          import mesa
 
-      # ============================================================
-      # ADD YOUR TESTS BELOW
-      # Each test should:
-      # 1. Have a unique id (test1, test2, etc.)
-      # 2. Track start/end time for duration
-      # 3. Set status=passed or status=failed
-      # 4. Exit 1 on failure
-      # ============================================================
+          dist = metadata.distribution("mesa")
+          assert dist.metadata["Name"].lower() == "mesa", "Wrong distribution name"
+          version = dist.version
+          assert re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}(?:(?:a|b|rc)[0-9]+)?(?:\.post[0-9]+)?(?:\.dev[0-9]+)?", version or ""), "Invalid Mesa version"
+          assert mesa.__version__ == version, "Import/distribution version mismatch"
+          assert dist.files, "Missing Mesa installation records"
+          owned = {Path(dist.locate_file(item)).resolve() for item in dist.files}
+          for path in (mesa.__file__, inspect.getfile(mesa.Model), inspect.getfile(mesa.Agent)):
+              assert Path(path).resolve() in owned, "Imported Mesa code is not owned by distribution"
+              print(f"Mesa owns {Path(path).resolve()}", file=sys.stderr)
+          assert {"mesa"} == {name.lower() for name in metadata.packages_distributions().get("mesa", [])}, "Ambiguous Mesa import owner"
+          if "EXPECTED_MESA_VERSION" in os.environ:
+              assert os.environ["EXPECTED_MESA_VERSION"] == version, "Missing or changed Mesa baseline"
+          print(version)
+          PY
+          )
+          if [[ "$VERSION" == *$'\n'* || "$VERSION" == *$'\r'* ]] || \
+             ! [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,3}((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$ ]]; then
+            finish 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          finish 0
 
-      - name: Test 1 - Check glxinfo binary
+      - name: Test 1 - Import Mesa and register an agent
         id: test1
+        if: always()
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if command -v glxinfo &> /dev/null; then
-            echo "✓ glxinfo binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ glxinfo binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          timeout --kill-after=5s 30s "$MESA_PYTHON" -I - <<'PY'
+          import mesa
 
-      - name: Test 2 - Check glxgears binary
+          model = mesa.Model(seed=7)
+          agent = mesa.Agent(model)
+          assert agent.model is model, "Agent has wrong model"
+          assert isinstance(agent.unique_id, int) and agent.unique_id > 0, "Invalid agent ID"
+          assert len(model.agents) == 1 and agent in model.agents, "Agent registration failed"
+          agent.remove()
+          assert len(model.agents) == 0, "Agent removal failed"
+          print("Mesa import, agent registration and removal passed")
+          PY
+          finish 0
+
+      - name: Test 2 - Verify distribution ownership and baseline version
         id: test2
+        if: always()
         continue-on-error: true
+        env:
+          EXPECTED_MESA_VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if command -v glxgears &> /dev/null; then
-            echo "✓ glxgears binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ glxgears binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          VERSION=$(timeout --kill-after=5s 30s "$MESA_PYTHON" -I - <<'PY'
+          import importlib.metadata as metadata
+          import inspect
+          import os
+          from pathlib import Path
+          import re
+          import sys
+          import mesa
 
-      - name: Test 3 - Check help output
+          dist = metadata.distribution("mesa")
+          assert dist.metadata["Name"].lower() == "mesa", "Wrong distribution name"
+          version = dist.version
+          assert re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}(?:(?:a|b|rc)[0-9]+)?(?:\.post[0-9]+)?(?:\.dev[0-9]+)?", version or ""), "Invalid Mesa version"
+          assert mesa.__version__ == version, "Import/distribution version mismatch"
+          assert dist.files, "Missing Mesa installation records"
+          owned = {Path(dist.locate_file(item)).resolve() for item in dist.files}
+          for path in (mesa.__file__, inspect.getfile(mesa.Model), inspect.getfile(mesa.Agent)):
+              assert Path(path).resolve() in owned, "Imported Mesa code is not owned by distribution"
+              print(f"Mesa owns {Path(path).resolve()}", file=sys.stderr)
+          assert {"mesa"} == {name.lower() for name in metadata.packages_distributions().get("mesa", [])}, "Ambiguous Mesa import owner"
+          if "EXPECTED_MESA_VERSION" in os.environ:
+              assert os.environ["EXPECTED_MESA_VERSION"] == version, "Missing or changed Mesa baseline"
+          print(version)
+          PY
+          )
+          if [[ "$VERSION" == *$'\n'* || "$VERSION" == *$'\r'* ]] || \
+             ! [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,3}((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$ ]]; then
+            finish 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "installed_version=$VERSION" >> "$GITHUB_OUTPUT"
+          finish 0
+
+      - name: Test 3 - Verify pip installation and dependencies
         id: test3
+        if: always()
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if glxinfo -h 2>&1 | grep -q "Usage"; then
-             echo "✓ glxinfo help works"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ glxinfo help failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          timeout --kill-after=5s 30s "$MESA_PYTHON" -I -m pip check
+          timeout --kill-after=5s 30s "$MESA_PYTHON" -I - <<'PY'
+          from importlib.metadata import distribution
 
-      - name: Test 4 - Run glxinfo (might fail without display)
+          dist = distribution("mesa")
+          assert (dist.read_text("INSTALLER") or "").strip() == "pip", "Mesa was not installed by pip"
+          assert dist.read_text("direct_url.json") is None, "Expected Mesa from the PyPI index"
+          print("Mesa pip installation and dependency checks passed")
+          PY
+          finish 0
+
+      - name: Test 4 - Verify native Arm64 Python
         id: test4
+        if: always()
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # This test is tricky in headless CI.
-          # We expect it to fail or print "Error: unable to open display"
-          # If it prints that, it means the binary ran and tried to connect.
-          
-          OUTPUT=$(glxinfo 2>&1 || true)
-          if echo "$OUTPUT" | grep -q "unable to open display"; then
-             echo "✓ glxinfo ran (display error expected)"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          elif echo "$OUTPUT" | grep -q "OpenGL"; then
-             echo "✓ glxinfo ran successfully"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             # If it failed with some other error (e.g. segfault), that's bad.
-             # But let's be lenient for smoke test if binary exists.
-             echo "Warning: glxinfo output unexpected: $OUTPUT"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-      - name: Test 5 - Check package info
-        id: test5
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          # Functional Validation
-          
-          if dpkg -s mesa-utils | grep -q "Status: install ok installed"; then
-             echo "✓ Package installed correctly"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ Package check failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-          
-          # Architecture Verification
-          ARCH=$(uname -m)
-          if [ "$ARCH" != "aarch64" ]; then
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          [ "$(uname -m)" = aarch64 ]
+          timeout --kill-after=5s 30s "$MESA_PYTHON" -I - <<'PY'
+          import platform
+          import struct
+          import sys
 
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          assert sys.platform == "linux", "Expected Linux"
+          assert platform.machine() == "aarch64", "Expected aarch64 runtime"
+          assert struct.calcsize("P") == 8, "Expected 64-bit Python"
+          with open(sys.executable, "rb") as executable:
+              header = executable.read(20)
+          assert header[:6] == b"\x7fELF\x02\x01", "Expected ELF64 little-endian Python"
+          assert int.from_bytes(header[18:20], "little") == 183, "Python executable is not AArch64"
+          print("Native Linux AArch64 Python verified")
+          PY
+          finish 0
 
-            # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
+      - name: Test 5 - Run deterministic Mesa model
+        id: test5
+        if: always()
+        continue-on-error: true
+        env:
+          EXPECTED_MESA_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          [ "$(uname -m)" = aarch64 ]
+          timeout --kill-after=5s 30s "$MESA_PYTHON" -I - <<'PY'
+          import importlib.metadata as metadata
+          import inspect
+          import os
+          from pathlib import Path
+          import re
+          import sys
+          import mesa
+
+          dist = metadata.distribution("mesa")
+          assert dist.metadata["Name"].lower() == "mesa", "Wrong distribution name"
+          version = dist.version
+          assert re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}(?:(?:a|b|rc)[0-9]+)?(?:\.post[0-9]+)?(?:\.dev[0-9]+)?", version or ""), "Invalid Mesa version"
+          assert mesa.__version__ == version, "Import/distribution version mismatch"
+          assert dist.files, "Missing Mesa installation records"
+          owned = {Path(dist.locate_file(item)).resolve() for item in dist.files}
+          for path in (mesa.__file__, inspect.getfile(mesa.Model), inspect.getfile(mesa.Agent)):
+              assert Path(path).resolve() in owned, "Imported Mesa code is not owned by distribution"
+              print(f"Mesa owns {Path(path).resolve()}", file=sys.stderr)
+          assert {"mesa"} == {name.lower() for name in metadata.packages_distributions().get("mesa", [])}, "Ambiguous Mesa import owner"
+          if "EXPECTED_MESA_VERSION" in os.environ:
+              assert os.environ["EXPECTED_MESA_VERSION"] == version, "Missing or changed Mesa baseline"
+          import platform
+          import struct
+          import sys
+
+          assert sys.platform == "linux", "Expected Linux"
+          assert platform.machine() == "aarch64", "Expected aarch64 runtime"
+          assert struct.calcsize("P") == 8, "Expected 64-bit Python"
+          with open(sys.executable, "rb") as executable:
+              header = executable.read(20)
+          assert header[:6] == b"\x7fELF\x02\x01", "Expected ELF64 little-endian Python"
+          assert int.from_bytes(header[18:20], "little") == 183, "Python executable is not AArch64"
+
+          class CounterAgent(mesa.Agent):
+              def __init__(self, model, initial):
+                  super().__init__(model)
+                  self.value = initial
+                  self.activations = 0
+
+              def step(self):
+                  self.value += 2
+                  self.activations += 1
+                  self.model.order.append(self.unique_id)
+
+          class CounterModel(mesa.Model):
+              def __init__(self):
+                  super().__init__(seed=42)
+                  self.order = []
+                  for initial in range(4):
+                      CounterAgent(self, initial)
+
+              def step(self):
+                  self.agents.shuffle_do("step")
+
+          traces = []
+          for repeat in range(2):
+              model = CounterModel()
+              agents = list(model.agents)
+              ids = {agent.unique_id for agent in agents}
+              assert len(agents) == len(ids) == 4, "Expected four distinct registered agents"
+              assert model.steps == 0, "Incorrect initial model step"
+              assert [agent.value for agent in agents] == [0, 1, 2, 3], "Incorrect initial state"
+              trace = []
+              for tick in range(1, 4):
+                  model.order.clear()
+                  model.step()
+                  values = [agent.value for agent in agents]
+                  assert model.steps == tick, "Model step did not advance"
+                  assert values == [initial + 2 * tick for initial in range(4)], "Incorrect agent state"
+                  assert sum(values) == 6 + 8 * tick, "Incorrect model total"
+                  assert all(agent.activations == tick for agent in agents), "Incorrect activation count"
+                  assert len(model.agents) == 4 and set(model.order) == ids and len(model.order) == 4, "Agents not activated exactly once"
+                  trace.append((list(model.order), values))
+              traces.append(trace)
+          assert traces[0] == traces[1], "Seeded model is not deterministic"
+          print(f"Mesa {version}: two seeded models, three steps, four agents; final values={traces[0][-1][1]}")
+          PY
+          finish 0
 
       - name: Regression applicability - package manager installed
         id: test6
+        if: always()
+        env:
+          CURRENT: ${{ steps.version.outputs.version || 'unknown' }}
         run: |
           set -euo pipefail
-          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
           echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.install.outputs.install_status }}" != success ]; then
+            echo "decision=baseline_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression skipped: the Python Mesa pip installation failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=No valid installed baseline is available for comparison." >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.test1.outcome }}" = success ] && [ "${{ steps.test1.outputs.status }}" = passed ] && \
+               [ "${{ steps.test2.outcome }}" = success ] && [ "${{ steps.test2.outputs.status }}" = passed ] && \
+               [ "${{ steps.test3.outcome }}" = success ] && [ "${{ steps.test3.outputs.status }}" = passed ] && \
+               [ "${{ steps.test4.outcome }}" = success ] && [ "${{ steps.test4.outputs.status }}" = passed ] && \
+               [ "${{ steps.test5.outcome }}" = success ] && [ "${{ steps.test5.outputs.status }}" = passed ]; then
+            echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation not applicable: Python Mesa is installed from PyPI using pip in Tests 1-5" >> "$GITHUB_OUTPUT"
+            echo "comparison=The baseline uses the pip package manager; no next-version artifact was installed or compared." >> "$GITHUB_OUTPUT"
+          else
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression skipped: Python Mesa baseline validation failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=All five core checks must pass before a baseline can be compared." >> "$GITHUB_OUTPUT"
+          fi
           echo "status=skipped" >> "$GITHUB_OUTPUT"
           echo "duration=0" >> "$GITHUB_OUTPUT"
 
@@ -292,78 +492,90 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
 
-          # Check glxinfo binary
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test1.outcome }}" = "success" ] && [ "${{ steps.test1.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Check glxgears binary
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test2.outcome }}" = "success" ] && [ "${{ steps.test2.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Check help output
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test3.outcome }}" = "success" ] && [ "${{ steps.test3.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Run glxinfo (might fail without display)
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test4.outcome }}" = "success" ] && [ "${{ steps.test4.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
-          # Check package info
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test5.outcome }}" = "success" ] && [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          CORE_FAILED=$FAILED
+          if [ "${{ steps.test6.outcome }}" = "success" ] && \
+             [ "${{ steps.test6.outputs.status }}" = "skipped" ] && \
+             { { [ "$CORE_FAILED" -eq 0 ] && [ "${{ steps.test6.outputs.decision }}" = "not_applicable_package_manager" ]; } || \
+               { [ "$CORE_FAILED" -gt 0 ] && { [ "${{ steps.test6.outputs.decision }}" = "baseline_failed" ] || \
+                                             [ "${{ steps.test6.outputs.decision }}" = "baseline_install_failed" ]; }; }; }; then
+            SKIPPED=$((SKIPPED + 1))
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## Mesa Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Test 1 - Check glxinfo binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Test 2 - Check glxgears binary: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Test 3 - Check help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Run glxinfo (might fail without display): ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Check package info: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "## Mesa Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${{ steps.version.outputs.version || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** ${{ steps.summary.outputs.overall_status || 'failure' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed || 0 }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed || 0 }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped || 0 }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner:** ubuntu-24.04 (arm64)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Test Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Test 1 - Import Mesa and register an agent: ${{ steps.test1.outputs.status || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Test 2 - Verify distribution ownership and baseline version: ${{ steps.test2.outputs.status || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Test 3 - Verify pip installation and dependencies: ${{ steps.test3.outputs.status || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Test 4 - Verify native Arm64 Python: ${{ steps.test4.outputs.status || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Test 5 - Run deterministic Mesa model: ${{ steps.test5.outputs.status || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Package-manager regression applicability: ${{ steps.test6.outputs.status || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
