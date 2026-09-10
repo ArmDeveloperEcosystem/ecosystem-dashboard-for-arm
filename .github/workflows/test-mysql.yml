@@ -118,10 +118,9 @@ jobs:
         run: |
           echo "Installing MySQL..."
           
-          # Install prerequisites and mysql
+          # Core packages provide the binaries without configuring a shared service.
           sudo apt-get update
-          # Use DEBIAN_FRONTEND=noninteractive to avoid password prompts
-          if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server mysql-client; then
+          if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server-core-8.0 mysql-client-core-8.0; then
              echo "MySQL installed successfully"
              echo "install_status=success" >> $GITHUB_OUTPUT
           else
@@ -135,14 +134,60 @@ jobs:
       # ============================================================
       - name: Get MySQL version
         id: version
+        continue-on-error: true
         run: |
-          if command -v mysql &> /dev/null; then
-             VERSION=$(mysql --version 2>&1 | awk '{print $5}' | tr -d ',' || echo "unknown")
-          else
-             VERSION="unknown"
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected MySQL version: $VERSION"
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          export LC_ALL=C
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+
+          def run(*args):
+              result = subprocess.run(args, check=True, capture_output=True, text=True, timeout=20)
+              if result.stderr:
+                  raise SystemExit(f"Unexpected diagnostics: {result.stderr!r}")
+              return result.stdout
+
+          verified = []
+          for name, package in (("mysql", "mysql-client-core-8.0"), ("mysqld", "mysql-server-core-8.0")):
+              binary = shutil.which(name)
+              if not binary:
+                  raise SystemExit(f"Missing {name}")
+              row = run("dpkg-query", "-W", "-f=${Package}\t${Status}\t${Version}\t${Architecture}\t${source:Upstream-Version}\n", package)
+              installed = re.fullmatch(re.escape(package) + r"\tinstall ok installed\t([0-9][0-9A-Za-z.+:~\-]*)\tarm64\t([0-9]+\.[0-9]+\.[0-9]+)\n", row)
+              if not installed or installed[1].split(":")[-1].rsplit("-", 1)[0] != installed[2]:
+                  raise SystemExit(f"Invalid MySQL package identity: {row!r}")
+              files = run("dpkg-query", "-L", package).splitlines()
+              if Path(binary).resolve() not in {Path(p).resolve() for p in files if p.startswith("/")}:
+                  raise SystemExit(f"{binary} is not owned by {package}")
+              banner = run(binary, "--no-defaults", "--version")
+              if not re.fullmatch(re.escape(binary) + r"  Ver " + re.escape(installed[1]) + r" for Linux on aarch64 \(\(Ubuntu\)\)\n", banner):
+                  raise SystemExit(f"MySQL binary/package version mismatch: {banner!r}, {row!r}")
+              verified.append((binary, installed[1], installed[2]))
+          if verified[0][1:] != verified[1][1:]:
+              raise SystemExit("MySQL client/server package versions differ")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={verified[0][2]}\npackage_version={verified[0][1]}\n")
+              output.write(f"client={verified[0][0]}\nserver={verified[1][0]}\n")
+          print(f"Verified MySQL {verified[0][2]}: {verified[0][1]} (arm64), client and server")
+          PY
+          finish 0
 
       # ============================================================
       # ADD YOUR TESTS BELOW
@@ -156,122 +201,214 @@ jobs:
       - name: Test 1 - Check mysql client binary
         id: test1
         continue-on-error: true
+        env:
+          VERSION_STATUS: ${{ steps.version.outputs.status }}
+          MYSQL_CLIENT: ${{ steps.version.outputs.client }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if command -v mysql &> /dev/null; then
-            echo "✓ mysql binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ mysql binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          test "$VERSION_STATUS" = passed
+          test -x "$MYSQL_CLIENT"
+          finish 0
 
       - name: Test 2 - Check mysqld binary
         id: test2
         continue-on-error: true
+        env:
+          VERSION_STATUS: ${{ steps.version.outputs.status }}
+          MYSQL_SERVER: ${{ steps.version.outputs.server }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if command -v mysqld &> /dev/null; then
-            echo "✓ mysqld binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          elif [ -f "/usr/sbin/mysqld" ]; then
-            echo "✓ mysqld binary found (in /usr/sbin)"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ mysqld binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          test "$VERSION_STATUS" = passed
+          test -x "$MYSQL_SERVER"
+          finish 0
 
       - name: Test 3 - Check help command
         id: test3
         continue-on-error: true
+        env:
+          MYSQL_CLIENT: ${{ steps.version.outputs.client }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if mysql --help 2>&1 | grep -q "Usage"; then
-             echo "✓ help command works"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ help command failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          HELP=$("$MYSQL_CLIENT" --no-defaults --help)
+          [[ "$HELP" == *"Usage:"* ]]
+          finish 0
 
-      - name: Test 4 - Check service status
+      - name: Test 4 - Validate isolated server configuration
         id: test4
         continue-on-error: true
+        env:
+          MYSQL_SERVER: ${{ steps.version.outputs.server }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          # Service should be started by apt
-          if sudo systemctl is-active mysql; then
-             echo "✓ MySQL service is running"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ MySQL service is not running"
-             # Try to start it
-             sudo systemctl start mysql
-             sleep 5
-             if sudo systemctl is-active mysql; then
-                echo "✓ MySQL service started successfully"
-                echo "status=passed" >> $GITHUB_OUTPUT
-            else
-                echo "✗ Failed to start MySQL service"
-                sudo journalctl -u mysql --no-pager | tail -n 20
-                echo "status=failed" >> $GITHUB_OUTPUT
-                exit 1
+          SCOPE=""
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ -n "$SCOPE" ]; then
+              rm -rf -- "$SCOPE" || rc=1
             fi
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          SCOPE=$(mktemp -d /tmp/mysql-config.XXXXXX)
+          "$MYSQL_SERVER" --no-defaults --validate-config --user="$(id -un)" \
+            --datadir="$SCOPE" --socket="$SCOPE/mysql.sock" --pid-file="$SCOPE/mysql.pid" \
+            --tmpdir="$SCOPE" --skip-networking --mysqlx=0 --secure-file-priv="$SCOPE"
+          finish 0
 
-      - name: Test 5 - Simple connection check
+      - name: Test 5 - Isolated functional SQL check
         id: test5
         continue-on-error: true
+        timeout-minutes: 4
+        env:
+          VERSION_STATUS: ${{ steps.version.outputs.status }}
+          MYSQL_VERSION: ${{ steps.version.outputs.package_version }}
+          MYSQL_CLIENT: ${{ steps.version.outputs.client }}
+          MYSQL_SERVER: ${{ steps.version.outputs.server }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Functional Validation
-          
-          # Try connecting as root (might need sudo or might fail if auth_socket is used)
-          # In Ubuntu, root usually uses auth_socket, so sudo mysql should work.
-          
-          if sudo mysql -e "SELECT 1;" > /dev/null; then
-             echo "✓ Connected to MySQL successfully"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ Failed to connect to MySQL"
-             # Don't fail the test if connection fails due to auth, as long as binary works.
-             # But let's try to be robust.
-             echo "status=passed" >> $GITHUB_OUTPUT
-          fi
-          
-          # Architecture Verification
-          ARCH=$(uname -m)
-          if [ "$ARCH" != "aarch64" ]; then
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          test "$VERSION_STATUS" = passed
+          test "$(uname -m)" = aarch64
+          export LC_ALL=C
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import pwd
+          import re
+          import signal
+          import subprocess
+          import tempfile
+          import time
 
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          def interrupted(signum, _frame):
+              raise SystemExit(128 + signum)
 
-            # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
+          signal.signal(signal.SIGTERM, interrupted)
+          signal.signal(signal.SIGINT, interrupted)
+          version = os.environ["MYSQL_VERSION"]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.+~]+", version):
+              raise SystemExit("MySQL package version was not verified")
+          with tempfile.TemporaryDirectory(prefix="mysql-smoke-", dir="/tmp") as directory:
+              scope = Path(directory)
+              socket = scope / "mysql.sock"
+              # Ignore shared option/login files and inherited credentials.
+              env = {key: value for key, value in os.environ.items() if not key.startswith("MYSQL_")}
+              env.update(HOME=directory, MYSQL_TEST_LOGIN_FILE=str(scope / "unused-login"))
+              server = [os.environ["MYSQL_SERVER"], "--no-defaults",
+                        "--user=" + pwd.getpwuid(os.getuid()).pw_name,
+                        "--datadir=" + str(scope / "data")]
+              client = [os.environ["MYSQL_CLIENT"], "--no-defaults", "--protocol=SOCKET",
+                        "--socket=" + str(socket), "--user=root",
+                        "--connect-timeout=5", "--batch", "--skip-column-names", "--raw"]
+
+              def query(sql, expected):
+                  result = subprocess.run(client + ["--execute=" + sql], env=env,
+                                          capture_output=True, text=True, timeout=15)
+                  if result.returncode or result.stderr or result.stdout != expected:
+                      raise RuntimeError(f"SQL failed: rc={result.returncode}, stdout={result.stdout!r}, stderr={result.stderr!r}")
+                  print(f"SQL verified: {sql!r} -> {result.stdout!r}")
+
+              with (scope / "server.log").open("w+") as log:
+                  process = None
+                  try:
+                      subprocess.run(server + ["--initialize-insecure"], env=env, stdout=log,
+                                     stderr=subprocess.STDOUT, check=True, timeout=60)
+                      process = subprocess.Popen(server + ["--socket=" + str(socket),
+                          "--pid-file=" + str(scope / "mysql.pid"), "--tmpdir=" + directory,
+                          "--skip-networking", "--mysqlx=0", "--secure-file-priv=" + directory,
+                          "--innodb-buffer-pool-size=64M"], env=env, stdout=log, stderr=subprocess.STDOUT)
+                      deadline = time.monotonic() + 30
+                      while not socket.is_socket():
+                          if process.poll() is not None or time.monotonic() >= deadline:
+                              raise RuntimeError("Isolated MySQL server did not become ready")
+                          time.sleep(0.2)
+                      query("SELECT 1;", "1\n")
+                      query("SELECT VERSION(), @@version_compile_machine, @@socket, @@datadir, @@skip_networking;",
+                            f"{version}\taarch64\t{socket}\t{scope}/data/\t1\n")
+                      query("CREATE DATABASE arm_smoke; "
+                            "CREATE TABLE arm_smoke.probe (id INT PRIMARY KEY, value INT NOT NULL); "
+                            "INSERT INTO arm_smoke.probe VALUES (1, 40); START TRANSACTION; "
+                            "UPDATE arm_smoke.probe SET value = value + 2 WHERE id = 1; COMMIT; "
+                            "SELECT value FROM arm_smoke.probe WHERE id = 1; DROP DATABASE arm_smoke;", "42\n")
+                  finally:
+                      try:
+                          if process is not None:
+                              if process.poll() is not None:
+                                  raise RuntimeError("Isolated MySQL server exited unexpectedly")
+                              process.terminate()
+                              try:
+                                  rc = process.wait(timeout=20)
+                              except subprocess.TimeoutExpired:
+                                  process.kill()
+                                  process.wait(timeout=5)
+                                  raise RuntimeError("Isolated MySQL server required forced cleanup")
+                              if rc != 0:
+                                  raise RuntimeError(f"Isolated MySQL shutdown failed: {rc}")
+                      finally:
+                          log.seek(0)
+                          print(log.read())
+              print(f"Isolated MySQL stopped; removing {scope}")
+          PY
+          finish 0
 
       - name: Regression applicability - package manager installed
         id: test6
@@ -293,10 +430,11 @@ jobs:
         run: |
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
 
           # Check mysql client binary
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test1.outcome }}" = "success" ] && [ "${{ steps.test1.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -304,7 +442,7 @@ jobs:
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
           # Check mysqld binary
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test2.outcome }}" = "success" ] && [ "${{ steps.test2.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -312,31 +450,43 @@ jobs:
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
           # Check help command
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test3.outcome }}" = "success" ] && [ "${{ steps.test3.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Check service status
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+          # Validate isolated server configuration
+          if [ "${{ steps.test4.outcome }}" = "success" ] && [ "${{ steps.test4.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
-          # Simple connection check
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+          # Isolated functional SQL check
+          if [ "${{ steps.test5.outcome }}" = "success" ] && [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
+          CORE_FAILED=$FAILED
+          if [ "${{ steps.test6.outcome }}" = "success" ] && \
+             [ "${{ steps.test6.outputs.status }}" = "skipped" ] && \
+             [ "${{ steps.test6.outputs.decision }}" = "not_applicable_package_manager" ]; then
+            SKIPPED=$((SKIPPED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
+          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
           if [ $FAILED -eq 0 ]; then
@@ -356,6 +506,7 @@ jobs:
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -363,6 +514,6 @@ jobs:
           echo "1. Test 1 - Check mysql client binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "2. Test 2 - Check mysqld binary: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "3. Test 3 - Check help command: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Check service status: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Simple connection check: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "4. Test 4 - Validate isolated server configuration: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "5. Test 5 - Isolated functional SQL check: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "6. Package-manager regression applicability: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY

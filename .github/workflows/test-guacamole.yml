@@ -135,11 +135,41 @@ jobs:
       # ============================================================
       - name: Get Guacamole version
         id: version
+        continue-on-error: true
         run: |
-          # Get version from guacd command
-          VERSION=$(guacd -v 2>&1 | grep "Guacamole proxy daemon" | awk '{print $4}' || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Guacamole version: $VERSION"
+          set -euo pipefail
+          trap 'echo "status=failed" >> "$GITHUB_OUTPUT"' ERR
+          export LC_ALL=C
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+
+          def run(*args):
+              return subprocess.run(args, check=True, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True).stdout
+
+          binary = shutil.which("guacd")
+          if not binary:
+              raise SystemExit("guacd is missing")
+          banner = run(binary, "-v")
+          match = re.fullmatch(r"Guacamole proxy daemon \(guacd\) version ([0-9]+(?:\.[0-9]+){1,2})\n?", banner)
+          if not match:
+              raise SystemExit(f"Invalid guacd version output: {banner!r}")
+          version = match[1]
+          package = run("dpkg-query", "-W", "-f=${Package}\t${Status}\t${Version}\t${Architecture}\t${source:Upstream-Version}\n", "guacd")
+          installed = re.fullmatch(r"guacd\tinstall ok installed\t([0-9][0-9A-Za-z.+:~\-]*)\tarm64\t([0-9]+(?:\.[0-9]+){1,2})\n", package)
+          if not installed or installed[2] != version:
+              raise SystemExit(f"guacd package/CLI version mismatch: {package!r}, {version!r}")
+          files = run("dpkg-query", "-L", "guacd").splitlines()
+          if Path(binary).resolve() not in {Path(p).resolve() for p in files if p.startswith("/")}:
+              raise SystemExit(f"Executable is not owned by guacd: {binary}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={version}\npackage_version={installed[1]}\nstatus=passed\n")
+          print(f"Verified Guacamole {version}: guacd {installed[1]} (arm64), {binary}")
+          PY
 
       # ============================================================
       # ADD YOUR TESTS BELOW
@@ -171,20 +201,29 @@ jobs:
       - name: Test 2 - Check guacd version command
         id: test2
         continue-on-error: true
+        env:
+          DETECTED_VERSION: ${{ steps.version.outputs.version }}
+          VERSION_STATUS: ${{ steps.version.outputs.status }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if guacd -v 2>&1 | grep -q "Guacamole proxy daemon"; then
-            echo "✓ guacd version command works"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ guacd version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-            fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          trap 'echo "status=failed" >> "$GITHUB_OUTPUT"; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' ERR
+          export LC_ALL=C
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+
+          version = os.environ["DETECTED_VERSION"]
+          if os.environ["VERSION_STATUS"] != "passed" or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", version):
+              raise SystemExit("Guacamole package identity was not verified")
+          banner = subprocess.run(["guacd", "-v"], check=True, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True).stdout
+          if not re.fullmatch(r"Guacamole proxy daemon \(guacd\) version " + re.escape(version) + r"\n?", banner):
+              raise SystemExit(f"guacd version changed or is malformed: {banner!r}")
+          PY
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 3 - Check libguac headers exist
         id: test3
@@ -324,6 +363,12 @@ jobs:
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "core_failed=$FAILED" >> "$GITHUB_OUTPUT"
+          SKIPPED=0
+          if [ "${{ steps.test6.outputs.status }}" = "skipped" ]; then
+            SKIPPED=1
+          fi
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
           if [ $FAILED -eq 0 ]; then
@@ -352,4 +397,3 @@ jobs:
           echo "3. Test 3 - Check libguac headers exist: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Test 4 - Start guacd service (dry run): ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Check library linking: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-

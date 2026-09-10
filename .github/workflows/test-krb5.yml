@@ -136,11 +136,41 @@ jobs:
       # ============================================================
       - name: Get Kerberos version
         id: version
+        continue-on-error: true
         run: |
-          # klist --version or kinit --version
-          VERSION=$(klist --version 2>&1 | grep "Kerberos" | awk '{print $4}' || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Kerberos version: $VERSION"
+          set -euo pipefail
+          trap 'echo "status=failed" >> "$GITHUB_OUTPUT"' ERR
+          export LC_ALL=C
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+
+          def run(*args):
+              return subprocess.run(args, check=True, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True).stdout
+
+          binary = shutil.which("klist")
+          if not binary:
+              raise SystemExit("klist is missing")
+          banner = run(binary, "-V")
+          match = re.fullmatch(r"Kerberos 5 version ([0-9]+(?:\.[0-9]+){1,2})\n?", banner)
+          if not match:
+              raise SystemExit(f"Invalid MIT Kerberos version output: {banner!r}")
+          version = match[1]
+          package = run("dpkg-query", "-W", "-f=${Package}\t${Status}\t${Version}\t${Architecture}\t${source:Upstream-Version}\n", "krb5-user")
+          installed = re.fullmatch(r"krb5-user\tinstall ok installed\t([0-9][0-9A-Za-z.+:~\-]*)\tarm64\t([0-9]+(?:\.[0-9]+){1,2})\n", package)
+          if not installed or installed[2] != version:
+              raise SystemExit(f"MIT Kerberos package/CLI version mismatch: {package!r}, {version!r}")
+          files = run("dpkg-query", "-L", "krb5-user").splitlines()
+          if Path(binary).resolve() not in {Path(p).resolve() for p in files if p.startswith("/")}:
+              raise SystemExit(f"Executable is not owned by krb5-user: {binary}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={version}\npackage_version={installed[1]}\nstatus=passed\n")
+          print(f"Verified MIT Kerberos {version}: krb5-user {installed[1]} (arm64), {binary}")
+          PY
 
       # ============================================================
       # ADD YOUR TESTS BELOW
@@ -190,20 +220,29 @@ jobs:
       - name: Test 3 - Check version command
         id: test3
         continue-on-error: true
+        env:
+          DETECTED_VERSION: ${{ steps.version.outputs.version }}
+          VERSION_STATUS: ${{ steps.version.outputs.status }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if kinit --version 2>&1 | grep -q "Kerberos"; then
-             echo "✓ kinit version command works"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ kinit version command failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          trap 'echo "status=failed" >> "$GITHUB_OUTPUT"; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' ERR
+          export LC_ALL=C
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+
+          version = os.environ["DETECTED_VERSION"]
+          if os.environ["VERSION_STATUS"] != "passed" or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", version):
+              raise SystemExit("MIT Kerberos package identity was not verified")
+          banner = subprocess.run(["klist", "-V"], check=True, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True).stdout
+          if not re.fullmatch(r"Kerberos 5 version " + re.escape(version) + r"\n?", banner):
+              raise SystemExit(f"MIT Kerberos version changed or is malformed: {banner!r}")
+          PY
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 4 - Check help command
         id: test4
@@ -318,6 +357,12 @@ jobs:
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "core_failed=$FAILED" >> "$GITHUB_OUTPUT"
+          SKIPPED=0
+          if [ "${{ steps.test6.outputs.status }}" = "skipped" ]; then
+            SKIPPED=1
+          fi
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
           if [ $FAILED -eq 0 ]; then
@@ -346,4 +391,3 @@ jobs:
           echo "3. Test 3 - Check version command: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Test 4 - Check help command: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Check klist execution (empty cache): ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-

@@ -136,9 +136,31 @@ jobs:
       - name: Get EDOT .NET SDK version
         id: version
         run: |
+          set -euo pipefail
           cd TestApp
-          VERSION=$(dotnet list package | awk '/Elastic.OpenTelemetry/ { print $2; exit }' || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          VERSION=$(python3 - <<'PY'
+          import json
+          import re
+          import subprocess
+          result = subprocess.run(
+              ['dotnet', 'list', 'package', '--format', 'json', '--output-version', '1'],
+              check=True, capture_output=True, text=True, timeout=60,
+          )
+          report = json.loads(result.stdout)
+          assert report['version'] == 1, 'Unexpected package report schema'
+          project, = report['projects']
+          framework, = project['frameworks']
+          assert framework['framework'] == 'net8.0', 'Unexpected target framework'
+          package, = [item for item in framework['topLevelPackages']
+                      if item['id'] == 'Elastic.OpenTelemetry']
+          version = package['resolvedVersion']
+          assert isinstance(version, str) and re.fullmatch(
+              r'[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?', version
+          ), 'Missing or invalid resolved EDOT version'
+          print(version)
+          PY
+          )
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected EDOT .NET SDK version: $VERSION"
 
       - name: Test 1 - Check dotnet binary
@@ -164,23 +186,40 @@ jobs:
       - name: Test 2 - Check package version metadata
         id: test2
         continue-on-error: true
+        env:
+          EXPECTED_EDOT_VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
           cd TestApp
-
-          if dotnet list package | grep -q "Elastic.OpenTelemetry"; then
-            echo "✓ EDOT .NET package metadata found"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ EDOT .NET package metadata missing"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          version = os.environ['EXPECTED_EDOT_VERSION']
+          assert version, 'Missing resolved EDOT version'
+          assets = json.loads(Path('obj/project.assets.json').read_text())
+          key = 'Elastic.OpenTelemetry/' + version
+          matches = [name for name in assets['libraries'] if name.split('/')[0] == 'Elastic.OpenTelemetry']
+          assert matches == [key], 'Restored EDOT version differs from package report'
+          assert assets['libraries'][key]['type'] == 'package', 'EDOT is not a NuGet package'
+          assert assets['targets']['net8.0'][key]['type'] == 'package', 'EDOT is not restored for net8.0'
+          assert assets['targets']['net8.0'][key]['runtime'], 'EDOT runtime assembly is missing'
+          print('Verified restored Elastic.OpenTelemetry ' + version)
+          PY
+          finish 0
 
       - name: Test 3 - Check CLI info output
         id: test3
@@ -229,37 +268,76 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          # Functional Validation
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
           cd TestApp
 
           cat > Program.cs << 'EOF'
           using System;
+          using System.Diagnostics;
+          using System.Runtime.InteropServices;
+          using Elastic.OpenTelemetry;
+          using OpenTelemetry;
+          using OpenTelemetry.Trace;
 
-          Console.WriteLine("EDOT smoke test");
+          if (RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
+              throw new Exception("Expected an Arm64 runtime");
+          var processor = new SmokeProcessor();
+          var options = new ElasticOpenTelemetryOptions
+          {
+              SkipOtlpExporter = true,
+              SkipInstrumentationAssemblyScanning = true
+          };
+          using (var sdk = OpenTelemetrySdk.Create(builder => builder
+              .WithElasticDefaults(options)
+              .WithTracing(tracing => tracing
+                  .AddSource("Arm.EDOT.Smoke")
+                  .SetSampler(new AlwaysOnSampler())
+                  .AddProcessor(processor))))
+          {
+              using var source = new ActivitySource("Arm.EDOT.Smoke");
+              using (var span = source.StartActivity("arm64-smoke"))
+              {
+                  if (span is null || !span.Recorded)
+                      throw new Exception("EDOT did not record the activity");
+                  span.SetTag("smoke.answer", 42);
+              }
+              if (processor.Count != 1)
+                  throw new Exception("Expected exactly one completed EDOT activity");
+          }
+          Console.WriteLine("EDOT tracing smoke passed: 1 validated activity");
+
+          sealed class SmokeProcessor : BaseProcessor<Activity>
+          {
+              public int Count { get; private set; }
+              public override void OnEnd(Activity activity)
+              {
+                  if (activity.Source.Name != "Arm.EDOT.Smoke" ||
+                      activity.OperationName != "arm64-smoke" ||
+                      !Equals(activity.GetTagItem("smoke.answer"), 42))
+                      throw new Exception("Unexpected activity content");
+                  Count++;
+              }
+          }
           EOF
 
-          if ! dotnet build > /dev/null; then
-            echo "✗ EDOT .NET sample project failed to build"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-          if dotnet run | grep -q "EDOT smoke test"; then
-            echo "✓ EDOT .NET sample project built and ran successfully"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ EDOT .NET sample project failed at runtime"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          timeout --kill-after=10s 3m dotnet build --no-restore
+          timeout --kill-after=10s 30s dotnet run --no-build --no-restore > smoke-output.log 2>&1
+          cat smoke-output.log
+          grep -Fx 'EDOT tracing smoke passed: 1 validated activity' smoke-output.log
+          finish 0
 
 
       - name: Regression applicability - package manager installed

@@ -109,6 +109,43 @@ on:
 jobs:
   test-robot-framework:
     runs-on: ubuntu-24.04-arm
+    env:
+      ROBOT_VERSION_PROBE: |
+        import importlib.metadata as metadata
+        from pathlib import Path
+        import re
+        import subprocess
+        import sys
+
+        import robot
+        from robot.version import get_full_version
+
+        cli = Path(sys.argv[1]).resolve(strict=True)
+        distribution = metadata.distribution("robotframework")
+        version = distribution.version
+        if distribution.metadata["Name"] != "robotframework" or not re.fullmatch(
+            r"[0-9]+(\.[0-9]+)+((a|b|rc|\.dev)[0-9]+)?", version or ""
+        ):
+            raise SystemExit("Invalid Robot Framework distribution identity/version")
+        if robot.__version__ != version:
+            raise SystemExit("Robot Framework package/distribution version mismatch")
+
+        # Both the imported package and the selected CLI must belong to this installation.
+        files = distribution.files or ()
+        owned = {Path(distribution.locate_file(file)).resolve() for file in files}
+        module = Path(distribution.locate_file("robot/__init__.py")).resolve()
+        if cli not in owned or module not in owned or Path(robot.__file__).resolve() != module:
+            raise SystemExit("Robot Framework package/CLI installation mismatch")
+        entry_points = [entry for entry in distribution.entry_points
+                        if entry.group == "console_scripts" and entry.name == "robot"]
+        if len(entry_points) != 1 or entry_points[0].value != "robot:run_cli" or entry_points[0].load() is not robot.run_cli:
+            raise SystemExit("Invalid Robot Framework CLI entry point")
+
+        result = subprocess.run([str(cli), "--version", "--nostatusrc"],
+                                check=True, capture_output=True, text=True, timeout=15)
+        if result.stderr or result.stdout != get_full_version("Robot Framework") + "\n":
+            raise SystemExit("Robot Framework CLI/package version banner mismatch")
+        print(version)
     
     outputs:
       contract_version: "2.0"
@@ -167,8 +204,18 @@ jobs:
       - name: Get Robot Framework version
         id: version
         run: |
-          VERSION=$(robot --version --nostatusrc | awk '{print $2}' || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          ROBOT_CLI=$(command -v robot)
+          # Query metadata with the interpreter used by the installed console script.
+          ROBOT_PYTHON=$(sed -n '1s/^#!//p' "$ROBOT_CLI")
+          test -n "$ROBOT_PYTHON"
+          test -x "$ROBOT_PYTHON"
+          VERSION=$("$ROBOT_PYTHON" -c "$ROBOT_VERSION_PROBE" "$ROBOT_CLI")
+          if ! [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)+((a|b|rc|\.dev)[0-9]+)?$ ]]; then
+            echo "Invalid Robot Framework version probe output" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Robot Framework version: $VERSION"
       
       - name: Test 1 - Check robot binary exists
@@ -189,24 +236,40 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 2 - Check robot version command
+      - name: Test 2 - Check installed Robot Framework identity and version
         id: test2
         continue-on-error: true
+        env:
+          EXPECTED_ROBOT_VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if robot --version --nostatusrc | grep -q "Robot Framework"; then
-            echo "✓ robot version command works"
-            robot --version --nostatusrc
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ robot version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          test -n "$EXPECTED_ROBOT_VERSION"
+          ROBOT_CLI=$(command -v robot)
+          ROBOT_PYTHON=$(sed -n '1s/^#!//p' "$ROBOT_CLI")
+          test -n "$ROBOT_PYTHON"
+          test -x "$ROBOT_PYTHON"
+          VERSION=$("$ROBOT_PYTHON" -c "$ROBOT_VERSION_PROBE" "$ROBOT_CLI")
+          if ! [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)+((a|b|rc|\.dev)[0-9]+)?$ ]]; then
+            echo "Invalid Robot Framework version probe output" >&2
             exit 1
           fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          test "$VERSION" = "$EXPECTED_ROBOT_VERSION"
+          echo "Verified installed Robot Framework version: $VERSION"
+          echo "installed_version=$VERSION" >> "$GITHUB_OUTPUT"
+          finish 0
       
       - name: Test 3 - Check robot help output
         id: test3
@@ -399,4 +462,3 @@ jobs:
 
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
