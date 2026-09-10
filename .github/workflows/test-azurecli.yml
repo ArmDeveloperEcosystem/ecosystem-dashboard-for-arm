@@ -90,6 +90,75 @@ jobs:
       HOMEPAGE_URL: "https://learn.microsoft.com/en-us/cli/azure/"
       OFFICIAL_DOCS: "https://learn.microsoft.com/en-us/cli/azure/install-azure-cli"
       GITHUB_REPO: "Azure/azure-cli"
+      AZURE_SMOKE_COMMAND: |
+        test "$(uname -m)" = aarch64
+        WORKDIR=$(mktemp -d "$PWD/azure-smoke.XXXXXX")
+        export WORKDIR AZURE_CONFIG_DIR="$WORKDIR/config" AZURE_CORE_COLLECT_TELEMETRY=no
+        python -m venv "$WORKDIR/venv"
+        . "$WORKDIR/venv/bin/activate"
+        python -m pip install --upgrade pip
+        mkdir -p "$WORKDIR/wheels"
+        if [ "$SMOKE_VERSION" = "2.46.0" ]; then
+          python - <<'PY'
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        import urllib.request
+        from urllib.parse import urlparse
+        root = Path(os.environ["WORKDIR"])
+        with urllib.request.urlopen("https://pypi.org/pypi/antlr4-python3-runtime/4.9.3/json", timeout=30) as response:
+            metadata = json.load(response)
+        assert metadata["info"]["version"] == "4.9.3"
+        sources = [item for item in metadata["urls"] if item["packagetype"] == "sdist"]
+        assert len(sources) == 1
+        source = sources[0]
+        assert urlparse(source["url"]).hostname == "files.pythonhosted.org"
+        with urllib.request.urlopen(source["url"], timeout=60) as response:
+            data = response.read()
+        assert hashlib.sha256(data).hexdigest() == source["digests"]["sha256"]
+        (root / "antlr4-4.9.3.tar.gz").write_bytes(data)
+        (root / "antlr4-source.json").write_text(json.dumps(source, indent=2))
+        print(json.dumps({"antlr4_source": source["url"], "sha256": source["digests"]["sha256"]}))
+        PY
+          timeout 180 python -m pip wheel --no-deps --wheel-dir "$WORKDIR/wheels" "$WORKDIR/antlr4-4.9.3.tar.gz"
+          python - <<'PY'
+        from email.parser import BytesParser
+        import os
+        from pathlib import Path
+        import zipfile
+        wheels = list((Path(os.environ["WORKDIR"]) / "wheels").glob("*.whl"))
+        assert len(wheels) == 1
+        with zipfile.ZipFile(wheels[0]) as wheel:
+            names = [name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")]
+            assert len(names) == 1
+            metadata = BytesParser().parsebytes(wheel.read(names[0]))
+        assert metadata["Name"].replace("_", "-") == "antlr4-python3-runtime"
+        assert metadata["Version"] == "4.9.3"
+        print(f"Built exact ANTLR wheel: {wheels[0]}")
+        PY
+          timeout 180 python -m pip wheel --index-url https://pypi.org/simple --no-deps --no-binary=psutil --wheel-dir "$WORKDIR/wheels" 'psutil~=5.9'
+        fi
+        timeout 360 python -m pip install --only-binary=:all: --find-links "$WORKDIR/wheels" "azure-cli==$SMOKE_VERSION"
+        python -m pip freeze > "$WORKDIR/pip-freeze.txt"
+        az --version > "$WORKDIR/az-version.txt"
+        cat "$WORKDIR/az-version.txt"
+        python - <<'PY'
+        from importlib.metadata import version
+        import os
+        from pathlib import Path
+        import re
+        expected = os.environ["SMOKE_VERSION"]
+        assert version("azure-cli") == expected
+        text = (Path(os.environ["WORKDIR"]) / "az-version.txt").read_text()
+        match = re.search(r"^azure-cli[ \t]+(\S+)[ \t]*(?:\*)?[ \t]*$", text, re.M)
+        assert match and match[1] == expected, text
+        if expected == "2.46.0":
+            assert version("antlr4-python3-runtime") == "4.9.3"
+        PY
+        az "$SMOKE_HELP" --help > "$WORKDIR/az-help.txt"
+        grep -Eiq "az $SMOKE_HELP|Manage Azure subscription|Manage resource groups" "$WORKDIR/az-help.txt"
+        printf 'Validated Azure CLI version=%s help=%s workdir=%s\n' "$SMOKE_VERSION" "$SMOKE_HELP" "$WORKDIR"
 
     outputs:
       contract_version: "2.0"
@@ -139,6 +208,7 @@ jobs:
         uses: ./.github/actions/apt-bootstrap
         with:
           packages: "git curl jq tar unzip file ca-certificates python3-venv"
+          extra_packages: "build-essential"
           quiet: "true"
 
       - name: Install baseline source or artifact
@@ -149,7 +219,7 @@ jobs:
           mkdir -p baseline-src baseline-external
           if [ -n "$GITHUB_REPO" ]; then
             RESOLVED_TAG=""
-            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
+            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION" "azure-cli-$BASELINE_VERSION"; do
               if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
                 RESOLVED_TAG="$CANDIDATE"
                 break
@@ -197,6 +267,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           SOURCE_MARKERS="${{ steps.expectations.outputs.source_markers }}"
           if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
@@ -255,6 +328,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
           [ -f "$CONTENT_PAGE" ]
           grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
@@ -262,6 +338,10 @@ jobs:
           grep -Fx "    homepage_url: $HOMEPAGE_URL" "$CONTENT_PAGE" >/dev/null
           grep -Fx "        official_docs: $OFFICIAL_DOCS" "$CONTENT_PAGE" >/dev/null
           grep -F "version_number: $BASELINE_VERSION" "$CONTENT_PAGE" >/dev/null
+          test "${{ steps.install.outputs.resolved_tag }}" = "azure-cli-$BASELINE_VERSION"
+          SOURCE_COMMIT=$(git -C baseline-src rev-parse HEAD)
+          test "$SOURCE_COMMIT" = "$(git -C baseline-src rev-parse "refs/tags/azure-cli-$BASELINE_VERSION^{commit}")"
+          echo "Azure CLI source tag=azure-cli-$BASELINE_VERSION commit=$SOURCE_COMMIT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           echo "note=Validated package metadata, baseline version, homepage, and docs alignment from the checked-in package page." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
@@ -273,6 +353,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           DOC_MARKERS="${{ steps.expectations.outputs.doc_markers }}"
           ENTRYPOINT_MARKERS="${{ steps.expectations.outputs.entrypoint_markers }}"
@@ -334,6 +417,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
           [ "$(uname -m)" = "aarch64" ]
           grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
@@ -352,13 +438,10 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          python -m venv smoke-venv
-          . smoke-venv/bin/activate
-          python -m pip install --upgrade pip setuptools wheel
-          timeout 360 python -m pip install --only-binary=:all: "azure-cli==$BASELINE_VERSION"
-          az --version
-          az account --help >/tmp/az-account-help.txt
-          grep -Eiq "az account|Manage Azure subscription" /tmp/az-account-help.txt
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
+          SMOKE_VERSION="$BASELINE_VERSION" SMOKE_HELP=account bash -euo pipefail -c "$AZURE_SMOKE_COMMAND"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           echo "note=Installed azure-cli $BASELINE_VERSION on Arm64 and ran az --version plus a non-auth az account help command." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
@@ -371,27 +454,32 @@ jobs:
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
           limited_cpu_probe: |
-            test "$(uname -m)" = "aarch64"
-            python -m venv next-venv
-            . next-venv/bin/activate
-            python -m pip install --upgrade pip setuptools wheel
-            timeout 360 python -m pip install --only-binary=:all: "azure-cli==$LATEST_VERSION"
-            az --version
-            az group --help >/tmp/az-group-help.txt
-            grep -Eiq "az group|Manage resource groups" /tmp/az-group-help.txt
+            test "$LATEST_VERSION" != "$BASELINE_VERSION"
+            test "$CANDIDATE_TAG" = "azure-cli-$LATEST_VERSION"
+            test "$(git -C next-src rev-parse HEAD)" = "$(git -C next-src rev-parse "refs/tags/$CANDIDATE_TAG^{commit}")"
+            SMOKE_VERSION="$LATEST_VERSION" SMOKE_HELP=group bash -euo pipefail -c "$AZURE_SMOKE_COMMAND"
           limited_cpu_description: "Installed the next Azure CLI candidate on the Arm64 runner and ran az --version plus a non-auth az group help command."
           next_version_override: "2.84.0"
           candidate_tag_override: "azure-cli-2.84.0"
+          defer_on_limited_cpu_probe_failure: "false"
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -401,27 +489,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6:$O6" = "passed:success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -431,3 +523,4 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0

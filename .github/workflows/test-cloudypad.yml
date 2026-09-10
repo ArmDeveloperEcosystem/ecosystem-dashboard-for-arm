@@ -347,6 +347,7 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          trap 'RC=$?; if [ "$RC" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; echo "note=Cloudy Pad CLI build, version, or command verification failed." >> "$GITHUB_OUTPUT"; fi; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           if [ "$MODE" != "github_source" ]; then
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -399,24 +400,38 @@ jobs:
               '  posthog:' \
               '    distinctId: arm-smoke-test' \
               '    collectionMethod: none' > "$CLOUDYPAD_HOME/config.yml"
-            CLI_JS=""
-            for candidate in dist/cli/main.js dist/src/cli/main.js dist/src/index.js dist/index.js; do
-              if [ -f "$candidate" ]; then
-                CLI_JS="$candidate"
-                break
-              fi
-            done
-            [ -n "$CLI_JS" ]
-            PROGRAM_JS=""
-            for candidate in dist/cli/program.js dist/src/cli/program.js; do
-              if [ -f "$candidate" ]; then
-                PROGRAM_JS="$candidate"
-                break
-              fi
-            done
-            [ -n "$PROGRAM_JS" ]
-            CLOUDYPAD_PROGRAM_JS="$PROGRAM_JS" node -e 'Promise.resolve().then(async()=>{const {pathToFileURL}=require("url");let mod;try{mod=require("./"+process.env.CLOUDYPAD_PROGRAM_JS)}catch(error){mod=await import(pathToFileURL(process.env.CLOUDYPAD_PROGRAM_JS).href)}const program=mod.buildProgram();const commandNames=program.commands.map((cmd)=>cmd.name());for(const name of ["create","list","configure","deploy"]){if(!commandNames.includes(name)){throw new Error(`missing Cloudy Pad command: ${name}`)}}console.log(program.helpInformation());console.log(`cloudypad-cli-preflight-ok commands=${commandNames.join(",")}`)}).catch((error)=>{console.error(error);process.exit(1)})' >/tmp/cloudypad-help.txt
-            node -e "const p=require('./package.json'); console.log(p.version || '0.0.0')" >/tmp/cloudypad-version.txt
+            node <<'NODE' > /tmp/cloudypad-help.txt
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const {spawnSync} = require('node:child_process');
+          const pkg = require(path.resolve('package.json'));
+          assert.equal(pkg.name, 'cloudypad');
+          assert.equal(pkg.version, process.env.BASELINE_VERSION);
+          assert.equal(typeof pkg.bin.cloudypad, 'string');
+          const entry = path.resolve(pkg.bin.cloudypad);
+          assert(entry.startsWith(process.cwd() + path.sep));
+          assert(fs.statSync(entry).isFile());
+          function cli(flag) {
+            const result = spawnSync(process.execPath, [entry, flag], {
+              encoding: 'utf8', timeout: 30000, env: {...process.env, AWS_EC2_METADATA_DISABLED: 'true'}
+            });
+            assert(!result.error, String(result.error));
+            assert.equal(result.status, 0, result.stderr);
+            return result.stdout.trim();
+          }
+          const version = cli('--version');
+          assert.equal(version, process.env.BASELINE_VERSION);
+          fs.writeFileSync('/tmp/cloudypad-version.txt', version + '\n');
+          const help = cli('--help');
+          assert.match(help, /^Usage: cloudypad\b/m);
+          // The 0.9.0 CLI calls deployment "provision" and has no buildProgram export.
+          for (const name of ['create', 'list', 'configure', 'provision']) {
+            assert.match(help, new RegExp('^\\s+' + name + '(?:\\s|$)', 'm'));
+          }
+          console.log(help);
+          console.log('cloudypad-cli-preflight-ok version=' + version);
+          NODE
             grep -Eiq 'cloudy pad|cloudypad|create|configure|provision' /tmp/cloudypad-help.txt
             if [ -f "$CLOUDYPAD_HOME/config.yml" ]; then
               grep -Eq 'version:|analytics:' "$CLOUDYPAD_HOME/config.yml"
@@ -486,6 +501,7 @@ jobs:
                 npm run build --if-present
               fi
               node -e "const p=require('./package.json'); if (!p.name) process.exit(1);"
+              node -e "const p=require('./package.json'); if (p.name !== 'cloudypad' || p.version !== process.env.LATEST_VERSION) process.exit(1);"
               mkdir -p "$CLOUDYPAD_HOME"
               printf '%s\n' \
                 'version: "1"' \
@@ -523,17 +539,25 @@ jobs:
             else
               exit 1
             fi
-          limited_cpu_description: "Test 6 reran the scoped Cloudy Pad Arm preflight against the next stable source tag: dependency install, CLI build, help/version execution, and local config-file proof when the CLI creates one. Cloud VM provisioning, GPU/display host setup, Sunshine/Wolf installation, and streaming runtime remain out of scope."
+          limited_cpu_description: "Test 6 reran the scoped Cloudy Pad Arm preflight against the next stable source tag: dependency install, CLI build, command registration and help generation, exact package version, and local config-file validation. Cloud VM provisioning, GPU/display host setup, Sunshine/Wolf installation, and streaming runtime remain out of scope."
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -543,27 +567,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6:$O6" = "passed:success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -573,3 +601,4 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0

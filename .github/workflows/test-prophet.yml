@@ -109,7 +109,7 @@ jobs:
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
-      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      regression_next_installed_version: "not_installed"
       regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
@@ -122,6 +122,11 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # original: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Set up Python for the baseline Arm64 wheel
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # original: actions/setup-python@v5
+        with:
+          python-version: "3.10"
 
       - name: Set test metadata
         id: metadata
@@ -555,46 +560,118 @@ jobs:
       - name: Test 5 - Run bounded package-specific smoke
         id: test5
         continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          SMOKE_LOG_DIR=$(mktemp -d "$RUNNER_TEMP/${PACKAGE_SLUG}-logs.XXXXXX")
+          export SMOKE_LOG_DIR
+          finish_smoke() {
+            RC=$?
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "note=Prophet baseline runtime failed with exit $RC; diagnostic logs follow." >> "$GITHUB_OUTPUT"
+              for LOG in "$SMOKE_LOG_DIR"/*; do
+                if [ -f "$LOG" ]; then
+                  printf 'Diagnostic: %s\n' "$LOG"
+                  tail -n 80 "$LOG"
+                fi
+              done
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish_smoke EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
-          IDENTITY_KIND="${{ steps.expectations.outputs.identity_kind }}"
-          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
-          IDENTITY_EXPECT="${{ steps.expectations.outputs.identity_expect }}"
-          EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            python3 -m compileall -q python prophet || python3 -m compileall -q .
-            VENV_DIR="$(mktemp -d)"
-            python3 -m venv "$VENV_DIR"
-            "$VENV_DIR/bin/python" -m pip install --upgrade pip wheel >/tmp/prophet-pip-bootstrap.log 2>&1
-            "$VENV_DIR/bin/python" -m pip install --no-cache-dir "prophet==${BASELINE_VERSION}" >/tmp/prophet-pip-install.log 2>&1
-            "$VENV_DIR/bin/python" - <<'PY'
+          test "$MODE" = github_source
+          test "$(uname -m)" = aarch64
+          cd baseline-src
+          SOURCE_TAG=$(git describe --tags --exact-match HEAD)
+          test "$SOURCE_TAG" = "v$BASELINE_VERSION"
+          python3 - <<'PY' > "$SMOKE_LOG_DIR/source-version.txt"
+          import ast
+          import os
+          from pathlib import Path
+          tree = ast.parse(Path('python/prophet/__version__.py').read_text())
+          versions = [ast.literal_eval(node.value) for node in tree.body
+                      if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == '__version__' for target in node.targets)]
+          assert versions == [os.environ['BASELINE_VERSION']], versions
+          print(versions[0])
+          PY
+          python3 -m compileall -q python/prophet
+          VENV_DIR=$(mktemp -d "$RUNNER_TEMP/prophet-venv.XXXXXX")
+          python3 -m venv "$VENV_DIR"
+          timeout --kill-after=10s 300s "$VENV_DIR/bin/python" -m pip install --upgrade pip wheel 'setuptools<82' \
+            > "$SMOKE_LOG_DIR/pip-bootstrap.log" 2>&1
+          # The 2022 wheel predates holidays' loader change and CmdStanPy's makefile requirement.
+          timeout --kill-after=10s 300s "$VENV_DIR/bin/python" -m pip install --no-cache-dir --only-binary=prophet \
+            --report "$SMOKE_LOG_DIR/pip-report.json" "prophet==${BASELINE_VERSION}" 'holidays<0.25' 'cmdstanpy<1.3' 'setuptools<82' \
+            > "$SMOKE_LOG_DIR/pip-install.log" 2>&1
+          export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 STAN_NUM_THREADS=1
+          timeout --kill-after=5s 120s "$VENV_DIR/bin/python" - <<'PY' > "$SMOKE_LOG_DIR/runtime.log" 2>&1
+          from importlib.metadata import version
+          from pathlib import Path
+          import hashlib
+          import json
+          import math
+          import os
+          import platform
+          import shutil
+          import struct
+          import sys
           import pandas as pd
+          import prophet
           from prophet import Prophet
+          expected = os.environ['BASELINE_VERSION']
+          assert sys.version_info[:2] == (3, 10), sys.version
+          assert platform.machine() == 'aarch64', platform.machine()
+          assert version('prophet') == prophet.__version__ == expected
+          executable = Path(prophet.__file__).resolve().parent / 'stan_model/prophet_model.bin'
+          with executable.open('rb') as stream:
+              header = stream.read(20)
+          assert header[:6] == b'\x7fELF\x02\x01', header
+          assert struct.unpack('<H', header[18:20])[0] == 183, 'model must be an Arm64 ELF'
+          model = Prophet(daily_seasonality=False, weekly_seasonality=False, yearly_seasonality=False,
+                          stan_backend='CMDSTANPY')
+          assert model.stan_backend.get_type() == 'CMDSTANPY'
+          assert Path(model.stan_backend.model.exe_file).resolve() == executable
           df = pd.DataFrame({
               "ds": pd.date_range("2024-01-01", periods=24, freq="D"),
               "y": [float(i % 7) for i in range(24)],
           })
-          model = Prophet(daily_seasonality=False, weekly_seasonality=False, yearly_seasonality=False)
           model.fit(df)
+          csv_files = model.stan_backend.stan_fit.runset.csv_files
+          assert len(csv_files) == 1
+          csv_path = Path(csv_files[0])
+          header_lines = csv_path.read_text().splitlines()
+          for key, value in (('major', 2), ('minor', 26), ('patch', 1)):
+              assert f'# stan_version_{key} = {value}' in header_lines, 'unexpected compiled Stan version'
           future = model.make_future_dataframe(periods=3)
           forecast = model.predict(future)
+          assert len(forecast) == 27
+          assert forecast['ds'].tail(3).tolist() == pd.date_range('2024-01-25', periods=3, freq='D').tolist()
           assert forecast["yhat"].tail(3).notna().all()
+          assert all(math.isfinite(value) for value in forecast['yhat'].tail(3))
           print(forecast[["ds", "yhat"]].tail(3).to_string(index=False))
+          logs = Path(os.environ['SMOKE_LOG_DIR'])
+          shutil.copyfile(csv_path, logs / 'stan-fit.csv')
+          proof = {'installed_version': version('prophet'), 'module_version': prophet.__version__,
+                   'python': platform.python_version(), 'machine': platform.machine(), 'stan_version': '2.26.1',
+                   'model_executable': str(executable), 'model_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
+                   'forecast_rows': len(forecast), 'future_yhat': forecast['yhat'].tail(3).tolist(),
+                   'dependencies': {name: version(name) for name in ('cmdstanpy', 'holidays', 'setuptools', 'numpy', 'pandas')}}
+          (logs / 'runtime.json').write_text(json.dumps(proof, indent=2) + '\n')
+          print(json.dumps(proof))
           PY
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=Installed Prophet on the Arm64 runner and ran a tiny CPU fit/predict forecast smoke." >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "status=failed" >> "$GITHUB_OUTPUT"
-          echo "note=Package-specific Arm smoke requires a source checkout for ${PACKAGE_SLUG}; install mode '$MODE' was not usable, so this workflow fails instead of reporting green." >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-          exit 1
+          cat "$SMOKE_LOG_DIR/runtime.log"
+          echo "installed_version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "note=Ran the official Prophet ${BASELINE_VERSION} Python 3.10 Arm64 wheel with its original compiled Stan 2.26.1 model: version-bound source/package, native ELF, real 24-row CPU fit and three finite future predictions. Compatibility bounds: setuptools<82, holidays<0.25, cmdstanpy<1.3." >> "$GITHUB_OUTPUT"
 
       - name: Test 6 - Regression Validation
         id: test6
@@ -611,13 +688,22 @@ jobs:
       - name: Calculate test summary
         id: summary
         if: always()
+        shell: bash
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -627,27 +713,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6:$O6" = "passed:success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -657,6 +747,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
 
       - name: Create test summary
         if: always()
@@ -678,6 +769,6 @@ jobs:
           test6_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
           regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
           regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
-          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_next_installed_version: "not_installed"
           regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
           regression_details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}

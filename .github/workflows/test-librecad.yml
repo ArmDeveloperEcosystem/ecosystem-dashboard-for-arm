@@ -97,7 +97,8 @@ jobs:
       TEST5_COMMAND: |
         test "$(uname -m)" = "aarch64"
         sudo apt-get update -qq
-        sudo apt-get install -y --no-install-recommends xvfb xauth file ca-certificates >/dev/null
+        sudo apt-get install -y --no-install-recommends xvfb xauth xdotool x11-utils file ca-certificates dbus-x11 \
+          libqt5widgets5t64 libqt5printsupport5t64 libqt5svg5 libxcb-xinerama0 > "$SMOKE_LOG_DIR/apt.log" 2>&1
         RUNTIME_DIR="$RUNNER_TEMP/librecad-appimage-${BASELINE_VERSION}"
         rm -rf "$RUNTIME_DIR"
         mkdir -p "$RUNTIME_DIR"
@@ -105,26 +106,62 @@ jobs:
         APPIMAGE="$RUNTIME_DIR/LibreCAD-${BASELINE_VERSION}-aarch64.AppImage"
         curl -fsSL "https://github.com/LibreCAD/LibreCAD/releases/download/v${BASELINE_VERSION}/LibreCAD-v${BASELINE_VERSION}-aarch64.AppImage" -o "$APPIMAGE"
         chmod +x "$APPIMAGE"
-        file "$APPIMAGE" | tee /tmp/librecad-appimage-file.txt
-        grep -Eiq 'aarch64|ARM aarch64' /tmp/librecad-appimage-file.txt
-        "$APPIMAGE" --appimage-extract > /tmp/librecad-appimage-extract.log 2>&1
+        file "$APPIMAGE" | tee "$SMOKE_LOG_DIR/appimage-file.txt"
+        grep -Eiq 'ELF 64-bit.*(aarch64|ARM aarch64)' "$SMOKE_LOG_DIR/appimage-file.txt"
+        "$APPIMAGE" --appimage-extract > "$SMOKE_LOG_DIR/extract.log" 2>&1
         APPDIR="$RUNTIME_DIR/squashfs-root"
-        LIBRECAD_BIN="$(find "$APPDIR" -type f -name librecad -perm -111 | head -n 1)"
+        LIBRECAD_BIN="$(find "$APPDIR" -type f -name librecad -perm -111 -print -quit)"
         test -n "$LIBRECAD_BIN"
-        file "$LIBRECAD_BIN" | tee /tmp/librecad-bin-file.txt
-        grep -Eiq 'aarch64|ARM aarch64' /tmp/librecad-bin-file.txt
-        xvfb-run -a "$APPDIR/AppRun" --help > /tmp/librecad-help.txt 2>&1
-        grep -Eiq 'Usage: librecad|dxf2pdf|dxf2png|dxf2svg' /tmp/librecad-help.txt
+        file "$LIBRECAD_BIN" | tee "$SMOKE_LOG_DIR/bin-file.txt"
+        grep -Eiq 'ELF 64-bit.*(aarch64|ARM aarch64)' "$SMOKE_LOG_DIR/bin-file.txt"
         export HOME="$RUNNER_TEMP/librecad-home-${BASELINE_VERSION}"
-        mkdir -p "$HOME"
-        set +e
-        QT_QPA_PLATFORM=offscreen timeout --kill-after=5s 15s "$APPDIR/AppRun" > /tmp/librecad-gui-launch.log 2>&1
-        LAUNCH_RC=$?
-        set -e
-        if [ "$LAUNCH_RC" -ne 124 ]; then
-          cat /tmp/librecad-gui-launch.log
-          exit 1
+        export XDG_RUNTIME_DIR="$HOME/runtime" QT_QPA_PLATFORM=xcb
+        export QT_PLUGIN_PATH=/usr/lib/aarch64-linux-gnu/qt5/plugins
+        # The AppImage omits platform plugins; use the matching host Qt libraries too.
+        export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu
+        mkdir -p "$XDG_RUNTIME_DIR"
+        chmod 700 "$XDG_RUNTIME_DIR"
+        timeout --kill-after=3s 30s xvfb-run -a -s '-screen 0 1280x1024x24 -nolisten tcp' \
+          dbus-run-session -- "$APPDIR/AppRun" --help > "$SMOKE_LOG_DIR/help.txt" 2>&1
+        grep -Eiq 'Usage: librecad|dxf2pdf|dxf2png|dxf2svg' "$SMOKE_LOG_DIR/help.txt"
+        timeout --kill-after=3s 30s xvfb-run -a -s '-screen 0 1280x1024x24 -nolisten tcp' \
+          dbus-run-session -- "$APPDIR/AppRun" dxf2svg --version > "$SMOKE_LOG_DIR/version.txt" 2>&1
+        grep -Fx "LibreCAD v$BASELINE_VERSION" "$SMOKE_LOG_DIR/version.txt"
+        if timeout --kill-after=5s 15s xvfb-run -a -s '-screen 0 1280x1024x24 -nolisten tcp' \
+          dbus-run-session -- bash -eu -o pipefail -c '
+            "$1" &
+            GUI_PID=$!
+            trap '\''if kill -0 "$GUI_PID" 2>/dev/null; then kill "$GUI_PID"; fi'\'' EXIT
+            for ATTEMPT in $(seq 1 50); do
+              kill -0 "$GUI_PID"
+              if WINDOWS=$(xdotool search --onlyvisible --pid "$GUI_PID"); then
+                for WINDOW in $WINDOWS; do
+                  TITLE=$(xdotool getwindowname "$WINDOW")
+                  test "$(xdotool getwindowpid "$WINDOW")" = "$GUI_PID"
+                  xprop -id "$WINDOW" WM_CLASS > "$2.class"
+                  grep -Fq '\''"LibreCAD"'\'' "$2.class"
+                  case "$TITLE" in
+                    Welcome) xdotool key --window "$WINDOW" Return; continue ;;
+                    *LibreCAD*) ;;
+                    *) continue ;;
+                  esac
+                  xprop -id "$WINDOW" _NET_WM_PID WM_CLASS WM_NAME > "$2"
+                  printf "window_verified pid=%s id=%s title=%s\n" "$GUI_PID" "$WINDOW" "$TITLE" >> "$2"
+                  wait "$GUI_PID"
+                  exit 0
+                done
+              fi
+              sleep 0.2
+            done
+            exit 1
+          ' gui-window "$APPDIR/AppRun" "$SMOKE_LOG_DIR/window.txt" > "$SMOKE_LOG_DIR/gui-launch.log" 2>&1; then
+          LAUNCH_RC=0
+        else
+          LAUNCH_RC=$?
         fi
+        test "$LAUNCH_RC" -eq 124
+        grep -Eq '^window_verified pid=[0-9]+ id=[0-9]+ title=.*LibreCAD' "$SMOKE_LOG_DIR/window.txt"
+        echo "installed_version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
         echo "note=Downloaded the LibreCAD ${BASELINE_VERSION} aarch64 AppImage, verified Arm64 ELF contents, ran CLI help under Xvfb, and held the GUI launch under Xvfb. No drawing workflow is claimed." >> "$GITHUB_OUTPUT"
 
     outputs:
@@ -304,9 +341,32 @@ jobs:
       - name: Test 5 - Bounded package-specific smoke
         id: test5
         continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          SMOKE_LOG_DIR=$(mktemp -d "$RUNNER_TEMP/${PACKAGE_SLUG}-logs.XXXXXX")
+          export SMOKE_LOG_DIR
+          finish_smoke() {
+            RC=$?
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            if [ "$RC" -ne 0 ]; then
+              for LOG in "$SMOKE_LOG_DIR"/*; do
+                if [ -f "$LOG" ]; then
+                  printf '%s\n' "Diagnostic: $LOG"
+                  tail -100 "$LOG"
+                fi
+              done
+            fi
+            exit "$RC"
+          }
+          trap finish_smoke EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
@@ -324,8 +384,12 @@ jobs:
           lane_kind: ${{ env.LANE_KIND }}
           limited_cpu_probe: |
             test "$(uname -m)" = "aarch64"
+            SMOKE_LOG_DIR=$(mktemp -d "$RUNNER_TEMP/librecad-next-logs.XXXXXX")
+            trap 'RC=$?; if [ "$RC" -ne 0 ]; then for LOG in "$SMOKE_LOG_DIR"/*; do if [ -f "$LOG" ]; then printf "%s\n" "Diagnostic: $LOG"; tail -100 "$LOG"; fi; done; fi' EXIT
             sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends xvfb xauth file ca-certificates jq >/dev/null
+            sudo apt-get install -y --no-install-recommends xvfb xauth xdotool x11-utils file ca-certificates jq dbus-x11 \
+              libqt5widgets5t64 libqt5printsupport5t64 libqt5svg5 libxcb-xinerama0 > "$SMOKE_LOG_DIR/apt.log" 2>&1
+            test "$CANDIDATE_TAG" = "v$LATEST_VERSION"
             ASSET_URL="$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${CANDIDATE_TAG}" | jq -r '.assets[] | select(.name | test("aarch64\\.AppImage$")) | .browser_download_url' | head -n 1)"
             test -n "$ASSET_URL"
             RUNTIME_DIR="$(mktemp -d)"
@@ -333,37 +397,82 @@ jobs:
             APPIMAGE="$RUNTIME_DIR/librecad-next-aarch64.AppImage"
             curl -fsSL "$ASSET_URL" -o "$APPIMAGE"
             chmod +x "$APPIMAGE"
-            file "$APPIMAGE" | tee /tmp/librecad-next-appimage-file.txt
-            grep -Eiq 'aarch64|ARM aarch64' /tmp/librecad-next-appimage-file.txt
-            "$APPIMAGE" --appimage-extract > /tmp/librecad-next-appimage-extract.log 2>&1
+            file "$APPIMAGE" | tee "$SMOKE_LOG_DIR/appimage-file.txt"
+            grep -Eiq 'ELF 64-bit.*(aarch64|ARM aarch64)' "$SMOKE_LOG_DIR/appimage-file.txt"
+            "$APPIMAGE" --appimage-extract > "$SMOKE_LOG_DIR/extract.log" 2>&1
             APPDIR="$RUNTIME_DIR/squashfs-root"
-            LIBRECAD_BIN="$(find "$APPDIR" -type f -name librecad -perm -111 | head -n 1)"
+            LIBRECAD_BIN="$(find "$APPDIR" -type f -name librecad -perm -111 -print -quit)"
             test -n "$LIBRECAD_BIN"
-            file "$LIBRECAD_BIN" | tee /tmp/librecad-next-bin-file.txt
-            grep -Eiq 'aarch64|ARM aarch64' /tmp/librecad-next-bin-file.txt
+            file "$LIBRECAD_BIN" | tee "$SMOKE_LOG_DIR/bin-file.txt"
+            grep -Eiq 'ELF 64-bit.*(aarch64|ARM aarch64)' "$SMOKE_LOG_DIR/bin-file.txt"
             export HOME="$RUNNER_TEMP/librecad-next-home"
-            mkdir -p "$HOME"
-            set +e
-            QT_QPA_PLATFORM=offscreen timeout --kill-after=5s 15s "$APPDIR/AppRun" > /tmp/librecad-next-gui-launch.log 2>&1
-            LAUNCH_RC=$?
-            set -e
-            if [ "$LAUNCH_RC" -ne 0 ] && [ "$LAUNCH_RC" -ne 124 ]; then
-              cat /tmp/librecad-next-gui-launch.log
-              exit 1
+            export XDG_RUNTIME_DIR="$HOME/runtime" QT_QPA_PLATFORM=xcb
+            export QT_PLUGIN_PATH=/usr/lib/aarch64-linux-gnu/qt5/plugins
+            export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu
+            mkdir -p "$XDG_RUNTIME_DIR"
+            chmod 700 "$XDG_RUNTIME_DIR"
+            timeout --kill-after=3s 30s xvfb-run -a -s '-screen 0 1280x1024x24 -nolisten tcp' \
+              dbus-run-session -- "$APPDIR/AppRun" --help > "$SMOKE_LOG_DIR/help.txt" 2>&1
+            grep -Eiq 'Usage: librecad|dxf2pdf|dxf2png|dxf2svg' "$SMOKE_LOG_DIR/help.txt"
+            timeout --kill-after=3s 30s xvfb-run -a -s '-screen 0 1280x1024x24 -nolisten tcp' \
+              dbus-run-session -- "$APPDIR/AppRun" dxf2svg --version > "$SMOKE_LOG_DIR/version.txt" 2>&1
+            grep -Fx "LibreCAD v$LATEST_VERSION" "$SMOKE_LOG_DIR/version.txt"
+            if timeout --kill-after=5s 15s xvfb-run -a -s '-screen 0 1280x1024x24 -nolisten tcp' \
+              dbus-run-session -- bash -eu -o pipefail -c '
+                "$1" &
+                GUI_PID=$!
+                trap '\''if kill -0 "$GUI_PID" 2>/dev/null; then kill "$GUI_PID"; fi'\'' EXIT
+                for ATTEMPT in $(seq 1 50); do
+                  kill -0 "$GUI_PID"
+                  if WINDOWS=$(xdotool search --onlyvisible --pid "$GUI_PID"); then
+                    for WINDOW in $WINDOWS; do
+                      TITLE=$(xdotool getwindowname "$WINDOW")
+                      test "$(xdotool getwindowpid "$WINDOW")" = "$GUI_PID"
+                      xprop -id "$WINDOW" WM_CLASS > "$2.class"
+                      grep -Fq '\''"LibreCAD"'\'' "$2.class"
+                      case "$TITLE" in
+                        Welcome) xdotool key --window "$WINDOW" Return; continue ;;
+                        *LibreCAD*) ;;
+                        *) continue ;;
+                      esac
+                      xprop -id "$WINDOW" _NET_WM_PID WM_CLASS WM_NAME > "$2"
+                      printf "window_verified pid=%s id=%s title=%s\n" "$GUI_PID" "$WINDOW" "$TITLE" >> "$2"
+                      wait "$GUI_PID"
+                      exit 0
+                    done
+                  fi
+                  sleep 0.2
+                done
+                exit 1
+              ' gui-window "$APPDIR/AppRun" "$SMOKE_LOG_DIR/window.txt" > "$SMOKE_LOG_DIR/gui-launch.log" 2>&1; then
+              LAUNCH_RC=0
+            else
+              LAUNCH_RC=$?
             fi
-          limited_cpu_description: "Downloaded the next LibreCAD aarch64 AppImage candidate, verified Arm64 ELF contents, and started the GUI with Qt offscreen rendering on Arm64. No drawing workflow is claimed."
+            test "$LAUNCH_RC" -eq 124
+            grep -Eq '^window_verified pid=[0-9]+ id=[0-9]+ title=.*LibreCAD' "$SMOKE_LOG_DIR/window.txt"
+          limited_cpu_description: "Downloaded the next LibreCAD aarch64 AppImage candidate, verified Arm64 ELF contents and the converter's exact version, ran help, and held the GUI under Xvfb with Qt's X11 platform. No drawing workflow is claimed."
           next_version_override: "2.2.1.5"
           candidate_tag_override: "v2.2.1.5"
       - name: Calculate test summary
         id: summary
         if: always()
+        shell: bash
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -373,27 +482,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6:$O6" = "passed:success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           {
@@ -405,3 +518,4 @@ jobs:
             echo "overall_status=$OVERALL_STATUS"
             echo "badge_status=$BADGE_STATUS"
           } >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0

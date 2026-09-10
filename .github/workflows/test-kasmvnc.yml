@@ -92,9 +92,9 @@ jobs:
       GITHUB_REPO: "kasmtech/KasmVNC"
       EXTRA_TAG_CANDIDATES: "0.9.3-beta|v0.9.3-beta"
       TEST1_COMMAND: >-
-        test -f README.md && test -f BUILDING.md && test -f CMakeLists.txt && test -d kasmvnc-functional-tests && test "$RESOLVED_TAG" = "v0.9.3-beta"
+        test -f README.md && test -f BUILDING.txt && test -f CMakeLists.txt && test -d unix && test "$RESOLVED_TAG" = "v0.9.3-beta"
       TEST3_COMMAND: >-
-        test -d tests && test -d kasmvnc-functional-tests && grep -Fq 'KasmVNC' README.md
+        test -d tests && test -d common && grep -Fq 'KasmVNC' README.md
       TEST5_COMMAND: |
         TAG="$RESOLVED_TAG"
         [ -n "$TAG" ] && [ "$TAG" != "default_branch" ]
@@ -103,7 +103,8 @@ jobs:
         [ -n "$ASSET_URL" ]
         curl -fL --retry 3 -o artifacts/kasmvnc.deb "$ASSET_URL"
         dpkg-deb -f artifacts/kasmvnc.deb Package Version Architecture | tee /tmp/kasmvnc-control.txt
-        grep -Fx arm64 /tmp/kasmvnc-control.txt >/dev/null
+        test "$(dpkg-deb -f artifacts/kasmvnc.deb Architecture)" = "arm64"
+        test "$(dpkg-deb -f artifacts/kasmvnc.deb Version)" = "0.9.3~beta-1"
         dpkg-deb -x artifacts/kasmvnc.deb kasmvnc-root
         XKASM_EXTRACTED="$(find kasmvnc-root -type f \( -name Xkasmvnc -o -name Xvnc \) -print -quit)"
         [ -n "$XKASM_EXTRACTED" ]
@@ -119,22 +120,29 @@ jobs:
         ("$KASMVNCSERVER" -help || "$KASMVNCSERVER" --help || true) >/tmp/kasmvncserver-help.log 2>&1
         grep -Eiq 'KasmVNC|kasmvncserver|usage|options' /tmp/kasmvncserver-help.log
         DISPLAY_NUM=29
-        "$XKASM" ":$DISPLAY_NUM" -geometry 800x600 -depth 24 -SecurityTypes None -rfbport 5929 -localhost >/tmp/kasmvnc-xserver.log 2>&1 &
+        "$XKASM" ":$DISPLAY_NUM" -geometry 800x600 -depth 24 -SecurityTypes None -noWebsocket -rfbport 5929 -localhost >/tmp/kasmvnc-xserver.log 2>&1 &
         XKASM_PID=$!
-        trap 'kill "$XKASM_PID" 2>/dev/null || true' EXIT
+        trap 'kill "$XKASM_PID" 2>/dev/null || true; wait "$XKASM_PID" 2>/dev/null || true; cat /tmp/kasmvnc-xserver.log' EXIT
         READY=0
         for _ in $(seq 1 20); do
           if xdpyinfo -display ":$DISPLAY_NUM" >/tmp/kasmvnc-xdpyinfo.log 2>&1; then
             READY=1
             break
           fi
+          kill -0 "$XKASM_PID"
           sleep 1
         done
         test "$READY" = "1"
         grep -Eiq 'dimensions|screen|vendor' /tmp/kasmvnc-xdpyinfo.log
-        kill "$XKASM_PID" 2>/dev/null || true
-        wait "$XKASM_PID" 2>/dev/null || true
-        echo "note=Arm preflight smoke passed for KasmVNC: downloaded $ASSET_URL, verified Debian package architecture arm64, verified extracted X server as AArch64, ran X server version and kasmvncserver help, started a bounded local headless X/VNC server, queried the display with xdpyinfo, and stopped it. No full VNC client session or desktop workload is claimed." >> "$GITHUB_OUTPUT"
+        kill -0 "$XKASM_PID"
+        python3 - <<'PY'
+        import socket
+        with socket.create_connection(("127.0.0.1", 5929), timeout=5) as connection:
+            greeting = connection.makefile("rb").read(12)
+        assert greeting == b"RFB 003.008\n", repr(greeting)
+        print("KasmVNC local RFB 3.8 greeting verified")
+        PY
+        echo "note=Arm preflight smoke passed for KasmVNC: downloaded $ASSET_URL, verified Debian package architecture arm64 and version 0.9.3~beta-1, verified extracted X server as AArch64, ran X server version and kasmvncserver help, started a bounded local headless X/VNC server in traditional RFB mode, queried the display with xdpyinfo, and verified its RFB 3.8 greeting. The server is stopped by the EXIT trap. No WebSocket client session or desktop workload is claimed." >> "$GITHUB_OUTPUT"
 
     outputs:
       contract_version: "2.0"
@@ -343,78 +351,108 @@ jobs:
           lane_kind: ${{ env.LANE_KIND }}
           limited_cpu_probe: |
             test "$(uname -m)" = "aarch64"
+            test "$CANDIDATE_TAG" = "v$LATEST_VERSION"
             ASSET_URL="$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$CANDIDATE_TAG" | jq -r '[.assets[] | select(.name | test("kasmvncserver_(noble|jammy|bookworm|bullseye|focal)_.*_arm64\\.deb$"; "i"))] | sort_by(if (.name | test("_noble_"; "i")) then 0 elif (.name | test("_jammy_"; "i")) then 1 elif (.name | test("_bookworm_"; "i")) then 2 elif (.name | test("_bullseye_"; "i")) then 3 else 4 end) | .[0].browser_download_url // empty')"
             [ -n "$ASSET_URL" ]
             curl -fL --retry 3 -o "$RUNNER_TEMP/kasmvnc-next.deb" "$ASSET_URL"
             dpkg-deb -f "$RUNNER_TEMP/kasmvnc-next.deb" Package Version Architecture | tee /tmp/kasmvnc-next-control.txt
+            test "$(dpkg-deb -f "$RUNNER_TEMP/kasmvnc-next.deb" Package)" = "kasmvncserver"
             test "$(dpkg-deb -f "$RUNNER_TEMP/kasmvnc-next.deb" Architecture)" = "arm64"
+            DEB_VERSION="$(dpkg-deb -f "$RUNNER_TEMP/kasmvnc-next.deb" Version)"
+            UPSTREAM_VERSION="${DEB_VERSION#*:}"
+            UPSTREAM_VERSION="${UPSTREAM_VERSION%-*}"
+            test "$UPSTREAM_VERSION" = "$LATEST_VERSION"
             rm -rf "$RUNNER_TEMP/kasmvnc-next-root"
             mkdir -p "$RUNNER_TEMP/kasmvnc-next-root"
             dpkg-deb -x "$RUNNER_TEMP/kasmvnc-next.deb" "$RUNNER_TEMP/kasmvnc-next-root"
-            XKASM_EXTRACTED="$(find "$RUNNER_TEMP/kasmvnc-next-root" -type f \( -name Xkasmvnc -o -name Xvnc \) -print -quit)"
-            [ -n "$XKASM_EXTRACTED" ]
+            XKASM_EXTRACTED="$RUNNER_TEMP/kasmvnc-next-root/usr/bin/Xkasmvnc"
+            test -f "$XKASM_EXTRACTED"
             file "$XKASM_EXTRACTED" | tee /tmp/kasmvnc-next-xserver.file
             grep -Eiq 'ARM aarch64|aarch64' /tmp/kasmvnc-next-xserver.file
             sudo DEBIAN_FRONTEND=noninteractive dpkg -i "$RUNNER_TEMP/kasmvnc-next.deb" || sudo DEBIAN_FRONTEND=noninteractive apt-get -f install -y
-            XKASM="$(command -v Xkasmvnc || command -v Xvnc)"
-            KASMVNCSERVER="$(command -v kasmvncserver)"
-            [ -x "$XKASM" ]
-            [ -x "$KASMVNCSERVER" ]
-            "$XKASM" -version >/tmp/kasmvnc-next-version.log 2>&1 || true
-            grep -Eiq 'KasmVNC|Xkasmvnc|Xvnc|version' /tmp/kasmvnc-next-version.log
-            ("$KASMVNCSERVER" -help || "$KASMVNCSERVER" --help || true) >/tmp/kasmvnc-next-help.log 2>&1
-            grep -Eiq 'KasmVNC|kasmvncserver|usage|options' /tmp/kasmvnc-next-help.log
-          limited_cpu_description: "Test 6 installed the next KasmVNC Arm64 Debian package candidate, verified package architecture and the extracted AArch64 X server, then ran X server version plus kasmvncserver help. No full VNC client session, desktop workload, or WAN remoting claim is made."
+            test "$(dpkg-query -W -f='${Status}' kasmvncserver)" = "install ok installed"
+            test "$(dpkg-query -W -f='${Architecture}' kasmvncserver)" = "arm64"
+            INSTALLED_VERSION="$(dpkg-query -W -f='${Version}' kasmvncserver)"
+            test "$INSTALLED_VERSION" = "$DEB_VERSION"
+            dpkg-query -L kasmvncserver > "$RUNNER_TEMP/kasmvnc-next-installed-files.txt"
+            for BINARY in Xkasmvnc kasmvncserver; do
+              BIN="/usr/bin/$BINARY"
+              test -x "$BIN"
+              grep -Fx "$BIN" "$RUNNER_TEMP/kasmvnc-next-installed-files.txt"
+              cmp "$RUNNER_TEMP/kasmvnc-next-root/usr/bin/$BINARY" "$BIN"
+            done
+            XKASM="/usr/bin/Xkasmvnc"
+            KASMVNCSERVER="/usr/bin/kasmvncserver"
+            echo "Candidate $LATEST_VERSION: downloaded=$DEB_VERSION installed=$INSTALLED_VERSION executable=$XKASM"
+            if ! timeout 10s "$XKASM" -version >/tmp/kasmvnc-next-version.log 2>&1; then
+              cat /tmp/kasmvnc-next-version.log
+              exit 1
+            fi
+            cat /tmp/kasmvnc-next-version.log
+            python3 - <<'PY'
+            import os
+            from pathlib import Path
+            import re
+            banner = Path("/tmp/kasmvnc-next-version.log").read_text()
+            versions = re.findall(r"^X(?:vnc|kasmvnc) KasmVNC (\S+) - built ", banner, re.MULTILINE)
+            expected = os.environ["LATEST_VERSION"]
+            assert len(versions) == 1, f"Missing or ambiguous KasmVNC version: {banner}"
+            assert re.fullmatch(re.escape(expected) + r"(?:\.[0-9a-f]{40})?", versions[0]), (expected, versions[0])
+            print(f"Verified KasmVNC runtime {versions[0]} for requested {expected}")
+            PY
+            HELP_EXIT=0
+            timeout 10s "$KASMVNCSERVER" -help >/tmp/kasmvnc-next-help.log 2>&1 || HELP_EXIT=$?
+            cat /tmp/kasmvnc-next-help.log
+            test "$HELP_EXIT" -eq 0 || test "$HELP_EXIT" -eq 2
+            grep -Eq '^usage: kasmvncserver([[:space:]]|$)' /tmp/kasmvnc-next-help.log
+          limited_cpu_description: "Candidate validation requires downloaded and installed KasmVNC Arm64 package versions matching the requested release, package-owned executable paths whose contents match the downloaded payload, an exact runtime release banner, and bounded server version/help commands. No full VNC client session, desktop workload, or WAN remoting claim is made."
           next_version_override: "1.4.0"
           candidate_tag_override: "v1.4.0"
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
-          D1="${{ steps.test1.outputs.duration || '0' }}"
-          D2="${{ steps.test2.outputs.duration || '0' }}"
-          D3="${{ steps.test3.outputs.duration || '0' }}"
-          D4="${{ steps.test4.outputs.duration || '0' }}"
-          D5="${{ steps.test5.outputs.duration || '0' }}"
-          D6="${{ steps.test6.outputs.duration || '0' }}"
+          set -euo pipefail
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          DURATION=0
+          check_core_test() {
+            if [ "$1" = "passed" ] && [ "$3" = "success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
-          done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
-            OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
+            DURATION=$((DURATION + $2))
+          }
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || '0' }}" "${{ steps.test1.outcome }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || '0' }}" "${{ steps.test2.outcome }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || '0' }}" "${{ steps.test3.outcome }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || '0' }}" "${{ steps.test4.outcome }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || '0' }}" "${{ steps.test5.outcome }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O6="${{ steps.test6.outcome }}"
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
-            OVERALL_STATUS="failure"
-            BADGE_STATUS="failing"
+            FAILED=$((FAILED + 1))
           fi
-          {
-            echo "passed=$PASSED"
-            echo "failed=$FAILED"
-            echo "skipped=$SKIPPED"
-            echo "duration=$DURATION"
-            echo "core_failed=$CORE_FAILED"
-            echo "overall_status=$OVERALL_STATUS"
-            echo "badge_status=$BADGE_STATUS"
-          } >> "$GITHUB_OUTPUT"
+          DURATION=$((DURATION + ${{ steps.test6.outputs.duration || '0' }}))
+          OVERALL_STATUS=failure
+          BADGE_STATUS=failing
+          if [ "$FAILED" -eq 0 ]; then
+            OVERALL_STATUS=success
+            BADGE_STATUS=passing
+          fi
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
+          echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0

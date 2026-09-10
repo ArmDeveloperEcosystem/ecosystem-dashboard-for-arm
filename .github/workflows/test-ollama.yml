@@ -84,6 +84,157 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       BASELINE_VERSION: "0.1.0"
+      OLLAMA_SMOKE_COMMAND: |
+        test "$(uname -m)" = aarch64
+        WORKDIR=$(mktemp -d "$PWD/ollama-smoke.XXXXXX")
+        export WORKDIR
+        ASSET_URL=""
+        for ASSET in ollama-linux-arm64.tgz ollama-linux-arm64.tar.zst ollama-linux-arm64; do
+          URL="https://github.com/ollama/ollama/releases/download/v${SMOKE_VERSION}/$ASSET"
+          if curl -fsLI "$URL" >/dev/null 2>&1; then
+            ASSET_URL="$URL"
+            break
+          fi
+        done
+        test -n "$ASSET_URL"
+        export ASSET_URL ASSET
+        curl -fsSL --retry 3 --max-time 600 "$ASSET_URL" -o "$WORKDIR/$ASSET"
+        curl -fsSL --retry 3 --max-time 60 "https://api.github.com/repos/ollama/ollama/releases/tags/v${SMOKE_VERSION}" -o "$WORKDIR/release.json"
+        python3 - <<'PY'
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        root = Path(os.environ["WORKDIR"])
+        expected = os.environ["SMOKE_VERSION"]
+        release = json.loads((root / "release.json").read_text())
+        assert release["tag_name"] == f"v{expected}" and not release["draft"] and not release["prerelease"]
+        assets = [asset for asset in release["assets"] if asset["name"] == os.environ["ASSET"]]
+        assert len(assets) == 1
+        asset = assets[0]
+        url = f"https://github.com/ollama/ollama/releases/download/v{expected}/{asset['name']}"
+        assert asset["browser_download_url"] == os.environ["ASSET_URL"] == url
+        archive = root / asset["name"]
+        assert archive.stat().st_size == asset["size"] > 0
+        digest = hashlib.sha256()
+        with archive.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if expected == "0.1.0":
+            assert asset["name"] == "ollama-linux-arm64", asset["name"]
+            # This historical release has no embedded version or publisher digest.
+            assert digest.hexdigest() == "16cb9f8021f79cae616e0a34959d827972f6805a2cf6a36f55e66b37d5e4d572", "Baseline release asset differs from the reviewed bytes"
+        if asset.get("digest"):
+            assert asset["digest"] == f"sha256:{digest.hexdigest()}"
+        proof = {"release_tag": release["tag_name"], "asset_id": asset["id"], "url": url,
+                 "size": asset["size"], "sha256": digest.hexdigest(), "publisher_digest": asset.get("digest")}
+        (root / "artifact-proof.json").write_text(json.dumps(proof, indent=2))
+        print(json.dumps(proof), flush=True)
+        PY
+        case "$ASSET" in
+          *.tgz) tar -xzf "$WORKDIR/$ASSET" -C "$WORKDIR" ;;
+          *.tar.zst) tar --zstd -xf "$WORKDIR/$ASSET" -C "$WORKDIR" ;;
+          ollama-linux-arm64) mv "$WORKDIR/$ASSET" "$WORKDIR/ollama"; chmod +x "$WORKDIR/ollama" ;;
+        esac
+        if [ -x "$WORKDIR/bin/ollama" ]; then
+          OLLAMA_BIN="$WORKDIR/bin/ollama"
+        else
+          OLLAMA_BIN="$WORKDIR/ollama"
+        fi
+        test -x "$OLLAMA_BIN"
+        export OLLAMA_BIN
+        file "$OLLAMA_BIN" | tee "$WORKDIR/binary-file.txt"
+        grep -Eiq 'aarch64|arm64' "$WORKDIR/binary-file.txt"
+        sha256sum "$OLLAMA_BIN" | tee "$WORKDIR/binary-sha256.txt"
+        if [ "$SMOKE_VERSION" = "0.1.0" ]; then
+          readelf -p .go.buildinfo "$OLLAMA_BIN" | tee "$WORKDIR/binary-buildinfo.txt"
+        fi
+        python3 - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+        import re
+        import signal
+        import socket
+        import subprocess
+        import time
+        import urllib.error
+        import urllib.request
+        root = Path(os.environ["WORKDIR"])
+        expected = os.environ["SMOKE_VERSION"]
+        binary = os.environ["OLLAMA_BIN"]
+        artifact = json.loads((root / "artifact-proof.json").read_text())
+        assert artifact["release_tag"] == f"v{expected}"
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+        environment = dict(os.environ, HOME=str(root / "home"), OLLAMA_MODELS=str(root / "models"),
+                           OLLAMA_HOST=f"127.0.0.1:{port}", OLLAMA_NO_CLOUD="true")
+        Path(environment["HOME"]).mkdir()
+        log_path = root / "server.log"
+        process = None
+        try:
+            with log_path.open("w") as log:
+                process = subprocess.Popen([binary, "serve"], env=environment, stdout=log,
+                                           stderr=subprocess.STDOUT, start_new_session=True)
+                base = f"http://127.0.0.1:{port}"
+                for _ in range(30):
+                    assert process.poll() is None, f"Ollama exited early: {process.returncode}"
+                    try:
+                        with urllib.request.urlopen(base + "/", timeout=2) as response:
+                            body = response.read().decode()
+                            assert response.status == 200 and body.strip() == "Ollama is running", body
+                        break
+                    except (urllib.error.URLError, TimeoutError):
+                        time.sleep(1)
+                else:
+                    raise AssertionError("Ollama root endpoint never became ready")
+                version_basis = "cli_and_release_asset"
+                try:
+                    cli = subprocess.check_output([binary, "--version"], env=environment, text=True,
+                                                  stderr=subprocess.STDOUT, timeout=30)
+                except subprocess.CalledProcessError as error:
+                    # The official 0.1.0 ELF has an empty version linker value.
+                    assert expected == "0.1.0" and error.output.strip() == "Error: unknown flag: --version", error.output
+                    cli = error.output
+                    version_basis = "official_release_asset_only; embedded_version_unavailable"
+                else:
+                    versions = set(re.findall(r"\bversion(?: is)?\s+v?([0-9]+(?:\.[0-9]+){2})\b", cli))
+                    assert versions == {expected}, cli
+                with urllib.request.urlopen(base + "/api/tags", timeout=5) as response:
+                    tags = json.load(response)
+                    assert response.status == 200
+                assert isinstance(tags, dict) and "models" in tags, tags
+                assert tags["models"] == [] or (expected == "0.1.0" and tags["models"] is None), tags
+                listing = subprocess.check_output([binary, "list"], env=environment, text=True,
+                                                  stderr=subprocess.STDOUT, timeout=30)
+                assert re.search(r"^NAME\s+.*SIZE\s+MODIFIED", listing, re.M), listing
+                api_version = None
+                if expected != "0.1.0":
+                    with urllib.request.urlopen(base + "/api/version", timeout=5) as response:
+                        api_version = json.load(response)
+                        assert response.status == 200 and api_version["version"] == expected, api_version
+                assert process.poll() is None, "Ollama exited during its runtime checks"
+                proof = {"version": expected, "asset_url": os.environ["ASSET_URL"], "binary": binary,
+                         "cli": cli, "root": body, "tags": tags, "list": listing,
+                         "api_version": api_version, "host": base, "version_basis": version_basis,
+                         "artifact": artifact}
+                (root / "runtime-proof.json").write_text(json.dumps(proof, indent=2))
+                print(json.dumps(proof), flush=True)
+        finally:
+            if process is not None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=10)
+            if log_path.exists():
+                print(log_path.read_text(), flush=True)
+        PY
       PACKAGE_SLUG: "ollama"
       LANE_KIND: "github release / source-build-or-tarball"
       DOWNLOAD_URL: "https://github.com/ollama/ollama/releases"
@@ -133,7 +284,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates zstd binutils"
           quiet: "true"
 
       - name: Install baseline source or artifact
@@ -427,6 +578,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           SOURCE_MARKERS="${{ steps.expectations.outputs.source_markers }}"
           if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
@@ -476,6 +630,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
           [ -f "$CONTENT_PAGE" ]
           grep -Fx "download_url: $DOWNLOAD_URL" "$CONTENT_PAGE" >/dev/null
@@ -483,6 +640,10 @@ jobs:
           grep -Fx "    version_number: $BASELINE_VERSION" "$CONTENT_PAGE" >/dev/null
           grep -Fx "    homepage_url: $HOMEPAGE_URL" "$CONTENT_PAGE" >/dev/null
           grep -Fx "        official_docs: $OFFICIAL_DOCS" "$CONTENT_PAGE" >/dev/null
+          test "${{ steps.install.outputs.resolved_tag }}" = "v$BASELINE_VERSION"
+          SOURCE_COMMIT=$(git -C baseline-src rev-parse HEAD)
+          test "$SOURCE_COMMIT" = "$(git -C baseline-src rev-parse "refs/tags/v$BASELINE_VERSION^{commit}")"
+          echo "Ollama source tag=v$BASELINE_VERSION commit=$SOURCE_COMMIT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           echo "note=Validated the checked-in package page against the workflow baseline, homepage, and docs metadata." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
@@ -494,6 +655,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           DOC_MARKERS="${{ steps.expectations.outputs.doc_markers }}"
           IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
@@ -540,6 +704,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
           [ "$(uname -m)" = "aarch64" ]
           grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
@@ -558,39 +725,12 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          WORKDIR=$(mktemp -d)
-          OLLAMA_PID=""
-          trap 'kill "$OLLAMA_PID" >/dev/null 2>&1 || true; docker rm -f ollama-smoke >/dev/null 2>&1 || true; rm -rf "$WORKDIR"' EXIT
-          ASSET_URL="https://github.com/ollama/ollama/releases/download/v${BASELINE_VERSION}/ollama-linux-arm64.tgz"
-          if curl -fsLI "$ASSET_URL" >/dev/null; then
-            curl -fsSL "$ASSET_URL" -o "$WORKDIR/ollama.tgz"
-            tar -xzf "$WORKDIR/ollama.tgz" -C "$WORKDIR"
-            OLLAMA_BIN=$(find "$WORKDIR" -type f -name ollama -perm -111 | head -n 1)
-            [ -n "$OLLAMA_BIN" ]
-            file "$OLLAMA_BIN" | grep -Eiq 'aarch64|arm64'
-            "$OLLAMA_BIN" --version
-            OLLAMA_HOST=127.0.0.1:11434 "$OLLAMA_BIN" serve >"$WORKDIR/ollama.log" 2>&1 &
-            OLLAMA_PID=$!
-            LIST_CMD=(env OLLAMA_HOST=127.0.0.1:11434 "$OLLAMA_BIN" list)
-          else
-            IMAGE="ollama/ollama:${BASELINE_VERSION}"
-            docker manifest inspect "$IMAGE" > /tmp/ollama-manifest.json
-            jq -e '[.. | objects | select((.architecture? == "arm64") or ((.platform? // {}) | .architecture? == "arm64"))] | length > 0' /tmp/ollama-manifest.json >/dev/null
-            docker pull --platform linux/arm64 "$IMAGE"
-            docker run -d --platform linux/arm64 --name ollama-smoke -p 127.0.0.1:11434:11434 "$IMAGE" >/dev/null
-            LIST_CMD=(docker exec ollama-smoke ollama list)
-          fi
-          for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:11434/api/version >/tmp/ollama-version.json; then
-              break
-            fi
-            sleep 1
-          done
-          test -s /tmp/ollama-version.json
-          curl -fsS http://127.0.0.1:11434/api/tags >/tmp/ollama-tags.json
-          "${LIST_CMD[@]}" >/tmp/ollama-list.txt
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
+          SMOKE_VERSION="$BASELINE_VERSION" bash -euo pipefail -c "$OLLAMA_SMOKE_COMMAND"
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "note=Downloaded the official Ollama Linux Arm64 binary, verified its architecture, started the local server, and probed /api/version, /api/tags, and ollama list. No LLM generation is claimed without model weights." >> "$GITHUB_OUTPUT"
+          echo "note=Ran the exact official v0.1.0 Arm64 release asset with isolated root liveness, /api/tags, and ollama list checks. This historical asset has no embedded CLI version or /api/version endpoint; release-asset provenance and ELF build metadata are retained, not a tag-matched binary build claim. No model inference or GPU validation is claimed." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -599,54 +739,49 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version || env.BASELINE_VERSION }}"
-          NEXT_VERSION=$(python3 -c 'import re, subprocess; current="'"$CURRENT"'"; tags=subprocess.check_output(["git","ls-remote","--tags","--refs","https://github.com/ollama/ollama.git"], text=True); vals=[]; cur=tuple(int(x) for x in current.split(".")); [vals.append((tuple(int(x) for x in m.group(1).split(".")), m.group(1))) for line in tags.splitlines() for m in [re.search(r"refs/tags/v?([0-9]+(?:\.[0-9]+)+)$", line)] if m]; newer=[v for v in vals if v[0] > cur]; newer.sort(); print(newer[-1][1] if newer else "")')
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
+          CURRENT="$BASELINE_VERSION"
+          export CURRENT
+          NEXT_VERSION=$(python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          current = os.environ["CURRENT"]
+          tags = subprocess.check_output(["git", "ls-remote", "--tags", "--refs", "https://github.com/ollama/ollama.git"], text=True)
+          versions = {}
+          for line in tags.splitlines():
+              match = re.search(r"refs/tags/v?([0-9]+(?:\.[0-9]+)+)$", line)
+              if match:
+                  versions[tuple(map(int, match[1].split(".")))] = match[1]
+          baseline = tuple(map(int, current.split(".")))
+          assert baseline in versions, "The baseline stable tag was not present in the resolved tag list"
+          newer = sorted(key for key in versions if key > baseline)
+          print(versions[newer[-1]] if newer else "")
+          PY
+          )
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           if [ -z "$NEXT_VERSION" ]; then
             echo "latest_version=$CURRENT" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=n/a" >> "$GITHUB_OUTPUT"
-            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
             echo "regression_result=No newer stable public release is available" >> "$GITHUB_OUTPUT"
-            echo "comparison=The current Ollama version $CURRENT is already the latest stable tag we could resolve. Tests 1-5 remain the bounded Arm64 server preflight; no newer candidate exists for Test 6." >> "$GITHUB_OUTPUT"
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "comparison=The complete successful stable-tag lookup contained baseline $CURRENT and no newer stable candidate." >> "$GITHUB_OUTPUT"
+            {
+              echo "decision=no_newer_stable_available"
+              echo "status=skipped"
+            } >> "$GITHUB_OUTPUT"
           else
-            WORKDIR=$(mktemp -d)
-            OLLAMA_PID=""
-            trap 'kill "$OLLAMA_PID" >/dev/null 2>&1 || true; docker rm -f ollama-next-smoke >/dev/null 2>&1 || true; rm -rf "$WORKDIR"' EXIT
-            ASSET_URL="https://github.com/ollama/ollama/releases/download/v${NEXT_VERSION}/ollama-linux-arm64.tgz"
-            if curl -fsLI "$ASSET_URL" >/dev/null; then
-              curl -fsSL "$ASSET_URL" -o "$WORKDIR/ollama.tgz"
-              tar -xzf "$WORKDIR/ollama.tgz" -C "$WORKDIR"
-              OLLAMA_BIN=$(find "$WORKDIR" -type f -name ollama -perm -111 | head -n 1)
-              [ -n "$OLLAMA_BIN" ]
-              file "$OLLAMA_BIN" | grep -Eiq 'aarch64|arm64'
-              "$OLLAMA_BIN" --version
-              OLLAMA_HOST=127.0.0.1:11434 "$OLLAMA_BIN" serve >"$WORKDIR/ollama.log" 2>&1 &
-              OLLAMA_PID=$!
-              LIST_CMD=(env OLLAMA_HOST=127.0.0.1:11434 "$OLLAMA_BIN" list)
-            else
-              IMAGE="ollama/ollama:${NEXT_VERSION}"
-              docker manifest inspect "$IMAGE" > /tmp/ollama-next-manifest.json
-              jq -e '[.. | objects | select((.architecture? == "arm64") or ((.platform? // {}) | .architecture? == "arm64"))] | length > 0' /tmp/ollama-next-manifest.json >/dev/null
-              docker pull --platform linux/arm64 "$IMAGE"
-              docker run -d --platform linux/arm64 --name ollama-next-smoke -p 127.0.0.1:11434:11434 "$IMAGE" >/dev/null
-              LIST_CMD=(docker exec ollama-next-smoke ollama list)
-            fi
-            for _ in $(seq 1 30); do
-              if curl -fsS http://127.0.0.1:11434/api/version >/tmp/ollama-next-version.json; then
-                break
-              fi
-              sleep 1
-            done
-            test -s /tmp/ollama-next-version.json
-            curl -fsS http://127.0.0.1:11434/api/tags >/tmp/ollama-next-tags.json
-            "${LIST_CMD[@]}" >/tmp/ollama-next-list.txt
             echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            SMOKE_VERSION="$NEXT_VERSION" bash -euo pipefail -c "$OLLAMA_SMOKE_COMMAND"
             echo "next_installed_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
-            echo "decision=limited_cpu_smoke_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Arm preflight proof passed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=The newer stable Ollama $NEXT_VERSION Linux Arm64 binary was downloaded, architecture-checked, started as a local server, and probed through /api/version, /api/tags, and ollama list. No LLM generation is claimed without model weights." >> "$GITHUB_OUTPUT"
-            echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "comparison=Verified the exact next official Arm64 CLI version, root liveness, /api/tags, /api/version, and ollama list with an isolated local server. No model inference or GPU validation is claimed." >> "$GITHUB_OUTPUT"
+            {
+              echo "decision=limited_cpu_smoke_validated"
+              echo "status=passed"
+            } >> "$GITHUB_OUTPUT"
           fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -655,12 +790,20 @@ jobs:
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -670,27 +813,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6:$O6" = "passed:success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -700,6 +847,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
 
       - name: Create test summary
         if: always()
@@ -712,12 +860,12 @@ jobs:
           tests_failed: ${{ steps.summary.outputs.failed || '0' }}
           tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
           duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
-          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
-          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
-          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
-          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
-          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_status: ${{ steps.test1.outcome == 'success' && steps.test1.outputs.status || 'failed' }}
+          test2_status: ${{ steps.test2.outcome == 'success' && steps.test2.outputs.status || 'failed' }}
+          test3_status: ${{ steps.test3.outcome == 'success' && steps.test3.outputs.status || 'failed' }}
+          test4_status: ${{ steps.test4.outcome == 'success' && steps.test4.outputs.status || 'failed' }}
+          test5_status: ${{ steps.test5.outcome == 'success' && steps.test5.outputs.status || 'failed' }}
+          test6_status: ${{ steps.test6.outcome == 'success' && steps.test6.outputs.status || 'failed' }}
           test6_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
           regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
           regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}

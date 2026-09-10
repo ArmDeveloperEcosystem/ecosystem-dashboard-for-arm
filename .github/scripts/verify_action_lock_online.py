@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -186,8 +187,9 @@ def validate_live_action_evidence(
 def validate_live_container_evidence(
     entry: object,
     manifest_payload: object,
+    config_payload: object = None,
 ) -> None:
-    """Validate one exact OCI index and its Linux Arm64 child manifest."""
+    """Validate an index's Arm64 child or a direct manifest's exact config."""
 
     try:
         supply_chain.validate_container_lock_entry(entry)
@@ -199,6 +201,50 @@ def validate_live_container_evidence(
         raise OnlineEvidenceError(
             f"live container media type contradicts {entry['resolved_ref']}"
         )
+    if entry["media_type"] in supply_chain.SINGLE_MANIFEST_MEDIA_TYPES:
+        config = _require_object(config_payload, "single-platform container config")
+        descriptor = _require_object(manifest.get("config"), "container config descriptor")
+        expected_config_type = (
+            "application/vnd.oci.image.config.v1+json"
+            if entry["media_type"] == "application/vnd.oci.image.manifest.v1+json"
+            else "application/vnd.docker.container.image.v1+json"
+        )
+        if (
+            manifest.get("schemaVersion") != 2
+            or "manifests" in manifest
+            or descriptor.get("mediaType") != expected_config_type
+            or descriptor.get("digest") != entry["config_digest"]
+            or type(descriptor.get("size")) is not int
+            or descriptor["size"] <= 0
+        ):
+            raise OnlineEvidenceError("single-platform manifest/config identity contradicts the lock")
+        if (
+            config.get("architecture") != "arm64"
+            or config.get("os") != "linux"
+            or config.get("variant") not in (None, "v8")
+        ):
+            raise OnlineEvidenceError("single-platform config is not Linux Arm64")
+        rootfs = _require_object(config.get("rootfs"), "container root filesystem")
+        layers = manifest.get("layers")
+        diff_ids = rootfs.get("diff_ids")
+        if (
+            not isinstance(layers, list) or not layers
+            or rootfs.get("type") != "layers"
+            or not isinstance(diff_ids, list)
+            or len(diff_ids) != len(layers)
+        ):
+            raise OnlineEvidenceError("single-platform image has incomplete filesystem evidence")
+        for layer, diff_id in zip(layers, diff_ids):
+            layer = _require_object(layer, "container layer")
+            if (
+                not isinstance(layer.get("digest"), str)
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", layer["digest"])
+                or type(layer.get("size")) is not int or layer["size"] <= 0
+                or not isinstance(diff_id, str)
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", diff_id)
+            ):
+                raise OnlineEvidenceError("single-platform image has malformed layer evidence")
+        return
     raw_manifests = manifest.get("manifests")
     if not isinstance(raw_manifests, list) or not raw_manifests:
         raise OnlineEvidenceError(
@@ -263,6 +309,36 @@ def _run_json(command: Sequence[str], runner: CommandRunner) -> object:
         raise OnlineEvidenceError(
             f"command returned malformed JSON: {' '.join(command)}"
         ) from error
+
+
+def verify_live_container(entry: dict[str, Any], runner: CommandRunner) -> None:
+    try:
+        supply_chain.validate_container_lock_entry(entry)
+    except supply_chain.ContractError as error:
+        raise OnlineEvidenceError(str(error)) from error
+    command = ["docker", "buildx", "imagetools", "inspect", entry["resolved_ref"], "--raw"]
+    raw = runner(command)
+    if not isinstance(raw, str):
+        raise OnlineEvidenceError("container manifest command did not return text")
+    try:
+        manifest_payload = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise OnlineEvidenceError("command returned malformed container manifest JSON") from error
+    config_payload = None
+    if entry["media_type"] in supply_chain.SINGLE_MANIFEST_MEDIA_TYPES:
+        # Docker may append one display newline to the original manifest bytes.
+        candidates = (raw, raw.removesuffix("\n"))
+        if not any(
+            "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+            == entry["resolved_digest"] for value in candidates
+        ):
+            raise OnlineEvidenceError("raw single-platform manifest does not match its pinned digest")
+        # Buildx resolves .Image from this exact digest, not the mutable tag.
+        config_payload = _run_json(
+            ["docker", "buildx", "imagetools", "inspect", entry["resolved_ref"],
+             "--format", "{{json .Image}}"], runner,
+        )
+    validate_live_container_evidence(entry, manifest_payload, config_payload)
 
 
 def verify_lock(
@@ -331,14 +407,7 @@ def verify_lock(
         except supply_chain.ContractError as error:
             raise OnlineEvidenceError(str(error)) from error
         assert isinstance(entry, dict)
-        manifest_payload = _run_json(
-            [
-                "docker", "buildx", "imagetools", "inspect",
-                entry["resolved_ref"], "--raw",
-            ],
-            runner,
-        )
-        validate_live_container_evidence(entry, manifest_payload)
+        verify_live_container(entry, runner)
     return len(actions), len(containers)
 
 

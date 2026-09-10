@@ -96,8 +96,55 @@ jobs:
         test "$RESOLVED_TAG" = "0.8" && grep -Eqi "version|myhdl" setup.py
       TEST3_COMMAND: >-
         test -d doc && test -d example && grep -Fq 'Simulation' example/manual/hello1.py
-      TEST5_COMMAND: >-
-        PYTHONPATH="$PWD" python3 example/manual/hello1.py
+      PINNED_CONTAINER_IMAGE_MYHDL: python@sha256:d8fac68ebdc45b8d66d53f1ed6c1532da81109a8f5532a6ca0c951ed31107d70 # original: python:2.7.18-buster
+      MYHDL_BASELINE_URL: https://files.pythonhosted.org/packages/5e/c5/5abde567ec2501afb3dbec65172577d02ef68223910cfe29d7c3af10ca17/myhdl-0.8.tar.gz
+      MYHDL_BASELINE_SHA256: fe69b3c834225bdb7348f7b86160bbc3368d14a90191cd49d063b7a751b4b5e1
+      MYHDL_SIMULATION: |
+        from __future__ import print_function
+        import os
+        import platform
+        import myhdl
+        from myhdl import Signal, intbv, delay, instance, always_comb, always
+        from myhdl import Simulation, StopSimulation
+
+        assert platform.machine() == "aarch64", platform.machine()
+        assert myhdl.__version__ == os.environ["EXPECTED_VERSION"], myhdl.__version__
+        assert os.path.realpath(myhdl.__file__).startswith("/tmp/site/"), myhdl.__file__
+
+        def bench():
+            a, b = Signal(intbv(0)[4:]), Signal(intbv(0)[4:])
+            total = Signal(intbv(0)[5:])
+            clock = Signal(bool(0))
+            count = Signal(intbv(0)[4:])
+
+            @always_comb
+            def adder():
+                total.next = a + b
+
+            @always(clock.posedge)
+            def counter():
+                count.next = (count + 1) % 16
+
+            @instance
+            def stimulus():
+                for left in range(16):
+                    for right in range(16):
+                        a.next, b.next = left, right
+                        yield delay(1)
+                        assert int(total) == left + right, (left, right, int(total))
+                for tick in range(32):
+                    clock.next = True
+                    yield delay(1)
+                    assert int(count) == (tick + 1) % 16, (tick, int(count))
+                    clock.next = False
+                    yield delay(1)
+                    assert int(count) == (tick + 1) % 16
+                raise StopSimulation
+
+            return adder, counter, stimulus
+
+        Simulation(bench()).run()
+        print("myhdl-simulation-ok version=%s adder_cases=256 counter_edges=32 wraps=2" % myhdl.__version__)
 
     outputs:
       contract_version: "2.0"
@@ -150,55 +197,21 @@ jobs:
           extra_packages: "${{ env.EXTRA_APT_PACKAGES }}"
           quiet: "true"
 
-      - name: Install baseline source or artifact
+      - name: Install baseline source and verified runtime archive
         id: install
+        shell: bash
         run: |
           set -euo pipefail
-          rm -rf baseline-src baseline-external
-          mkdir -p baseline-src baseline-external
-          if [ -n "$GITHUB_REPO" ]; then
-            RESOLVED_TAG=""
-            CANDIDATE_TAGS="$BASELINE_VERSION|v$BASELINE_VERSION"
-            if [ -n "${EXTRA_TAG_CANDIDATES:-}" ]; then
-              CANDIDATE_TAGS="${CANDIDATE_TAGS}|${EXTRA_TAG_CANDIDATES}"
-            fi
-            OLD_IFS="$IFS"
-            IFS='|'
-            for CANDIDATE in $CANDIDATE_TAGS; do
-              [ -n "$CANDIDATE" ] || continue
-              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
-                RESOLVED_TAG="$CANDIDATE"
-                break
-              fi
-            done
-            IFS="$OLD_IFS"
-            if [ -n "$RESOLVED_TAG" ]; then
-              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
-            else
-              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
-            fi
-            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            {
-              echo "download=$DOWNLOAD_URL"
-              echo "homepage=$HOMEPAGE_URL"
-              echo "docs=$OFFICIAL_DOCS"
-            } > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
+          test "$BASELINE_VERSION" = "0.8"
+          git clone --depth 1 --branch "$BASELINE_VERSION" "https://github.com/$GITHUB_REPO.git" baseline-src
+          test "$(git -C baseline-src describe --tags --exact-match HEAD)" = "$BASELINE_VERSION"
+          git -C baseline-src rev-parse HEAD
+          mkdir -p baseline-runtime
+          curl --fail --location --retry 3 "$MYHDL_BASELINE_URL" -o baseline-runtime/myhdl.tar.gz
+          printf '%s  %s\n' "$MYHDL_BASELINE_SHA256" baseline-runtime/myhdl.tar.gz | sha256sum --check -
+          echo "resolved_tag=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
       - name: Get baseline version
         id: version
         run: |
@@ -208,15 +221,27 @@ jobs:
       - name: Test 1 - Check package-specific baseline markers
         id: test1
         continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
+          STATUS=failed
+          finish() {
+            RC=$?
+            trap - EXIT
+            if [ "$RC" -ne 0 ]; then STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           RESOLVED_TAG="${{ steps.install.outputs.resolved_tag || '' }}"
           INSTALL_STATUS="${{ steps.install.outputs.install_status || 'failed' }}"
           DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
           if [ "$INSTALL_STATUS" != "success" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           if [ "$MODE" = "github_source" ]; then
@@ -226,15 +251,28 @@ jobs:
           if [ "$MODE" = "github_source" ] && [ "$RESOLVED_TAG" = "default_branch" ]; then
             echo "note=Upstream source smoke used the default branch because no exact source tag matched the published baseline version." >> "$GITHUB_OUTPUT"
           fi
+          STATUS=passed
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 2 - Check package-specific version and release evidence
         id: test2
         continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
+          STATUS=failed
+          finish() {
+            RC=$?
+            trap - EXIT
+            if [ "$RC" -ne 0 ]; then STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           RESOLVED_TAG="${{ steps.install.outputs.resolved_tag || '' }}"
           DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
@@ -247,54 +285,110 @@ jobs:
             export DOC_PATH BASELINE_VERSION DOWNLOAD_URL
             python3 -c "from pathlib import Path; import os; text=Path(os.environ['DOC_PATH']).read_text(); version=os.environ['BASELINE_VERSION']; download=os.environ['DOWNLOAD_URL']; assert f'version_number: {version}' in text; assert f'download_url: {download}' in text"
           fi
+          STATUS=passed
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 3 - Check package-specific docs and entrypoints
         id: test3
         continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
+          STATUS=failed
+          finish() {
+            RC=$?
+            trap - EXIT
+            if [ "$RC" -ne 0 ]; then STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
           fi
           eval "$TEST3_COMMAND"
+          STATUS=passed
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
+          STATUS=failed
+          finish() {
+            RC=$?
+            trap - EXIT
+            if [ "$RC" -ne 0 ]; then STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
           DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
           test "$(uname -m)" = "aarch64"
           grep -Fq "works_on_arm: true" "$DOC_PATH"
           if [ -n "${TEST4_COMMAND:-}" ]; then
             eval "$TEST4_COMMAND"
           fi
+          STATUS=passed
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-      - name: Test 5 - Run bounded package-specific smoke
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+      - name: Test 5 - Simulate MyHDL 0.8 in isolated Python 2.7
         id: test5
         continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-          fi
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
-          echo "note=MyHDL $BASELINE_VERSION is documented for Python 2.7-era Arm installs; ubuntu-24.04-arm does not provide a bounded Python 2.7 runtime, so this workflow defers the current-version runtime claim instead of publishing a fake pass." >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          STATUS=failed
+          WORKDIR=""
+          CONTAINER=""
+          finish() {
+            RC=$?
+            trap - EXIT
+            if [ -n "$CONTAINER" ]; then sudo docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; fi
+            if [ -n "$WORKDIR" ]; then rm -rf "$WORKDIR"; fi
+            if [ "$RC" -ne 0 ]; then STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          WORKDIR=$(mktemp -d "${RUNNER_TEMP}/myhdl-baseline.XXXXXX")
+          CONTAINER="myhdl-baseline-$(basename "$WORKDIR")"
+          test "$BASELINE_VERSION" = "0.8"
+          sudo docker pull --platform linux/arm64 "$PINNED_CONTAINER_IMAGE_MYHDL"
+          printf '%s  %s\n' "$MYHDL_BASELINE_SHA256" baseline-runtime/myhdl.tar.gz | sha256sum --check -
+          cp baseline-runtime/myhdl.tar.gz "$WORKDIR/myhdl.tar.gz"
+          printf '%s\n' "$MYHDL_SIMULATION" > "$WORKDIR/smoke.py"
+          echo "MyHDL baseline container: $CONTAINER"
+          timeout --signal=TERM --kill-after=15s 180s sudo docker run --rm --pull=never \
+            --name "$CONTAINER" --platform linux/arm64 --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges --pids-limit 128 \
+            --cpus 2 --memory 1g --memory-swap 1g --tmpfs /tmp:rw,nosuid,size=256m \
+            -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 -e EXPECTED_VERSION="$BASELINE_VERSION" \
+            -e AWS_EC2_METADATA_DISABLED=true -v "$WORKDIR:/inputs:ro" -w /tmp \
+            "$PINNED_CONTAINER_IMAGE_MYHDL" bash -e -o pipefail -c '
+              python --version
+              python -m pip install --no-index --no-deps --no-build-isolation --target /tmp/site /inputs/myhdl.tar.gz
+              PYTHONPATH=/tmp/site python /inputs/smoke.py
+            '
+          STATUS=passed
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
         id: test6
         uses: ./.github/actions/generic-source-regression-check
@@ -305,10 +399,24 @@ jobs:
           limited_cpu_probe: |
             python -m venv myhdl-next-venv
             . myhdl-next-venv/bin/activate
-            python -m pip install --upgrade pip setuptools wheel
-            timeout 240 python -m pip install ./next-src
+            python -m pip install --index-url https://pypi.org/simple --only-binary=:all: --no-deps --require-hashes -r /dev/stdin <<'REQUIREMENTS'
+            setuptools==80.9.0 --hash=sha256:062d34222ad13e0cc312a4c02d73f059e86a4acbfbdea8f8f76b28c99f306922
+            wheel==0.45.1 --hash=sha256:708e7481cc80179af0e556bbf0cc00b8444c7321e2700b8d8580231d13017248
+            REQUIREMENTS
+            timeout 240 python -m pip install --no-index --no-deps --no-build-isolation ./next-src
             cat > /tmp/myhdl_next_smoke.py <<'PY'
+            import os
+            import sys
+            import importlib.metadata
+            import myhdl
             from pathlib import Path
+            assert myhdl.__version__ == os.environ["LATEST_VERSION"], myhdl.__version__
+            assert importlib.metadata.version("myhdl") == os.environ["LATEST_VERSION"]
+            assert Path(myhdl.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
+            def deny_network(event, args):
+                if event.startswith("socket."):
+                    raise RuntimeError("Network is disabled during the candidate simulation")
+            sys.addaudithook(deny_network)
             from myhdl import Signal, delay, instance, always_comb, Simulation, StopSimulation, toVerilog
 
             def inverter(a, b):
@@ -345,19 +453,28 @@ jobs:
             assert out.exists() and "module myhdl_inverter" in out.read_text(encoding="utf-8")
             PY
             python /tmp/myhdl_next_smoke.py
+            echo "myhdl-candidate-ok version=$LATEST_VERSION simulation=inverter conversion=Verilog"
           limited_cpu_description: |
-            Installed the next MyHDL candidate on Arm64, ran a tiny simulation, and converted the design to Verilog. Current MyHDL 0.8 remains Python 2.7-era and is not claimed as runnable on ubuntu-24.04-arm.
-          defer_on_limited_cpu_probe_failure: "true"
+            Installed the exact next MyHDL candidate on Python 3.10/Arm64, ran an inverter simulation with Python socket operations denied, and converted it to Verilog. Baseline 0.8 runs an adder/counter simulation separately in a pinned network-disabled Python 2.7 container; no HDL engine or hardware validation is claimed.
       - name: Calculate test summary
         id: summary
         if: always()
+        shell: bash
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -367,27 +484,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6:$O6" = "passed:success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -397,7 +518,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
-
+          test "$FAILED" -eq 0
       - name: Create test summary
         if: always()
         uses: ./.github/actions/write-package-job-summary
