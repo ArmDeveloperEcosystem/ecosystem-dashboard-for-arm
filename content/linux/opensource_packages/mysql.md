@@ -1,6 +1,6 @@
 ---
 name: MySQL
-category: Database
+category: Data / Memory / State
 description: MySQL is an open-source relational database management system.
 download_url: https://dev.mysql.com/downloads/
 works_on_arm: true

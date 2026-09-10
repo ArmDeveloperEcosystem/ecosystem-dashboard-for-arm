@@ -1,6 +1,6 @@
 --- 
 name: Prometheus 
-category: Monitoring/Observability 
+category: Observability
 description: Prometheus is an open-source technology designed to provide monitoring and alerting functionality for cloud-native environments, including Kubernetes. 
 download_url: https://prometheus.io/download/ 
 works_on_arm: true 

@@ -1,6 +1,6 @@
 ---
 name: vLLM
-category: AI/ML
+category: Benchmarks / Evaluation
 description: vLLM is a fast, straightforward library for LLM inference and serving.
 download_url: https://github.com/vllm-project/vllm/releases
 works_on_arm: true

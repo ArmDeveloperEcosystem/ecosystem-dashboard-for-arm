@@ -1,6 +1,6 @@
 ---
 name: Kata
-category: Containers and Orchestration
+category: Tool / Action Execution
 description: Kata Containers is an open-source project that aims to provide a lightweight and secure alternative to traditional virtual machines (VMs) for running containerized applications.
 download_url: https://github.com/kata-containers/kata-containers/releases
 works_on_arm: true

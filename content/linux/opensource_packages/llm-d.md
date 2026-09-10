@@ -1,6 +1,6 @@
 ---
 name: llm-d
-category: AI/ML
+category: Model Serving / Runtime
 description: llm-d is a Kubernetes-native stack for serving large AI models at scale using tested, high-performance deployment patterns.
 download_url: https://github.com/llm-d/llm-d/releases
 works_on_arm: true

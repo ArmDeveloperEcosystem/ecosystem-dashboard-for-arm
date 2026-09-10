@@ -1,6 +1,6 @@
 ---
 name: Numpy
-category: AI/ML
+category: AI / Data Processing
 description: NumPy is the fundamental package for array computing with Python.
 download_url: https://pypi.org/project/numpy/#files
 works_on_arm: true

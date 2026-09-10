@@ -1,6 +1,6 @@
 ---
 name: gRPC
-category: Messaging/Comms
+category: Platform / Infrastructure
 description: gRPC is an open-source, high-performance remote procedure call (RPC) framework that can run anywhere. gRPC enables client and server applications to communicate transparently, and simplifies the building of connected systems.
 download_url: https://github.com/grpc/grpc/releases
 works_on_arm: true
