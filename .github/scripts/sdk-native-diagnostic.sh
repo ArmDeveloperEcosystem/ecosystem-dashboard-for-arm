@@ -16,7 +16,13 @@ sdk="runtime/org.freedesktop.Sdk/aarch64/$branch"
 platform="runtime/org.freedesktop.Platform/aarch64/$branch"
 flatpak --version
 test "$(flatpak --default-arch)" = aarch64
-timeout --kill-after=5s 30s bwrap --unshare-user --uid 0 --gid 0 --ro-bind / / --proc /proc --dev /dev -- /usr/bin/true
+# Flatpak can have a different AppArmor transition from standalone bubblewrap.
+# Record this diagnostic; only actual SDK execution can establish success.
+if timeout --kill-after=5s 30s bwrap --unshare-user --uid 0 --gid 0 --ro-bind / / --proc /proc --dev /dev -- /usr/bin/true; then
+  printf 'standalone_bwrap_exit=0\n'
+else
+  printf 'standalone_bwrap_exit=%s\n' "$?"
+fi
 timeout --kill-after=5s 120s flatpak remote-add --user flathub https://flathub.org/repo/flathub.flatpakrepo
 sdk_commit=$(timeout --kill-after=5s 120s flatpak remote-info --user --show-commit flathub "$sdk")
 platform_commit=$(timeout --kill-after=5s 120s flatpak remote-info --user --show-commit flathub "$platform")
