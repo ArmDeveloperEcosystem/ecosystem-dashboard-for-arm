@@ -65,17 +65,51 @@ class CliHeadlessWorkflowTests(unittest.TestCase):
             values[f"steps.test{number}.outputs.status"] = "passed"
             values[f"steps.test{number}.outcome"] = "success"
             values[f"steps.test{number}.outputs.duration"] = "1"
+        if slug == "xpra":
+            values.update({
+                "steps.install.outcome": "success",
+                "steps.install.outputs.status": "passed",
+                "steps.version.outcome": "success",
+                "steps.version.outputs.version": "3.1.5",
+            })
         values.update(overrides or {})
+        if slug == "xpra":
+            result, regression = self.run_script(
+                render(step(slug, "test6")["run"], values), job(slug)["env"],
+                {"date": "printf '100\\n'\n"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            values.update({f"steps.test6.outputs.{key}": value for key, value in regression.items()})
+            values["steps.test6.outcome"] = "success"
+            values.update(overrides or {})
         return self.run_script(render(step(slug, "summary")["run"], values))
 
-    def test_all_six_successful_outcomes_pass(self):
+    def test_successful_outcomes_use_the_workflow_test6_contract(self):
         for slug in SLUGS:
             with self.subTest(slug=slug):
                 result, fields = self.summary(slug)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(fields["passed"], "6")
+                self.assertEqual(fields["passed"], "5" if slug == "xpra" else "6")
                 self.assertEqual(fields["failed"], "0")
-                self.assertEqual(fields["duration"], "6")
+                self.assertEqual(fields["skipped"], "1" if slug == "xpra" else "0")
+                self.assertEqual(fields["duration"], "5" if slug == "xpra" else "6")
+
+    def test_xpra_rejects_a_sixth_pass_for_package_manager_installation(self):
+        result, fields = self.summary("xpra", {"steps.test6.outputs.status": "passed"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((fields["passed"], fields["failed"], fields["skipped"]), ("5", "1", "0"))
+        self.assertEqual(fields["badge_status"], "failing")
+
+    def test_xpra_failed_baseline_rejects_a_package_manager_success_decision(self):
+        result, fields = self.summary("xpra", {
+            "steps.test5.outcome": "failure",
+            "steps.test5.outputs.status": "failed",
+            "steps.test6.outputs.decision": "not_applicable_package_manager",
+        })
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((fields["passed"], fields["failed"], fields["skipped"]), ("4", "2", "0"))
+        self.assertEqual(fields["core_failed"], "1")
+        self.assertEqual(fields["badge_status"], "failing")
 
     def test_missing_failed_and_skipped_core_outputs_fail_closed(self):
         for slug in SLUGS:
@@ -85,7 +119,7 @@ class CliHeadlessWorkflowTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertEqual(fields["core_failed"], "1")
                     self.assertEqual(fields["failed"], "1")
-                    self.assertEqual(fields["skipped"], "0")
+                    self.assertEqual(fields["skipped"], "1" if slug == "xpra" else "0")
 
     def test_passed_output_cannot_override_failed_or_cancelled_step(self):
         for slug in SLUGS:
