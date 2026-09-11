@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -20,6 +22,8 @@ SPEC.loader.exec_module(scope)
 
 REPOSITORY = "example/dashboard"
 API_PREFIX = f"repos/{REPOSITORY}/actions"
+WORKFLOW_ENDPOINT = f"{API_PREFIX}/workflows/main.yml"
+LISTING_ENDPOINT = f"{WORKFLOW_ENDPOINT}/runs?branch=main&per_page=50&page=1"
 
 
 def deployment_run(run_id=101, *, sha="a" * 40, attempt=2):
@@ -61,6 +65,18 @@ def deployment_documents(runs, *, skipped=()):
     return documents
 
 
+def deployment_api(*snapshots):
+    index = -1
+
+    def read(endpoint):
+        nonlocal index
+        if endpoint == WORKFLOW_ENDPOINT:
+            index = min(index + 1, len(snapshots) - 1)
+        return copy.deepcopy(snapshots[index][endpoint])
+
+    return Mock(side_effect=read)
+
+
 class DeploymentReceiptTests(unittest.TestCase):
     def setUp(self):
         self.run = deployment_run()
@@ -76,6 +92,163 @@ class DeploymentReceiptTests(unittest.TestCase):
         self.assertEqual(self.receipt(), {"run_id": 101, "run_attempt": 2, "sha": "a" * 40})
         self.assertIn(self.jobs_endpoint, [call.args[0] for call in self.api.call_args_list])
         self.assertTrue(all("filter=all" not in call.args[0] for call in self.api.call_args_list))
+        self.assertEqual(self.api.call_count, 4)
+
+    def test_mutable_state_change_restarts_the_full_lookup(self):
+        for status, conclusion in (("in_progress", None), ("queued", None), ("completed", "failure")):
+            with self.subTest(status=status, conclusion=conclusion):
+                first = copy.deepcopy(self.documents)
+                first[LISTING_ENDPOINT]["workflow_runs"][0].update(status=status, conclusion=conclusion)
+                api = deployment_api(first, self.documents)
+                self.assertEqual(scope.latest_deployment_receipt(REPOSITORY, api), {
+                    "run_id": 101, "run_attempt": 2, "sha": "a" * 40,
+                })
+                self.assertEqual([call.args[0] for call in api.call_args_list], [
+                    WORKFLOW_ENDPOINT, LISTING_ENDPOINT, self.endpoint,
+                    WORKFLOW_ENDPOINT, LISTING_ENDPOINT, self.endpoint, self.jobs_endpoint,
+                ])
+
+    def test_restart_rechecks_newer_runs_and_recomputes_catch_up(self):
+        newer = deployment_run(102, sha="b" * 40)
+        stable = deployment_documents([newer, self.run])
+        first = copy.deepcopy(stable)
+        for run in first[LISTING_ENDPOINT]["workflow_runs"]:
+            run.update(status="in_progress", conclusion=None)
+        newer_endpoint = f"{API_PREFIX}/runs/102/attempts/2"
+        first[newer_endpoint].update(status="in_progress", conclusion=None)
+        api = deployment_api(first, stable)
+        self.assertEqual(scope.latest_deployment_receipt(REPOSITORY, api), {
+            "run_id": 102, "run_attempt": 2, "sha": "b" * 40,
+        })
+        self.assertEqual([call.args[0] for call in api.call_args_list].count(newer_endpoint), 2)
+
+    def test_persistent_mutable_churn_exhausts_three_full_lookups(self):
+        self.documents[LISTING_ENDPOINT]["workflow_runs"][0].update(status="in_progress", conclusion=None)
+        api = deployment_api(self.documents)
+        with self.assertRaisesRegex(scope.ScopeError, "did not stabilize after 3 lookup attempts"):
+            scope.latest_deployment_receipt(REPOSITORY, api)
+        self.assertEqual([call.args[0] for call in api.call_args_list], [
+            WORKFLOW_ENDPOINT, LISTING_ENDPOINT, self.endpoint,
+        ] * 3)
+
+    def test_mutable_churn_does_not_retry_identity_mismatch(self):
+        for key, value in (
+            ("id", 102), ("run_attempt", 1), ("head_sha", "b" * 40), ("run_number", 102),
+            ("event", "workflow_dispatch"), ("workflow_id", 99),
+            ("repository", {"full_name": "other/repo"}),
+        ):
+            with self.subTest(key=key):
+                first = copy.deepcopy(self.documents)
+                first[LISTING_ENDPOINT]["workflow_runs"][0].update(status="in_progress", conclusion=None)
+                first[self.endpoint][key] = value
+                api = deployment_api(first, self.documents)
+                with self.assertRaises(scope.ScopeError):
+                    scope.latest_deployment_receipt(REPOSITORY, api)
+                self.assertEqual(api.call_count, 3)
+
+    def test_invalid_responses_are_not_retried(self):
+        for endpoint, key, value in (
+            (LISTING_ENDPOINT, "total_count", True), (LISTING_ENDPOINT, "total_count", 2),
+            (LISTING_ENDPOINT, "workflow_runs", [None]),
+            (self.endpoint, "status", "in_progress"),
+            (self.jobs_endpoint, "total_count", 2),
+            (self.jobs_endpoint, "jobs", []),
+        ):
+            with self.subTest(endpoint=endpoint, key=key):
+                first = copy.deepcopy(self.documents)
+                first[endpoint][key] = value
+                api = deployment_api(first, self.documents)
+                with self.assertRaises(scope.ScopeError):
+                    scope.latest_deployment_receipt(REPOSITORY, api)
+                self.assertEqual([call.args[0] for call in api.call_args_list].count(WORKFLOW_ENDPOINT), 1)
+
+    def test_pagination_churn_restarts_at_page_one_and_finds_newest_receipt(self):
+        runs = [deployment_run(run_id) for run_id in range(151, 100, -1)]
+        skipped = set(range(102, 152))
+        stable = deployment_documents([deployment_run(152, sha="b" * 40), *runs], skipped=skipped)
+        page_two = LISTING_ENDPOINT.removesuffix("1") + "2"
+        for count, tail in (
+            (52, runs[-2:]), (50, []), (51, [runs[-2]]), (51, [deployment_run(152)]),
+        ):
+            with self.subTest(count=count, tail=tail):
+                first = deployment_documents(runs, skipped=skipped)
+                first[page_two] = {"total_count": count, "workflow_runs": tail}
+                api = deployment_api(first, stable)
+                self.assertEqual(scope.latest_deployment_receipt(REPOSITORY, api)["run_id"], 152)
+                calls = [call.args[0] for call in api.call_args_list]
+                self.assertEqual(calls[calls.index(page_two) + 1:calls.index(page_two) + 3], [
+                    WORKFLOW_ENDPOINT, LISTING_ENDPOINT,
+                ])
+                self.assertEqual(calls.count(page_two), 1)
+                self.assertNotIn(self.jobs_endpoint, calls)
+
+    def test_pagination_churn_cannot_hide_invalid_or_conflicting_identities(self):
+        runs = [deployment_run(run_id) for run_id in range(151, 100, -1)]
+        stable = deployment_documents(runs, skipped=set(range(102, 152)))
+        page_two = LISTING_ENDPOINT.removesuffix("1") + "2"
+        for tail in ([None, runs[-1]], [dict(runs[-2], head_sha="b" * 40), runs[-1]]):
+            with self.subTest(tail=tail):
+                first = copy.deepcopy(stable)
+                first[page_two] = {"total_count": 52, "workflow_runs": tail}
+                api = deployment_api(first, stable)
+                with self.assertRaises(scope.ScopeError):
+                    scope.latest_deployment_receipt(REPOSITORY, api)
+                calls = [call.args[0] for call in api.call_args_list]
+                self.assertEqual(calls.count(WORKFLOW_ENDPOINT), 1)
+                self.assertEqual(calls[-1], page_two)
+
+    def test_persistent_pagination_churn_exhausts_three_full_lookups(self):
+        runs = [deployment_run(run_id) for run_id in range(151, 100, -1)]
+        documents = deployment_documents(runs, skipped=set(range(102, 152)))
+        page_two = LISTING_ENDPOINT.removesuffix("1") + "2"
+        documents[page_two] = {"total_count": 51, "workflow_runs": [runs[-2]]}
+        api = deployment_api(documents)
+        with self.assertRaisesRegex(scope.ScopeError, "did not stabilize after 3 lookup attempts"):
+            scope.latest_deployment_receipt(REPOSITORY, api)
+        calls = [call.args[0] for call in api.call_args_list]
+        self.assertEqual(calls.count(WORKFLOW_ENDPOINT), 3)
+        self.assertEqual(calls.count(LISTING_ENDPOINT), 3)
+        self.assertEqual(calls.count(page_two), 3)
+        self.assertNotIn(self.endpoint, calls)
+
+    def test_duplicate_or_unordered_runs_within_one_page_are_not_retried(self):
+        for runs in ([self.run, self.run], [self.run, deployment_run(102)]):
+            with self.subTest(runs=runs):
+                api = deployment_api(deployment_documents(runs), self.documents)
+                with self.assertRaisesRegex(scope.ScopeError, "duplicate or unordered"):
+                    scope.latest_deployment_receipt(REPOSITORY, api)
+                self.assertEqual(api.call_count, 2)
+
+    def test_retries_share_the_original_api_request_and_time_budgets(self):
+        self.documents[LISTING_ENDPOINT]["workflow_runs"][0].update(status="in_progress", conclusion=None)
+        for budget in ("requests", "deadline"):
+            with self.subTest(budget=budget), patch.dict(os.environ, {"GH_TOKEN": "fixture-only"}), patch.object(
+                scope.time, "monotonic", return_value=0
+            ) as clock:
+                fixture = deployment_api(self.documents)
+
+                def response(command, **kwargs):
+                    document = fixture(command[-1])
+                    if budget == "deadline":
+                        if fixture.call_count == 3:
+                            clock.return_value = 119
+                        elif fixture.call_count == 4:
+                            self.assertEqual(kwargs["timeout"], 1)
+                            clock.return_value = 120
+                    return json.dumps(document).encode()
+
+                api = scope.GitHubReadAPI(REPOSITORY)
+                if budget == "requests":
+                    api.requests = 124
+                with patch.object(scope, "read_api_response", side_effect=response), self.assertRaisesRegex(
+                    scope.ScopeError, "API read budget exhausted"
+                ):
+                    scope.latest_deployment_receipt(REPOSITORY, api)
+                self.assertEqual(api.deadline, 120)
+                self.assertEqual(api.requests, 128 if budget == "requests" else 4)
+                self.assertEqual([call.args[0] for call in fixture.call_args_list], [
+                    WORKFLOW_ENDPOINT, LISTING_ENDPOINT, self.endpoint, WORKFLOW_ENDPOINT,
+                ])
 
     def test_newer_scope_only_green_run_is_not_a_deployment(self):
         self.documents = deployment_documents([deployment_run(102), self.run], skipped={102})
@@ -317,6 +490,132 @@ class DeploymentReceiptTests(unittest.TestCase):
         for program, expected in (("raise SystemExit(1)", "request failed"), ("import time; time.sleep(5)", "timed out")):
             with self.subTest(program=program), self.assertRaisesRegex(scope.ScopeError, expected):
                 scope.read_api_response([sys.executable, "-c", program], environment=os.environ.copy(), timeout=0.2)
+
+
+class DeploymentReceiptCLITests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.output = Path(temporary.name) / "github-output"
+        self.output.write_text("existing=reviewed\n")
+        self.run = deployment_run()
+        self.current = dict(deployment_run(999, sha="c" * 40, attempt=1), status="in_progress", conclusion=None)
+        self.stable = deployment_documents([self.current, self.run])
+        self.first = copy.deepcopy(self.stable)
+        self.first[LISTING_ENDPOINT]["workflow_runs"][1].update(status="in_progress", conclusion=None)
+
+    def invoke(self, api, *, changes=None, attempt=1):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, {
+            "GITHUB_REPOSITORY": REPOSITORY, "GITHUB_RUN_ID": "999", "GITHUB_RUN_ATTEMPT": str(attempt),
+        }), patch.object(scope, "GitHubReadAPI", return_value=api) as client, patch.object(
+            scope, "changed_paths", side_effect=changes or [["layouts/index.html"], ["layouts/index.html"]]
+        ) as diff, redirect_stdout(stdout), redirect_stderr(stderr):
+            status = scope.main([
+                "--base", "b" * 40, "--head", "c" * 40, "--deployed-baseline", "--github-output", str(self.output),
+            ])
+        client.assert_called_once_with(REPOSITORY)
+        return status, stdout.getvalue(), stderr.getvalue(), diff
+
+    def test_completion_between_list_and_detail_recovers_dashboard_activation(self):
+        api = deployment_api(self.first, self.stable)
+        status, stdout, stderr, diff = self.invoke(api)
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(stderr, "")
+        self.assertEqual(json.loads(stdout), {
+            "smoke": False, "dashboard": True,
+            "deployment_receipt": {"run_id": 101, "run_attempt": 2, "sha": "a" * 40},
+        })
+        self.assertEqual(self.output.read_text(), "existing=reviewed\nsmoke=false\ndashboard=true\n")
+        self.assertEqual([call.args for call in diff.call_args_list], [("b" * 40, "c" * 40), ("a" * 40, "c" * 40)])
+        self.assertEqual([call.args[0] for call in api.call_args_list].count(LISTING_ENDPOINT), 2)
+
+    def test_exhausted_churn_never_emits_or_appends_partial_scope_outputs(self):
+        api = deployment_api(self.first)
+        status, stdout, stderr, diff = self.invoke(api)
+        self.assertEqual(status, 1)
+        self.assertIn("did not stabilize after 3 lookup attempts", stderr)
+        self.assertEqual(stdout, "")
+        self.assertEqual(self.output.read_text(), "existing=reviewed\n")
+        self.assertEqual(diff.call_count, 1)
+        self.assertEqual([call.args[0] for call in api.call_args_list].count(LISTING_ENDPOINT), 3)
+
+    def test_pagination_restart_routes_from_the_newest_verified_receipt(self):
+        runs = [deployment_run(run_id) for run_id in range(151, 100, -1)]
+        skipped = set(range(102, 152))
+        first = deployment_documents(runs, skipped=skipped)
+        page_two = LISTING_ENDPOINT.removesuffix("1") + "2"
+        first[page_two] = {"total_count": 52, "workflow_runs": runs[-2:]}
+        stable = deployment_documents([deployment_run(152, sha="b" * 40), *runs], skipped=skipped)
+        api = deployment_api(first, stable)
+        status, stdout, stderr, diff = self.invoke(api)
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(json.loads(stdout)["deployment_receipt"]["run_id"], 152)
+        self.assertIn("dashboard=true\n", self.output.read_text())
+        self.assertEqual(diff.call_args.args, ("b" * 40, "c" * 40))
+        self.assertEqual([call.args[0] for call in api.call_args_list].count(LISTING_ENDPOINT), 2)
+
+    def test_recovered_receipt_does_not_bypass_deployed_baseline_diff_validation(self):
+        api = deployment_api(self.first, self.stable)
+        status, stdout, stderr, diff = self.invoke(api, changes=[
+            ["layouts/index.html"], scope.ScopeError("deployed baseline is not an ancestor"),
+        ])
+        self.assertEqual(status, 1)
+        self.assertIn("deployed baseline is not an ancestor", stderr)
+        self.assertEqual(stdout, "")
+        self.assertEqual(self.output.read_text(), "existing=reviewed\n")
+        self.assertEqual(diff.call_args.args, ("a" * 40, "c" * 40))
+
+    def test_identity_mismatch_is_rejected_immediately_without_scope_outputs(self):
+        self.output.unlink()
+        self.first[f"{API_PREFIX}/runs/101/attempts/2"]["head_sha"] = "d" * 40
+        api = deployment_api(self.first, self.stable)
+        status, stdout, stderr, diff = self.invoke(api)
+        self.assertEqual(status, 1)
+        self.assertIn("deployment attempt contradicts the listed run", stderr)
+        self.assertEqual(stdout, "")
+        self.assertFalse(self.output.exists())
+        self.assertEqual(diff.call_count, 1)
+        self.assertEqual([call.args[0] for call in api.call_args_list].count(LISTING_ENDPOINT), 1)
+
+    def test_recovered_lookup_still_requires_successful_deployment_steps(self):
+        jobs_endpoint = f"{API_PREFIX}/runs/101/attempts/2/jobs?per_page=100&page=1"
+        self.stable[jobs_endpoint]["jobs"][0]["steps"][-1]["conclusion"] = "skipped"
+        api = deployment_api(self.first, self.stable)
+        status, stdout, stderr, diff = self.invoke(api)
+        self.assertEqual(status, 1)
+        self.assertIn("No verified S3 deployment receipt", stderr)
+        self.assertEqual(stdout, "")
+        self.assertEqual(self.output.read_text(), "existing=reviewed\n")
+        self.assertEqual(diff.call_count, 1)
+        self.assertEqual([call.args[0] for call in api.call_args_list].count(LISTING_ENDPOINT), 2)
+
+    def test_recovered_failed_deployment_cannot_hide_behind_content_reversion(self):
+        failed = dict(deployment_run(102, sha="b" * 40), conclusion="failure")
+        stable = deployment_documents([self.current, failed, self.run])
+        first = copy.deepcopy(stable)
+        first[LISTING_ENDPOINT]["workflow_runs"][1].update(status="in_progress", conclusion=None)
+        api = deployment_api(first, stable)
+        status, stdout, stderr, _ = self.invoke(api, changes=[[".github/workflows/test-nginx.yml"], []])
+        self.assertEqual(status, 0, stderr)
+        result = json.loads(stdout)
+        self.assertTrue(result["dashboard"])
+        self.assertTrue(result["smoke"])
+        self.assertTrue(result["deployment_receipt"]["requires_catch_up"])
+        self.assertEqual(result["deployment_receipt"]["sha"], "a" * 40)
+
+    def test_restart_preserves_current_rerun_catch_up_even_when_not_listed(self):
+        for runs in ([dict(self.current, run_attempt=2), self.run], [self.run]):
+            with self.subTest(current_listed=len(runs) == 2):
+                stable = deployment_documents(runs)
+                first = copy.deepcopy(stable)
+                first[LISTING_ENDPOINT]["workflow_runs"][-1].update(status="in_progress", conclusion=None)
+                api = deployment_api(first, stable)
+                status, stdout, stderr, _ = self.invoke(api, changes=[[], []], attempt=2)
+                self.assertEqual(status, 0, stderr)
+                result = json.loads(stdout)
+                self.assertTrue(result["dashboard"])
+                self.assertTrue(result["deployment_receipt"]["requires_catch_up"])
 
 
 class ClassificationTests(unittest.TestCase):

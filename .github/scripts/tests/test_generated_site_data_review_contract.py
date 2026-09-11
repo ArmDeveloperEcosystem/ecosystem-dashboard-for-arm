@@ -213,7 +213,7 @@ class GeneratedSiteDataReviewContractTests(unittest.TestCase):
         self.assertNotRegex(main, r"(?m)^concurrency:")
         self.assertIn(
             "    concurrency:\n      group: production-deployment\n"
-            "      cancel-in-progress: false\n", main
+            "      cancel-in-progress: false\n      queue: max\n", main
         )
         self.assertIn("needs: activation", main)
         self.assertIn("fetch-depth: 0", main)

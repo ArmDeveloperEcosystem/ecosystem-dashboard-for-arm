@@ -68,6 +68,10 @@ class ScopeError(ValueError):
     """The requested comparison cannot safely determine routing."""
 
 
+class _DeploymentHistoryChanged(ScopeError):
+    """Valid API responses no longer describe one deployment snapshot."""
+
+
 def read_api_response(command: list[str], *, environment: dict, timeout: float) -> bytes:
     deadline = time.monotonic() + timeout
     with subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
@@ -212,12 +216,23 @@ def deployment_job_succeeded(jobs: list, run: dict) -> bool:
 
 
 def latest_deployment_receipt(repository: str, api, *, current_run=None) -> dict:
+    # Restart all evidence reads, but share the caller's API deadline/request budget.
+    for attempt in range(3):
+        try:
+            return _deployment_receipt_snapshot(repository, api, current_run=current_run)
+        except _DeploymentHistoryChanged as exc:
+            if attempt == 2:
+                raise ScopeError("deployment history did not stabilize after 3 lookup attempts") from exc
+
+
+def _deployment_receipt_snapshot(repository: str, api, *, current_run=None) -> dict:
     prefix = f"repos/{repository}/actions"
     workflow = api(f"{prefix}/workflows/main.yml")
     workflow_id = workflow.get("id")
     if not positive_id(workflow_id) or workflow.get("path") != ".github/workflows/main.yml":
         raise ScopeError("main deployment workflow identity is invalid")
-    seen = set()
+    identity_keys = ("id", "run_attempt", "head_sha", "run_number", "event")
+    seen = {}
     previous_number = None
     total = None
     if current_run is not None and (
@@ -234,35 +249,48 @@ def latest_deployment_receipt(repository: str, api, *, current_run=None) -> dict
         runs = document.get("workflow_runs")
         if type(count) is not int or count < 0 or not isinstance(runs, list):
             raise ScopeError("deployment run listing is incomplete")
-        if total is not None and count != total:
-            raise ScopeError("deployment history changed during pagination; retry lookup")
-        total = count
-        if len(runs) != min(50, max(0, total - len(seen))):
+        if len(runs) != min(50, max(0, count - len(seen))):
             raise ScopeError("deployment run listing is truncated")
+        history_changed = total is not None and count != total
+        page_seen = {}
+        page_previous_number = None
         for listed in runs:
             validate_deployment_run(listed, repository, workflow_id, require_success=False)
-            number = listed.get("run_number")
+            number = listed["run_number"]
+            identity = tuple(listed[key] for key in identity_keys)
             if (
-                listed["id"] in seen or not positive_id(number)
-                or (previous_number is not None and number >= previous_number)
+                listed["id"] in page_seen
+                or (page_previous_number is not None and number >= page_previous_number)
             ):
                 raise ScopeError("deployment history has duplicate or unordered runs")
-            seen.add(listed["id"])
-            previous_number = number
-        for listed in runs:
+            if listed["id"] in seen and seen[listed["id"]] != identity:
+                raise ScopeError("deployment history has contradictory run identities")
+            if listed["id"] in seen or (previous_number is not None and number >= previous_number):
+                history_changed = True
+            page_seen[listed["id"]] = identity
+            page_previous_number = number
             if current_run is not None and listed["id"] == current_run[0]:
                 if (listed["run_attempt"], listed["head_sha"]) != current_run[1:]:
                     raise ScopeError("listed activation contradicts the current run identity")
                 if listed["status"] == "completed":
                     raise ScopeError("current activation cannot already be completed")
+        if history_changed:
+            raise _DeploymentHistoryChanged("deployment history changed during pagination")
+        total = count
+        seen.update(page_seen)
+        previous_number = page_previous_number
+        for listed in runs:
+            if current_run is not None and listed["id"] == current_run[0]:
                 # This activation cannot write S3, but a previous attempt may have.
                 requires_catch_up = requires_catch_up or current_run[1] > 1
                 continue
             endpoint = f"{prefix}/runs/{listed['id']}/attempts/{listed['run_attempt']}"
             run = api(endpoint)
             validate_deployment_run(run, repository, workflow_id, require_success=False)
-            if any(run.get(key) != listed.get(key) for key in ("id", "run_attempt", "head_sha", "run_number", "status", "conclusion")):
+            if any(run[key] != listed[key] for key in identity_keys):
                 raise ScopeError("deployment attempt contradicts the listed run")
+            if any(run.get(key) != listed.get(key) for key in ("status", "conclusion")):
+                raise _DeploymentHistoryChanged("deployment attempt state changed after listing")
             if (run["status"], run["conclusion"]) != ("completed", "success"):
                 # A failed/cancelled/live deployment may have partially written S3.
                 # Never infer clean storage solely from a later content reversion.

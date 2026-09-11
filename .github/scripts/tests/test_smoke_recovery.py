@@ -1096,6 +1096,75 @@ class RecoveryControllerTests(unittest.TestCase):
 
 
 class WorkflowScopeTests(unittest.TestCase):
+    def test_serialized_workflows_preserve_pending_jobs(self):
+        for filename, job_id, group in (
+            ("main.yml", "build_and_deploy_s3", "production-deployment"),
+            ("test-all-packages-orchestrator.yml", "orchestrate-batches", "orchestrator"),
+        ):
+            with self.subTest(workflow=filename):
+                workflow = yaml.safe_load((SCRIPT_ROOT.parent / "workflows" / filename).read_text())
+                self.assertNotIn("concurrency", workflow)
+                for name, job in workflow["jobs"].items():
+                    if name == job_id:
+                        self.assertEqual(job["concurrency"], {
+                            "group": group, "cancel-in-progress": False, "queue": "max",
+                        })
+                    else:
+                        self.assertNotIn("concurrency", job)
+
+    def test_late_old_scope_cannot_replace_latest_pending_deployment(self):
+        workflow = yaml.safe_load((SCRIPT_ROOT.parent / "workflows" / "main.yml").read_text())
+        deployment = workflow["jobs"]["build_and_deploy_s3"]
+        policy = deployment["concurrency"]
+        # Model GitHub's queue admission order while an earlier job holds the lock.
+        pending = [SHA]
+        if policy.get("queue", "single") == "single":
+            pending.clear()
+        pending.append(OTHER_SHA)
+        self.assertEqual(pending, [SHA, OTHER_SHA])
+        guard = next(step["run"] for step in deployment["steps"]
+                     if step.get("name") == "Require the reviewed commit to remain current")
+        fake_git = 'git() { if [[ "$1" == "check-ref-format" ]]; then return 0; fi; printf "%s\\trefs/heads/main\\n" "$CURRENT_SHA"; }\n'
+        statuses = []
+        for sha in pending:
+            result = subprocess.run(
+                ["bash", "-c", fake_git + guard], capture_output=True, text=True,
+                env={**recovery.os.environ, "BASE_BRANCH": "main", "EXPECTED_BASE_SHA": sha, "CURRENT_SHA": SHA},
+                timeout=10,
+            )
+            statuses.append(result.returncode)
+        self.assertEqual(statuses, [0, 1])
+
+    def test_queue_lint_compatibility_is_narrow_and_schema_checked(self):
+        workflow = yaml.safe_load((SCRIPT_ROOT.parent / "workflows" / "exact-run-aggregation-foundation-ci.yml").read_text())
+        lint = next(step for step in workflow["jobs"]["exact-run-contract"]["steps"] if step.get("name") == "Lint foundation workflow")
+        command = lint["run"]
+        self.assertEqual(lint["env"]["ACTIONLINT_VERSION"], "1.7.12")
+        self.assertIn("! -name 'test-all-packages-orchestrator.yml'", command)
+        self.assertEqual(command.count("-ignore"), 1)
+        schema_check = "test_smoke_recovery.WorkflowScopeTests.test_serialized_workflows_preserve_pending_jobs"
+        self.assertLess(command.index(schema_check), command.index("-ignore"))
+        exempt = shlex.split(command[command.rindex('"$binary"'):].replace("\\\n", ""))
+        self.assertEqual(exempt, ["$binary", "-shellcheck=", "-ignore",
+            '^unexpected key "queue" for "concurrency" section\\. expected one of "cancel-in-progress", "group"$',
+            ".github/workflows/main.yml", ".github/workflows/test-all-packages-orchestrator.yml"])
+
+    def test_notification_retains_producing_attempt_on_partial_rerun(self):
+        workflow = yaml.safe_load((SCRIPT_ROOT.parent / "workflows" / "test-all-packages-orchestrator.yml").read_text())
+        orchestration = workflow["jobs"]["orchestrate-batches"]
+        self.assertEqual(orchestration["outputs"]["run_attempt"], "${{ steps.budget.outputs.run_attempt }}")
+        budget = orchestration["steps"][0]
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "output"
+            subprocess.run(["bash", "-e", "-c", budget["run"]], check=True, timeout=10,
+                           env={**recovery.os.environ, "GITHUB_RUN_ATTEMPT": "1", "GITHUB_OUTPUT": str(output)})
+            self.assertEqual(dict(line.split("=", 1) for line in output.read_text().splitlines())["run_attempt"], "1")
+        notifier = next(step for step in workflow["jobs"]["notify"]["steps"] if step.get("name") == "Notify the smoke-run owner")
+        self.assertEqual(notifier["env"]["RUN_ATTEMPT"], "${{ github.run_attempt }}")
+        self.assertEqual(notifier["env"]["ORCHESTRATION_ATTEMPT"], "${{ needs.orchestrate-batches.outputs.run_attempt || github.run_attempt }}")
+        command = shlex.split(notifier["run"].replace("\\\n", ""))
+        self.assertEqual(command[command.index("--orchestration-attempt") + 1], "$ORCHESTRATION_ATTEMPT")
+
     def test_recovery_helper_and_tests_trigger_existing_exact_ci(self):
         workflow = yaml.safe_load((SCRIPT_ROOT.parent / "workflows" / "exact-run-aggregation-foundation-ci.yml").read_text())
         steps = workflow["jobs"]["exact-run-contract"]["steps"]
@@ -1388,6 +1457,7 @@ class GitHubAdapterTests(unittest.TestCase):
 class NotificationFixture:
     def __init__(self):
         self.run_id, self.attempt = 123456, 1
+        self.orchestration_attempt = 1
         self.title = f"Arm64 smoke run {self.run_id}, attempt {self.attempt}"
         self.run = {
             "id": self.run_id, "run_attempt": self.attempt, "head_sha": SHA,
@@ -1413,7 +1483,7 @@ class NotificationFixture:
         self.calls.append((endpoint, deepcopy(payload), pages, raw))
         if endpoint == f"repos/{REPOSITORY}/actions/runs/{self.run_id}":
             return deepcopy(self.run)
-        if endpoint == f"repos/{REPOSITORY}/actions/runs/{self.run_id}/attempts/{self.attempt}/jobs?per_page=100":
+        if endpoint == f"repos/{REPOSITORY}/actions/runs/{self.run_id}/attempts/{self.orchestration_attempt}/jobs?per_page=100":
             if not pages:
                 raise AssertionError("notification jobs must be fully paginated")
             return deepcopy(self.pages)
@@ -1447,6 +1517,7 @@ class NotificationTests(unittest.TestCase):
         values = {
             "repository": REPOSITORY, "run-id": str(self.fixture.run_id),
             "run-attempt": str(self.fixture.attempt), "expected-sha": SHA,
+            "orchestration-attempt": str(self.fixture.orchestration_attempt),
             "outcome": "success", "recipient": "test-reviewer",
         }
         values.update(overrides)
@@ -1483,6 +1554,52 @@ class NotificationTests(unittest.TestCase):
         self.assertIn("not verified green", body)
         self.assertIn("reviewed repair PR", body)
         self.assertRegex(body.lower(), r"no automatic (?:repair |fix )?pr (?:was |has been )?created|no (?:repair )?pr (?:was |has been )?created automatically")
+
+    def test_notification_only_rerun_reports_original_success(self):
+        self.fixture.attempt = 2
+        self.fixture.run["run_attempt"] = 2
+        status, _, stderr = self.invoke()
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(self.fixture.posts[0]["title"], self.fixture.title)
+        self.assertIn("Orchestration attempt: `1`", self.fixture.posts[0]["body"])
+        endpoints = [call[0] for call in self.fixture.calls]
+        self.assertIn(f"repos/{REPOSITORY}/actions/runs/{self.fixture.run_id}/attempts/1/jobs?per_page=100", endpoints)
+        self.assertFalse(any("attempts/2/jobs" in endpoint for endpoint in endpoints))
+
+    def test_notification_only_rerun_does_not_duplicate_original_report(self):
+        self.assertEqual(self.invoke()[0], 0)
+        for attempt in (2, 3):
+            self.fixture.attempt = attempt
+            self.fixture.run["run_attempt"] = attempt
+            self.assertEqual(self.invoke()[0], 0)
+        self.assertEqual(len(self.fixture.posts), 1)
+
+    def test_full_orchestration_rerun_reports_its_new_evidence(self):
+        self.assertEqual(self.invoke()[0], 0)
+        self.fixture.attempt = self.fixture.orchestration_attempt = 2
+        self.fixture.run["run_attempt"] = self.fixture.job["run_attempt"] = 2
+        status, _, stderr = self.invoke()
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(len(self.fixture.posts), 2)
+        self.assertEqual(self.fixture.posts[-1]["title"], self.fixture.title.replace("attempt 1", "attempt 2"))
+
+    def test_prior_attempt_must_still_match_sha_identity_and_outcome(self):
+        self.fixture.attempt = 2
+        self.fixture.run["run_attempt"] = 2
+        original = deepcopy(self.fixture.job)
+        for field, value in (("head_sha", OTHER_SHA), ("run_id", 999999), ("run_attempt", 2),
+                             ("status", "in_progress"), ("conclusion", "failure")):
+            with self.subTest(field=field):
+                self.fixture.job.clear()
+                self.fixture.job.update(original)
+                self.fixture.job[field] = value
+                self.assert_rejected()
+
+    def test_future_or_nonpositive_producing_attempt_rejected_before_api(self):
+        for attempt in ("0", "-1", "2"):
+            with self.subTest(attempt=attempt):
+                self.assert_rejected(**{"orchestration-attempt": attempt})
+        self.assertEqual(self.fixture.calls, [])
 
     def test_missing_or_duplicate_orchestrator_job_rejected(self):
         for jobs in ([], [dict(self.fixture.job, name="Some other job")], [self.fixture.job, deepcopy(self.fixture.job)]):
@@ -1547,7 +1664,7 @@ class NotificationTests(unittest.TestCase):
         for recipient in ("", "@test-reviewer", "org/team", "first second", "first\n@second", "delivery[bot]", "-reviewer", "reviewer-", "a" * 40):
             with self.subTest(recipient=recipient):
                 self.assert_rejected(recipient=recipient)
-        for flag in ("run-id", "run-attempt"):
+        for flag in ("run-id", "run-attempt", "orchestration-attempt"):
             for value in ("0", "-1"):
                 with self.subTest(flag=flag, value=value):
                     self.assert_rejected(**{flag: value})
@@ -1580,7 +1697,13 @@ class NotificationTests(unittest.TestCase):
 
     def test_notification_cli_requires_trusted_sha(self):
         with mock.patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as error:
-            recovery.main(["notify", "--repository", REPOSITORY, "--run-id", "123456", "--run-attempt", "1", "--outcome", "success", "--recipient", "test-reviewer"])
+            recovery.main(["notify", "--repository", REPOSITORY, "--run-id", "123456", "--run-attempt", "1", "--orchestration-attempt", "1", "--outcome", "success", "--recipient", "test-reviewer"])
+        self.assertEqual(error.exception.code, 2)
+        self.assertEqual(self.fixture.calls, [])
+
+    def test_notification_cli_requires_producing_attempt(self):
+        with mock.patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as error:
+            recovery.main(["notify", "--repository", REPOSITORY, "--run-id", "123456", "--run-attempt", "1", "--expected-sha", SHA, "--outcome", "success", "--recipient", "test-reviewer"])
         self.assertEqual(error.exception.code, 2)
         self.assertEqual(self.fixture.calls, [])
 

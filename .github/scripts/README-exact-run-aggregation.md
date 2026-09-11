@@ -15,6 +15,12 @@ result changes do not. Mixed changes take both routes. The website CI/deployment
 route is separate; production-branch deployment workflows are unchanged.
 Concurrency applies only after the smoke scope check, so a website-only push
 cannot cancel or replace an in-flight smoke orchestration.
+Both deployment and orchestration retain up to 100 pending jobs (`queue: max`),
+so a late older scope job cannot evict the latest pending work. Queue exhaustion
+still cancels additional jobs and requires operator intervention; current-SHA
+and environment approval gates remain enforced. The pinned actionlint 1.7.12
+lacks this documented GitHub key (rhysd/actionlint#680); CI validates the exact
+two queue configurations before excluding only that unsupported-key diagnostic.
 
 After the initial batch runs finish, `smoke_recovery.py` validates the complete
 attempt-specific job inventory. Only a terminal remote-download DNS failure or
@@ -45,7 +51,9 @@ publication gate rejects retained historical rows and package test failures.
 A separate job with `issues: write`, no deployment credentials, reports the
 verified orchestration outcome in a GitHub issue. Set repository variable
 `SMOKE_NOTIFICATION_LOGIN` to the human login to mention; otherwise the triggering
-actor is used. Repeating notification for the same run attempt is idempotent.
+actor is used. Notification-only reruns verify the original orchestration attempt
+carried by its job output. Reports are idempotent per producing orchestration
+attempt, not per notification attempt; a full orchestration rerun gets a new report.
 Successful validation is not a production deployment: generated results still
 follow their protected review, merge, and dashboard deployment process.
 

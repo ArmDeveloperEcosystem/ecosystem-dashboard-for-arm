@@ -109,6 +109,9 @@ wall time are bounded, and each API response is limited to 2 MiB before JSON
 parsing. API errors or no verified receipt require an approved
 manual main deployment to establish a reviewed baseline; they never imply that
 the website is current.
+Normal status changes or pagination movement allow up to three complete lookup
+attempts (two retries) within the original API budget. Identity mismatches and invalid evidence
+still stop immediately; persistent history churn fails closed.
 
 Dashboard scope compares that proven deployed commit with the exact event
 commit and requires Git ancestry. Thus a smoke-only push catches up an earlier

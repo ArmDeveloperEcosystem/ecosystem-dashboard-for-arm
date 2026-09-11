@@ -497,13 +497,14 @@ def notify(argv):
     parser.add_argument("--repository", required=True)
     parser.add_argument("--run-id", required=True, type=int)
     parser.add_argument("--run-attempt", required=True, type=int)
+    parser.add_argument("--orchestration-attempt", required=True, type=int)
     parser.add_argument("--expected-sha", required=True)
     parser.add_argument("--outcome", choices=("success", "failure", "cancelled"), required=True)
     parser.add_argument("--recipient", required=True)
     args = parser.parse_args(argv)
     repository = validate_repository(args.repository)
     sha = validate_sha(args.expected_sha)
-    if args.run_id <= 0 or args.run_attempt <= 0:
+    if args.run_id <= 0 or args.run_attempt <= 0 or not 0 < args.orchestration_attempt <= args.run_attempt:
         raise ContractError("notification run identity is invalid")
     if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", args.recipient):
         raise ContractError("configure SMOKE_NOTIFICATION_LOGIN as a human GitHub login")
@@ -515,7 +516,8 @@ def notify(argv):
         raise ContractError("notification does not match the exact main orchestration")
     if type(run.get("id")) is not int or type(run.get("run_attempt")) is not int or run.get("event") not in {"push", "schedule", "workflow_dispatch"}:
         raise ContractError("notification parent run identity or event is invalid")
-    pages = api.api(f"repos/{repository}/actions/runs/{args.run_id}/attempts/{args.run_attempt}/jobs?per_page=100", pages=True)
+    # A notification-only rerun retains the producing job's attempt through needs.
+    pages = api.api(f"repos/{repository}/actions/runs/{args.run_id}/attempts/{args.orchestration_attempt}/jobs?per_page=100", pages=True)
     jobs = [job for page in pages for job in page["jobs"]]
     if not pages or any(page.get("total_count") != len(jobs) for page in pages):
         raise ContractError("notification jobs response is incomplete")
@@ -525,12 +527,12 @@ def notify(argv):
     job = matched[0]
     if any(type(job.get(key)) is not int or job[key] <= 0 for key in ("id", "run_id", "run_attempt")):
         raise ContractError("notification job numeric identity is invalid")
-    if job.get("run_id") != args.run_id or job.get("run_attempt") != args.run_attempt or job.get("status") != "completed" or job.get("head_sha") != sha or job.get("html_url") != f"https://github.com/{repository}/actions/runs/{args.run_id}/job/{job['id']}":
+    if job.get("run_id") != args.run_id or job.get("run_attempt") != args.orchestration_attempt or job.get("status") != "completed" or job.get("head_sha") != sha or job.get("html_url") != f"https://github.com/{repository}/actions/runs/{args.run_id}/job/{job['id']}":
         raise ContractError("notification job identity or completion is invalid")
     allowed = {"success": {"success"}, "failure": {"failure", "timed_out", "startup_failure"}, "cancelled": {"cancelled"}}
     if job.get("conclusion") not in allowed[args.outcome]:
         raise ContractError("notification contradicts the completed orchestrator job")
-    title = f"Arm64 smoke run {args.run_id}, attempt {args.run_attempt}"
+    title = f"Arm64 smoke run {args.run_id}, attempt {args.orchestration_attempt}"
     url = f"https://github.com/{repository}/actions/runs/{args.run_id}"
     if args.outcome == "success":
         result = "All 22 batch runs and exact Global Summary completed successfully."
@@ -540,6 +542,7 @@ def notify(argv):
         followup = "Check the run for the failing stage, exhausted retries, changed main commit, or pending delivery approval. A code fix requires a reviewed repair PR. No automatic repair PR was created."
     body = (f"@{args.recipient}\n\n{result}\n\n"
             f"- [Workflow run]({url})\n- Tested commit: `{sha}`\n"
+            f"- Orchestration attempt: `{args.orchestration_attempt}`\n"
             f"- Original failures and any recovery attempts remain in the run's evidence artifact.\n\n{followup}\n")
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
