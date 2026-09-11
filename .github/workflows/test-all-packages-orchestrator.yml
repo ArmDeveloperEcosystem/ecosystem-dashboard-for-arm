@@ -1,14 +1,11 @@
 name: Test All Packages (Orchestrator) on Arm64
 
-concurrency:
-  group: orchestrator
-  cancel-in-progress: true
-
 permissions:
-  actions: write
   contents: read
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
   schedule:
     # Weekly main-branch validation run: Friday night in US Central time.
@@ -16,11 +13,57 @@ on:
     - cron: '0 3 * * 6'
 
 jobs:
+  scope:
+    name: Check smoke change scope
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    outputs:
+      smoke: ${{ steps.scope.outputs.smoke }}
+    steps:
+      - name: Check out exact main commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify authenticated changes
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$HEAD_SHA" ]]
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            python3 .github/scripts/ci_change_scope.py \
+              --base "$BASE_SHA" --head "$HEAD_SHA" \
+              --github-output "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == "schedule" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            printf '%s\n' 'smoke=true' >> "$GITHUB_OUTPUT"
+          else
+            exit 1
+          fi
+
   orchestrate-batches:
     name: Trigger and Wait for All Batches
+    needs: scope
+    if: needs.scope.outputs.smoke == 'true'
+    concurrency:
+      group: orchestrator
+      cancel-in-progress: false
+    permissions:
+      actions: write
+      contents: read
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     steps:
+      - name: Reserve time for Global Summary and evidence upload
+        id: budget
+        run: printf 'deadline_epoch=%s\n' "$(( $(date +%s) + 285 * 60 ))" >> "$GITHUB_OUTPUT"
+
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -59,7 +102,9 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Dispatch and capture exact batch runs
+        timeout-minutes: 75
         env:
+          DEADLINE_EPOCH: ${{ steps.budget.outputs.deadline_epoch }}
           BRANCH: ${{ steps.context.outputs.branch }}
           EXPECTED_SHA: ${{ steps.context.outputs.expected_sha }}
           GH_TOKEN: ${{ github.token }}
@@ -71,6 +116,7 @@ jobs:
           records=".orchestration/batch-records.json"
 
           for i in {1..22}; do
+            [[ "$(date +%s)" -lt "$DEADLINE_EPOCH" ]] || { echo "Shared batch time budget exhausted." >&2; exit 1; }
             WORKFLOW="test-all-packages-batch${i}.yml"
             nonce_file=".orchestration/dispatch-nonce-${i}"
             payload=".orchestration/dispatch-${i}.json"
@@ -107,6 +153,7 @@ jobs:
             RUN_ID=""
             api_failures=0
             for attempt in {1..18}; do
+              [[ "$(date +%s)" -lt "$DEADLINE_EPOCH" ]] || { echo "Shared batch time budget exhausted." >&2; exit 1; }
               if gh api --paginate --slurp "$endpoint" > "$runs_payload"; then
                 api_failures=0
                 RUN_ID="$(python3 "$helper" select-registration \
@@ -156,7 +203,9 @@ jobs:
             --output .orchestration/run-manifest.json
 
       - name: Wait for captured batch runs
+        timeout-minutes: 285
         env:
+          DEADLINE_EPOCH: ${{ steps.budget.outputs.deadline_epoch }}
           BRANCH: ${{ steps.context.outputs.branch }}
           EXPECTED_SHA: ${{ steps.context.outputs.expected_sha }}
           GH_TOKEN: ${{ github.token }}
@@ -180,6 +229,7 @@ jobs:
             completed=false
 
             for attempt in {1..330}; do
+              [[ "$(date +%s)" -lt "$DEADLINE_EPOCH" ]] || { echo "Shared batch time budget exhausted." >&2; exit 1; }
               if ! gh api \
                 "repos/${REPOSITORY}/actions/runs/${RUN_ID}" \
                 > "$run_payload"; then
@@ -226,10 +276,37 @@ jobs:
           if [[ "${#failed_batches[@]}" -gt 0 ]]; then
             echo "One or more captured batch runs failed:"
             printf ' - %s\n' "${failed_batches[@]}"
-            exit 1
+            echo "The bounded recovery step will classify these failures."
           fi
 
+      - name: Install pinned recovery parser
+        timeout-minutes: 5
+        run: >-
+          python3 -m pip install --disable-pip-version-check --no-deps
+          --only-binary=:all: --require-hashes
+          --requirement .github/scripts/requirements-exact-run.txt
+
+      - name: Recover only verified transient download failures
+        timeout-minutes: 95
+        env:
+          DEADLINE_EPOCH: ${{ steps.budget.outputs.deadline_epoch }}
+          BRANCH: ${{ steps.context.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.context.outputs.expected_sha }}
+          ORCHESTRATION_ID: ${{ steps.context.outputs.orchestration_id }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 .github/scripts/smoke_recovery.py \
+            --manifest .orchestration/run-manifest.json \
+            --repository "$REPOSITORY" --branch "$BRANCH" \
+            --expected-sha "$EXPECTED_SHA" \
+            --orchestration-id "$ORCHESTRATION_ID" \
+            --deadline-epoch "$DEADLINE_EPOCH" \
+            --audit .orchestration/recovery-audit.json
+
       - name: Dispatch exact global summary
+        timeout-minutes: 65
         env:
           BRANCH: ${{ steps.context.outputs.branch }}
           EXPECTED_SHA: ${{ steps.context.outputs.expected_sha }}
@@ -312,3 +389,46 @@ jobs:
 
           echo "Global Summary run $summary_run_id did not complete within the bounded wait."
           exit 1
+
+      - name: Preserve original failures and accepted run identities
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: smoke-orchestration-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .orchestration/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  notify:
+    name: Report smoke validation outcome
+    needs: [scope, orchestrate-batches]
+    if: always() && needs.scope.result == 'success' && needs.scope.outputs.smoke == 'true'
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact notification implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Notify the smoke-run owner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          EXPECTED_SHA: ${{ github.sha }}
+          OUTCOME: ${{ needs.orchestrate-batches.result }}
+          RECIPIENT: ${{ vars.SMOKE_NOTIFICATION_LOGIN || github.actor }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 .github/scripts/smoke_recovery.py notify \
+            --repository "$REPOSITORY" --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" --expected-sha "$EXPECTED_SHA" \
+            --outcome "$OUTCOME" --recipient "$RECIPIENT"

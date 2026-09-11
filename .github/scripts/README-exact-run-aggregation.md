@@ -1,9 +1,58 @@
 # Exact-run aggregation foundation
 
 This foundation defines the evidence contract for replacing timestamp-based batch
-discovery with exact GitHub Actions run and artifact identities. It is deliberately
-not connected to the production orchestrator, summary writer, deployment workflow,
-or generated-data publisher.
+discovery with exact GitHub Actions run and artifact identities. The live
+orchestrator reuses its immutable topology and Jobs API validators for bounded
+recovery. Publication still uses the existing batch-attestation and reviewed
+generated-data delivery path; this module does not merge or deploy changes.
+
+## Routing and recovery
+
+The orchestrator keeps its Friday-night schedule and manual entry point. Main
+pushes run a read-only, complete Git-diff scope check: smoke execution changes
+start all batches; category, package metadata, site, dependency, and generated
+result changes do not. Mixed changes take both routes. The website CI/deployment
+route is separate; production-branch deployment workflows are unchanged.
+Concurrency applies only after the smoke scope check, so a website-only push
+cannot cancel or replace an in-flight smoke orchestration.
+
+After the initial batch runs finish, `smoke_recovery.py` validates the complete
+attempt-specific job inventory. Only a terminal remote-download DNS failure or
+HTTP 429/502/503/504 in the actual failed download/install step can authorize a
+retry. The failed step must match one explicit, single-command HTTPS curl step
+read from the immutable workflow commit, with its real exit code. Printed error
+text, variables, shell programs, mixed install/build steps, and downstream
+summary-guard failures are not sufficient evidence for an automatic retry.
+Unknown or mixed failures, local-service errors, compilation/assertion
+failures, permissions, checksums, missing evidence, and failed collectors stop
+recovery. No test outcome or skip is rewritten.
+
+The initial inventory of 960 registered workflows has no eligible standalone
+curl steps. Their combined install/build failures therefore require repair,
+not an inferred transient retry. This is not fleet-wide automatic recovery;
+broader confirmation reruns require a separate policy decision.
+
+Each failed batch can receive at most two fresh dispatches, with backoff and a
+90-minute controller budget, further capped by a shared 285-minute initial-batch
+and recovery deadline that reserves time for Global Summary and evidence upload.
+Custom shell wrappers cannot authorize retries. Every dispatch has a new nonce and run ID, still
+attempt 1. The main SHA must remain unchanged. Ambiguous dispatch responses are
+reconciled by the original nonce, never blindly reposted. Original failures and
+replacement identities are retained in the orchestration evidence artifact.
+Global Summary runs only after every selected batch succeeds; its all-fresh
+publication gate rejects retained historical rows and package test failures.
+
+A separate job with `issues: write`, no deployment credentials, reports the
+verified orchestration outcome in a GitHub issue. Set repository variable
+`SMOKE_NOTIFICATION_LOGIN` to the human login to mention; otherwise the triggering
+actor is used. Repeating notification for the same run attempt is idempotent.
+Successful validation is not a production deployment: generated results still
+follow their protected review, merge, and dashboard deployment process.
+
+Unattended AI code repair requires a separately approved AI backend and a narrowly
+scoped repair identity. Those are not configured by this change. Persistent
+failures are reported as requiring repair; no automatically created fix PR is
+claimed. The generated-data delivery App is not reused for code-writing access.
 
 ## Trust boundary
 

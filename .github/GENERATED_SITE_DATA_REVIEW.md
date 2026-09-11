@@ -6,8 +6,10 @@
 not called by `main.yml` and does not deploy the site. Missing configuration fails
 closed. The production deployment regenerates the same three files with the
 same pinned Python dependency and stops before deployment if their bytes differ
-from the reviewed repository versions. Generated changes must therefore reach
-`main` through a reviewed pull request opened by this workflow.
+from the reviewed repository versions. The secretless `Dashboard build` PR
+check applies the same drift gate before merge. Generated changes must reach
+`main` in reviewed PRs, either alongside their source changes or through this
+separate review workflow; they are never silently published during a build.
 
 ## What a bounded run does
 
@@ -57,26 +59,88 @@ Contents, and Pull requests because it never edits workflow files.
 
 After a bounded run, immediately return
 `GENERATED_SITE_DATA_REVIEW_ENABLED=false`. Review the draft PR normally; this
-workflow never approves or merges it. Merge the generated-data PR before any
-source change that depends on those bytes reaches `main`; otherwise deployment
-stops at the generated-data drift gate without changing production.
+workflow never approves or merges it. Source changes and their matching generated
+bytes must be reviewed together before reaching `main`; otherwise the PR check
+and deployment stop at the generated-data drift gate without publishing changes.
 
-## Production deployment
+## Dashboard CI and deployment routing
 
-Production deployment is a separate, manual-only, fail-closed workflow. Keep
-repository variable `PRODUCTION_DEPLOYMENT_ENABLED=false` except during one
-approved bounded deployment. A production run must be manually dispatched from
-the default branch while that variable is exactly `true`.
+`dashboard-ci.yml` runs on every pull request, without path-filter or label-based
+skips. It binds the authenticated base and head to the proposed merge commit and
+uses the authenticated full Git diff to determine scope. `Dashboard build`
+always completes: dashboard changes run preprocessing, the reviewed-data drift
+gate, and the CloudFront Hugo build; smoke-only changes report a successful
+not-applicable build after running routing and deployment-contract tests. PR jobs have read-only
+repository permissions, no deployment environment, and no AWS credentials.
 
-The deployment job is bound to the exact dispatch commit and enters protected
+`ci_change_scope.py --base SHA --head SHA` is shared by dashboard and smoke
+routing. It requires full nonzero commit SHAs and base ancestry, disables Git
+replacement objects, and reads a NUL-delimited `git diff --no-renames`. Deletions
+and both sides of renames count; there is no GitHub changed-file limit. Missing,
+unrelated, or initial all-zero revisions fail closed. Mixed changes select the
+union of both routes.
+
+- Smoke scope: root `.github/workflows/test-*.yml`, explicitly listed runtime
+  helpers, local smoke actions, their tests, and smoke validation support files.
+  The explicit sets in the helper follow the current execution closure; update
+  them when introducing another shared smoke helper or action. Smoke-only
+  changes introduce no dashboard delta; they deploy only when earlier dashboard
+  changes remain unpublished.
+- Dashboard scope: every non-smoke path, including unknown paths, package and
+  category metadata, package identity catalog, UI, dependencies, build scripts,
+  and workflow configuration outside the smoke scope. The shared routing helper
+  and its tests select both routes.
+- Smoke results in `data/test-results/` and `data/test-results-index.json` are
+  dashboard data, not smoke code. Publishing results builds/deploys the website
+  without launching another full smoke run.
+
+On `main` pushes, `main.yml` validates the authenticated before/after commit SHAs
+using complete Git history. For dashboard routing it additionally invokes
+`--deployed-baseline`: bounded authenticated `actions: read` API calls inspect
+all run statuses and locate the newest successful `main.yml` execution with an exact-attempt successful
+`Build and deploy reviewed main` job and successful reviewed-data, current-HEAD,
+and `Deploy to S3` steps. A green scope-only run is not a deployment receipt.
+The receipt binds the same repository, workflow, main branch, commit, run ID,
+attempt, and exact job/run URLs; numeric IDs must be integers, not booleans or
+floats. Every listed record on a fetched page is validated before receipt
+selection. Duplicate or incomplete evidence fails closed. No external API URL
+or caller-supplied deployment SHA is accepted. Pagination, request count, and
+wall time are bounded, and each API response is limited to 2 MiB before JSON
+parsing. API errors or no verified receipt require an approved
+manual main deployment to establish a reviewed baseline; they never imply that
+the website is current.
+
+Dashboard scope compares that proven deployed commit with the exact event
+commit and requires Git ancestry. Thus a smoke-only push catches up an earlier
+category/UI/results merge still waiting to deploy, but skips deployment when
+those website changes are already published. Ordinary smoke scope still uses
+only the authenticated before/after diff, not deployment history.
+Newer failed, cancelled, or unfinished executions conservatively require a
+catch-up deployment even if the reviewed commit restores the last published
+bytes: S3 may contain partial writes. Only this activation's exact run ID,
+attempt, and commit are excluded; its earlier attempts still require catch-up.
+The lookup never treats another in-progress execution as the current scope job.
+Relevant outstanding dashboard changes automatically start the
+existing CloudFront deployment and wait for environment `production` approval.
+Smoke-only pushes with no outstanding dashboard changes do not enter that
+environment. The separate
+`content-deploy.yml` and `staging-content-deploy.yml` workflows, including
+deployment after promotion to `production`, are unchanged.
+
+Manual CloudFront deployment remains bounded and fail-closed. Keep repository
+variable `PRODUCTION_DEPLOYMENT_ENABLED=false` except during an approved manual
+run on the default `main` branch; that run requires the variable to be exactly
+`true`. This variable gates manual dispatch only, not scoped automatic pushes.
+
+The deployment job is bound to the exact event commit and enters protected
 environment `production` before it can access AWS credentials or run Hugo.
 Require independent reviewers, prevent self-review, disable administrator
 bypass, and allow only the default branch in that environment. Once the
-protected job is waiting for approval, immediately return
+protected manual job is waiting for approval, immediately return
 `PRODUCTION_DEPLOYMENT_ENABLED=false`.
 
 Immediately before `hugo deploy`, the workflow confirms that the live default
-branch still points to the reviewed dispatch commit. If `main` advances while a
+branch still points to the reviewed event commit. If `main` advances while a
 run waits for approval or builds, the stale run fails instead of rolling
 production backward. The checkout retains complete Git history because Hugo
 uses Git metadata for page modification dates.
@@ -84,5 +148,5 @@ uses Git metadata for page modification dates.
 The deployment regenerates and validates the three allowlisted site-data files
 before building. Any difference from the reviewed bytes on `main`, or any other
 unexpected tracked or untracked preprocessing change, fails before `hugo
-deploy`. Enabling a push trigger or unattended production deployment is a
-separate policy change and is outside this initial rollout.
+deploy`. Automatic triggering never bypasses environment reviewers, grants
+administrator bypass, or changes repository protection settings.
