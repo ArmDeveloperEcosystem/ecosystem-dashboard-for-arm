@@ -599,6 +599,7 @@ def notify(argv):
     parser.add_argument("--expected-sha", required=True)
     parser.add_argument("--outcome", choices=("success", "failure", "cancelled"), required=True)
     parser.add_argument("--recipient", required=True)
+    parser.add_argument("--repair-outcome", choices=("success", "failure", "cancelled", "skipped", "not_requested"), default="not_requested")
     args = parser.parse_args(argv)
     repository = validate_repository(args.repository)
     sha = validate_sha(args.expected_sha)
@@ -654,6 +655,13 @@ def notify(argv):
     else:
         result = "Validation did not complete successfully; this run is not verified green."
         followup = "Check the run for the failing stage, exhausted confirmation retry, or pending delivery approval. A code fix requires a reviewed repair PR. No automatic repair PR was created."
+        if args.repair_outcome not in {"not_requested", "skipped"}:
+            followup = (
+                "Check the run for the failing stage and the separate package repair reports. "
+                f"The bounded repair workflow outcome was {args.repair_outcome}; this alone does not prove a fix PR was created. "
+                "Only native-validated proposals can be published as drafts. Human review, required checks and merge remain mandatory. "
+                "The original run stays failed; only a new main cycle can establish green."
+            )
     if stale:
         main_status = "stale (superseded); this run does not verify current main as green"
         followup += (

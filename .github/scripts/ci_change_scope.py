@@ -37,6 +37,12 @@ SMOKE_SCRIPTS = frozenset({
     ".github/scripts/package_result_policy.py",
     ".github/scripts/promote_package_results.py",
     ".github/scripts/smoke_recovery.py",
+    ".github/scripts/smoke_repair_evidence.py",
+    ".github/scripts/smoke_repair_model.py",
+    ".github/scripts/smoke_repair_native.py",
+    ".github/scripts/smoke_repair_pipeline.py",
+    ".github/scripts/smoke_repair_policy.py",
+    ".github/scripts/smoke_repair_publisher.py",
     ".github/scripts/summary_slug_policy.py",
 })
 SMOKE_ACTIONS = frozenset({
@@ -55,6 +61,8 @@ SMOKE_ACTIONS = frozenset({
 ROUTING_SCRIPT = ".github/scripts/ci_change_scope.py"
 ROUTING_TEST = ".github/scripts/tests/test_ci_change_scope.py"
 SMOKE_SUPPORT = frozenset({
+    ".github/workflows/smoke-repair.yml",
+    ".github/workflows/smoke-repair-package.yml",
     ".github/scripts/package_observation_migration_audit.py",
     ".github/scripts/package_workflow_supply_chain.py",
     ".github/scripts/package_workflow_action_lock.json",
@@ -64,6 +72,7 @@ SMOKE_SUPPORT = frozenset({
     ".github/scripts/tests/test_active_collector_failure_evidence.py",
     ".github/scripts/tests/test_source_only_candidate_reporting.py",
     ".github/scripts/tests/test_vidgear_summary.py",
+    ".github/scripts/tests/test_smoke_repair_integration.py",
 })
 
 

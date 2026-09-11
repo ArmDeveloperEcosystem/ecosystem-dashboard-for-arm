@@ -101,8 +101,18 @@ completed failed batch with a complete exact job inventory and successful
 collector may receive one same-SHA confirmation dispatch with a new nonce and
 run ID, still attempt 1. Successful batches are never rerun, original failure
 evidence is kept, and persistent failures remain red. This is confirmation, not
-automatic code repair; assertion failures are not relabelled transient. The
-strict standalone curl classifier is diagnostic, not an eligibility gate. The
+code repair; assertion failures are not relabelled transient. A separate,
+disabled-by-default [bounded smoke repair](SMOKE_REPAIR.md) path is now
+implemented for authenticated failures that remain after confirmation. It permits
+only approved build prerequisites, reduced parallelism, and bounded curl retries:
+data-only proposal, policy admission, immutable candidate branch, real hosted Arm
+validation, then a draft PR for human review and merge. The new `main` must pass
+its own full smoke cycle; the original failure is never changed to green. Not
+all packages or failure causes are automatically repairable; callable-only or
+delegated layouts require manual handling. The [coverage snapshot](SMOKE_REPAIR.md#layout-admission-coverage)
+measures layout admission, not validated repairs, and no package workflows were
+changed to force eligibility. The strict standalone curl classifier is
+diagnostic, not an eligibility gate. The
 existing shared 285-minute deadline and recovery limit of at most 90 minutes
 remain in force. See [Routing and recovery](scripts/README-exact-run-aggregation.md#routing-and-recovery).
 
@@ -113,9 +123,13 @@ explicitly reports superseded status, the tested SHA, and the current `main` SHA
 After merges settle, the owner starts a fresh `workflow_dispatch` on `main`;
 rerunning the old Actions run retains the old SHA. There is no automatic
 replacement run. These checks do not change production behavior or any human
-review, approval, merge, or deployment gate. No approved AI backend or code bot
-is configured, the AI repair-PR follow-up is still not done, and no full
-live-fleet validation is claimed.
+review, approval, merge, or deployment gate. Repair remains disabled unless
+`SMOKE_REPAIR_ENABLED` is exactly `true`. Its model/App/environment configuration
+and live integration have not been performed or verified in this change, and no
+full live-fleet validation is claimed. The user tests first, Chris reviews next,
+and a human merges only after required checks and approvals. The repair path uses
+a dedicated App, separate from Dashboard Delivery, and never automatically
+approves, merges, or deploys. See the [repair configuration and credential boundaries](SMOKE_REPAIR.md#configuration-and-credentials).
 
 On `main` pushes, `main.yml` validates the authenticated before/after commit SHAs
 using complete Git history. For dashboard routing it additionally invokes

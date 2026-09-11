@@ -1,0 +1,327 @@
+name: Propose validate and publish one smoke repair
+
+on:
+  workflow_call:
+    inputs:
+      base_sha:
+        required: true
+        type: string
+      package_slug:
+        required: true
+        type: string
+      context_artifact_id:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  propose:
+    name: Generate data-only repair proposal
+    if: github.ref == 'refs/heads/main' && vars.SMOKE_REPAIR_ENABLED == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    environment: smoke-repair-analysis
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Check out trusted proposal implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned workflow parser
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes -r .github/scripts/requirements-exact-run.txt
+      - name: Download exact authenticated context
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ inputs.context_artifact_id }}
+          path: ${{ runner.temp }}/repair-context
+          merge-multiple: true
+      - name: Select one supported package from trusted context
+        env:
+          REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          PACKAGE_SLUG: ${{ inputs.package_slug }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" == "$GITHUB_SHA" ]]
+          mkdir -p "$RUNNER_TEMP/repair-proposal"
+          python3 -I -B .github/scripts/smoke_repair_pipeline.py select \
+            --bundle "$RUNNER_TEMP/repair-context/contexts.json" \
+            --slug "$PACKAGE_SLUG" --repository "$REPOSITORY" --base-sha "$BASE_SHA" \
+            --output "$RUNNER_TEMP/repair-proposal/context.json" \
+            --model-output "$RUNNER_TEMP/repair-proposal/model-context.json"
+      - name: Request one bounded structured proposal
+        env:
+          SMOKE_REPAIR_OPENAI_API_KEY: ${{ secrets.SMOKE_REPAIR_OPENAI_API_KEY }}
+          SMOKE_REPAIR_MODEL: ${{ vars.SMOKE_REPAIR_MODEL }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 -I -B .github/scripts/smoke_repair_model.py \
+            --context "$RUNNER_TEMP/repair-proposal/model-context.json" \
+            --output "$RUNNER_TEMP/repair-proposal/proposal.json"
+      - name: Preserve proposal as data only
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: smoke-repair-proposal-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.package_slug }}
+          path: |
+            ${{ runner.temp }}/repair-proposal/context.json
+            ${{ runner.temp }}/repair-proposal/proposal.json
+          if-no-files-found: error
+          retention-days: 30
+
+  stage:
+    name: Admit and stage immutable repair branch
+    needs: propose
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    environment: smoke-repair-delivery
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Check out trusted admission and publisher code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned workflow parser
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes -r .github/scripts/requirements-exact-run.txt
+      - name: Download exact proposal
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.propose.outputs.artifact_id }}
+          path: ${{ runner.temp }}/repair-proposal
+          merge-multiple: true
+      - name: Enforce patch policy before minting write credentials
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          mkdir -p "$RUNNER_TEMP/repair-stage"
+          python3 -I -B .github/scripts/smoke_repair_pipeline.py admit \
+            --context "$RUNNER_TEMP/repair-proposal/context.json" \
+            --proposal "$RUNNER_TEMP/repair-proposal/proposal.json" \
+            --source-output "$RUNNER_TEMP/repair-stage/candidate.yml" \
+            --contract-output "$RUNNER_TEMP/repair-stage/contract.json"
+          python3 -I -B .github/scripts/smoke_repair_publisher.py admit \
+            --context "$RUNNER_TEMP/repair-proposal/context.json" \
+            --proposal "$RUNNER_TEMP/repair-proposal/proposal.json" \
+            --policy-version 1 --output "$RUNNER_TEMP/repair-stage/candidate.json"
+      - name: Mint dedicated repair App token
+        id: repair_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          app-id: ${{ secrets.SMOKE_REPAIR_APP_ID }}
+          private-key: ${{ secrets.SMOKE_REPAIR_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+          permission-actions: read
+      - name: Create only the admitted immutable candidate branch
+        env:
+          GH_TOKEN: ${{ steps.repair_token.outputs.token }}
+          SMOKE_REPAIR_APP_SLUG: ${{ steps.repair_token.outputs.app-slug }}
+          SMOKE_REPAIR_APP_BOT_LOGIN: ${{ vars.SMOKE_REPAIR_APP_BOT_LOGIN }}
+          DASHBOARD_DELIVERY_APP_BOT_LOGIN: ${{ vars.DASHBOARD_DELIVERY_APP_BOT_LOGIN }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 -I -B .github/scripts/smoke_repair_publisher.py stage \
+            --context "$RUNNER_TEMP/repair-proposal/context.json" \
+            --proposal "$RUNNER_TEMP/repair-proposal/proposal.json" \
+            --candidate "$RUNNER_TEMP/repair-stage/candidate.json" \
+            --native-contract "$RUNNER_TEMP/repair-stage/contract.json" \
+            --policy-version 1 --output "$RUNNER_TEMP/repair-stage/stage.json"
+      - name: Preserve exact candidate identity
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: smoke-repair-stage-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.package_slug }}
+          path: |
+            ${{ runner.temp }}/repair-stage/stage.json
+            ${{ runner.temp }}/repair-stage/contract.json
+          if-no-files-found: error
+          retention-days: 30
+
+  native:
+    name: Verify actual package workflow on hosted Arm
+    needs: stage
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 65
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Check out trusted native controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned workflow parser
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes -r .github/scripts/requirements-exact-run.txt
+      - name: Download exact candidate identity
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.stage.outputs.artifact_id }}
+          path: ${{ runner.temp }}/repair-stage
+          merge-multiple: true
+      - name: Dispatch and verify the original package workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          mkdir -p "$RUNNER_TEMP/repair-native"
+          python3 -I -B .github/scripts/smoke_repair_native.py --mode dispatch \
+            --stage "$RUNNER_TEMP/repair-stage/stage.json" \
+            --contract "$RUNNER_TEMP/repair-stage/contract.json" \
+            --output "$RUNNER_TEMP/repair-native/receipt.json"
+      - name: Preserve verified native receipt
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: smoke-repair-native-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.package_slug }}
+          path: ${{ runner.temp }}/repair-native/receipt.json
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Open verified repair as a human-reviewed draft
+    needs: [propose, stage, native]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    environment: smoke-repair-delivery
+    outputs:
+      pull_request_url: ${{ steps.publish.outputs.pull_request_url }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out trusted draft publisher
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned workflow parser
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes -r .github/scripts/requirements-exact-run.txt
+      - name: Download exact proposal
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.propose.outputs.artifact_id }}
+          path: ${{ runner.temp }}/repair-proposal
+          merge-multiple: true
+      - name: Download exact staged identity
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.stage.outputs.artifact_id }}
+          path: ${{ runner.temp }}/repair-stage
+          merge-multiple: true
+      - name: Download exact native validation receipt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.native.outputs.artifact_id }}
+          path: ${{ runner.temp }}/repair-native
+          merge-multiple: true
+      - name: Recheck policy and live native evidence without write credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          mkdir -p "$RUNNER_TEMP/repair-publication"
+          python3 -I -B .github/scripts/smoke_repair_pipeline.py admit \
+            --context "$RUNNER_TEMP/repair-proposal/context.json" \
+            --proposal "$RUNNER_TEMP/repair-proposal/proposal.json" \
+            --source-output "$RUNNER_TEMP/repair-publication/candidate.yml" \
+            --contract-output "$RUNNER_TEMP/repair-publication/contract.json"
+          python3 -I -B .github/scripts/smoke_repair_native.py --mode verify \
+            --stage "$RUNNER_TEMP/repair-stage/stage.json" \
+            --contract "$RUNNER_TEMP/repair-publication/contract.json" \
+            --receipt "$RUNNER_TEMP/repair-native/receipt.json" \
+            --output "$RUNNER_TEMP/repair-publication/verified.json"
+      - name: Mint dedicated repair App token
+        id: repair_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          app-id: ${{ secrets.SMOKE_REPAIR_APP_ID }}
+          private-key: ${{ secrets.SMOKE_REPAIR_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+          permission-actions: read
+      - name: Revalidate exact candidate and open draft PR
+        id: publish
+        env:
+          GH_TOKEN: ${{ steps.repair_token.outputs.token }}
+          SMOKE_REPAIR_APP_SLUG: ${{ steps.repair_token.outputs.app-slug }}
+          SMOKE_REPAIR_APP_BOT_LOGIN: ${{ vars.SMOKE_REPAIR_APP_BOT_LOGIN }}
+          DASHBOARD_DELIVERY_APP_BOT_LOGIN: ${{ vars.DASHBOARD_DELIVERY_APP_BOT_LOGIN }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 -I -B .github/scripts/smoke_repair_publisher.py open-pr \
+            --context "$RUNNER_TEMP/repair-proposal/context.json" \
+            --proposal "$RUNNER_TEMP/repair-proposal/proposal.json" \
+            --stage "$RUNNER_TEMP/repair-stage/stage.json" \
+            --native-contract "$RUNNER_TEMP/repair-publication/contract.json" \
+            --native-receipt "$RUNNER_TEMP/repair-native/receipt.json" \
+            --policy-version 1 --output "$RUNNER_TEMP/repair-publication/result.json"
+      - name: Preserve published draft identity
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: smoke-repair-pr-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.package_slug }}
+          path: ${{ runner.temp }}/repair-publication/result.json
+          if-no-files-found: error
+          retention-days: 30
+
+  report:
+    name: Report package repair outcome
+    needs: [propose, stage, native, publish]
+    if: always()
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out trusted reporting implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned workflow parser
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes -r .github/scripts/requirements-exact-run.txt
+      - name: Notify owner without changing the original test outcome
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PACKAGE_SLUG: ${{ inputs.package_slug }}
+          RECIPIENT: ${{ vars.SMOKE_NOTIFICATION_LOGIN || github.actor }}
+          SMOKE_REPAIR_JOB_RESULTS: '{"propose":"${{ needs.propose.result }}","stage":"${{ needs.stage.result }}","native":"${{ needs.native.result }}","publish":"${{ needs.publish.result }}"}'
+          SMOKE_REPAIR_PR_URL: ${{ needs.publish.outputs.pull_request_url }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        shell: bash
+        run: |
+          python3 -I -B .github/scripts/smoke_repair_pipeline.py report \
+            --repository "$REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --attempt "$GITHUB_RUN_ATTEMPT" --slug "$PACKAGE_SLUG" --recipient "$RECIPIENT"

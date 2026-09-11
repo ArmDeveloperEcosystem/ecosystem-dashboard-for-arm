@@ -1,0 +1,123 @@
+name: Prepare bounded smoke repairs
+
+on:
+  workflow_call:
+    inputs:
+      base_sha:
+        required: true
+        type: string
+      orchestrator_run_id:
+        required: true
+        type: string
+      orchestrator_attempt:
+        required: true
+        type: string
+      evidence_artifact_id:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Authenticate exhausted smoke confirmations
+    if: github.ref == 'refs/heads/main' && vars.SMOKE_REPAIR_ENABLED == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      eligible: ${{ steps.evidence.outputs.eligible }}
+      matrix: ${{ steps.evidence.outputs.matrix }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Check out trusted repair implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned workflow parser
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes -r .github/scripts/requirements-exact-run.txt
+      - name: Authenticate failures and prepare public model context
+        id: evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          PARENT_RUN_ID: ${{ inputs.orchestrator_run_id }}
+          PARENT_ATTEMPT: ${{ inputs.orchestrator_attempt }}
+          EVIDENCE_ARTIFACT_ID: ${{ inputs.evidence_artifact_id }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" == "$GITHUB_SHA" ]]
+          [[ "$PARENT_RUN_ID" == "$GITHUB_RUN_ID" ]]
+          mkdir -p "$RUNNER_TEMP/smoke-repair"
+          python3 -I -B .github/scripts/smoke_repair_evidence.py \
+            --repository "$REPOSITORY" --base-sha "$BASE_SHA" \
+            --run-id "$PARENT_RUN_ID" --attempt "$PARENT_ATTEMPT" \
+            --artifact-id "$EVIDENCE_ARTIFACT_ID" \
+            --output "$RUNNER_TEMP/smoke-repair/contexts.json"
+      - name: Preserve authenticated repair context
+        id: upload
+        if: steps.evidence.outputs.eligible == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: smoke-repair-context-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/smoke-repair/contexts.json
+          if-no-files-found: error
+          retention-days: 30
+
+  repair:
+    name: Repair ${{ matrix.slug }}
+    needs: prepare
+    if: needs.prepare.outputs.eligible == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    permissions:
+      contents: read
+      actions: write
+      issues: write
+    uses: ./.github/workflows/smoke-repair-package.yml
+    with:
+      base_sha: ${{ inputs.base_sha }}
+      package_slug: ${{ matrix.slug }}
+      context_artifact_id: ${{ needs.prepare.outputs.artifact_id }}
+
+  report-ineligible:
+    name: Report unavailable automatic repair
+    needs: prepare
+    if: always() && needs.prepare.outputs.eligible != 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out trusted reporting implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned workflow parser
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes -r .github/scripts/requirements-exact-run.txt
+      - name: Report manual investigation requirement
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RECIPIENT: ${{ vars.SMOKE_NOTIFICATION_LOGIN || github.actor }}
+          SMOKE_REPAIR_JOB_RESULTS: '{"prepare":"${{ needs.prepare.result }}"}'
+          PYTHONDONTWRITEBYTECODE: "1"
+        shell: bash
+        run: |
+          python3 -I -B .github/scripts/smoke_repair_pipeline.py report \
+            --repository "$REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --attempt "$GITHUB_RUN_ATTEMPT" --slug all --recipient "$RECIPIENT"

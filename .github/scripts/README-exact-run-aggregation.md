@@ -77,14 +77,26 @@ attempt, not per notification attempt; a full orchestration rerun gets a new rep
 Successful validation is not a production deployment: generated results still
 follow their protected review, merge, and dashboard deployment process.
 
-Unattended AI code repair requires a separately approved AI backend and a narrowly
-scoped code-writing bot identity. No approved AI backend or code bot is configured
-by this change. Persistent failures are reported as requiring repair; the AI
-repair-PR follow-up is still not done, and no automatically created fix PR is
-claimed. The generated-data delivery App is not reused for code-writing access.
-Production behavior and all human review, approval, merge, and deployment gates
-remain unchanged. This policy and local contract validation do not constitute
-full live-fleet validation.
+An opt-in [bounded smoke repair](../SMOKE_REPAIR.md) implementation now follows
+authenticated exhausted confirmations, but remains disabled unless
+`SMOKE_REPAIR_ENABLED` is exactly `true`. It admits only approved build
+prerequisites, reduced parallelism, and bounded curl retries: one data-only model
+proposal, independent patch policy, an immutable candidate branch, real hosted Arm
+validation, then a verified draft PR. Unsupported failures require manual work;
+not all registered packages or failure causes are automatically repairable.
+Callable-only or delegated layouts remain manual, and the [coverage scan](../SMOKE_REPAIR.md#layout-admission-coverage)
+counts layout admission, not validated repairs. No package workflows were
+changed to force eligibility, and original failures are never changed to green.
+Model/App/environment configuration and live integration have not been performed
+or verified in this change. The
+dedicated repair App is separate from the generated-data delivery App. The user
+tests first, Chris reviews next, and only a human merges after required checks
+and approvals; the new `main` must pass a fresh full smoke cycle. Native-only
+reruns can be refused when a candidate run already exists, and one repair merge
+can stale other same-base drafts; a new main-orchestrator incident re-evaluates
+the remaining failures. There is no automatic approval, merge, or deployment.
+Production gates remain unchanged, and local tests are not full live-fleet
+validation.
 
 ## Trust boundary
 
