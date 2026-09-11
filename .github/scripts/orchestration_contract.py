@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import secrets
@@ -270,6 +271,36 @@ def canonical_json(payload: object) -> str:
     return json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
 
+def decode_json(data: str | bytes | bytearray) -> object:
+    """Reject ambiguous keys and non-finite numbers before validating evidence."""
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ContractError(f"duplicate JSON key: {key!r}")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise ContractError(f"non-finite JSON number: {value}")
+
+    def finite_float(value: str) -> float:
+        number = float(value)
+        if not math.isfinite(number):
+            raise ContractError("non-finite JSON number")
+        return number
+
+    try:
+        return json.loads(
+            data, object_pairs_hook=unique_object,
+            parse_constant=reject_constant, parse_float=finite_float,
+        )
+    except ContractError:
+        raise
+    except (ValueError, UnicodeError, TypeError, RecursionError) as exc:
+        raise ContractError("input is not valid JSON") from exc
+
+
 def validate_manifest_text(
     raw: object,
     *,
@@ -287,8 +318,8 @@ def validate_manifest_text(
     if raw_size > MAX_MANIFEST_BYTES:
         raise ContractError("manifest input exceeds the maximum canonical size")
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
+        payload = decode_json(raw)
+    except ContractError as exc:
         raise ContractError("manifest input is not valid JSON") from exc
     manifest = validate_manifest(
         payload,
@@ -723,8 +754,8 @@ def _require_exact_keys(
 
 def _load_json(path: Path) -> object:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        return decode_json(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ContractError) as exc:
         raise ContractError(f"could not read canonical JSON from {path}") from exc
 
 

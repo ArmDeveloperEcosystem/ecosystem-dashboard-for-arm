@@ -22,6 +22,7 @@ from orchestration_contract import (  # noqa: E402
     batch_dispatch_payload,
     build_manifest,
     canonical_json,
+    decode_json,
     expected_artifact,
     expected_run_name,
     expected_summary_run_name,
@@ -147,6 +148,66 @@ def artifacts_payload(
     }
 
 
+class StrictJSONTests(unittest.TestCase):
+    def test_valid_text_bytes_and_finite_numbers_preserve_values(self) -> None:
+        raw = '{"run_attempt":1,"nested":[null,true,1.25,1e3,-2]}'
+        for data in (raw, raw.encode(), bytearray(raw.encode())):
+            with self.subTest(data_type=type(data).__name__):
+                self.assertEqual(decode_json(data), json.loads(raw))
+
+    def test_duplicate_keys_are_rejected_at_every_depth(self) -> None:
+        for raw in (
+            '{"run_attempt":2,"run_attempt":1}',
+            '{"head_sha":"wrong","head_sha":"expected"}',
+            '{"repository":{"full_name":"other/repo","full_name":"example/dashboard"}}',
+            '[{"id":1,"id":1}]',
+            r'{"run_attempt":2,"run_\u0061ttempt":1}',
+        ):
+            with self.subTest(raw=raw), self.assertRaisesRegex(ContractError, "duplicate JSON key"):
+                decode_json(raw)
+
+    def test_nonfinite_constants_and_overflow_are_rejected(self) -> None:
+        for value in ("NaN", "Infinity", "-Infinity", "1e999", "-1e999"):
+            for raw in (value, f'{{"unused":[{value}]}}'):
+                with self.subTest(raw=raw), self.assertRaisesRegex(ContractError, "non-finite"):
+                    decode_json(raw)
+
+    def test_invalid_json_and_utf8_are_contract_errors(self) -> None:
+        for raw in (b"\xff", b'{"id":', "", "[", None):
+            with self.subTest(raw_type=type(raw).__name__), self.assertRaises(ContractError):
+                decode_json(raw)
+
+    def test_cli_rejects_ambiguous_nonfinite_and_invalid_utf8_run_evidence(self) -> None:
+        valid = canonical_json(run_payload(1))
+        invalid = (
+            valid.replace('"run_attempt":1', '"run_attempt":2,"run_attempt":1').encode(),
+            valid.replace('"head_sha":', '"head_sha":"wrong","head_sha":').encode(),
+            valid.replace('"full_name":', '"full_name":"other/repo","full_name":').encode(),
+            *(valid[:-1] + f',"unused":{value}}}' for value in ("NaN", "Infinity", "-Infinity", "1e999")),
+            b"\xff",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            payload_path = Path(directory) / "run.json"
+            for raw, expected_status in ((valid, 0), *((item, 1) for item in invalid)):
+                with self.subTest(raw=raw):
+                    payload_path.write_bytes(raw.encode() if isinstance(raw, str) else raw)
+                    result = subprocess.run(
+                        [sys.executable, "-B", str(SCRIPT_ROOT / "orchestration_contract.py"),
+                         "validate-run", "--payload", str(payload_path), "--batch", "1",
+                         "--orchestration-id", ORCHESTRATION_ID, "--dispatch-nonce", nonce_for(1),
+                         "--expected-sha", EXPECTED_SHA, "--branch", BRANCH,
+                         "--repository", REPOSITORY, "--expected-run-id", "10001"],
+                        capture_output=True, text=True, check=False, timeout=10,
+                    )
+                    self.assertEqual(result.returncode, expected_status, result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
+                    if expected_status:
+                        self.assertEqual(result.stdout, "")
+                        self.assertIn("orchestration contract rejected input", result.stderr)
+                    else:
+                        self.assertEqual(result.stdout, "completed\tsuccess\n")
+
+
 class CurrentMainContractTests(unittest.TestCase):
     def ref_payload(self, sha: str = EXPECTED_SHA) -> dict:
         return {"ref": "refs/heads/main", "object": {"type": "commit", "sha": sha}}
@@ -244,6 +305,57 @@ class CurrentMainContractTests(unittest.TestCase):
                                 if "validate-run" in section.split("done", 1)[0]
                                 else section.index("sleep"))
         self.assertNotIn("workflows/test-all-packages-orchestrator.yml/dispatches", workflow)
+
+    def test_initial_batch_post_is_denied_after_ref_or_preparation_exhausts_deadline(self) -> None:
+        workflow = (SCRIPT_ROOT.parent / "workflows/test-all-packages-orchestrator.yml").read_text()
+        step = workflow.split("      - name: Dispatch and capture exact batch runs\n", 1)[1].split("\n      - name:", 1)[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        stub = '''date() { cat "$CLOCK_FILE"; }
+python3() {
+  "$REVIEW_PYTHON" -B "$@" || return $?
+  if [[ "$2" == "batch-dispatch-payload" && "$EXPIRE_AT" == "preparation" ]]; then
+    printf '102\\n' > "$CLOCK_FILE"
+  fi
+}
+gh() {
+  if [[ "$*" == "api repos/${REPOSITORY}/git/ref/heads/${BRANCH}" ]]; then
+    if [[ "$EXPIRE_AT" == "ref" ]]; then
+      printf '102\\n' > "$CLOCK_FILE"
+    fi
+    printf '%s\\n' "$REF_PAYLOAD"
+  elif [[ "$*" == "api --method POST "* ]]; then
+    printf 'UNAUTHORIZED_POST\\n' >> "$POST_FILE"
+  else
+    printf 'UNEXPECTED_API: %s\\n' "$*" >&2
+    return 98
+  fi
+}
+'''
+        for expire_at in ("ref", "preparation"):
+            with self.subTest(expire_at=expire_at), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / ".github").symlink_to(SCRIPT_ROOT.parent, target_is_directory=True)
+                (root / ".orchestration").mkdir()
+                (root / ".orchestration/batch-records.json").write_text("[]\n")
+                (root / "clock").write_text("100\n")
+                environment = dict(os.environ, REPOSITORY=REPOSITORY, BRANCH=BRANCH,
+                                   EXPECTED_SHA=EXPECTED_SHA, ORCHESTRATION_ID=ORCHESTRATION_ID,
+                                   DEADLINE_EPOCH="101", CLOCK_FILE=str(root / "clock"),
+                                   POST_FILE=str(root / "posts"), EXPIRE_AT=expire_at,
+                                   REVIEW_PYTHON=sys.executable, REF_PAYLOAD=json.dumps(self.ref_payload()))
+                result = subprocess.run(["bash", "-c", stub + script], cwd=root, env=environment,
+                                        capture_output=True, text=True, check=False, timeout=10)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("Shared batch time budget exhausted", result.stderr)
+                self.assertNotIn("UNEXPECTED_API", result.stderr)
+                self.assertFalse((root / "posts").exists())
+                self.assertTrue((root / ".orchestration/dispatch-1.json").is_file())
+
+    def test_summary_keeps_its_separate_deadline_budget(self) -> None:
+        workflow = (SCRIPT_ROOT.parent / "workflows/test-all-packages-orchestrator.yml").read_text()
+        summary = workflow.split("      - name: Dispatch exact global summary\n", 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("timeout-minutes: 65", summary)
+        self.assertNotIn("DEADLINE_EPOCH", summary)
 
     def test_contract_only_edits_trigger_the_cli_test_suite(self) -> None:
         workflow = (SCRIPT_ROOT.parent / "workflows/generated-data-publisher-foundation-ci.yml").read_text()

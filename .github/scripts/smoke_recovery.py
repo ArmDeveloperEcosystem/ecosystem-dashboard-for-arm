@@ -8,9 +8,11 @@ from datetime import datetime, timedelta
 import hashlib
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
+import selectors
 import shlex
 import subprocess
 import sys
@@ -23,6 +25,7 @@ from orchestration_contract import (
     MainAdvanced,
     batch_dispatch_payload,
     canonical_json,
+    decode_json,
     generate_dispatch_nonce,
     select_exact_registration,
     validate_current_ref,
@@ -36,6 +39,7 @@ from orchestration_contract import (
 MAX_RETRIES = 1
 MAX_LOG_BYTES = 2 * 1024 * 1024
 RECOVERY_SECONDS = 90 * 60
+DIAGNOSTIC_SECONDS = 30
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _HARD_FAILURE = re.compile(
     r"permission denied|unauthorized|forbidden|certificate|checksum|hash mismatch"
@@ -298,37 +302,71 @@ class GitHub:
     def __init__(self, deadline):
         self.deadline = deadline
 
-    def api(self, endpoint, *, payload=None, pages=False, raw=False):
+    def api(self, endpoint, *, payload=None, pages=False, raw=False, timeout=60):
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise ContractError("recovery time budget exhausted")
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+            raise ContractError("GitHub API timeout must be finite and positive")
+        deadline = min(self.deadline, time.monotonic() + min(60, timeout))
         command = ["gh", "api", endpoint]
         if pages:
             command += ["--paginate", "--slurp"]
         if payload is not None:
             command += ["--method", "POST", "--input", "-"]
-        with tempfile.TemporaryFile() as output:
+        with tempfile.TemporaryFile() as source:
+            if payload is not None:
+                request = canonical_json(payload).encode()
+                if len(request) > MAX_LOG_BYTES:
+                    raise ContractError("GitHub request exceeds recovery resource limit")
+                source.write(request)
+                source.seek(0)
             try:
-                result = subprocess.run(
-                    command, input=None if payload is None else canonical_json(payload).encode(),
-                    stdout=output, stderr=subprocess.PIPE, timeout=min(60, remaining),
-                )
+                if time.monotonic() >= deadline:
+                    raise ContractError("GitHub API request exceeded its time budget before execution")
+                with subprocess.Popen(command, stdin=source, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE) as process:
+                    data = bytearray()
+                    received = 0
+                    try:
+                        with selectors.DefaultSelector() as streams:
+                            streams.register(process.stdout, selectors.EVENT_READ, True)
+                            streams.register(process.stderr, selectors.EVENT_READ, False)
+                            while streams.get_map():
+                                left = deadline - time.monotonic()
+                                if left <= 0:
+                                    raise ContractError("GitHub API response exceeded its time budget")
+                                events = streams.select(left)
+                                if not events:
+                                    raise ContractError("GitHub API response exceeded its time budget")
+                                for key, _ in events:
+                                    chunk = os.read(key.fd, min(65536, MAX_LOG_BYTES - received + 1))
+                                    if not chunk:
+                                        streams.unregister(key.fileobj)
+                                        continue
+                                    received += len(chunk)
+                                    if received > MAX_LOG_BYTES:
+                                        raise ContractError("GitHub response exceeds recovery resource limit")
+                                    if key.data:
+                                        data.extend(chunk)
+                        left = deadline - time.monotonic()
+                        if left <= 0:
+                            raise ContractError("GitHub API response exceeded its time budget")
+                        status = process.wait(timeout=left)
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait()
             except (OSError, subprocess.SubprocessError) as exc:
                 raise ContractError("GitHub API response unavailable; no evidence inferred") from exc
-            if result.returncode:
+            if status:
                 raise ContractError("GitHub API request failed; no evidence inferred")
-            output.seek(0)
-            data = output.read(MAX_LOG_BYTES + 1)
-        if len(data) > MAX_LOG_BYTES:
-            raise ContractError("GitHub response exceeds recovery resource limit")
+        data = bytes(data)
         if raw:
             return data
         if payload is not None and not data:
             return None
-        try:
-            return json.loads(data)
-        except (ValueError, UnicodeError) as exc:
-            raise ContractError("GitHub API response is not JSON") from exc
+        return decode_json(data)
 
 
 class Recovery:
@@ -345,6 +383,7 @@ class Recovery:
             if budget <= 0:
                 raise ContractError("shared orchestration time budget exhausted")
         self.deadline = clock() + budget
+        self.diagnostic_remaining = min(DIAGNOSTIC_SECONDS, budget / 10)
         self.github = api or GitHub(self.deadline)
         self.seen_ids = {record["run_id"] for record in self.manifest["batches"]}
         self.seen_nonces = {record["dispatch_nonce"] for record in self.manifest["batches"]}
@@ -406,10 +445,25 @@ class Recovery:
         self.save()
         for job in failed_jobs:
             self.remaining()
-            failure = {"job_id": job["id"], "name": job["name"],
-                       "classification": "unknown_failure", "log_sha256": None}
+            entry["failures"].append(self.diagnose(record, job))
+            self.save()
+            self.remaining()
+        self.save()
+        return entry["classification"]
+
+    def diagnose(self, record, job):
+        failure = {"job_id": job["id"], "name": job["name"],
+                   "classification": "unknown_failure", "log_sha256": None}
+        allowance = min(5, self.diagnostic_remaining, self.remaining() / 10)
+        if allowance <= 0:
+            failure["log_status"] = "not_collected_diagnostic_budget"
+            return failure
+        started = self.clock()
+        deadline = started + allowance
+        try:
             try:
-                raw = self.github.api(f"repos/{self.repository}/actions/jobs/{job['id']}/logs", raw=True)
+                raw = self.github.api(f"repos/{self.repository}/actions/jobs/{job['id']}/logs",
+                                      raw=True, timeout=allowance)
                 if not isinstance(raw, bytes) or not raw or len(raw) > MAX_LOG_BYTES:
                     raise ContractError("job logs unavailable as bounded nonempty bytes")
             except ContractError as exc:
@@ -417,18 +471,19 @@ class Recovery:
             else:
                 failure.update(log_status="available", log_sha256=hashlib.sha256(raw).hexdigest())
                 try:
+                    left = deadline - self.clock()
+                    if left <= 0:
+                        raise ContractError("optional diagnostic time budget exhausted")
                     command = trusted_download_command(
                         self.root, self.manifest["expected_sha"], self.definitions[record["batch"] - 1], job,
-                        timeout=min(20, self.remaining()),
+                        timeout=left,
                     )
                     failure["classification"] = classify_retryable_failure(raw, job, command=command)
                 except ContractError as exc:
                     failure["diagnostic_error"] = str(exc)
-            entry["failures"].append(failure)
-            self.save()
-            self.remaining()
-        self.save()
-        return entry["classification"]
+        finally:
+            self.diagnostic_remaining = max(0, self.diagnostic_remaining - (self.clock() - started))
+        return failure
 
     def dispatch(self, record, retry):
         if retry != MAX_RETRIES or any(item["batch"] == record["batch"] for item in self.audit.get("dispatches", [])):

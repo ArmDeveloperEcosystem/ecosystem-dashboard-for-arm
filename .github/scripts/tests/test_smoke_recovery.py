@@ -171,6 +171,8 @@ class RecoveryFixture:
         self.package_outcomes = {}
         self.ref_hook = self.run_hook = self.registration_hook = self.dispatch_hook = None
         self.ambiguous = False
+        self.log_delay = 0
+        self.log_timeouts = []
         self.visible_after = 0
         self.never_register = False
         for record in self.manifest["batches"]:
@@ -214,7 +216,7 @@ class RecoveryFixture:
         self.definitions = tuple(definitions)
         self.fail(batch)
 
-    def api(self, endpoint, *, payload=None, pages=False, raw=False):
+    def api(self, endpoint, *, payload=None, pages=False, raw=False, timeout=60):
         self.calls.append((endpoint, deepcopy(payload), pages, raw))
         prefix = f"repos/{REPOSITORY}/"
         if not endpoint.startswith(prefix):
@@ -269,6 +271,10 @@ class RecoveryFixture:
         if match:
             if not raw or pages or payload is not None:
                 raise AssertionError("job log must be read as bytes from its validated ID")
+            self.log_timeouts.append(timeout)
+            self.clock.now += min(self.log_delay, timeout)
+            if self.log_delay >= timeout:
+                raise contract.ContractError("job log request timed out")
             result = self.logs[int(match[1])]
             if isinstance(result, Exception):
                 raise result
@@ -646,7 +652,7 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(batch, 6)
         self.assertEqual(payload, contract.batch_dispatch_payload(batch=6, orchestration_id=ORCHESTRATION, dispatch_nonce=result["batches"][5]["dispatch_nonce"], expected_sha=SHA, branch=BRANCH))
         self.assertEqual([item["classification"] for item in self.audit()["history"] if item["batch"] == 6], ["failed", "success"])
-        self.trusted_command.assert_called_once_with(self.root, SHA, self.fixture.definitions[5], self.fixture.pages[10006][0]["jobs"][0], timeout=20)
+        self.trusted_command.assert_called_once_with(self.root, SHA, self.fixture.definitions[5], self.fixture.pages[10006][0]["jobs"][0], timeout=5)
 
     def test_hypothetical_second_success_does_not_authorize_another_retry(self):
         self.fixture.fail()
@@ -1076,11 +1082,11 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(self.fixture.registration_count, 1)
         self.assertEqual(len(self.fixture.posts), 1)
 
-    def test_log_diagnostics_use_remaining_budget_and_expiry_prevents_dispatch(self):
+    def test_log_diagnostics_cannot_consume_the_required_recovery_budget(self):
         self.fixture.fail(1, "assertion")
         def diagnostic(*args, **kwargs):
-            self.assertEqual(kwargs["timeout"], 5)
-            self.fixture.clock.now += 5
+            self.assertEqual(kwargs["timeout"], 0.5)
+            self.fixture.clock.now += 0.5
             raise contract.ContractError("diagnostic time budget exhausted")
         self.trusted_command.side_effect = diagnostic
         with mock.patch.object(recovery, "RECOVERY_SECONDS", 5):
@@ -1088,9 +1094,51 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(stdout, "")
         self.assertEqual(self.fixture.posts, [])
-        self.assertEqual(self.fixture.clock.sleeps, [])
+        self.assertEqual(self.fixture.clock.sleeps, [4.5])
         self.assertEqual(self.audit()["status"], "failed")
         self.assertEqual(self.audit()["history"][0]["failures"][0]["log_status"], "available")
+
+    def test_ninety_optional_log_timeouts_leave_time_for_confirmation(self):
+        self.fixture.fail_packages(1, ["assertion"] * 45)
+        self.fixture.fail_packages(2, ["assertion"] * 45)
+        self.topology.return_value = self.fixture.definitions
+        self.fixture.log_delay = 60
+        status, _, stderr, _ = self.cli()
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(len(self.fixture.posts), 2)
+        self.assertEqual(self.fixture.log_timeouts, [5] * 6)
+        self.assertEqual(self.fixture.clock.now, 90)
+        failures = [failure for entry in self.audit()["history"] for failure in entry["failures"]]
+        self.assertEqual(len(failures), 90)
+        self.assertEqual(sum(item["log_status"] == "not_collected_diagnostic_budget" for item in failures), 84)
+        self.assertTrue(all(item["log_sha256"] is None for item in failures))
+
+    def test_log_budget_is_shared_with_confirmation_diagnostics(self):
+        self.fixture.fail_packages(1, ["assertion"] * 45)
+        self.topology.return_value = self.fixture.definitions
+        self.fixture.log_delay = 60
+        self.fixture.outcomes[1] = ["assertion"]
+        status, _, _, _ = self.cli()
+        self.assertEqual(status, 1)
+        self.assertEqual(len(self.fixture.posts), 1)
+        self.assertEqual(self.fixture.log_timeouts, [5] * 6)
+        self.assertEqual(self.fixture.clock.now, 90)
+        confirmation = [entry for entry in self.audit()["history"] if entry["retry"] == 1][0]
+        self.assertTrue(all(item["log_status"] == "not_collected_diagnostic_budget" for item in confirmation["failures"]))
+
+    def test_slow_source_diagnostics_are_bounded_without_blocking_confirmation(self):
+        self.fixture.fail_packages(1, ["assertion"] * 45)
+        self.topology.return_value = self.fixture.definitions
+        def slow_source(*args, **kwargs):
+            self.assertLessEqual(kwargs["timeout"], 5)
+            self.fixture.clock.now += kwargs["timeout"]
+            raise contract.ContractError("source diagnostic timeout")
+        self.trusted_command.side_effect = slow_source
+        status, _, stderr, _ = self.cli()
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(len(self.fixture.posts), 1)
+        self.assertEqual(self.trusted_command.call_count, 6)
+        self.assertEqual(self.fixture.clock.now, 90)
 
     def test_final_ref_request_crossing_deadline_cannot_publish_success(self):
         def ref_hook(api):
@@ -1692,11 +1740,18 @@ class GitHubAdapterTests(unittest.TestCase):
         self.addCleanup(mock.patch.stopall)
         self.api = recovery.GitHub(200)
 
+    def program(self, script):
+        popen = subprocess.Popen
+        def spawn(command, **kwargs):
+            self.request = kwargs["stdin"].read()
+            kwargs["stdin"].seek(0)
+            self.child = popen([sys.executable, "-c", script], **kwargs)
+            return self.child
+        return mock.patch.object(recovery.subprocess, "Popen", side_effect=spawn)
+
     def response(self, raw, status=0):
-        def run(command, **kwargs):
-            kwargs["stdout"].write(raw)
-            return subprocess.CompletedProcess(command, status, stderr=b"fixture")
-        return mock.patch.object(recovery.subprocess, "run", side_effect=run)
+        content = f"b'x' * {len(raw)}" if len(raw) > recovery.MAX_LOG_BYTES else repr(raw)
+        return self.program(f"import sys; sys.stdout.buffer.write({content}); sys.stdout.flush(); sys.exit({status})")
 
     def test_empty_dispatch_response_and_nonempty_issue_post_json(self):
         for raw, expected in ((b"", None), (b'{"number":1079}', {"number": 1079})):
@@ -1704,7 +1759,7 @@ class GitHubAdapterTests(unittest.TestCase):
                 self.assertEqual(self.api.api(f"repos/{REPOSITORY}/issues", payload={"title": "fixture"}), expected)
                 command = process.call_args.args[0]
                 self.assertEqual(command[-4:], ["--method", "POST", "--input", "-"])
-                self.assertEqual(json.loads(process.call_args.kwargs["input"]), {"title": "fixture"})
+                self.assertEqual(json.loads(self.request), {"title": "fixture"})
 
     def test_paginated_response_uses_slurp_and_preserves_all_pages(self):
         raw = b'[{"jobs":[1],"total_count":2},{"jobs":[2],"total_count":2}]'
@@ -1722,14 +1777,63 @@ class GitHubAdapterTests(unittest.TestCase):
             with self.subTest(length=len(raw), status=status), self.response(raw, status), self.assertRaises(CONTRACT_ERRORS):
                 self.api.api("fixture")
 
+    def test_duplicate_identity_keys_and_nonfinite_json_fail_closed(self):
+        for raw in (b'{"run_attempt":2,"run_attempt":1}', b'{"run":{"id":7,"id":8}}',
+                    b'{"total_count":NaN}', b'{"total_count":Infinity}'):
+            with self.subTest(raw=raw), self.response(raw), self.assertRaises(CONTRACT_ERRORS):
+                self.api.api("fixture")
+
+    def test_oversized_stdout_and_stderr_are_stopped_before_producer_finishes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "producer-finished"
+            for stream in (1, 2):
+                script = (f"import os; from pathlib import Path; os.write({stream}, b'x' * "
+                          f"{recovery.MAX_LOG_BYTES * 10}); Path({str(marker)!r}).write_text('finished')")
+                with self.subTest(stream=stream), self.program(script), self.assertRaises(CONTRACT_ERRORS):
+                    self.api.api("fixture", raw=True)
+                self.assertFalse(marker.exists())
+                self.assertIsNotNone(self.child.poll())
+
+    def test_stdout_and_stderr_share_one_response_byte_cap(self):
+        half = recovery.MAX_LOG_BYTES // 2 + 1
+        script = f"import os; os.write(1, b'x' * {half}); os.write(2, b'y' * {half})"
+        with self.program(script), self.assertRaises(CONTRACT_ERRORS):
+            self.api.api("fixture", raw=True)
+
+    def test_diagnostic_timeout_kills_and_reaps_a_silent_process(self):
+        with self.program("import time; time.sleep(30)"), self.assertRaises(CONTRACT_ERRORS):
+            self.api.api("fixture", raw=True, timeout=0.05)
+        self.assertIsNotNone(self.child.poll())
+
+    def test_closed_output_streams_do_not_allow_a_process_to_outlive_timeout(self):
+        with self.program("import os,time; os.close(1); os.close(2); time.sleep(30)"), self.assertRaises(CONTRACT_ERRORS):
+            self.api.api("fixture", raw=True, timeout=0.05)
+        self.assertIsNotNone(self.child.poll())
+
+    def test_invalid_timeout_never_starts_a_process(self):
+        for timeout in (0, -1, True, None, "5", float("nan"), float("inf")):
+            with self.subTest(timeout=timeout), mock.patch.object(recovery.subprocess, "Popen") as process:
+                with self.assertRaises(CONTRACT_ERRORS):
+                    self.api.api("fixture", timeout=timeout)
+                process.assert_not_called()
+
+    def test_request_preparation_crossing_deadline_never_starts_a_process(self):
+        def encode(payload):
+            self.clock.return_value = 201
+            return '{}'
+        with mock.patch.object(recovery, "canonical_json", side_effect=encode), mock.patch.object(recovery.subprocess, "Popen") as process:
+            with self.assertRaises(CONTRACT_ERRORS):
+                self.api.api("fixture", payload={"request": "test"})
+        process.assert_not_called()
+
     def test_unavailable_process_and_timeout_are_contract_errors(self):
         for error in (OSError("gh unavailable"), subprocess.TimeoutExpired("gh", 60)):
-            with self.subTest(error=error), mock.patch.object(recovery.subprocess, "run", side_effect=error), self.assertRaises(CONTRACT_ERRORS):
+            with self.subTest(error=error), mock.patch.object(recovery.subprocess, "Popen", side_effect=error), self.assertRaises(CONTRACT_ERRORS):
                 self.api.api("fixture")
 
     def test_expired_deadline_does_not_start_process(self):
         self.clock.return_value = 201
-        with mock.patch.object(recovery.subprocess, "run") as process, self.assertRaises(CONTRACT_ERRORS):
+        with mock.patch.object(recovery.subprocess, "Popen") as process, self.assertRaises(CONTRACT_ERRORS):
             self.api.api("fixture")
         process.assert_not_called()
 

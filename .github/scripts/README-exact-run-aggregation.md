@@ -38,6 +38,13 @@ step or an unknown diagnostic classification does not disqualify an otherwise
 authenticated failed batch. Assertion failures are never relabelled transient;
 no test outcome or skip is rewritten. A retry confirms behavior at the same
 commit, not a diagnosis of transience or automatic code repair.
+Optional log/source diagnostics share a 30-second allowance, reduced to at most
+10% of the initial recovery budget. Each diagnostic is capped at five seconds
+and 10% of remaining recovery time. Once exhausted, uncollected logs are marked
+explicitly in the audit; authenticated run/job checks and confirmation do not
+depend on those logs. API stdout and stderr share a streaming 2 MiB limit,
+processes are stopped on overflow or timeout, and duplicate JSON keys or
+nonfinite values are rejected before identity validation.
 
 The single confirmation retry uses backoff and a controller budget of at most
 90 minutes, further capped by the existing shared 285-minute initial-batch and
