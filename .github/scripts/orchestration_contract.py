@@ -69,6 +69,20 @@ class ContractError(ValueError):
     """Untrusted orchestration data does not match the exact-run contract."""
 
 
+class MainAdvanced(ContractError):
+    """A valid branch reference no longer points to the tested commit."""
+
+    def __init__(self, *, expected_sha: str, current_sha: str, branch: str):
+        self.expected_sha = expected_sha
+        self.current_sha = current_sha
+        self.branch = branch
+        super().__init__(
+            f"Orchestration superseded: {branch} changed from tested commit "
+            f"{expected_sha} to {current_sha}. Start a fresh workflow_dispatch on "
+            f"{branch} after merges settle; rerunning this old run keeps its old commit."
+        )
+
+
 def expected_workflow(batch: int) -> str:
     _validate_batch(batch)
     return f"test-all-packages-batch{batch}.yml"
@@ -150,6 +164,25 @@ def validate_repository(value: object) -> str:
     if not isinstance(value, str) or not _REPOSITORY_RE.fullmatch(value):
         raise ContractError("repository is not canonical")
     return value
+
+
+def validate_current_ref(
+    payload: object, *, expected_sha: str, branch: str
+) -> str:
+    expected_sha = validate_sha(expected_sha)
+    branch = validate_branch(branch)
+    payload = _require_mapping(payload, "branch reference")
+    if payload.get("ref") != f"refs/heads/{branch}":
+        raise ContractError("branch reference does not match the requested branch")
+    target = _require_mapping(payload.get("object"), "branch reference object")
+    if target.get("type") != "commit":
+        raise ContractError("branch reference does not point to a commit")
+    current_sha = validate_sha(target.get("sha"), label="current branch SHA")
+    if current_sha != expected_sha:
+        raise MainAdvanced(
+            expected_sha=expected_sha, current_sha=current_sha, branch=branch
+        )
+    return current_sha
 
 
 def validate_manifest(
@@ -824,6 +857,11 @@ def _build_parser() -> argparse.ArgumentParser:
     base.add_argument("--checkout-sha", required=True)
     base.add_argument("--remote-sha", required=True)
 
+    current_ref = subparsers.add_parser("validate-current-ref")
+    current_ref.add_argument("--payload", type=Path, required=True)
+    current_ref.add_argument("--expected-sha", required=True)
+    current_ref.add_argument("--branch", required=True)
+
     run_name = subparsers.add_parser("run-name")
     run_name.add_argument("--batch", type=int, required=True)
     run_name.add_argument("--orchestration-id", required=True)
@@ -978,6 +1016,10 @@ def _main(arguments: Sequence[str]) -> int:
             workflow_sha=args.workflow_sha,
             checkout_sha=args.checkout_sha,
             remote_sha=args.remote_sha,
+        )
+    elif args.command == "validate-current-ref":
+        validate_current_ref(
+            _load_json(args.payload), expected_sha=args.expected_sha, branch=args.branch
         )
     elif args.command == "run-name":
         print(

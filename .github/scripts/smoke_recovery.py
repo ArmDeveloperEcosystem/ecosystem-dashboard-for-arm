@@ -20,10 +20,12 @@ from urllib.parse import urlencode, urlsplit
 
 from orchestration_contract import (
     ContractError,
+    MainAdvanced,
     batch_dispatch_payload,
     canonical_json,
     generate_dispatch_nonce,
     select_exact_registration,
+    validate_current_ref,
     validate_manifest,
     validate_manifest_text,
     validate_repository,
@@ -31,7 +33,7 @@ from orchestration_contract import (
     validate_sha,
 )
 
-MAX_RETRIES = 2
+MAX_RETRIES = 1
 MAX_LOG_BYTES = 2 * 1024 * 1024
 RECOVERY_SECONDS = 90 * 60
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -105,7 +107,7 @@ def download_tokens(command):
     return tokens if len(urls) == 1 else None
 
 
-def trusted_download_command(root, sha, definition, job):
+def trusted_download_command(root, sha, definition, job, *, timeout=20):
     from exact_run_aggregation import _yaml_mapping, expected_job_name
 
     registrations = [item for item in definition.packages if expected_job_name(item) == job.get("name")]
@@ -117,7 +119,7 @@ def trusted_download_command(root, sha, definition, job):
     try:
         result = subprocess.run(
             ["git", "-C", str(root), "show", f"{validate_sha(sha)}:{registration.workflow_path}"],
-            check=True, capture_output=True, timeout=20,
+            check=True, capture_output=True, timeout=timeout,
             env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"},
         )
         if len(result.stdout) > MAX_LOG_BYTES:
@@ -148,7 +150,7 @@ def trusted_download_command(root, sha, definition, job):
 
 
 def classify_retryable_failure(raw: bytes, job: dict, *, command=None) -> str:
-    """Require a terminal download error in the actual failed step, not old noise."""
+    """Diagnose observed download errors; never infer transience or retry eligibility."""
     if not isinstance(raw, bytes) or not raw or len(raw) > MAX_LOG_BYTES:
         return "unknown_failure"
     expected_command = download_tokens(command)
@@ -224,7 +226,7 @@ def classify_retryable_failure(raw: bytes, job: dict, *, command=None) -> str:
     # Generic timeouts and local-service connection failures are deliberately excluded.
     terminal = lines[-1]
     if exit_seen == 22 and re.fullmatch(curl_http, terminal):
-        return "transient_download"
+        return "observed_download_error"
     match = re.fullmatch(r"curl: \(6\) Could not resolve host: ([A-Za-z0-9.-]+)", terminal)
     if match and exit_seen == 6:
         host = match.group(1).lower()
@@ -233,7 +235,7 @@ def classify_retryable_failure(raw: bytes, job: dict, *, command=None) -> str:
             try:
                 ipaddress.ip_address(host)
             except ValueError:
-                return "transient_download"
+                return "observed_download_error"
     return "unknown_failure"
 
 
@@ -245,6 +247,8 @@ def validate_recovery_jobs(pages, *, definition, run, repository):
         run={"id": run["id"], "attempt": 1, "created_at": run["created_at"], "updated_at": run["updated_at"]},
     )
     jobs = [job for page in pages for job in page["jobs"]]
+    if any(not isinstance(job, dict) for job in jobs):
+        raise ContractError("batch job inventory is malformed")
     summaries = [job for job in jobs if job.get("name") == "summary"]
     if len(summaries) != 1 or len(jobs) != len(normalized) + 1:
         raise ContractError("unexpected or missing batch job")
@@ -350,14 +354,31 @@ class Recovery:
     def save(self):
         self.audit_path.write_text(json.dumps(self.audit, indent=2) + "\n")
 
-    def current(self):
-        if self.clock() >= self.deadline:
+    def remaining(self):
+        remaining = self.deadline - self.clock()
+        if remaining <= 0:
             raise ContractError("recovery time budget exhausted")
+        return remaining
+
+    def pause(self, seconds):
+        self.sleep(min(seconds, self.remaining()))
+        self.remaining()
+
+    def current(self):
+        self.remaining()
         payload = self.github.api(f"repos/{self.repository}/git/ref/heads/{self.manifest['branch']}")
-        if payload.get("ref") != f"refs/heads/{self.manifest['branch']}" or payload.get("object", {}).get("sha") != self.manifest["expected_sha"] or payload.get("object", {}).get("type") != "commit":
-            raise ContractError("branch advanced; start a new orchestration for the new commit")
+        try:
+            sha = validate_current_ref(payload, expected_sha=self.manifest["expected_sha"], branch=self.manifest["branch"])
+        except MainAdvanced as exc:
+            self.audit.update(status="superseded", expected_sha=exc.expected_sha,
+                              current_sha=exc.current_sha, branch=exc.branch, error=str(exc))
+            self.save()
+            raise
+        self.remaining()
+        return sha
 
     def check_run(self, record, *, completed):
+        self.remaining()
         run = self.github.api(f"repos/{self.repository}/actions/runs/{record['run_id']}")
         validate_run(
             run, batch=record["batch"], orchestration_id=self.manifest["orchestration_id"],
@@ -365,44 +386,66 @@ class Recovery:
             branch=self.manifest["branch"], repository=self.repository,
             expected_run_id=record["run_id"], require_completed=completed,
         )
-        if run.get("head_repository", {}).get("full_name") != self.repository:
+        if not isinstance(run.get("head_repository"), dict) or run["head_repository"].get("full_name") != self.repository:
             raise ContractError("run head repository differs from orchestration repository")
+        self.remaining()
         return run
 
     def inspect(self, record, retry):
+        self.remaining()
         run = self.check_run(record, completed=True)
+        self.remaining()
         pages = self.github.api(f"repos/{self.repository}/actions/runs/{record['run_id']}/attempts/1/jobs?per_page=100", pages=True)
         failed_jobs = validate_recovery_jobs(
             pages, definition=self.definitions[record["batch"] - 1], run=run, repository=self.repository,
         )
         entry = {"batch": record["batch"], "run_id": run["id"], "retry": retry,
-                 "run": run, "jobs": pages, "classification": "success", "failures": []}
+                 "run": run, "jobs": pages,
+                 "classification": "failed" if failed_jobs else "success", "failures": []}
         self.audit["history"].append(entry)
         self.save()
         for job in failed_jobs:
+            self.remaining()
+            failure = {"job_id": job["id"], "name": job["name"],
+                       "classification": "unknown_failure", "log_sha256": None}
             try:
                 raw = self.github.api(f"repos/{self.repository}/actions/jobs/{job['id']}/logs", raw=True)
-                command = trusted_download_command(self.root, self.manifest["expected_sha"], self.definitions[record["batch"] - 1], job)
-                classification = classify_retryable_failure(raw, job, command=command)
-                digest = hashlib.sha256(raw).hexdigest() if isinstance(raw, bytes) else None
-            except ContractError:
-                classification, digest = "logs_unavailable", None
-            entry["failures"].append({"job_id": job["id"], "name": job["name"],
-                                      "classification": classification, "log_sha256": digest})
-        if failed_jobs:
-            entry["classification"] = "transient_download" if all(
-                failure["classification"] == "transient_download" for failure in entry["failures"]
-            ) else "repair_required"
+                if not isinstance(raw, bytes) or not raw or len(raw) > MAX_LOG_BYTES:
+                    raise ContractError("job logs unavailable as bounded nonempty bytes")
+            except ContractError as exc:
+                failure.update(classification="logs_unavailable", log_status="unavailable", log_error=str(exc))
+            else:
+                failure.update(log_status="available", log_sha256=hashlib.sha256(raw).hexdigest())
+                try:
+                    command = trusted_download_command(
+                        self.root, self.manifest["expected_sha"], self.definitions[record["batch"] - 1], job,
+                        timeout=min(20, self.remaining()),
+                    )
+                    failure["classification"] = classify_retryable_failure(raw, job, command=command)
+                except ContractError as exc:
+                    failure["diagnostic_error"] = str(exc)
+            entry["failures"].append(failure)
+            self.save()
+            self.remaining()
         self.save()
         return entry["classification"]
 
     def dispatch(self, record, retry):
+        if retry != MAX_RETRIES or any(item["batch"] == record["batch"] for item in self.audit.get("dispatches", [])):
+            raise ContractError("only one fresh confirmation dispatch is authorized per batch")
+        if record != self.audit["original_manifest"]["batches"][record["batch"] - 1] or not any(
+            item["run_id"] == record["run_id"] and item["retry"] == 0 and item["classification"] == "failed"
+            for item in self.audit["history"]
+        ):
+            raise ContractError("confirmation dispatch requires an authenticated failed original batch")
         self.current()
         nonce = generate_dispatch_nonce()
         if nonce in self.seen_nonces or any(item["dispatch_nonce"] == nonce for item in self.audit.get("dispatches", [])):
             raise ContractError("recovery generated a duplicate dispatch nonce")
         replacement = dict(record, dispatch_nonce=nonce)
-        pending = {"batch": record["batch"], "retry": retry, "dispatch_nonce": nonce, "status": "pending_registration"}
+        pending = {"batch": record["batch"], "retry": retry, "dispatch_nonce": nonce,
+                   "expected_sha": self.manifest["expected_sha"], "run_attempt": 1,
+                   "reason": "failed_batch_confirmation", "status": "pending_registration"}
         self.audit.setdefault("dispatches", []).append(pending)
         self.save()
         payload = batch_dispatch_payload(
@@ -438,7 +481,7 @@ class Recovery:
                 self.save()
                 self.current()
                 return replacement
-            self.sleep(10)
+            self.pause(10)
         raise ContractError("fresh retry has no unique exact registration")
 
     def recover(self):
@@ -451,14 +494,14 @@ class Recovery:
         blocked = []
         for record in self.manifest["batches"]:
             state = self.inspect(record, 0)
-            if state == "transient_download":
+            if state == "failed":
                 pending.append(record)
             elif state != "success":
                 blocked.append(record["batch"])
         for retry in range(1, MAX_RETRIES + 1):
             if not pending:
                 break
-            self.sleep(60 * retry)
+            self.pause(60 * retry)
             self.current()
             replacements = [(record, self.dispatch(record, retry)) for record in pending]
             pending = []
@@ -468,15 +511,13 @@ class Recovery:
                     run = self.check_run(replacement, completed=False)
                     if run["status"] == "completed":
                         break
-                    self.sleep(30)
+                    self.pause(30)
                 state = self.inspect(replacement, retry)
                 if state == "success":
                     self.manifest = replace_manifest_record(
                         self.manifest, old_record=self.manifest["batches"][original["batch"] - 1],
                         replacement=replacement, seen_ids=self.seen_ids, seen_nonces=self.seen_nonces,
                     )
-                elif state == "transient_download" and retry < MAX_RETRIES:
-                    pending.append(replacement)
                 else:
                     blocked.append(original["batch"])
                 self.seen_ids.add(replacement["run_id"])
@@ -484,7 +525,9 @@ class Recovery:
                 self.audit["accepted_manifest"] = self.manifest
                 self.save()
         if blocked:
-            raise ContractError(f"batches require repair, not more retries: {sorted(blocked)}")
+            self.audit.update(status="failed", failed_batches=sorted(blocked))
+            self.save()
+            raise ContractError(f"batches failed confirmation; investigate before a reviewed repair, no more retries: {sorted(blocked)}")
         self.current()
         self.audit["status"] = "batches_passed_summary_pending"
         self.audit["accepted_manifest"] = self.manifest
@@ -512,14 +555,23 @@ def notify(argv):
     run = api.api(f"repos/{repository}/actions/runs/{args.run_id}")
     expected = {"id": args.run_id, "run_attempt": args.run_attempt, "head_sha": sha,
                 "head_branch": "main", "path": ".github/workflows/test-all-packages-orchestrator.yml"}
-    if any(run.get(key) != value for key, value in expected.items()) or any(run.get(key, {}).get("full_name") != repository for key in ("repository", "head_repository")):
+    if not isinstance(run, dict) or any(run.get(key) != value for key, value in expected.items()) or any(
+        not isinstance(run.get(key), dict) or run[key].get("full_name") != repository
+        for key in ("repository", "head_repository")
+    ):
         raise ContractError("notification does not match the exact main orchestration")
     if type(run.get("id")) is not int or type(run.get("run_attempt")) is not int or run.get("event") not in {"push", "schedule", "workflow_dispatch"}:
         raise ContractError("notification parent run identity or event is invalid")
     # A notification-only rerun retains the producing job's attempt through needs.
     pages = api.api(f"repos/{repository}/actions/runs/{args.run_id}/attempts/{args.orchestration_attempt}/jobs?per_page=100", pages=True)
+    if not isinstance(pages, list) or not pages or any(
+        not isinstance(page, dict) or not isinstance(page.get("jobs"), list) for page in pages
+    ):
+        raise ContractError("notification jobs response is malformed")
     jobs = [job for page in pages for job in page["jobs"]]
-    if not pages or any(page.get("total_count") != len(jobs) for page in pages):
+    if any(not isinstance(job, dict) for job in jobs) or any(
+        type(page.get("total_count")) is not int or page["total_count"] != len(jobs) for page in pages
+    ):
         raise ContractError("notification jobs response is incomplete")
     matched = [job for job in jobs if job.get("name") == "Trigger and Wait for All Batches"]
     if len(matched) != 1:
@@ -532,16 +584,36 @@ def notify(argv):
     allowed = {"success": {"success"}, "failure": {"failure", "timed_out", "startup_failure"}, "cancelled": {"cancelled"}}
     if job.get("conclusion") not in allowed[args.outcome]:
         raise ContractError("notification contradicts the completed orchestrator job")
+    current_sha = sha
+    stale = False
+    current_ref = api.api(f"repos/{repository}/git/ref/heads/main")
+    try:
+        current_sha = validate_current_ref(current_ref, expected_sha=sha, branch="main")
+    except MainAdvanced as exc:
+        current_sha, stale = exc.current_sha, True
     title = f"Arm64 smoke run {args.run_id}, attempt {args.orchestration_attempt}"
     url = f"https://github.com/{repository}/actions/runs/{args.run_id}"
     if args.outcome == "success":
-        result = "All 22 batch runs and exact Global Summary completed successfully."
+        result = "All 22 batch runs and exact Global Summary completed successfully for the tested commit."
         followup = "Explicit test skips remain skips. Generated results still need their normal review, merge and deployment."
     else:
         result = "Validation did not complete successfully; this run is not verified green."
-        followup = "Check the run for the failing stage, exhausted retries, changed main commit, or pending delivery approval. A code fix requires a reviewed repair PR. No automatic repair PR was created."
+        followup = "Check the run for the failing stage, exhausted confirmation retry, or pending delivery approval. A code fix requires a reviewed repair PR. No automatic repair PR was created."
+    if stale:
+        main_status = "stale (superseded); this run does not verify current main as green"
+        followup += (
+            " Start a fresh workflow_dispatch on main for current-main validation: "
+            f"`gh workflow run test-all-packages-orchestrator.yml --repo {repository} --ref main`. "
+            "Rerunning this old run retains its old SHA. No replacement was dispatched automatically. "
+            "Ordinary main advances do not trigger a new smoke cycle."
+        )
+    else:
+        main_status = "matches tested commit at notification check"
     body = (f"@{args.recipient}\n\n{result}\n\n"
             f"- [Workflow run]({url})\n- Tested commit: `{sha}`\n"
+            f"- Run outcome: `{args.outcome}`\n"
+            f"- Current main at notification check: `{current_sha}`\n"
+            f"- Current-main status: {main_status}\n"
             f"- Orchestration attempt: `{args.orchestration_attempt}`\n"
             f"- Original failures and any recovery attempts remain in the run's evidence artifact.\n\n{followup}\n")
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -591,7 +663,8 @@ def main(argv=None):
         return 0
     except (ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:
         if recovery is not None:
-            recovery.audit.update(status="failed", error=str(exc))
+            if not isinstance(exc, MainAdvanced):
+                recovery.audit.update(status="failed", error=str(exc))
             recovery.save()
         print(f"Smoke recovery stopped: {exc}", file=sys.stderr)
         return 1

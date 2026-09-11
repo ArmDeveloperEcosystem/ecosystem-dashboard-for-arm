@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -167,6 +168,7 @@ class RecoveryFixture:
         self.calls, self.posts, self.dispatched_records = [], [], []
         self.ref_count = self.registration_count = 0
         self.outcomes = {}
+        self.package_outcomes = {}
         self.ref_hook = self.run_hook = self.registration_hook = self.dispatch_hook = None
         self.ambiguous = False
         self.visible_after = 0
@@ -176,15 +178,41 @@ class RecoveryFixture:
 
     def add_run(self, record, outcome="success"):
         run_id = record["run_id"]
-        conclusion = "success" if outcome == "success" else "failure"
+        packages = self.definitions[record["batch"] - 1].packages
+        outcomes = self.package_outcomes.get(record["batch"]) if run_id < 20000 else None
+        outcomes = outcomes or [outcome] * len(packages)
+        conclusion = "success" if all(item == "success" for item in outcomes) else "failure"
         self.runs[run_id] = run_payload(record, conclusion)
-        package = job_payload(record, conclusion=conclusion)
-        self.pages[run_id] = [{"total_count": 2, "jobs": [package, job_payload(record, summary=True)]}]
-        if outcome != "success":
-            self.logs[package["id"]] = log_bytes(DNS_ERROR) if outcome == "transient" else log_bytes("fatal error: missing header")
+        jobs = []
+        for index, (registration, result) in enumerate(zip(packages, outcomes)):
+            package = job_payload(record, conclusion="success" if result == "success" else "failure")
+            job_id = run_id * 10 + (index + 1 if index else 0)
+            package.update(id=job_id, name=exact.expected_job_name(registration),
+                           html_url=f"https://github.com/{REPOSITORY}/actions/runs/{run_id}/job/{job_id}")
+            jobs.append(package)
+            if result != "success":
+                if result == "unavailable":
+                    self.logs[job_id] = contract.ContractError("job logs expired")
+                else:
+                    message = {"transient": DNS_ERROR, "assertion": "AssertionError: expected 42, got 0"}.get(result, "fatal error: missing header")
+                    self.logs[job_id] = log_bytes(message)
+        jobs.append(job_payload(record, summary=True))
+        self.pages[run_id] = [{"total_count": len(jobs), "jobs": jobs}]
 
     def fail(self, batch=1, outcome="transient"):
         self.add_run(self.manifest["batches"][batch - 1], outcome)
+
+    def fail_packages(self, batch, outcomes):
+        self.package_outcomes[batch] = outcomes
+        registrations = tuple(exact.PackageRegistration(
+            job=f"test-package-{batch}-{index}", called_job="test",
+            workflow_path=f".github/workflows/test-package-{batch}-{index}.yml",
+            package_slug=f"package-{batch}-{index}",
+        ) for index in range(len(outcomes)))
+        definitions = list(self.definitions)
+        definitions[batch - 1] = replace(definitions[batch - 1], packages=registrations)
+        self.definitions = tuple(definitions)
+        self.fail(batch)
 
     def api(self, endpoint, *, payload=None, pages=False, raw=False):
         self.calls.append((endpoint, deepcopy(payload), pages, raw))
@@ -256,12 +284,12 @@ class ClassifierTests(unittest.TestCase):
         return recovery.classify_retryable_failure(raw, self.job, command=command)
 
     def test_terminal_remote_dns_failure(self):
-        self.assertEqual(self.classify(log_bytes(DNS_ERROR)), "transient_download")
+        self.assertEqual(self.classify(log_bytes(DNS_ERROR)), "observed_download_error")
 
     def test_curl22_only_429_502_503_504(self):
         for code in (200, 400, 401, 403, 404, 408, 429, 500, 501, 502, 503, 504, 505):
             with self.subTest(code=code):
-                expected = "transient_download" if code in {429, 502, 503, 504} else "unknown_failure"
+                expected = "observed_download_error" if code in {429, 502, 503, 504} else "unknown_failure"
                 self.assertEqual(self.classify(log_bytes(f"curl: (22) The requested URL returned error: {code}")), expected)
 
     def test_network_noise_does_not_excuse_terminal_compiler_or_assertion_error(self):
@@ -391,7 +419,7 @@ class ClassifierTests(unittest.TestCase):
     def test_optional_utf8_bom_preserves_real_terminal_download_error(self):
         for message in (DNS_ERROR, HTTP_ERROR):
             with self.subTest(message=message):
-                self.assertEqual(self.classify(b"\xef\xbb\xbf" + log_bytes(message)), "transient_download")
+                self.assertEqual(self.classify(b"\xef\xbb\xbf" + log_bytes(message)), "observed_download_error")
 
     def test_exit_marker_must_match_terminal_curl_error_code(self):
         for message, correct in ((DNS_ERROR, 6), (HTTP_ERROR, 22)):
@@ -617,44 +645,43 @@ class RecoveryControllerTests(unittest.TestCase):
         batch, payload = self.fixture.posts[0]
         self.assertEqual(batch, 6)
         self.assertEqual(payload, contract.batch_dispatch_payload(batch=6, orchestration_id=ORCHESTRATION, dispatch_nonce=result["batches"][5]["dispatch_nonce"], expected_sha=SHA, branch=BRANCH))
-        self.assertEqual([item["classification"] for item in self.audit()["history"] if item["batch"] == 6], ["transient_download", "success"])
-        self.trusted_command.assert_called_once_with(self.root, SHA, self.fixture.definitions[5], self.fixture.pages[10006][0]["jobs"][0])
+        self.assertEqual([item["classification"] for item in self.audit()["history"] if item["batch"] == 6], ["failed", "success"])
+        self.trusted_command.assert_called_once_with(self.root, SHA, self.fixture.definitions[5], self.fixture.pages[10006][0]["jobs"][0], timeout=20)
 
-    def test_success_on_second_retry_accepts_only_last_successful_run(self):
+    def test_hypothetical_second_success_does_not_authorize_another_retry(self):
         self.fixture.fail()
         self.fixture.outcomes[1] = ["transient", "success"]
-        result = self.controller().recover()
-        self.assert_final(result, changed={1})
-        self.assertEqual(len(self.fixture.posts), 2)
-        failed_retry, good_retry = self.fixture.dispatched_records
-        self.assertEqual(result["batches"][0], good_retry)
-        self.assertNotIn(failed_retry["run_id"], {item["run_id"] for item in result["batches"]})
-        self.assertNotEqual(failed_retry["dispatch_nonce"], good_retry["dispatch_nonce"])
-        self.assertEqual([entry["retry"] for entry in self.audit()["history"] if entry["batch"] == 1], [0, 1, 2])
-        self.assertEqual(self.fixture.clock.sleeps, [60, 120])
+        controller = self.controller()
+        with self.assertRaises(CONTRACT_ERRORS):
+            controller.recover()
+        self.assertEqual(len(self.fixture.posts), 1)
+        self.assertEqual(controller.manifest, self.fixture.manifest)
+        self.assertEqual([entry["retry"] for entry in self.audit()["history"] if entry["batch"] == 1], [0, 1])
+        self.assertEqual(self.fixture.clock.sleeps, [60])
+        self.assertEqual(self.audit()["status"], "failed")
 
     def test_entire_22_batch_recovery_produces_only_fresh_successful_records(self):
         for batch in range(1, 23):
             self.fixture.fail(batch)
-            self.fixture.outcomes[batch] = ["transient", "success"] if batch % 2 == 0 else ["success"]
+            self.fixture.fail(batch, "hard" if batch % 2 == 0 else "transient")
         result = self.controller().recover()
         self.assert_final(result, changed=set(range(1, 23)))
-        self.assertEqual(len(self.fixture.posts), 33)
-        self.assertEqual(len({item["dispatch_nonce"] for item in self.fixture.dispatched_records}), 33)
-        self.assertEqual(len({item["run_id"] for item in self.fixture.dispatched_records}), 33)
-        self.assertEqual(len(self.audit()["history"]), 55)
+        self.assertEqual(len(self.fixture.posts), 22)
+        self.assertEqual(len({item["dispatch_nonce"] for item in self.fixture.dispatched_records}), 22)
+        self.assertEqual(len({item["run_id"] for item in self.fixture.dispatched_records}), 22)
+        self.assertEqual(len(self.audit()["history"]), 44)
 
-    def test_maximum_two_retries_and_never_accept_a_failed_replacement(self):
+    def test_maximum_one_retry_and_never_accept_a_failed_replacement(self):
         self.fixture.fail()
         self.fixture.outcomes[1] = ["transient"]
         controller = self.controller()
         with self.assertRaises(CONTRACT_ERRORS):
             controller.recover()
-        self.assertEqual(len(self.fixture.posts), 2)
+        self.assertEqual(len(self.fixture.posts), 1)
         self.assertEqual(controller.manifest, self.fixture.manifest)
         self.assertNotEqual(self.audit()["status"], "batches_passed_summary_pending")
 
-    def test_nontransient_failure_and_unavailable_logs_never_dispatch(self):
+    def test_hard_failures_and_unavailable_logs_allow_one_confirmation(self):
         for outcome in ("hard", "unavailable", "malicious", "oversized", "invalid_utf8"):
             with self.subTest(outcome=outcome):
                 self.fixture = RecoveryFixture()
@@ -668,10 +695,17 @@ class RecoveryControllerTests(unittest.TestCase):
                     self.fixture.logs[job_id] = b"x" * (recovery.MAX_LOG_BYTES + 1)
                 elif outcome == "invalid_utf8":
                     self.fixture.logs[job_id] = b"\xff"
-                with self.assertRaises(CONTRACT_ERRORS):
-                    self.controller().recover()
-                self.assertEqual(self.fixture.posts, [])
-                self.assertEqual(self.audit()["history"][0]["classification"], "repair_required")
+                result = self.controller().recover()
+                self.assertEqual(result["batches"][1:], self.fixture.manifest["batches"][1:])
+                self.assertEqual(len(self.fixture.posts), 1)
+                entry = self.audit()["history"][0]
+                self.assertEqual(entry["classification"], "failed")
+                failure = entry["failures"][0]
+                self.assertEqual(failure["classification"], "logs_unavailable" if outcome in {"unavailable", "oversized"} else "unknown_failure")
+                self.assertEqual(failure["log_status"], "unavailable" if outcome in {"unavailable", "oversized"} else "available")
+                if outcome == "unavailable":
+                    self.assertIsNone(failure["log_sha256"])
+                    self.assertEqual(failure["log_error"], "logs unavailable")
 
     def test_only_validated_job_id_controls_log_endpoint(self):
         self.fixture.fail()
@@ -680,6 +714,110 @@ class RecoveryControllerTests(unittest.TestCase):
         result = self.controller().recover()
         self.assert_final(result, changed={1})
         self.assertEqual([call[0] for call in self.fixture.calls if call[3]], [f"repos/{REPOSITORY}/actions/jobs/{job['id']}/logs"])
+
+    def test_cli_multiple_failed_packages_and_mixed_batches_keep_full_original_audit(self):
+        self.fixture.fail_packages(1, ["transient", "assertion", "hard", "unavailable", "success"])
+        self.fixture.fail_packages(6, ["assertion", "hard"])
+        self.topology.return_value = self.fixture.definitions
+        original_runs = deepcopy(self.fixture.runs)
+        original_jobs = deepcopy(self.fixture.pages)
+        status, _, stderr, _ = self.cli()
+        self.assertEqual(status, 0, stderr)
+        accepted = json.loads((self.root / "manifest.json").read_text())
+        self.assert_final(accepted, changed={1, 6})
+        self.assertEqual([batch for batch, _ in self.fixture.posts], [1, 6])
+        self.assertEqual(self.fixture.clock.sleeps, [60])
+        audit = self.audit()
+        self.assertEqual(len(audit["history"]), 24)
+        for entry in audit["history"][:22]:
+            self.assertEqual(entry["run"], original_runs[entry["run_id"]])
+            self.assertEqual(entry["jobs"], original_jobs[entry["run_id"]])
+            self.assertEqual(entry["retry"], 0)
+        failures = audit["history"][0]["failures"]
+        self.assertEqual([item["classification"] for item in failures],
+                         ["observed_download_error", "unknown_failure", "unknown_failure", "logs_unavailable"])
+        for failure in failures[:3]:
+            self.assertEqual(failure["log_sha256"], hashlib.sha256(self.fixture.logs[failure["job_id"]]).hexdigest())
+        self.assertEqual(failures[-1]["log_error"], "job logs expired")
+        for dispatch in audit["dispatches"]:
+            self.assertEqual(dispatch["retry"], 1)
+            self.assertEqual(dispatch["run_attempt"], 1)
+            self.assertEqual(dispatch["expected_sha"], SHA)
+            self.assertEqual(dispatch["reason"], "failed_batch_confirmation")
+        self.assertNotIn("transient_download", json.dumps(audit))
+
+    def test_cli_persistent_assertions_remain_red_with_partial_success_only_in_audit(self):
+        self.fixture.fail_packages(1, ["assertion", "unavailable"])
+        self.fixture.fail(6, "hard")
+        self.fixture.outcomes[1] = ["assertion", "success"]
+        self.topology.return_value = self.fixture.definitions
+        status, stdout, stderr, _ = self.cli()
+        self.assertEqual(status, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("failed confirmation", stderr)
+        self.assertEqual([batch for batch, _ in self.fixture.posts], [1, 6])
+        self.assertEqual(json.loads((self.root / "manifest.json").read_text()), self.fixture.manifest)
+        audit = self.audit()
+        self.assertEqual(audit["status"], "failed")
+        self.assertEqual(audit["failed_batches"], [1])
+        self.assertEqual(audit["original_manifest"], self.fixture.manifest)
+        self.assertEqual(audit["accepted_manifest"]["batches"][0], self.fixture.manifest["batches"][0])
+        self.assertNotEqual(audit["accepted_manifest"]["batches"][5], self.fixture.manifest["batches"][5])
+        self.assertEqual([entry["classification"] for entry in audit["history"] if entry["batch"] == 1], ["failed", "failed"])
+        self.assertEqual([entry["retry"] for entry in audit["history"] if entry["batch"] == 1], [0, 1])
+
+    def test_dispatch_rejects_successful_uninspected_and_already_retried_batches(self):
+        controller = self.controller()
+        record = self.fixture.manifest["batches"][0]
+        with self.assertRaises(CONTRACT_ERRORS):
+            controller.dispatch(record, 1)
+        controller.recover()
+        with self.assertRaises(CONTRACT_ERRORS):
+            controller.dispatch(record, 1)
+        self.assertEqual(self.fixture.posts, [])
+        self.fixture.fail()
+        controller = self.controller()
+        controller.recover()
+        for retry in (0, 1, 2):
+            with self.subTest(retry=retry), self.assertRaises(CONTRACT_ERRORS):
+                controller.dispatch(record, retry)
+        self.assertEqual(len(self.fixture.posts), 1)
+
+    def test_cli_invalid_inventory_fails_closed_before_any_confirmation(self):
+        for variant in ("missing", "extra", "malformed", "duplicate", "collector", "cancelled", "timed_out", "identity", "sha", "attempt", "contradiction", "pagination"):
+            with self.subTest(variant=variant):
+                self.fixture = RecoveryFixture()
+                self.fixture.fail(1, "assertion")
+                self.fixture.fail(22)
+                page = self.fixture.pages[10022][0]
+                jobs = page["jobs"]
+                if variant == "missing":
+                    jobs.pop(0)
+                elif variant == "extra":
+                    jobs.append(dict(jobs[0], id=1234, name="unknown"))
+                elif variant == "malformed":
+                    jobs.append(None)
+                elif variant == "duplicate":
+                    jobs.append(deepcopy(jobs[0]))
+                elif variant == "collector":
+                    jobs[-1]["conclusion"] = "failure"
+                elif variant in {"cancelled", "timed_out"}:
+                    jobs[0]["conclusion"] = variant
+                elif variant == "identity":
+                    jobs[0]["run_id"] = 10001
+                elif variant == "sha":
+                    jobs[0]["head_sha"] = OTHER_SHA
+                elif variant == "attempt":
+                    jobs[0]["run_attempt"] = 2
+                elif variant == "contradiction":
+                    self.fixture.runs[10022]["conclusion"] = "success"
+                page["total_count"] = len(jobs) + int(variant == "pagination")
+                status, stdout, _, _ = self.cli()
+                self.assertEqual(status, 1)
+                self.assertEqual(stdout, "")
+                self.assertEqual(self.fixture.posts, [])
+                self.assertEqual(self.audit()["status"], "failed")
+                self.assertEqual(json.loads((self.root / "manifest.json").read_text()), self.fixture.manifest)
 
     def test_invalid_job_provenance_blocks_log_download_and_retry(self):
         self.fixture.fail()
@@ -709,9 +847,60 @@ class RecoveryControllerTests(unittest.TestCase):
     def test_main_movement_before_first_dispatch(self):
         self.fixture.fail()
         self.fixture.ref_hook = lambda api: branch_ref(OTHER_SHA if api.ref_count >= 2 else SHA)
-        with self.assertRaises(CONTRACT_ERRORS):
+        with self.assertRaises(contract.MainAdvanced):
             self.controller().recover()
         self.assertEqual(self.fixture.posts, [])
+        self.assertEqual(self.audit()["status"], "superseded")
+        self.assertEqual(self.audit()["expected_sha"], SHA)
+        self.assertEqual(self.audit()["current_sha"], OTHER_SHA)
+        self.assertEqual(self.audit()["branch"], BRANCH)
+
+    def test_cli_superseded_preserves_actual_shas_failure_evidence_and_input_manifest(self):
+        self.fixture.fail(1, "assertion")
+        self.fixture.ref_hook = lambda api: branch_ref(OTHER_SHA if api.posts else SHA)
+        status, stdout, stderr, _ = self.cli()
+        self.assertEqual(status, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("workflow_dispatch", stderr)
+        self.assertIn(SHA, stderr)
+        self.assertIn(OTHER_SHA, stderr)
+        audit = self.audit()
+        self.assertEqual(audit["status"], "superseded")
+        self.assertEqual(audit["expected_sha"], SHA)
+        self.assertEqual(audit["current_sha"], OTHER_SHA)
+        self.assertEqual(audit["branch"], BRANCH)
+        self.assertEqual(audit["history"][0]["classification"], "failed")
+        self.assertEqual(len(audit["dispatches"]), 1)
+        self.assertEqual(audit["dispatches"][0]["status"], "pending_registration")
+        self.assertEqual(json.loads((self.root / "manifest.json").read_text()), self.fixture.manifest)
+        self.assertEqual(len(self.fixture.posts), 1)
+
+    def test_cli_malformed_ref_or_api_failure_never_claims_main_movement(self):
+        refs = (None, [], {}, {"ref": "refs/heads/main", "object": None},
+                branch_ref(branch="production"), branch_ref("bad-sha"),
+                {"ref": "refs/heads/main", "object": {"sha": OTHER_SHA, "type": "tag"}},
+                contract.ContractError("GitHub API request failed; no evidence inferred"))
+        for payload in refs:
+            with self.subTest(payload=payload):
+                self.fixture = RecoveryFixture()
+                def ref_hook(api):
+                    if isinstance(payload, Exception):
+                        raise payload
+                    return payload
+                self.fixture.ref_hook = ref_hook
+                status, stdout, stderr, _ = self.cli()
+                self.assertEqual(status, 1)
+                self.assertEqual(stdout, "")
+                self.assertNotIn("superseded", stderr.lower())
+                self.assertNotIn("branch advanced", stderr.lower())
+                self.assertEqual(self.audit()["status"], "failed")
+                self.assertNotIn("current_sha", self.audit())
+                self.assertEqual(self.fixture.posts, [])
+
+    def test_current_delegates_to_shared_ref_contract_and_returns_exact_sha(self):
+        with mock.patch.object(recovery, "validate_current_ref", wraps=contract.validate_current_ref) as validate:
+            self.assertEqual(self.controller().current(), SHA)
+        validate.assert_called_once_with(branch_ref(), expected_sha=SHA, branch=BRANCH)
 
     def test_main_movement_after_dispatch_never_accepts_replacement(self):
         self.fixture.fail()
@@ -807,6 +996,32 @@ class RecoveryControllerTests(unittest.TestCase):
             controller.recover()
         self.assertEqual(controller.manifest, self.fixture.manifest)
 
+    def test_cli_failed_retry_inventory_cannot_authorize_another_dispatch(self):
+        for variant in ("collector", "missing_package", "timed_out", "cancelled", "attempt", "head_repository"):
+            with self.subTest(variant=variant):
+                self.fixture = RecoveryFixture()
+                self.fixture.fail()
+                self.fixture.outcomes[1] = ["hard"]
+                def corrupt(api, record):
+                    jobs = api.pages[record["run_id"]][0]["jobs"]
+                    if variant == "collector":
+                        jobs[-1]["conclusion"] = "failure"
+                    elif variant == "missing_package":
+                        jobs.pop(0)
+                        api.pages[record["run_id"]][0]["total_count"] = len(jobs)
+                    elif variant in {"timed_out", "cancelled"}:
+                        jobs[0]["conclusion"] = variant
+                    elif variant == "attempt":
+                        jobs[0]["run_attempt"] = 2
+                self.fixture.dispatch_hook = corrupt
+                if variant == "head_repository":
+                    self.fixture.run_hook = lambda run: dict(run, head_repository=None) if run["id"] > 20000 else run
+                status, _, _, _ = self.cli()
+                self.assertEqual(status, 1)
+                self.assertEqual(len(self.fixture.posts), 1)
+                self.assertEqual(self.audit()["status"], "failed")
+                self.assertEqual(json.loads((self.root / "manifest.json").read_text()), self.fixture.manifest)
+
     def test_main_movement_on_final_check_prevents_success(self):
         self.fixture.ref_hook = lambda api: branch_ref(OTHER_SHA if sum("/attempts/1/jobs?" in call[0] for call in api.calls) == 22 else SHA)
         with self.assertRaises(CONTRACT_ERRORS):
@@ -849,7 +1064,46 @@ class RecoveryControllerTests(unittest.TestCase):
                 controller.recover()
         self.assertEqual(len(self.fixture.posts), 1)
         self.assertEqual(controller.manifest, self.fixture.manifest)
-        self.assertLessEqual(self.fixture.clock.now, 130)
+        self.assertEqual(self.fixture.clock.now, 100)
+
+    def test_registration_backoff_cannot_exceed_remaining_budget(self):
+        self.fixture.fail()
+        self.fixture.never_register = True
+        with mock.patch.object(recovery, "RECOVERY_SECONDS", 65):
+            with self.assertRaises(CONTRACT_ERRORS):
+                self.controller().recover()
+        self.assertEqual(self.fixture.clock.sleeps, [60, 5])
+        self.assertEqual(self.fixture.registration_count, 1)
+        self.assertEqual(len(self.fixture.posts), 1)
+
+    def test_log_diagnostics_use_remaining_budget_and_expiry_prevents_dispatch(self):
+        self.fixture.fail(1, "assertion")
+        def diagnostic(*args, **kwargs):
+            self.assertEqual(kwargs["timeout"], 5)
+            self.fixture.clock.now += 5
+            raise contract.ContractError("diagnostic time budget exhausted")
+        self.trusted_command.side_effect = diagnostic
+        with mock.patch.object(recovery, "RECOVERY_SECONDS", 5):
+            status, stdout, _, _ = self.cli()
+        self.assertEqual(status, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(self.fixture.posts, [])
+        self.assertEqual(self.fixture.clock.sleeps, [])
+        self.assertEqual(self.audit()["status"], "failed")
+        self.assertEqual(self.audit()["history"][0]["failures"][0]["log_status"], "available")
+
+    def test_final_ref_request_crossing_deadline_cannot_publish_success(self):
+        def ref_hook(api):
+            if api.ref_count == 2:
+                api.clock.now = 100
+            return branch_ref()
+        self.fixture.ref_hook = ref_hook
+        with mock.patch.object(recovery, "RECOVERY_SECONDS", 100):
+            status, stdout, _, _ = self.cli()
+        self.assertEqual(status, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(self.audit()["status"], "failed")
+        self.assertEqual(self.fixture.posts, [])
 
     def test_optional_shared_deadline_preserves_90_minute_default(self):
         with mock.patch.object(recovery.time, "time") as wall_clock:
@@ -895,6 +1149,7 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(self.fixture.posts, [])
         self.assertEqual(controller.manifest, self.fixture.manifest)
         self.assertNotEqual(self.audit()["status"], "batches_passed_summary_pending")
+        self.assertEqual(self.fixture.clock.now, 30)
 
     def test_successful_recovery_within_shared_budget_preserves_exact_22_records(self):
         self.fixture.fail()
@@ -996,6 +1251,7 @@ class RecoveryControllerTests(unittest.TestCase):
     def test_cli_failure_never_writes_a_partially_recovered_manifest(self):
         self.fixture.fail(1)
         self.fixture.fail(2, "hard")
+        self.fixture.outcomes[2] = ["hard"]
         path = self.root / "manifest.json"
         original = contract.canonical_json(self.fixture.manifest) + "\n"
         path.write_text(original)
@@ -1034,7 +1290,7 @@ class RecoveryControllerTests(unittest.TestCase):
                 constructor.assert_not_called()
                 self.assertEqual(path.read_text(), raw)
 
-    def test_cli_wrong_typed_log_response_fails_without_publishing_manifest(self):
+    def test_cli_wrong_typed_log_response_is_unavailable_but_not_retry_authority(self):
         for raw in (None, {}, "curl: (6) Could not resolve host: downloads.example.org"):
             with self.subTest(raw=raw):
                 self.fixture = RecoveryFixture()
@@ -1044,11 +1300,15 @@ class RecoveryControllerTests(unittest.TestCase):
                 original = contract.canonical_json(self.fixture.manifest) + "\n"
                 path.write_text(original)
                 status, _, _, _ = self.cli()
-                self.assertEqual(status, 1)
-                self.assertEqual(path.read_text(), original)
-                self.assertEqual(self.fixture.posts, [])
+                self.assertEqual(status, 0)
+                self.assertNotEqual(path.read_text(), original)
+                self.assertEqual(len(self.fixture.posts), 1)
+                failure = self.audit()["history"][0]["failures"][0]
+                self.assertEqual(failure["classification"], "logs_unavailable")
+                self.assertEqual(failure["log_status"], "unavailable")
+                self.assertIsNone(failure["log_sha256"])
 
-    def test_cli_missing_untrusted_or_mismatched_command_never_dispatches(self):
+    def test_cli_missing_untrusted_or_mismatched_command_is_only_diagnostic(self):
         for command in (None, "", f"{CURL_COMMAND}; ./configure", "curl --fail https://unrelated.example.org/pkg", f"printf '%s\\n' '{DOWNLOAD}' '{DNS_ERROR}'"):
             with self.subTest(command=command):
                 self.fixture = RecoveryFixture()
@@ -1058,19 +1318,24 @@ class RecoveryControllerTests(unittest.TestCase):
                 original = contract.canonical_json(self.fixture.manifest) + "\n"
                 path.write_text(original)
                 status, _, _, _ = self.cli()
-                self.assertEqual(status, 1)
-                self.assertEqual(self.fixture.posts, [])
-                self.assertEqual(path.read_text(), original)
+                self.assertEqual(status, 0)
+                self.assertEqual(len(self.fixture.posts), 1)
+                self.assertNotEqual(path.read_text(), original)
+                self.assertEqual(self.audit()["history"][0]["failures"][0]["classification"], "unknown_failure")
 
-    def test_cli_command_authentication_failure_does_not_accept_manifest(self):
+    def test_cli_command_diagnostic_failure_is_not_mislabeled_missing_logs(self):
         self.fixture.fail()
         self.trusted_command.side_effect = contract.ContractError("immutable workflow blob unavailable")
         status, _, _, _ = self.cli()
-        self.assertEqual(status, 1)
-        self.assertEqual(self.fixture.posts, [])
-        self.assertEqual(json.loads((self.root / "manifest.json").read_text()), self.fixture.manifest)
+        self.assertEqual(status, 0)
+        self.assertEqual(len(self.fixture.posts), 1)
+        failure = self.audit()["history"][0]["failures"][0]
+        self.assertEqual(failure["log_status"], "available")
+        self.assertIsNotNone(failure["log_sha256"])
+        self.assertEqual(failure["classification"], "unknown_failure")
+        self.assertEqual(failure["diagnostic_error"], "immutable workflow blob unavailable")
 
-    def test_cli_output_filename_host_never_authorizes_retry_or_manifest_write(self):
+    def test_cli_output_filename_host_cannot_supply_download_diagnostic(self):
         self.fixture.fail()
         command = f"curl --fail --output https://other.example.org/out {DOWNLOAD}"
         self.trusted_command.return_value = command
@@ -1081,18 +1346,20 @@ class RecoveryControllerTests(unittest.TestCase):
         original = contract.canonical_json(self.fixture.manifest) + "\n"
         path.write_text(original)
         status, stdout, _, _ = self.cli()
-        self.assertEqual(status, 1)
-        self.assertEqual(stdout, "")
-        self.assertEqual(self.fixture.posts, [])
-        self.assertEqual(path.read_text(), original)
+        self.assertEqual(status, 0)
+        self.assertIn("Global Summary", stdout)
+        self.assertEqual(len(self.fixture.posts), 1)
+        self.assertNotEqual(path.read_text(), original)
+        self.assertEqual(self.audit()["history"][0]["failures"][0]["classification"], "unknown_failure")
 
-    def test_downstream_calculate_summary_failure_does_not_retry_prior_download(self):
+    def test_package_calculate_summary_failure_gets_confirmation_with_success_collector(self):
         self.fixture.fail()
         package = self.fixture.pages[10001][0]["jobs"][0]
         package["steps"].append(dict(package["steps"][0], number=2, name="Calculate Summary"))
-        with self.assertRaises(CONTRACT_ERRORS):
-            self.controller().recover()
-        self.assertEqual(self.fixture.posts, [])
+        result = self.controller().recover()
+        self.assert_final(result, changed={1})
+        self.assertEqual(len(self.fixture.posts), 1)
+        self.assertEqual(self.audit()["history"][0]["failures"][0]["classification"], "unknown_failure")
 
 
 class WorkflowScopeTests(unittest.TestCase):
@@ -1191,15 +1458,15 @@ class WorkflowScopeTests(unittest.TestCase):
         self.assertIn("deadline_epoch=", steps[0]["run"])
         self.assertIn('"$GITHUB_OUTPUT"', steps[0]["run"])
         by_name = {step["name"]: step for step in steps}
-        for name in ("Dispatch and capture exact batch runs", "Wait for captured batch runs", "Recover only verified transient download failures"):
+        for name in ("Dispatch and capture exact batch runs", "Wait for captured batch runs", "Confirm failed batches once with fresh exact runs"):
             with self.subTest(step=name):
                 step = by_name[name]
                 self.assertEqual(step["env"]["DEADLINE_EPOCH"], "${{ steps.budget.outputs.deadline_epoch }}")
                 self.assertIs(step.get("continue-on-error", False), False)
-                if name != "Recover only verified transient download failures":
+                if name != "Confirm failed batches once with fresh exact runs":
                     self.assertIn('"$(date +%s)" -lt "$DEADLINE_EPOCH"', step["run"])
                     self.assertIn("exit 1", step["run"])
-        command = shlex.split(by_name["Recover only verified transient download failures"]["run"].replace("\\\n", ""))
+        command = shlex.split(by_name["Confirm failed batches once with fresh exact runs"]["run"].replace("\\\n", ""))
         self.assertEqual(command[command.index("--deadline-epoch") + 1], "$DEADLINE_EPOCH")
         summary = by_name["Dispatch exact global summary"]
         upload = by_name["Preserve original failures and accepted run identities"]
@@ -1208,6 +1475,19 @@ class WorkflowScopeTests(unittest.TestCase):
         self.assertEqual(upload["if"], "always()")
         self.assertGreaterEqual(job["timeout-minutes"] - 285, 75)
         self.assertGreaterEqual(job["timeout-minutes"] - 285, summary["timeout-minutes"] + upload["timeout-minutes"])
+
+    def test_recovery_audit_is_in_always_uploaded_evidence_directory(self):
+        workflow = yaml.safe_load((SCRIPT_ROOT.parent / "workflows" / "test-all-packages-orchestrator.yml").read_text())
+        steps = workflow["jobs"]["orchestrate-batches"]["steps"]
+        confirm = next(step for step in steps if step["name"] == "Confirm failed batches once with fresh exact runs")
+        upload = next(step for step in steps if step["name"] == "Preserve original failures and accepted run identities")
+        args = shlex.split(confirm["run"].replace("\\\n", ""))
+        audit = Path(args[args.index("--audit") + 1])
+        self.assertEqual(audit.parent, Path(upload["with"]["path"]))
+        self.assertEqual(upload["if"], "always()")
+        self.assertIs(upload["with"]["include-hidden-files"], True)
+        self.assertIn("github.run_id", upload["with"]["name"])
+        self.assertIn("github.run_attempt", upload["with"]["name"])
 
 
 class TrustedDownloadCommandTests(unittest.TestCase):
@@ -1286,7 +1566,7 @@ class TrustedDownloadCommandTests(unittest.TestCase):
                 self.assertEqual(command, CURL_COMMAND)
                 self.assertEqual(
                     recovery.classify_retryable_failure(log_bytes(DNS_ERROR), self.job, command=command),
-                    "transient_download",
+                    "observed_download_error",
                 )
 
     def test_explicit_sh_is_a_supported_shell(self):
@@ -1477,10 +1757,17 @@ class NotificationFixture:
         }
         self.pages = [{"total_count": 1, "jobs": [self.job]}]
         self.search = {"total_count": 0, "incomplete_results": False, "items": []}
+        self.ref = branch_ref()
         self.calls, self.posts = [], []
 
     def api(self, endpoint, *, payload=None, pages=False, raw=False):
         self.calls.append((endpoint, deepcopy(payload), pages, raw))
+        if endpoint == f"repos/{REPOSITORY}/git/ref/heads/main":
+            if payload is not None or pages or raw:
+                raise AssertionError("notification main check must be read-only")
+            if isinstance(self.ref, Exception):
+                raise self.ref
+            return deepcopy(self.ref)
         if endpoint == f"repos/{REPOSITORY}/actions/runs/{self.run_id}":
             return deepcopy(self.run)
         if endpoint == f"repos/{REPOSITORY}/actions/runs/{self.run_id}/attempts/{self.orchestration_attempt}/jobs?per_page=100":
@@ -1545,6 +1832,66 @@ class NotificationTests(unittest.TestCase):
         self.assertIn("normal review", body)
         self.assertEqual(self.summary.read_text(), body)
         self.assertIn("Posted", stdout)
+        self.assertIn("Run outcome: `success`", body)
+        self.assertIn("matches tested commit at notification check", body)
+
+    def test_stale_success_reports_independent_outcome_and_fresh_main_dispatch(self):
+        self.fixture.ref = branch_ref(OTHER_SHA)
+        status, _, stderr = self.invoke()
+        self.assertEqual(status, 0, stderr)
+        body = self.fixture.posts[0]["body"]
+        self.assertIn("All 22", body)
+        self.assertIn("for the tested commit", body)
+        self.assertIn("Run outcome: `success`", body)
+        self.assertIn(f"Tested commit: `{SHA}`", body)
+        self.assertIn(f"Current main at notification check: `{OTHER_SHA}`", body)
+        self.assertIn("Current-main status: stale (superseded)", body)
+        self.assertIn("does not verify current main as green", body)
+        self.assertIn("fresh workflow_dispatch on main", body)
+        self.assertIn(f"gh workflow run test-all-packages-orchestrator.yml --repo {REPOSITORY} --ref main", body)
+        self.assertIn("Rerunning this old run retains its old SHA", body)
+        self.assertIn("No replacement was dispatched automatically", body)
+        self.assertIn("Ordinary main advances do not trigger", body)
+        self.assertNotIn("gh run rerun", body)
+        self.assertEqual(self.summary.read_text(), body)
+        writes = [call[0] for call in self.fixture.calls if call[1] is not None]
+        self.assertEqual(writes, [f"repos/{REPOSITORY}/issues"])
+
+    def test_stale_failure_and_cancellation_still_report_their_own_outcome(self):
+        for outcome in ("failure", "cancelled"):
+            with self.subTest(outcome=outcome):
+                self.fixture.search = {"total_count": 0, "incomplete_results": False, "items": []}
+                self.fixture.job["conclusion"] = outcome
+                self.fixture.ref = branch_ref(OTHER_SHA)
+                status, _, stderr = self.invoke(outcome=outcome)
+                self.assertEqual(status, 0, stderr)
+                body = self.fixture.posts[-1]["body"]
+                self.assertIn(f"Run outcome: `{outcome}`", body)
+                self.assertIn("not verified green", body)
+                self.assertIn("stale (superseded)", body)
+                self.assertIn("fresh workflow_dispatch on main", body)
+
+    def test_notification_ref_contract_is_read_only_and_exact(self):
+        with mock.patch.object(recovery, "validate_current_ref", wraps=contract.validate_current_ref) as validate:
+            status, _, stderr = self.invoke()
+        self.assertEqual(status, 0, stderr)
+        validate.assert_called_once_with(branch_ref(), expected_sha=SHA, branch="main")
+        refs = [call for call in self.fixture.calls if "/git/ref/" in call[0]]
+        self.assertEqual(refs, [(f"repos/{REPOSITORY}/git/ref/heads/main", None, False, False)])
+
+    def test_notification_malformed_ref_or_api_failure_is_not_stale_or_green(self):
+        for payload in (None, [], {}, branch_ref("malformed"), branch_ref(OTHER_SHA, "production"),
+                        {"ref": "refs/heads/main", "object": {"sha": OTHER_SHA, "type": "tree"}},
+                        {"ref": "refs/heads/main", "object": None},
+                        contract.ContractError("GitHub API request failed; no evidence inferred")):
+            with self.subTest(payload=payload):
+                self.fixture.ref = payload
+                status, _, stderr = self.invoke()
+                self.assertEqual(status, 1)
+                self.assertEqual(self.fixture.posts, [])
+                self.assertFalse(self.summary.exists())
+                self.assertNotIn("superseded", stderr.lower())
+                self.assertNotIn("branch advanced", stderr.lower())
 
     def test_failure_summary_explicitly_does_not_claim_an_automatic_repair_pr(self):
         self.fixture.job["conclusion"] = "failure"
@@ -1565,6 +1912,33 @@ class NotificationTests(unittest.TestCase):
         endpoints = [call[0] for call in self.fixture.calls]
         self.assertIn(f"repos/{REPOSITORY}/actions/runs/{self.fixture.run_id}/attempts/1/jobs?per_page=100", endpoints)
         self.assertFalse(any("attempts/2/jobs" in endpoint for endpoint in endpoints))
+
+    def test_notification_only_rerun_preserves_producing_attempt_while_main_is_stale(self):
+        self.fixture.attempt = 3
+        self.fixture.run["run_attempt"] = 3
+        self.fixture.ref = branch_ref(OTHER_SHA)
+        status, _, stderr = self.invoke()
+        self.assertEqual(status, 0, stderr)
+        post = self.fixture.posts[0]
+        self.assertEqual(post["title"], self.fixture.title)
+        self.assertIn("Orchestration attempt: `1`", post["body"])
+        self.assertIn("Run outcome: `success`", post["body"])
+        self.assertIn("stale (superseded)", post["body"])
+        self.assertFalse(any("attempts/3/jobs" in call[0] for call in self.fixture.calls))
+
+    def test_notification_only_rerun_rechecks_main_without_duplicate_issue(self):
+        self.assertEqual(self.invoke()[0], 0)
+        self.summary.unlink()
+        self.fixture.attempt = 2
+        self.fixture.run["run_attempt"] = 2
+        self.fixture.ref = branch_ref(OTHER_SHA)
+        status, stdout, stderr = self.invoke()
+        self.assertEqual(status, 0, stderr)
+        self.assertIn("already been reported", stdout)
+        self.assertEqual(len(self.fixture.posts), 1)
+        self.assertIn("stale (superseded)", self.summary.read_text())
+        self.assertIn("Orchestration attempt: `1`", self.summary.read_text())
+        self.assertEqual(sum("/git/ref/heads/main" in call[0] for call in self.fixture.calls), 2)
 
     def test_notification_only_rerun_does_not_duplicate_original_report(self):
         self.assertEqual(self.invoke()[0], 0)
@@ -1619,6 +1993,19 @@ class NotificationTests(unittest.TestCase):
 
     def test_incomplete_and_inconsistent_jobs_pagination_rejected(self):
         for pages in ([], [{"total_count": 2, "jobs": [self.fixture.job]}], [{"total_count": 1, "jobs": [self.fixture.job]}, {"total_count": 2, "jobs": []}]):
+            with self.subTest(pages=pages):
+                self.fixture.pages = pages
+                self.assert_rejected()
+
+    def test_malformed_run_and_job_inventory_fail_closed_without_notification(self):
+        original_run = deepcopy(self.fixture.run)
+        for run in (None, [], {}, dict(original_run, head_repository=None), dict(original_run, repository=[])):
+            with self.subTest(run=run):
+                self.fixture.run = run
+                self.assert_rejected()
+        self.fixture.run = original_run
+        for pages in (None, {}, [None], [{"jobs": None}], [{"total_count": 1, "jobs": [None]}],
+                      [{"total_count": True, "jobs": [self.fixture.job]}]):
             with self.subTest(pages=pages):
                 self.fixture.pages = pages
                 self.assert_rejected()

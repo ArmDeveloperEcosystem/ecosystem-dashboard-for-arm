@@ -22,31 +22,44 @@ and environment approval gates remain enforced. The pinned actionlint 1.7.12
 lacks this documented GitHub key (rhysd/actionlint#680); CI validates the exact
 two queue configurations before excluding only that unsupported-key diagnostic.
 
-After the initial batch runs finish, `smoke_recovery.py` validates the complete
-attempt-specific job inventory. Only a terminal remote-download DNS failure or
-HTTP 429/502/503/504 in the actual failed download/install step can authorize a
-retry. The failed step must match one explicit, single-command HTTPS curl step
-read from the immutable workflow commit, with its real exit code. Printed error
-text, variables, shell programs, mixed install/build steps, and downstream
-summary-guard failures are not sufficient evidence for an automatic retry.
-Unknown or mixed failures, local-service errors, compilation/assertion
-failures, permissions, checksums, missing evidence, and failed collectors stop
-recovery. No test outcome or skip is rewritten.
+After the initial batch runs finish, `smoke_recovery.py` authenticates each exact
+run and validates its complete attempt-specific job inventory against the
+immutable topology. A completed batch with conclusion `failure`, a complete
+exact job inventory, and a successful collector is eligible for at most one
+confirmation retry. Missing, ambiguous, or mismatched evidence, incomplete jobs,
+and an unsuccessful collector fail closed without a retry. A successful batch,
+whether initial or confirmation, is never rerun by recovery.
 
-The initial inventory of 960 registered workflows has no eligible standalone
-curl steps. Their combined install/build failures therefore require repair,
-not an inferred transient retry. This is not fleet-wide automatic recovery;
-broader confirmation reruns require a separate policy decision.
+The strict standalone curl classifier remains diagnostic: it binds a
+terminal remote-download DNS failure or HTTP 429/502/503/504 to an explicit
+single-command HTTPS curl step from the immutable workflow commit and its real
+exit code. It no longer controls retry eligibility. A combined install/build
+step or an unknown diagnostic classification does not disqualify an otherwise
+authenticated failed batch. Assertion failures are never relabelled transient;
+no test outcome or skip is rewritten. A retry confirms behavior at the same
+commit, not a diagnosis of transience or automatic code repair.
 
-Each failed batch can receive at most two fresh dispatches, with backoff and a
-90-minute controller budget, further capped by a shared 285-minute initial-batch
-and recovery deadline that reserves time for Global Summary and evidence upload.
-Custom shell wrappers cannot authorize retries. Every dispatch has a new nonce and run ID, still
-attempt 1. The main SHA must remain unchanged. Ambiguous dispatch responses are
-reconciled by the original nonce, never blindly reposted. Original failures and
-replacement identities are retained in the orchestration evidence artifact.
-Global Summary runs only after every selected batch succeeds; its all-fresh
-publication gate rejects retained historical rows and package test failures.
+The single confirmation retry uses backoff and a controller budget of at most
+90 minutes, further capped by the existing shared 285-minute initial-batch and
+recovery deadline that reserves time for Global Summary and evidence upload.
+Every confirmation dispatch has a new nonce and run ID, still attempt 1, at the
+same SHA. The `main` SHA must remain unchanged. Ambiguous dispatch responses are
+reconciled by the original nonce, never blindly reposted. Original failed runs,
+their exact job inventory and failure evidence, and confirmation identities and
+outcomes are retained in the orchestration evidence artifact, even when the
+confirmation succeeds. Persistent failures remain red and require repair; there
+is no second confirmation retry. Global Summary runs only after every selected
+batch succeeds; its all-fresh publication gate rejects retained historical rows
+and package test failures.
+
+Current-SHA guards run before initial dispatch, while polling, and immediately
+before Global Summary. If `main` advances during the run, fail closed: stop
+further dispatches and publication, retain the evidence, and explicitly report
+the run as superseded with both the tested SHA and the current `main` SHA. A
+superseded run is not validation of current `main`. Notify the owner/reviewer;
+after merges settle, the owner starts a fresh `workflow_dispatch` on `main`.
+Rerunning an old Actions run retains its old SHA and cannot validate the new
+commit. There is no automatic replacement orchestration.
 
 A separate job with `issues: write`, no deployment credentials, reports the
 verified orchestration outcome in a GitHub issue. Set repository variable
@@ -58,9 +71,13 @@ Successful validation is not a production deployment: generated results still
 follow their protected review, merge, and dashboard deployment process.
 
 Unattended AI code repair requires a separately approved AI backend and a narrowly
-scoped repair identity. Those are not configured by this change. Persistent
-failures are reported as requiring repair; no automatically created fix PR is
+scoped code-writing bot identity. No approved AI backend or code bot is configured
+by this change. Persistent failures are reported as requiring repair; the AI
+repair-PR follow-up is still not done, and no automatically created fix PR is
 claimed. The generated-data delivery App is not reused for code-writing access.
+Production behavior and all human review, approval, merge, and deployment gates
+remain unchanged. This policy and local contract validation do not constitute
+full live-fleet validation.
 
 ## Trust boundary
 
