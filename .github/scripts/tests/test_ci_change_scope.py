@@ -486,6 +486,38 @@ class DeploymentReceiptTests(unittest.TestCase):
                     with self.assertRaisesRegex(scope.ScopeError, "byte limit"):
                         scope.read_api_response(command, environment=os.environ.copy(), timeout=5)
 
+    def test_deployment_receipt_rejects_ambiguous_wire_identity(self):
+        for mutation in ("control", "duplicate_attempt", "nested_duplicate_job", "nonfinite"):
+            with self.subTest(mutation=mutation):
+                wire = {endpoint: json.dumps(document, separators=(",", ":"))
+                        for endpoint, document in self.documents.items()}
+                if mutation == "duplicate_attempt":
+                    wire[self.endpoint] = wire[self.endpoint].replace(
+                        '"run_attempt":2', '"run_attempt":3,"run_attempt":2')
+                elif mutation == "nested_duplicate_job":
+                    wire[self.jobs_endpoint] = wire[self.jobs_endpoint].replace(
+                        '"run_id":101', '"run_id":999,"run_id":101')
+                elif mutation == "nonfinite":
+                    wire[WORKFLOW_ENDPOINT] = wire[WORKFLOW_ENDPOINT][:-1] + ',"unused":NaN}'
+                with patch.dict(os.environ, GH_TOKEN="fixture-only"), patch.object(
+                    scope, "read_api_response", side_effect=lambda command, **kwargs: wire[command[-1]].encode()
+                ):
+                    api = scope.GitHubReadAPI(REPOSITORY)
+                    if mutation == "control":
+                        self.assertEqual(scope.latest_deployment_receipt(REPOSITORY, api),
+                                         {"run_id": 101, "run_attempt": 2, "sha": "a" * 40})
+                    else:
+                        with self.assertRaisesRegex(scope.ScopeError, "invalid JSON"):
+                            scope.latest_deployment_receipt(REPOSITORY, api)
+
+    def test_deployment_reader_rejects_nonfinite_overflow_and_invalid_utf8(self):
+        for raw in (b'{"id":Infinity}', b'{"id":-Infinity}', b'{"id":1e9999}', b'\xff',
+                    b'{"id":1,"\\u0069d":1}'):
+            with self.subTest(raw=raw), patch.dict(os.environ, GH_TOKEN="fixture-only"), patch.object(
+                scope, "read_api_response", return_value=raw
+            ), self.assertRaisesRegex(scope.ScopeError, "invalid JSON"):
+                scope.GitHubReadAPI(REPOSITORY)(WORKFLOW_ENDPOINT)
+
     def test_failed_or_stalled_api_process_is_not_a_receipt(self):
         for program, expected in (("raise SystemExit(1)", "request failed"), ("import time; time.sleep(5)", "timed out")):
             with self.subTest(program=program), self.assertRaisesRegex(scope.ScopeError, expected):
@@ -902,6 +934,7 @@ class GitScopeTests(unittest.TestCase):
                 break
             lines.append(line)
         self.write(".github/scripts/ci_change_scope.py", SCRIPT.read_text())
+        self.write(".github/scripts/orchestration_contract.py", (SCRIPT.parent / "orchestration_contract.py").read_text())
         fixtures = self.root / "api.json"
         fixtures.write_text(json.dumps(deployment_documents(
             deployment_runs if deployment_runs is not None else [deployment_run(sha=deployed_sha or self.base)]

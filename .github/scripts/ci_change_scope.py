@@ -14,6 +14,9 @@ import time
 from pathlib import Path
 from typing import Iterable
 
+# Keep the trusted sibling import available for isolated Python invocations.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from orchestration_contract import decode_json
 
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 MAX_API_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -129,7 +132,7 @@ class GitHubReadAPI:
         except subprocess.TimeoutExpired as exc:
             raise ScopeError("deployment receipt API request timed out") from exc
         try:
-            document = json.loads(raw)
+            document = decode_json(raw)
         except (ValueError, UnicodeError) as exc:
             raise ScopeError("deployment receipt API returned invalid JSON") from exc
         if not isinstance(document, dict):

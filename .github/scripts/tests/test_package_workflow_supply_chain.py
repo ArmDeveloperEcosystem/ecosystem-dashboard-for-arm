@@ -50,6 +50,7 @@ RELEVANT_PATHS = (
     ".github/scripts/requirements-exact-run.txt",
     ".github/actions/**",
     FOUNDATION_WORKFLOW,
+    ".github/workflows/main.yml",
     ".github/workflows/test-*.yml",
 )
 
