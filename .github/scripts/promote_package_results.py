@@ -800,11 +800,62 @@ def _write_report_files(
     _write_text(stage_root / "publish-metrics.env", metrics)
 
 
+def _validate_fresh_registrations(
+    registrations: Mapping[str, Mapping[str, str]], run_manifest: Path | None
+) -> None:
+    """Bind full publication coverage to the already authenticated parent manifest."""
+    from exact_run_aggregation import (
+        ContractError as TopologyError,
+        discover_topology_at_commit,
+        expected_job_name,
+        validate_checkout_binding,
+    )
+    from orchestration_contract import ContractError, validate_manifest
+
+    if run_manifest is None:
+        raise PromotionError("--require-all-fresh requires --run-manifest")
+    try:
+        manifest = validate_manifest(
+            _load_json_object(run_manifest), expected_branch="main"
+        )
+        repository_root = Path(__file__).resolve().parents[2]
+        validate_checkout_binding(repository_root, manifest["expected_sha"])
+        topology = discover_topology_at_commit(
+            repository_root, manifest["expected_sha"]
+        )
+    except (ContractError, TopologyError) as exc:
+        raise PromotionError(f"fresh publication context is invalid: {exc}") from exc
+    expected = {}
+    if len(topology) != len(manifest["batches"]):
+        raise PromotionError("fresh publication topology does not match the manifest")
+    for definition, record in zip(topology, manifest["batches"], strict=True):
+        for package in definition.packages:
+            expected[package.package_slug] = {
+                "batch_title": f"Batch {definition.batch}",
+                "workflow_path": definition.workflow_path,
+                "run_id": str(record["run_id"]),
+                "run_attempt": "1",
+                "job_name": expected_job_name(package),
+            }
+    if set(registrations) != set(expected):
+        raise PromotionError("fresh publication requires the exact committed package topology")
+    for slug, identity in expected.items():
+        if any(registrations[slug][key] != value for key, value in identity.items()):
+            raise PromotionError(
+                f"fresh registration for {slug} does not match "
+                "the accepted manifest/topology"
+            )
+    if len({entry["job_url"] for entry in registrations.values()}) != len(expected):
+        raise PromotionError("fresh registrations contain duplicate package jobs")
+
+
 def promote_package_results(
     stage_root: Path,
     *,
     validation_policy: str = "strict",
     repository: str = "ArmDeveloperEcosystem/ecosystem-dashboard-for-arm",
+    require_all_fresh: bool = False,
+    run_manifest: Path | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Validate every carried row, then materialize one complete staging set."""
@@ -843,8 +894,12 @@ def promote_package_results(
         stage_root / "trusted-registrations.json",
         expected_repository=repository,
     )
+    if require_all_fresh:
+        _validate_fresh_registrations(registrations, run_manifest)
     timestamp = now or datetime.now(timezone.utc)
     _validate_normalize_report(normalize_report)
+    if require_all_fresh and any(normalize_report.values()):
+        raise PromotionError("fresh publication requires zero normalization failures")
     if timestamp.tzinfo is None:
         raise PromotionError("promotion timestamp must be timezone-aware")
     refreshed_at = timestamp.astimezone(timezone.utc).isoformat()
@@ -875,6 +930,10 @@ def promote_package_results(
 
     def retain_previous(slug: str, reason: str) -> None:
         nonlocal blocked_count, warning_count
+        if require_all_fresh:
+            decisions[slug] = {"state": "blocked_not_fresh", "reason": reason}
+            blocked_count += 1
+            return
         previous_path = previous_paths.get(slug)
         if previous_path is None:
             decisions[slug] = {
@@ -916,7 +975,7 @@ def promote_package_results(
     for slug, candidate_path in candidate_paths.items():
         try:
             payload = _load_json_object(candidate_path)
-            validate_persisted_result(
+            status = validate_persisted_result(
                 payload,
                 expected_slug=slug,
                 expected_repository=repository,
@@ -925,6 +984,10 @@ def promote_package_results(
                 validation_policy="strict",
                 allow_legacy_missing_decision=False,
             )
+            if require_all_fresh and status != "success":
+                raise PromotionError(
+                    "fresh publication requires zero package test failures"
+                )
         except PromotionError as exc:
             retain_previous(
                 slug,
@@ -1010,6 +1073,16 @@ def _parser() -> argparse.ArgumentParser:
         default="ArmDeveloperEcosystem/ecosystem-dashboard-for-arm",
         help="Repository expected in every exact package job URL.",
     )
+    parser.add_argument(
+        "--require-all-fresh",
+        action="store_true",
+        help="Require every committed package to pass using the accepted orchestration runs.",
+    )
+    parser.add_argument(
+        "--run-manifest",
+        type=Path,
+        help="Validated parent run manifest, required with --require-all-fresh.",
+    )
     return parser
 
 
@@ -1020,6 +1093,8 @@ def main(argv: list[str] | None = None) -> int:
             args.stage_root,
             validation_policy=args.validation_policy,
             repository=args.repository,
+            require_all_fresh=args.require_all_fresh,
+            run_manifest=args.run_manifest,
         )
     except PromotionError as exc:
         print(f"package result promotion error: {exc}", file=sys.stderr)

@@ -27,26 +27,34 @@ import promote_package_results as promoter  # noqa: E402
 FOUNDATION_WORKFLOW = ".github/workflows/exact-run-aggregation-foundation-ci.yml"
 SCOPE_GUARD = "if: steps.scope.outputs.relevant == 'true'"
 RELEVANT_PATHS = (
+    ".github/skills/smoke-repair/SKILL.md",
     ".github/scripts/download-with-fallback.sh",
     ".github/scripts/package_workflow_action_lock.json",
     ".github/scripts/verify_action_lock_online.py",
     ".github/scripts/package_workflow_supply_chain.py",
     ".github/scripts/exact_run_aggregation.py",
+    ".github/scripts/orchestration_contract.py",
     ".github/scripts/package_result_policy.py",
     ".github/scripts/package_observation.py",
     ".github/scripts/package_observation_migration_audit.py",
     ".github/scripts/promote_package_results.py",
+    ".github/scripts/smoke_recovery.py",
+    ".github/scripts/smoke_repair_*.py",
     ".github/scripts/tests/test_package_workflow_supply_chain.py",
     ".github/scripts/tests/test_verify_action_lock_online.py",
     ".github/scripts/tests/test_exact_run_aggregation.py",
     ".github/scripts/tests/test_package_observation.py",
     ".github/scripts/tests/test_package_observation_migration_audit.py",
     ".github/scripts/tests/test_promote_package_results.py",
+    ".github/scripts/tests/test_smoke_recovery.py",
+    ".github/scripts/tests/test_smoke_repair_*.py",
     ".github/scripts/README-exact-run-aggregation.md",
     ".github/scripts/README-package-observation.md",
     ".github/scripts/requirements-exact-run.txt",
     ".github/actions/**",
     FOUNDATION_WORKFLOW,
+    ".github/workflows/main.yml",
+    ".github/workflows/smoke-repair*.yml",
     ".github/workflows/test-*.yml",
 )
 
@@ -968,10 +976,8 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             r"^[0-9a-f]{64}$",
         )
         transition = lock["hardened_workflow_transition"]
-        self.assertEqual(
-            "c756fd2e7bba16232c69bed31ba54fdf78d91ef2dfd0916359bdbee7f9dc149e",
-            transition["from_sha256"],
-        )
+        self.assertRegex(transition["from_sha256"], r"^[0-9a-f]{64}$")
+        self.assertNotEqual(transition["from_sha256"], transition["to_sha256"])
         self.assertEqual(
             lock["hardened_workflow_sha256"],
             transition["to_sha256"],

@@ -1,9 +1,102 @@
 # Exact-run aggregation foundation
 
 This foundation defines the evidence contract for replacing timestamp-based batch
-discovery with exact GitHub Actions run and artifact identities. It is deliberately
-not connected to the production orchestrator, summary writer, deployment workflow,
-or generated-data publisher.
+discovery with exact GitHub Actions run and artifact identities. The live
+orchestrator reuses its immutable topology and Jobs API validators for bounded
+recovery. Publication still uses the existing batch-attestation and reviewed
+generated-data delivery path; this module does not merge or deploy changes.
+
+## Routing and recovery
+
+The orchestrator keeps its Friday-night schedule and manual entry point. Main
+pushes run a read-only, complete Git-diff scope check: smoke execution changes
+start all batches; category, package metadata, site, dependency, and generated
+result changes do not. Mixed changes take both routes. The website CI/deployment
+route is separate; production-branch deployment workflows are unchanged.
+Concurrency applies only after the smoke scope check, so a website-only push
+cannot cancel or replace an in-flight smoke orchestration.
+Both deployment and orchestration retain up to 100 pending jobs (`queue: max`),
+so a late older scope job cannot evict the latest pending work. Queue exhaustion
+still cancels additional jobs and requires operator intervention; current-SHA
+and environment approval gates remain enforced. The pinned actionlint 1.7.12
+lacks this documented GitHub key (rhysd/actionlint#680); CI validates the exact
+two queue configurations before excluding only that unsupported-key diagnostic.
+
+After the initial batch runs finish, `smoke_recovery.py` authenticates each exact
+run and validates its complete attempt-specific job inventory against the
+immutable topology. A completed batch with conclusion `failure`, a complete
+exact job inventory, and a successful collector is eligible for at most one
+confirmation retry. Missing, ambiguous, or mismatched evidence, incomplete jobs,
+and an unsuccessful collector fail closed without a retry. A successful batch,
+whether initial or confirmation, is never rerun by recovery.
+
+The strict standalone curl classifier remains diagnostic: it binds a
+terminal remote-download DNS failure or HTTP 429/502/503/504 to an explicit
+single-command HTTPS curl step from the immutable workflow commit and its real
+exit code. It no longer controls retry eligibility. A combined install/build
+step or an unknown diagnostic classification does not disqualify an otherwise
+authenticated failed batch. Assertion failures are never relabelled transient;
+no test outcome or skip is rewritten. A retry confirms behavior at the same
+commit, not a diagnosis of transience or automatic code repair.
+Optional log/source diagnostics share a 30-second allowance, reduced to at most
+10% of the initial recovery budget. Each diagnostic is capped at five seconds
+and 10% of remaining recovery time. Once exhausted, uncollected logs are marked
+explicitly in the audit; authenticated run/job checks and confirmation do not
+depend on those logs. API stdout and stderr share a streaming 2 MiB limit,
+processes are stopped on overflow or timeout, and duplicate JSON keys or
+nonfinite values are rejected before identity validation.
+
+The single confirmation retry uses backoff and a controller budget of at most
+90 minutes, further capped by the existing shared 285-minute initial-batch and
+recovery deadline that reserves time for Global Summary and evidence upload.
+Every confirmation dispatch has a new nonce and run ID, still attempt 1, at the
+same SHA. The `main` SHA must remain unchanged. Ambiguous dispatch responses are
+reconciled by the original nonce, never blindly reposted. Original failed runs,
+their exact job inventory and failure evidence, and confirmation identities and
+outcomes are retained in the orchestration evidence artifact, even when the
+confirmation succeeds. Persistent failures remain red and require repair; there
+is no second confirmation retry. Global Summary runs only after every selected
+batch succeeds; its all-fresh publication gate rejects retained historical rows
+and package test failures.
+
+Current-SHA guards run before initial dispatch, while polling, and immediately
+before Global Summary. If `main` advances during the run, fail closed: stop
+further dispatches and publication, retain the evidence, and explicitly report
+the run as superseded with both the tested SHA and the current `main` SHA. A
+superseded run is not validation of current `main`. Notify the owner/reviewer;
+after merges settle, the owner starts a fresh `workflow_dispatch` on `main`.
+Rerunning an old Actions run retains its old SHA and cannot validate the new
+commit. There is no automatic replacement orchestration.
+
+A separate job with `issues: write`, no deployment credentials, reports the
+verified orchestration outcome in a GitHub issue. Set repository variable
+`SMOKE_NOTIFICATION_LOGIN` to the human login to mention; otherwise the triggering
+actor is used. Notification-only reruns verify the original orchestration attempt
+carried by its job output. Reports are idempotent per producing orchestration
+attempt, not per notification attempt; a full orchestration rerun gets a new report.
+Successful validation is not a production deployment: generated results still
+follow their protected review, merge, and dashboard deployment process.
+
+An opt-in [bounded smoke repair](../SMOKE_REPAIR.md) implementation now follows
+authenticated exhausted confirmations, but remains disabled unless
+`SMOKE_REPAIR_ENABLED` is exactly `true`. It admits only approved build
+prerequisites, reduced parallelism, and bounded curl retries: one data-only model
+proposal, independent patch policy, an immutable candidate branch, real hosted Arm
+validation, then a verified draft PR. Unsupported failures require manual work;
+not all registered packages or failure causes are automatically repairable.
+Callable-only or delegated layouts remain manual, and the [coverage scan](../SMOKE_REPAIR.md#layout-admission-coverage)
+counts layout admission, not validated repairs. No package workflows were
+changed to force eligibility, and original failures are never changed to green.
+Model/App/environment configuration and live integration have not been performed
+or verified in this change. The
+dedicated repair App is separate from the generated-data delivery App. The user
+tests first, Chris reviews next, and only a human merges after required checks
+and approvals; the new `main` must pass a fresh full smoke cycle. Native-only
+reruns can be refused when a candidate run already exists, and one repair merge
+can stale other same-base drafts; a new main-orchestrator incident re-evaluates
+the remaining failures. There is no automatic approval, merge, or deployment.
+Production gates remain unchanged, and local tests are not full live-fleet
+validation.
 
 ## Trust boundary
 
