@@ -6,6 +6,7 @@ import io
 import os
 from pathlib import Path
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -25,6 +26,7 @@ from orchestration_contract import canonical_json, decode_json  # noqa: E402
 MODEL = "explicit-test-model"
 KEY = "synthetic-test-credential"
 PATH = ".github/workflows/test-example.yml"
+REAL_CREATE_CONNECTION = socket.create_connection
 
 
 def context():
@@ -461,7 +463,8 @@ class ProposeTests(OfflineTest):
         self.assertEqual(decode_json(body), adapter.build_request(evidence, model=MODEL))
 
     def test_bad_inputs_never_reach_transport(self):
-        for key in (None, "", " ", "secret\r\nX-Header: injected", "\u00e9", "x" * 513):
+        for key in (None, "", " ", "secret\r\nX-Header: injected", "\u00e9",
+                    "x" * (adapter.MAX_TOKEN_BYTES + 1)):
             transport = StubTransport()
             with self.assertRaises(adapter.ProposalError):
                 adapter.propose(context(), model=MODEL, api_key=key, transport=transport)
@@ -470,6 +473,24 @@ class ProposeTests(OfflineTest):
         with self.assertRaises(adapter.ProposalError):
             adapter.propose(context(), model="", api_key=KEY, transport=transport)
         self.assertEqual(transport.calls, [])
+
+    def test_short_lived_token_bounds_and_header_injection(self):
+        self.assertEqual(adapter.MAX_TOKEN_BYTES, 8192)
+        for size in (1, 512, 513, 4096, adapter.MAX_TOKEN_BYTES):
+            token = "a" * size
+            transport = StubTransport()
+            with self.subTest(size=size):
+                self.assertEqual(adapter.propose(context(), model=MODEL, api_key=token,
+                                                transport=transport), proposal())
+                self.assertEqual(transport.calls[0][1], token)
+                self.assertEqual(len(transport.calls), 1)
+        for token in ("a" * (adapter.MAX_TOKEN_BYTES + 1), " leading", "trailing ",
+                      "two words", "embedded\tvalue", "trailing\n", "\r", "\x00",
+                      "\x1f", "\x7f", "\u0085", "\u2028", b"bytes", True):
+            transport = StubTransport()
+            with self.subTest(kind=type(token).__name__), self.assertRaises(adapter.ProposalError):
+                adapter.propose(context(), model=MODEL, api_key=token, transport=transport)
+            self.assertEqual(transport.calls, [])
 
     def test_transport_failure_is_sanitized_and_never_retried(self):
         for error in (TimeoutError("sensitive timeout"), OSError("sensitive OS error"),
@@ -540,18 +561,21 @@ class HttpsTransportTests(OfflineTest):
         with tempfile.TemporaryDirectory() as directory:
             keylog = Path(directory) / "must-not-exist"
             environment = {"HTTPS_PROXY": "https://untrusted-proxy", "ALL_PROXY": "http://proxy",
-                           "OPENAI_BASE_URL": "https://untrusted-host", "SSLKEYLOGFILE": str(keylog)}
+                           "OPENAI_BASE_URL": "https://api.openai.com/v1",
+                           "SMOKE_REPAIR_BASE_URL": "https://untrusted-host",
+                           "SSLKEYLOGFILE": str(keylog)}
             with mock.patch.object(adapter.os, "environ", environment):
                 self.assertEqual(adapter.https_transport(b"{}", api_key=KEY), (200, response.body))
             self.assertFalse(keylog.exists())
-        self.assertEqual(factory.call_args.args, ("api.openai.com",))
+        self.assertEqual(factory.call_args.args, ("openai-api-proxy.geo.arm.com",))
         self.assertEqual(factory.call_args.kwargs["port"], 443)
         self.assertEqual(factory.call_args.kwargs["timeout"], adapter.SOCKET_TIMEOUT_SECONDS)
         tls = factory.call_args.kwargs["context"]
         self.assertTrue(tls.check_hostname)
         self.assertEqual(tls.verify_mode, adapter.ssl.CERT_REQUIRED)
         self.assertIsNone(tls.keylog_filename)
-        self.assertEqual(connection.request.call_args.args, ("POST", "/v1/responses"))
+        self.assertEqual(connection.request.call_args.args,
+                         ("POST", "/api/providers/openai/v1/responses"))
         self.assertEqual(connection.request.call_args.kwargs["headers"]["Authorization"], "Bearer " + KEY)
         self.assertEqual(connection.request.call_args.kwargs["headers"]["Accept-Encoding"], "identity")
         self.assertEqual(response.reads, [adapter.MAX_RESPONSE_BYTES + 1])
@@ -560,7 +584,7 @@ class HttpsTransportTests(OfflineTest):
         connection.set_tunnel.assert_not_called()
 
     def test_redirect_and_http_errors_never_read_body_or_retry(self):
-        for status in (301, 302, 303, 307, 308, 400, 401, 429, 500):
+        for status in (301, 302, 303, 307, 308, 400, 401, 403, 429, 500, 502, 503, 504):
             response = FakeResponse(b"sensitive error body", status=status,
                                     headers=[("Location", "https://untrusted-host")])
             connection, factory = self.call(response)
@@ -569,6 +593,28 @@ class HttpsTransportTests(OfflineTest):
             factory.assert_called_once()
             connection.request.assert_called_once()
             connection.close.assert_called_once()
+
+    def test_proxy_token_is_header_only_and_tls_uses_runner_trust_store(self):
+        token = "synthetic-workload-token." + "x" * 4096
+        connection, factory = self.call(FakeResponse())
+        with mock.patch.object(adapter.ssl.SSLContext, "load_default_certs") as load_certs:
+            result = adapter.propose(context(), model=MODEL, api_key=token)
+        self.assertEqual(result, proposal())
+        load_certs.assert_called_once_with()
+        factory.assert_called_once()
+        request = connection.request.call_args
+        self.assertEqual(request.kwargs["headers"]["Authorization"], "Bearer " + token)
+        self.assertNotIn(token.encode(), request.kwargs["body"])
+        self.assertEqual(connection.request.call_count, 1)
+
+    def test_missing_enterprise_ca_fails_before_connection_without_fallback(self):
+        _, factory = self.call(FakeResponse())
+        with mock.patch.object(adapter.ssl.SSLContext, "load_default_certs",
+                               side_effect=adapter.ssl.SSLError(KEY)), \
+                self.assertRaises(adapter.ProposalError) as caught:
+            adapter.https_transport(b"{}", api_key=KEY)
+        self.assertEqual(str(caught.exception), "proposal request failed")
+        factory.assert_not_called()
 
     def test_bad_headers_fail_closed_before_reading(self):
         base = [("Content-Type", "application/json")]
@@ -641,6 +687,32 @@ class HttpsTransportTests(OfflineTest):
             self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
             self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0, 0))
             connection.close.assert_called_once()
+
+    def test_wall_clock_deadline_bounds_actual_dns_and_connect_paths(self):
+        for phase in ("dns", "connect"):
+            with mock.patch("socket.create_connection", side_effect=REAL_CREATE_CONNECTION), \
+                    mock.patch("socket.getaddrinfo") as resolve, \
+                    mock.patch("socket.socket") as socket_factory, \
+                    mock.patch.object(adapter, "REQUEST_TIMEOUT_SECONDS", 0.05):
+                connect = socket_factory.return_value.connect
+                if phase == "dns":
+                    resolve.side_effect = lambda *args, **kwargs: time.sleep(2)
+                else:
+                    resolve.return_value = [(socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                                             ("127.0.0.1", 443))]
+                    connect.side_effect = lambda *args, **kwargs: time.sleep(2)
+                previous = signal.getsignal(signal.SIGALRM)
+                started = time.monotonic()
+                with self.subTest(phase=phase), self.assertRaises(adapter.ProposalError):
+                    adapter.https_transport(b"{}", api_key=KEY)
+                self.assertLess(time.monotonic() - started, 1)
+                self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
+                self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0, 0))
+                resolve.assert_called_once()
+                if phase == "dns":
+                    connect.assert_not_called()
+                else:
+                    connect.assert_called_once()
 
     def test_no_existing_alarm_is_overwritten(self):
         _, factory = self.call(FakeResponse())

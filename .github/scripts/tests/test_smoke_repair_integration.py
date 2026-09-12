@@ -368,6 +368,51 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
         self.admit()
         return self.stage()
 
+    def test_arm_proxy_cli_to_verified_draft_with_synthetic_token_and_api_evidence(self):
+        self.collect()
+        token = "synthetic-arm-workload-token." + "x" * 4096
+        response = model_fixture.FakeResponse(model_fixture.wire(model_fixture.envelope(self.proposal)))
+        with patch.object(model.http.client, "HTTPSConnection") as connection, \
+                patch.dict(os.environ, {"SMOKE_REPAIR_OPENAI_API_KEY": token}):
+            connection.return_value.getresponse.return_value = response
+            self.invoke(model, ["--context", self.path("model-context.json"),
+                                "--output", self.path("proposal.json")])
+        self.assertEqual(connection.call_args.args, ("openai-api-proxy.geo.arm.com",))
+        connection.assert_called_once()
+        request = connection.return_value.request
+        request.assert_called_once()
+        self.assertEqual(request.call_args.args, ("POST", "/api/providers/openai/v1/responses"))
+        self.assertEqual(request.call_args.kwargs["headers"]["Authorization"], "Bearer " + token)
+        self.assertNotIn(token.encode(), request.call_args.kwargs["body"])
+        self.assertEqual(self.read("proposal.json"), self.proposal)
+        self.admit()
+        stage = self.stage()
+        receipt = self.dispatch()
+        result = self.publish()
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(receipt["status"], "passed")
+        self.assertEqual(self.api.prs[0]["head"]["sha"], stage["candidate_sha"])
+        self.assertIs(self.api.prs[0]["draft"], True)
+        for path in self.artifacts.iterdir():
+            self.assertNotIn(token.encode(), path.read_bytes())
+        self.assertNotIn(token, json.dumps(self.api.prs))
+
+    def test_rejected_proxy_token_stops_cli_before_proposal_or_publication(self):
+        self.collect()
+        for status in (401, 403, 429, 500, 503):
+            with self.subTest(status=status), patch.object(model.http.client, "HTTPSConnection") as connection:
+                response = model_fixture.FakeResponse(b"do-not-report-upstream-error", status=status)
+                connection.return_value.getresponse.return_value = response
+                error = self.invoke(model, ["--context", self.path("model-context.json"),
+                                           "--output", self.path("proposal.json")], expected=1)
+            self.assertEqual(error, "smoke repair proposal failed\n")
+            connection.return_value.request.assert_called_once()
+            self.assertEqual(response.reads, [])
+            self.assertFalse(self.path("proposal.json").exists())
+            self.assertEqual(self.api.prs, [])
+            self.assertEqual(self.api.dispatches, [])
+            self.assertEqual(self.api.calls, [])
+
     def test_actual_evidence_model_policy_publisher_native_and_draft_clis(self):
         context = self.collect()
         self.assertEqual(context["source_text"], self.source)
@@ -641,7 +686,8 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
                         if filename == "smoke_repair_publisher.py" and action == "open-pr":
                             self.assertIsNotNone(namespace.stage)
                             self.assertIsNotNone(namespace.native_contract)
-        self.assertEqual(seen, {("smoke_repair_evidence.py", "default"), ("smoke_repair_model.py", "default"),
+        # Model CLI coverage is separate while production authentication is blocked.
+        self.assertEqual(seen, {("smoke_repair_evidence.py", "default"),
                                ("smoke_repair_pipeline.py", "select"), ("smoke_repair_pipeline.py", "admit"),
                                ("smoke_repair_pipeline.py", "report"), ("smoke_repair_publisher.py", "admit"),
                                ("smoke_repair_publisher.py", "stage"), ("smoke_repair_publisher.py", "open-pr"),

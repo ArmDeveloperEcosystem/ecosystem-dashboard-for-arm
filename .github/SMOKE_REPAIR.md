@@ -5,7 +5,8 @@
 The repository implements a bounded repair path, but it is **disabled by
 default**. Repair jobs require repository variable `SMOKE_REPAIR_ENABLED` to be
 exactly `true`; unset or `false` leaves them disabled. This switch does not
-disable ordinary smoke validation or its confirmation retry.
+disable ordinary smoke validation or its confirmation retry. **Merging alone
+does not activate repair.** Keep repair disabled throughout implementation.
 
 Repository variables, protected environments, the dedicated GitHub App, and
 live end-to-end integration have **not been configured or verified in this
@@ -13,6 +14,20 @@ change**. No live model call, hosted repair validation, repair PR, or successful
 full-main cycle is claimed by this documentation. Offline tests are not live
 integration evidence. The rollout order remains: **the user tests, Chris
 reviews, then a human merges** after required checks and approvals.
+
+**The Arm proxy adapter is ready for offline use only; live integration is
+blocked.** `Arm-Debug/devops-actions` is `internal`, while the dashboard is
+public. GitHub does not permit internal actions to be shared with public
+repositories; see [the official sharing rules](https://docs.github.com/en/enterprise-cloud@latest/actions/how-tos/reuse-automations/share-with-your-enterprise).
+Runner authorization and action allowlisting cannot override that restriction.
+A supported token-delivery path requires an explicit decision and review before
+activation, as described in the rollout below.
+
+The `propose` job retains `ubuntu-24.04-arm`. Its model request was replaced by
+`Require approved Arm model authentication`, which prints a fixed diagnostic
+and exits with status 1; the static model-secret binding was removed. Even with
+`SMOKE_REPAIR_ENABLED=true`, this workflow cannot mint a model token, call the
+model, stage a candidate, or open a repair draft.
 
 This is not a universal fixer. It never automatically approves, merges, or
 deploys, and cannot turn an original failure into a passing result.
@@ -195,9 +210,38 @@ Structural admission and native success do not prove semantic equivalence or
 complete coverage. Dependency additions execute upstream code, and an unchanged
 probe can still be insufficient or wrong. Human review remains mandatory.
 
+## Arm Proxy Adapter
+
+The adapter uses fixed HTTPS host `openai-api-proxy.geo.arm.com`, port 443, and
+path `/api/providers/openai/v1/responses`. There is no arbitrary base URL or
+`OPENAI_BASE_URL` override, redirect, retry, ambient proxy discovery, or fallback
+endpoint/model. Verified TLS with system CA trust, bounded reads, the 60-second
+deadline, content-free errors, and avoidance of `SSLKEYLOGFILE` remain required.
+
+`SMOKE_REPAIR_OPENAI_API_KEY` remains the adapter input for a short-lived Arm
+token, not a static-secret fallback. It accepts 1-8192 visible ASCII characters
+(`0x21`-`0x7e`), with no whitespace/control characters. Test bounds with synthetic
+credentials only; issued-token format, lifetime, authorization, and model
+compatibility have not been live-tested. Invalid or rejected tokens fail closed.
+
+Infrastructure prerequisites are runner authorization; an action shareable with
+its caller and allowlisted at its reviewed pin; SPIFFE/AWS identity and system
+setup; network access and system CA trust; and an authorized token/model that
+supports the exact strict Responses schema. The dedicated repair App, protected
+environments, and approved live pilot remain separate prerequisites.
+
+Identity setup can leave credentials on the runner; step-scoped environment
+variables are not an execution sandbox. Use only trusted base tooling on the
+approved ephemeral runner, never package/candidate code. Do not log or transfer
+tokens, put them in artifacts or job outputs, copy registration secrets to
+arbitrary machines, or disable TLS verification. Other repair jobs and candidate
+tests retain free hosted Arm `ubuntu-24.04-arm` and unchanged native evidence
+requirements. This adapter change does not authorize a runner switch.
+
 ## Configuration and Credentials
 
-Configure only after the user test and Chris review stages authorize rollout.
+Configure only after the integration decision and the user test and Chris
+review stages authorize rollout.
 The required repository variables are:
 
 | Variable | Required value or purpose |
@@ -236,14 +280,14 @@ environment gates. No environment protections are configured, changed, or
 removed in this change. **Human PR review and human merge remain mandatory in
 either mode**; generated-data and production approval policies are unchanged.
 
-Credentials must remain environment secrets, not broadly available repository
-or organization secrets:
+Repair App credentials must remain delivery-environment secrets, not broadly
+available repository or organization secrets. The model token source is pending:
 
-| Environment | Environment secret | Consumer |
+| Environment | Credential source | Consumer |
 | --- | --- | --- |
-| `smoke-repair-analysis` | `SMOKE_REPAIR_OPENAI_API_KEY` | The one data-only proposal request step. |
-| `smoke-repair-delivery` | `SMOKE_REPAIR_APP_ID` | Dedicated repair GitHub App token minting. |
-| `smoke-repair-delivery` | `SMOKE_REPAIR_APP_PRIVATE_KEY` | Private key for that same dedicated App. |
+| `smoke-repair-analysis` | Pending approved short-lived token source; adapter input `SMOKE_REPAIR_OPENAI_API_KEY` | Proposal step blocked by guard; no static secret fallback. |
+| `smoke-repair-delivery` | Environment secret `SMOKE_REPAIR_APP_ID` | Dedicated repair GitHub App token minting. |
+| `smoke-repair-delivery` | Environment secret `SMOKE_REPAIR_APP_PRIVATE_KEY` | Private key for that same dedicated App. |
 
 Install the **dedicated repair App only on this repository**. Its repository
 permissions are Contents read/write, Pull requests read/write, Workflows
@@ -257,13 +301,14 @@ and those permissions. Native dispatch uses the separate controller job's
 `GITHUB_TOKEN` with `actions: write`, not an Actions-write App token. Reporting
 jobs use their own `GITHUB_TOKEN` with `issues: write` for notifications.
 
-**The model key must never be available to a candidate-code executor.** The
+**The model token must never be available to a candidate-code executor.** The
 analysis job executes only trusted base tooling and handles proposals as data;
 it has no delivery credential. The staging/publication jobs use trusted base
 tooling and do not execute candidate code. The dispatched package workflow has
-read-only contents permission, no model key, no repair App private key/token,
-and no protected repair environment. Keep the OpenAI key confined to
-`smoke-repair-analysis`; do not copy it into package workflows or shared secrets.
+read-only contents permission, no model token, no repair App private key/token,
+and no protected repair environment. Keep the Arm proxy token confined to the
+trusted model step in `smoke-repair-analysis`; do not copy it into package
+workflows, publisher jobs, or shared secrets.
 
 ## Rollout and Manual Follow-up
 
@@ -271,9 +316,13 @@ and no protected repair environment. Keep the OpenAI key confined to
    and reviews failure handling, policy limits, credential boundaries, and
    proposed workflow changes. Chris then reviews; only a human merges after the
    required checks and approvals. These steps are not waived by green unit tests.
-2. Separately configure and verify the App installation, exact bot identities,
-   model choice, and both environments under the organization's approved pilot
-   or routine-operation policy above. Retained required reviewers mean approval
+2. Explicitly select and review an action approved for public-repository use or
+   an authorized model-call path within Arm-Debug. Neither alternative is
+   implemented. Keep repair disabled and retain the fail-closed guard until the
+   selected path is implemented and reviewed. Verify the prerequisites above,
+   then configure and verify the App installation, exact bot identities, model
+   choice, and both environments under the organization's approved pilot or
+   routine-operation policy above. Retained required reviewers mean approval
    pauses, even with `SMOKE_REPAIR_ENABLED=true`. No configuration, protection
    removal, or live integration was performed in this documentation change.
 3. Approve a bounded live test on reviewed `main`, explicitly enable repair, and

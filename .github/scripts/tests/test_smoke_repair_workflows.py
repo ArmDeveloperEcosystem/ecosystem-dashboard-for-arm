@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -104,6 +106,37 @@ class RepairWorkflowTests(unittest.TestCase):
                              {"permission-contents": "write", "permission-pull-requests": "write",
                               "permission-workflows": "write", "permission-actions": "read"})
             self.assertNotIn("DASHBOARD_DELIVERY_APP_PRIVATE_KEY", str(job))
+
+    def test_unavailable_arm_authentication_fails_closed_without_static_key_fallback(self):
+        job = self.package["jobs"]["propose"]
+        steps = job["steps"]
+        guard = next(step for step in steps if step.get("name") == "Require approved Arm model authentication")
+        self.assertEqual(set(guard), {"name", "shell", "run"})
+        self.assertEqual(guard["shell"], "bash")
+        self.assertEqual(guard["run"].splitlines(), [
+            "printf '%s\\n' 'Arm model authentication is not connected. The public dashboard cannot consume the internal token action. Owner authorization is required for a supported public action or separate service.' >&2",
+            "exit 1",
+        ])
+        self.assertNotIn("secrets.", str(job))
+        self.assertNotIn("SMOKE_REPAIR_OPENAI_API_KEY", str(job))
+        self.assertNotIn("Arm-Debug/devops-actions", str(job))
+        self.assertNotIn("smoke_repair_model.py", str(job))
+        upload = next(step for step in steps if step.get("id") == "upload")
+        self.assertLess(steps.index(guard), steps.index(upload))
+        self.assertNotIn("if", upload)
+        self.assertNotIn("if", self.package["jobs"]["stage"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e", "-c", guard["run"]],
+                                    cwd=directory, env={"SMOKE_REPAIR_ENABLED": "true",
+                                    "SMOKE_REPAIR_OPENAI_API_KEY": "synthetic-do-not-send",
+                                    "SMOKE_REPAIR_MODEL": "synthetic-model"},
+                                    capture_output=True, text=True, timeout=5, check=False)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("Arm model authentication is not connected.", result.stderr)
+            self.assertNotIn("synthetic", result.stderr)
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_all_downloads_use_exact_artifact_ids_and_uploads_are_required(self):
         for document in (self.repair, self.package):
