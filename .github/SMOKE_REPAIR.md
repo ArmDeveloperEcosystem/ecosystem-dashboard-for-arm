@@ -150,6 +150,32 @@ Authenticated persistent failure -> data-only model -> policy admission
    does not verify the whole fleet, retroactively clear the original failure,
    publish generated results, or authorize deployment.
 
+## Repository Repair Skill
+
+[The smoke-repair skill](skills/smoke-repair/SKILL.md) is reviewed instruction
+data for the existing tool-free model adapter, not a separately installed agent.
+It covers evidence-based diagnosis, the three repair classes, immutable tests,
+stop conditions, exact proposal output, and the boundary between a suggestion
+and independently verified recovery.
+
+`propose()` loads the complete file from the adapter's fixed repository-relative
+location on each request; environment variables, working directories, model
+evidence, and CLI arguments cannot select another skill. Missing, invalid,
+oversized, symlinked, or non-regular skill files fail before model transport.
+The request builder remains pure and takes the trusted skill text explicitly.
+The caller must supply an immutable, authenticated base checkout for both the
+adapter and skill, separate from artifacts and candidate execution. Anchoring
+the path is not itself proof of checkout provenance.
+
+The fixed developer guard and independent policy remain authoritative. The
+adapter generates output limits from its constants; policy feedback supplies
+approved dependency names and script limits. Neither the skill nor model output
+can change those enforced limits or authorize execution. Skill-only changes
+enter smoke routing and the foundation CI scope. Tests cover loading, request
+isolation, and reference repair cases; offline evaluation is not evidence of
+Arm-proxy model behavior or a live repair. The authentication block described
+above is unchanged, and adding this skill does not enable repair.
+
 ## Allowed Repairs and Limits
 
 Only these classes can be admitted within a supported package workflow:

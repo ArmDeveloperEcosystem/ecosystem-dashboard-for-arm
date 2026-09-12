@@ -61,6 +61,7 @@ SMOKE_ACTIONS = frozenset({
 ROUTING_SCRIPT = ".github/scripts/ci_change_scope.py"
 ROUTING_TEST = ".github/scripts/tests/test_ci_change_scope.py"
 SMOKE_SUPPORT = frozenset({
+    ".github/skills/smoke-repair/SKILL.md",
     ".github/workflows/smoke-repair.yml",
     ".github/workflows/smoke-repair-package.yml",
     ".github/scripts/package_observation_migration_audit.py",
@@ -73,6 +74,7 @@ SMOKE_SUPPORT = frozenset({
     ".github/scripts/tests/test_source_only_candidate_reporting.py",
     ".github/scripts/tests/test_vidgear_summary.py",
     ".github/scripts/tests/test_smoke_repair_integration.py",
+    ".github/scripts/tests/test_smoke_repair_skill.py",
 })
 
 

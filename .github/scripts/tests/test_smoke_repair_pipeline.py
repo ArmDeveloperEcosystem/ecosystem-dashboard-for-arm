@@ -226,7 +226,7 @@ class ModelContextTests(PipelineTestCase):
         self.assertEqual("Enforced repair policy (including frozen final gates): " + policy.policy_description(),
                          projected["validation_feedback"])
         self.assertLessEqual(len(projected["validation_feedback"].encode()), model.MAX_FEEDBACK_BYTES)
-        request = model.build_request(projected, model="approved-model")
+        request = model.build_request(projected, model="approved-model", skill_text=model.load_skill())
         self.assertEqual(projected, json.loads(request["input"][1]["content"]))
         self.assertEqual([], request["tools"])
         self.assertIs(request["text"]["format"]["strict"], True)

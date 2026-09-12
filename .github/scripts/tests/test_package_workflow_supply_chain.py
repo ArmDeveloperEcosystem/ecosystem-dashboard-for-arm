@@ -27,6 +27,7 @@ import promote_package_results as promoter  # noqa: E402
 FOUNDATION_WORKFLOW = ".github/workflows/exact-run-aggregation-foundation-ci.yml"
 SCOPE_GUARD = "if: steps.scope.outputs.relevant == 'true'"
 RELEVANT_PATHS = (
+    ".github/skills/smoke-repair/SKILL.md",
     ".github/scripts/download-with-fallback.sh",
     ".github/scripts/package_workflow_action_lock.json",
     ".github/scripts/verify_action_lock_online.py",
