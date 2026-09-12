@@ -119,7 +119,7 @@ jobs:
         id: install
         run: |
           set -euo pipefail
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "curl"
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "curl python3"
           BASELINE_VERSION="10.2.4"
           BASELINE_URL="https://ftp.drupal.org/files/projects/drupal-${BASELINE_VERSION}.tar.gz"
           WORKDIR=$(mktemp -d)
@@ -237,34 +237,65 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          LATEST_VERSION=$(curl -fsSL https://www.drupal.org/project/drupal/releases | rg -o '/project/drupal/releases/[0-9]+\.[0-9]+\.[0-9]+' | sed 's#.*/##' | sort -V | tail -n 1 || true)
-          if [ -z "$LATEST_VERSION" ]; then
-            LATEST_VERSION="11.2.5"
-          fi
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
+          {
+            echo "current_version=$CURRENT"
+            echo "next_installed_version=not_installed"
+            echo "decision=next_lookup_failed"
+            echo "regression_result=Stable Drupal candidate discovery failed"
+            echo "comparison=A published stable Drupal version newer than baseline $CURRENT must be resolved from the official release feed before candidate validation."
+          } >> "$GITHUB_OUTPUT"
+          command -v curl
+          command -v python3
+          NEXT_DIR=$(mktemp -d)
+          RELEASE_FEED="https://updates.drupal.org/release-history/drupal/current"
+          curl -fsSL --connect-timeout 15 --max-time 60 -o "$NEXT_DIR/releases.xml" "$RELEASE_FEED"
+          LATEST_VERSION=$(python3 - "$NEXT_DIR/releases.xml" "$CURRENT" <<'PY'
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
 
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          stable = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
+          prerelease = re.compile(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?-(?:alpha|beta|rc)[0-9]+")
+          development = re.compile(r"(?:[0-9]+\.){1,2}x-dev|dev-[A-Za-z0-9.-]+")
+          if not stable.fullmatch(sys.argv[2]):
+              raise ValueError("Invalid pinned Drupal baseline version")
+          project = ET.parse(sys.argv[1]).getroot()
+          if (project.tag != "project" or project.findtext("short_name") != "drupal"
+                  or project.findtext("type") != "project_core"
+                  or project.findtext("project_status") != "published"):
+              raise ValueError("Unexpected Drupal release feed identity or status")
+          versions = []
+          for release in project.findall("releases/release"):
+              version = release.findtext("version", "")
+              if release.findtext("status") != "published":
+                  raise ValueError("Unexpected Drupal release status")
+              if stable.fullmatch(version):
+                  versions.append(tuple(map(int, version.split("."))))
+              elif not (prerelease.fullmatch(version) or development.fullmatch(version)):
+                  raise ValueError(f"Malformed Drupal release version: {version!r}")
+          if not versions:
+              raise ValueError("Drupal release feed contains no published stable versions")
+          latest = max(versions)
+          if latest <= tuple(map(int, sys.argv[2].split("."))):
+              raise ValueError("Latest stable Drupal release is not newer than the pinned baseline")
+          print(".".join(map(str, latest)))
+          PY
+          )
           echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved stable Drupal candidate $LATEST_VERSION from $RELEASE_FEED"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: $CURRENT"
           echo "Next version targeted for install validation: $LATEST_VERSION"
 
-          if [ "$CURRENT" = "$LATEST_VERSION" ]; then
-            echo "next_installed_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: $CURRENT"
-            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-            echo "Details: Current pinned Drupal version ${CURRENT} passed smoke tests in this run and already matches the latest published source distribution."
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          NEXT_DIR=$(mktemp -d)
+          echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Drupal candidate source validation failed" >> "$GITHUB_OUTPUT"
+          echo "comparison=Candidate $LATEST_VERSION must download, extract, and expose the expected Drupal source tree layout on Arm64." >> "$GITHUB_OUTPUT"
+          command -v tar
           NEXT_URL="https://ftp.drupal.org/files/projects/drupal-${LATEST_VERSION}.tar.gz"
-          curl -fsSL -o "$NEXT_DIR/drupal.tar.gz" "$NEXT_URL"
+          curl -fsSL --connect-timeout 15 --max-time 120 -o "$NEXT_DIR/drupal.tar.gz" "$NEXT_URL"
           tar -xzf "$NEXT_DIR/drupal.tar.gz" -C "$NEXT_DIR"
           CANDIDATE_DIR="$NEXT_DIR/drupal-${LATEST_VERSION}"
 
@@ -296,10 +327,6 @@ jobs:
 
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
-          if [ "$last_status" = "failed" ]; then
-            exit 1
-          fi
       - name: Show regression validation details
         if: always()
         run: |
@@ -385,7 +412,8 @@ jobs:
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
-          if [ "${{ steps.test6.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test6.outputs.status }}" == "passed" ] && \
+             [ "${{ steps.test6.outcome || 'failure' }}" == "success" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -397,9 +425,7 @@ jobs:
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
 
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
-
-          if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
+          if [ "$FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else

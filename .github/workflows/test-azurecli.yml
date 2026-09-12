@@ -98,7 +98,10 @@ jobs:
         . "$WORKDIR/venv/bin/activate"
         python -m pip install --upgrade pip
         mkdir -p "$WORKDIR/wheels"
+        SMOKE_DEPENDENCIES=("azure-cli==$SMOKE_VERSION")
         if [ "$SMOKE_VERSION" = "2.46.0" ]; then
+          # Match this release's requirements.py3.Linux.txt; later betas remove its flexible-server modules.
+          SMOKE_DEPENDENCIES+=("azure-mgmt-rdbms==10.2.0b6")
           python - <<'PY'
         import hashlib
         import json
@@ -139,10 +142,25 @@ jobs:
         PY
           timeout 180 python -m pip wheel --index-url https://pypi.org/simple --no-deps --no-binary=psutil --wheel-dir "$WORKDIR/wheels" 'psutil~=5.9'
         fi
-        timeout 360 python -m pip install --only-binary=:all: --find-links "$WORKDIR/wheels" "azure-cli==$SMOKE_VERSION"
+        timeout 360 python -m pip install --only-binary=:all: --find-links "$WORKDIR/wheels" "${SMOKE_DEPENDENCIES[@]}"
+        python -m pip check
         python -m pip freeze > "$WORKDIR/pip-freeze.txt"
-        az --version > "$WORKDIR/az-version.txt"
-        cat "$WORKDIR/az-version.txt"
+        checked_az() {
+          local logfile="$WORKDIR/$1"
+          shift
+          local status=0
+          "$@" > "$logfile" 2>&1 || status=$?
+          cat "$logfile"
+          if [ "$status" -ne 0 ]; then
+            return "$status"
+          fi
+          # Azure CLI can log command-module failures while returning successful help.
+          if grep -Eiq '(^|[[:space:]])ERROR:|Error loading command module|Traceback \(most recent call last\):|ModuleNotFoundError|ImportError' "$logfile"; then
+            echo "Azure CLI runtime error in $logfile" >&2
+            return 1
+          fi
+        }
+        checked_az az-version.txt az --version
         python - <<'PY'
         from importlib.metadata import version
         import os
@@ -156,8 +174,20 @@ jobs:
         if expected == "2.46.0":
             assert version("antlr4-python3-runtime") == "4.9.3"
         PY
-        az "$SMOKE_HELP" --help > "$WORKDIR/az-help.txt"
+        checked_az az-help.txt az "$SMOKE_HELP" --help
         grep -Eiq "az $SMOKE_HELP|Manage Azure subscription|Manage resource groups" "$WORKDIR/az-help.txt"
+        if [ "$SMOKE_VERSION" = "2.46.0" ]; then
+          python - <<'PY'
+        from importlib.metadata import version
+        import azure.mgmt.rdbms.mysql_flexibleservers
+        import azure.mgmt.rdbms.postgresql_flexibleservers
+        assert version("azure-mgmt-rdbms") == "10.2.0b6"
+        PY
+        fi
+        checked_az az-mysql-help.txt az mysql flexible-server --help
+        grep -Fq 'az mysql flexible-server' "$WORKDIR/az-mysql-help.txt"
+        checked_az az-postgres-help.txt az postgres flexible-server --help
+        grep -Fq 'az postgres flexible-server' "$WORKDIR/az-postgres-help.txt"
         printf 'Validated Azure CLI version=%s help=%s workdir=%s\n' "$SMOKE_VERSION" "$SMOKE_HELP" "$WORKDIR"
 
     outputs:
@@ -443,7 +473,7 @@ jobs:
           trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           SMOKE_VERSION="$BASELINE_VERSION" SMOKE_HELP=account bash -euo pipefail -c "$AZURE_SMOKE_COMMAND"
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "note=Installed azure-cli $BASELINE_VERSION on Arm64 and ran az --version plus a non-auth az account help command." >> "$GITHUB_OUTPUT"
+          echo "note=Installed azure-cli $BASELINE_VERSION on Arm64; checked dependencies, exact version, account help, RDBMS imports and MySQL/PostgreSQL flexible-server help without CLI runtime errors." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
@@ -458,7 +488,7 @@ jobs:
             test "$CANDIDATE_TAG" = "azure-cli-$LATEST_VERSION"
             test "$(git -C next-src rev-parse HEAD)" = "$(git -C next-src rev-parse "refs/tags/$CANDIDATE_TAG^{commit}")"
             SMOKE_VERSION="$LATEST_VERSION" SMOKE_HELP=group bash -euo pipefail -c "$AZURE_SMOKE_COMMAND"
-          limited_cpu_description: "Installed the next Azure CLI candidate on the Arm64 runner and ran az --version plus a non-auth az group help command."
+          limited_cpu_description: "Required candidate checks on Arm64: installation, dependency consistency, exact Azure CLI version, group help and MySQL/PostgreSQL flexible-server help with no CLI runtime errors."
           next_version_override: "2.84.0"
           candidate_tag_override: "azure-cli-2.84.0"
           defer_on_limited_cpu_probe_failure: "false"
