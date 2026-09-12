@@ -149,11 +149,11 @@ elif args[0] == "exec":
                     return key
             return ""
 
-        script = re.sub(r"\$\{\{\s*(.*?)\s*\}\}", expression, self.steps[step_id]["run"])
+        # Relocate literal diagnostic paths before inserting fixture paths under /tmp.
+        script = self.steps[step_id]["run"].replace("/tmp/milvus-", str(self.root / "milvus-"))
+        script = re.sub(r"\$\{\{\s*(.*?)\s*\}\}", expression, script)
         # Exercise the same Python body using the test environment's PyYAML.
         script = script.replace("/usr/bin/python3", sys.executable)
-        # Keep the workflow's fixed diagnostic paths private during offline tests.
-        script = script.replace("/tmp/milvus-", str(self.root / "milvus-"))
         output = Path(self.env["GITHUB_OUTPUT"])
         output.write_text("")
         (self.root / "trace").write_text("")
@@ -209,6 +209,28 @@ elif args[0] == "exec":
                     self.assertEqual("next_install_validated", output["decision"])
                     self.assertEqual("2.5.7", output["next_installed_version"])
                     self.assertTrue(any("down" in call for call in calls))
+
+    def test_linux_tmp_fixture_paths_are_not_rewritten_as_diagnostic_paths(self):
+        with tempfile.TemporaryDirectory(prefix="milvus-workflow-", dir="/tmp") as directory:
+            baseline = Path(directory) / "baseline"
+            baseline.mkdir()
+            compose = baseline / "compose.yml"
+            compose.write_text(yaml.safe_dump(compose_fixture("2.5.6")))
+            values = {
+                "steps.install.outputs.compose_path": str(compose),
+                "steps.install.outputs.work_dir": str(baseline),
+            }
+            for startup_rc in ("0", "17"):
+                with self.subTest(startup_rc=startup_rc):
+                    result, output, calls = self.run_step("test4", values=values, UP_RC=startup_rc)
+                    self.assertEqual(int(startup_rc != "0"), int(result.returncode != 0))
+                    self.assertEqual("passed" if startup_rc == "0" else "failed", output["status"])
+                    self.assertIn("compose startup diagnostic", (self.root / "milvus-up.log").read_text())
+                    if startup_rc != "0":
+                        self.assertIn("compose startup diagnostic", result.stdout)
+                    starts = [call for call in calls if "up" in call]
+                    self.assertEqual(1, len(starts))
+                    self.assertEqual(str(compose), starts[0][starts[0].index("-f") + 1])
 
     def test_startup_failure_prints_diagnostics_and_remains_failed_even_when_diagnostics_fail(self):
         for step in ("test4", "test6"):
