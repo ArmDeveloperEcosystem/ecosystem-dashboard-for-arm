@@ -161,39 +161,101 @@ jobs:
           set -euo pipefail
           SRC_DIR="${{ steps.install.outputs.source_dir }}"
           VERSION=$("$SRC_DIR/build/run/tshark" -v 2>&1 | awk 'NR==1 {print $3; exit}')
-          LATEST="$(
-            CURRENT_VERSION="$VERSION" python3 - <<'PY'
+          LOOKUP_ERROR_FILE="${RUNNER_TEMP}/wireshark-lookup-error.txt"
+          LOOKUP_ERROR=""
+          if LATEST="$(
+            CURRENT_VERSION="$VERSION" python3 - 2>"$LOOKUP_ERROR_FILE" <<'PY'
+          from html.parser import HTMLParser
+          import http.client
           import os
           import re
+          import sys
+          from urllib.parse import urljoin, urlsplit
           import urllib.request
 
-          current = os.environ.get("CURRENT_VERSION", "").strip()
+          index_url = "https://www.wireshark.org/download/src/all-versions/"
+          version_pattern = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
+          prerelease_pattern = re.compile(version_pattern.pattern + r"-?(?:alpha|beta|rc)[0-9]+")
+
+          def version_tuple(value):
+              if not version_pattern.fullmatch(value):
+                  raise ValueError("invalid release version")
+              return tuple(int(part) for part in value.split("."))
+
+          class SourceIndex(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.hrefs = []
+
+              def handle_starttag(self, tag, attrs):
+                  if tag == "a":
+                      hrefs = [value for key, value in attrs if key == "href"]
+                      if len(hrefs) != 1 or not hrefs[0]:
+                          raise ValueError("invalid source index link")
+                      self.hrefs.append(hrefs[0])
+
           try:
-              current_tuple = tuple(int(part) for part in current.split("."))
-          except Exception:
-              print("unknown")
-              raise SystemExit(0)
-
-          html = urllib.request.urlopen("https://www.wireshark.org/download/src/", timeout=20).read().decode("utf-8", "ignore")
-          versions = sorted(
-              {
-                  parsed
-                  for match in re.findall(r'wireshark-([0-9]+\\.[0-9]+\\.[0-9]+)\\.tar\\.xz', html)
-                  if (parsed := tuple(int(part) for part in match.split(".")))[1] % 2 == 0
-              }
-          )
-          next_newer = next((version for version in versions if version > current_tuple), None)
-          if next_newer is None:
-              print(current)
-          else:
-              print(".".join(str(x) for x in next_newer))
+              current = os.environ.get("CURRENT_VERSION", "")
+              current_tuple = version_tuple(current)
+              if current_tuple[1] % 2:
+                  raise ValueError("baseline is not a stable release")
+              with urllib.request.urlopen(index_url, timeout=20) as response:
+                  if response.geturl() != index_url:
+                      raise ValueError("source index redirected away from the official index URL")
+                  if response.status != 200 or response.headers.get_content_type() not in ("text/html", "application/xhtml+xml"):
+                      raise ValueError("unexpected source index HTTP response")
+                  payload = response.read(2_000_001)
+                  length = response.headers.get("Content-Length")
+                  if length is not None and int(length) != len(payload):
+                      raise ValueError("incomplete source index response")
+              if not payload or len(payload) > 2_000_000:
+                  raise ValueError("empty or oversized source index")
+              parser = SourceIndex()
+              parser.feed(payload.decode("utf-8"))
+              if parser.rawdata.strip():
+                  raise ValueError("unfinished source index markup")
+              parser.close()
+              versions = set()
+              for href in parser.hrefs:
+                  link = urlsplit(urljoin(index_url, href))
+                  directory, _, filename = link.path.rpartition("/")
+                  if (link.scheme, link.netloc, directory) != ("https", "www.wireshark.org", "/download/src/all-versions") or link.query or link.fragment:
+                      continue
+                  if filename == "wireshark-latest.tar.xz":
+                      continue
+                  if filename.startswith("wireshark-") and filename.endswith(".tar.xz"):
+                      release = filename.removeprefix("wireshark-").removesuffix(".tar.xz")
+                      if prerelease_pattern.fullmatch(release):
+                          continue
+                      parsed = version_tuple(release)
+                      if parsed[1] % 2 == 0:
+                          versions.add(parsed)
+              if not versions:
+                  raise ValueError("source index contains no stable release archives")
+              next_newer = next((version for version in sorted(versions) if version > current_tuple), None)
+              if next_newer is None and current_tuple not in versions:
+                  raise ValueError("source index does not establish the baseline or a newer stable release")
+              print(".".join(str(part) for part in next_newer) if next_newer else current)
+          except (ValueError, OSError, http.client.HTTPException) as error:
+              print("Wireshark source lookup failed: " + " ".join(str(error).split())[:300], file=sys.stderr)
+              raise SystemExit(1)
           PY
-          )"
+          )"; then
+            echo "Detected next newer stable source candidate: $LATEST"
+          else
+            LATEST="unknown"
+            LOOKUP_ERROR="$(cat "$LOOKUP_ERROR_FILE")"
+            LOOKUP_ERROR="${LOOKUP_ERROR//$'\n'/ }"
+            LOOKUP_ERROR="${LOOKUP_ERROR//$'\r'/ }"
+            echo "$LOOKUP_ERROR" >&2
+          fi
 
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$VERSION"
+            echo "latest=$LATEST"
+            echo "lookup_error=$LOOKUP_ERROR"
+          } >> "$GITHUB_OUTPUT"
           echo "Detected Wireshark version: $VERSION"
-          echo "Detected next newer stable source candidate: $LATEST"
 
       - name: Test 1 - Check tshark binary exists
         id: test1
@@ -300,6 +362,8 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
+        env:
+          WIRESHARK_LOOKUP_ERROR: ${{ steps.version.outputs.lookup_error }}
         run: |
           set -euo pipefail
           echo "regression_policy=${{ steps.metadata.outputs.regression_policy || 'applicable' }}" >> "$GITHUB_OUTPUT"
@@ -314,7 +378,7 @@ jobs:
             echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Wireshark source version ${CURRENT} passed smoke tests in this run, but the next newer stable source release could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Wireshark source version ${CURRENT} passed smoke tests in this run, but the next newer stable source release could not be resolved automatically. ${WIRESHARK_LOOKUP_ERROR:-See the version step for lookup failure details.}" >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"

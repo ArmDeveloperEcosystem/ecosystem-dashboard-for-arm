@@ -124,15 +124,17 @@ jobs:
           curl -fsSL https://assets.logdna.com/logdna.gpg | sudo gpg --dearmor -o /usr/share/keyrings/logdna-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/logdna-archive-keyring.gpg] https://assets.logdna.com stable main" | sudo tee /etc/apt/sources.list.d/logdna.list >/dev/null
           sudo apt-get update
-          sudo apt-get install -y logdna-agent
+          sudo apt-get install -y logdna-agent python3-yaml
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get Mezmo version
         id: version
         run: |
           set -euo pipefail
-          logdna-agent --version 2>&1 | tee /tmp/mezmo-version.log
-          VERSION=$(grep -oE 'LogDNA Agent [0-9]+\.[0-9]+\.[0-9]+' /tmp/mezmo-version.log | awk '{print $3}' | head -1)
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP" logdna-agent --version >"$RUNNER_TEMP/mezmo-version.log" 2>&1
+          cat "$RUNNER_TEMP/mezmo-version.log"
+          VERSION=$(grep -oE 'LogDNA Agent [0-9]+\.[0-9]+\.[0-9]+' "$RUNNER_TEMP/mezmo-version.log" | awk '{print $3}' | head -1)
+          test -n "$VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Test 1 - Binary Existence
@@ -153,31 +155,44 @@ jobs:
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          logdna-agent --version 2>&1 | tee /tmp/mezmo-version-check.log
-          if grep -Fq "LogDNA Agent" /tmp/mezmo-version-check.log; then
+          finish_duration() {
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+          }
+          trap finish_duration EXIT
+          if env -i PATH="$PATH" HOME="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP" logdna-agent --version >"$RUNNER_TEMP/mezmo-version-check.log" 2>&1 && \
+             grep -Fq "LogDNA Agent" "$RUNNER_TEMP/mezmo-version-check.log"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            cat "$RUNNER_TEMP/mezmo-version-check.log" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          trap - EXIT
+          finish_duration
 
       - name: Test 3 - Help Output Validation
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          logdna-agent --help 2>&1 | tee /tmp/mezmo-help.log
-          if grep -Fq "A resource-efficient log collection agent" /tmp/mezmo-help.log && grep -Fq "USAGE:" /tmp/mezmo-help.log; then
+          finish_duration() {
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+          }
+          trap finish_duration EXIT
+          if env -i PATH="$PATH" HOME="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP" logdna-agent --help >"$RUNNER_TEMP/mezmo-help.log" 2>&1 && \
+             grep -Fq "A resource-efficient log collection agent" "$RUNNER_TEMP/mezmo-help.log" && \
+             grep -Fq "USAGE:" "$RUNNER_TEMP/mezmo-help.log"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
+            cat "$RUNNER_TEMP/mezmo-help.log" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          trap - EXIT
+          finish_duration
 
       - name: Test 4 - Architecture Verification
         id: test4
@@ -197,16 +212,83 @@ jobs:
         id: test5
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          logdna-agent --list 2>&1 | tee /tmp/mezmo-functional.log
-          if grep -Fq "effective configuration:" /tmp/mezmo-functional.log && grep -Fq "http:" /tmp/mezmo-functional.log; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          finish() {
+            RC=$?
+            if [ "$RC" -eq 0 ]; then STATUS=passed; else STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import socket
+          import subprocess
+          import tempfile
+          import yaml
+
+          # --list validates configuration and exits before creating ingestion clients or tailers.
+          with tempfile.TemporaryDirectory(prefix="mezmo-list-", dir=os.environ["RUNNER_TEMP"]) as directory:
+              root = Path(directory)
+              for name in ("home", "fixtures", "retry", "state"):
+                  (root / name).mkdir(mode=0o700)
+              (root / "fixtures/synthetic.log").write_text("mezmo synthetic smoke fixture\n")
+              with socket.socket() as receiver:
+                  receiver.bind(("127.0.0.1", 0))
+                  receiver.listen(1)
+                  receiver.setblocking(False)
+                  host = f"127.0.0.1:{receiver.getsockname()[1]}"
+                  config = {
+                      "http": {"host": host, "endpoint": "/logs/agent", "use_ssl": False,
+                               "ingestion_key": "mezmo-local-smoke-not-a-real-key", "use_compression": False,
+                               "gzip_level": 2, "timeout": 1000, "body_size": 4096,
+                               "retry_dir": str(root / "retry"), "params": {"hostname": "mezmo-smoke-fixture"}},
+                      "log": {"dirs": [str(root / "fixtures")], "db_path": str(root / "state"),
+                              "include": {"glob": ["*.log"], "regex": []}, "use_k8s_enrichment": "never",
+                              "log_k8s_events": "never", "log_metric_server_stats": "never"},
+                      "journald": {"paths": [], "systemd_journal_tailer": False},
+                  }
+                  config_path = root / "config.yaml"
+                  config_path.write_text(json.dumps(config))
+                  child_env = {"PATH": os.environ["PATH"], "HOME": str(root / "home"), "TMPDIR": str(root)}
+                  result = subprocess.run(["logdna-agent", "--config", str(config_path), "--list"],
+                                          env=child_env, capture_output=True, text=True, timeout=30)
+                  text = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout + result.stderr)
+                  (root / "producer.log").write_text(text)
+                  print(f"Mezmo --list producer exit: {result.returncode}")
+                  if result.returncode != 0:
+                      raise RuntimeError("Mezmo --list failed configuration validation")
+                  if re.search(r"\b(?:ERROR|FATAL)\b|configuration error:|panicked", text, re.IGNORECASE):
+                      raise RuntimeError("Mezmo --list emitted an unexpected error")
+                  marker = "effective configuration:\n"
+                  if text.count(marker) != 1:
+                      raise RuntimeError("Mezmo --list did not emit one effective configuration")
+                  effective = yaml.safe_load(text.split(marker, 1)[1])
+                  for section in ("http", "log", "journald"):
+                      for key, expected in config[section].items():
+                          if key == "ingestion_key":
+                              expected = "REDACTED"
+                          if key == "params":
+                              if effective[section][key]["hostname"] != expected["hostname"]:
+                                  raise RuntimeError("Unexpected fixture hostname")
+                          elif effective[section][key] != expected:
+                              raise RuntimeError(f"Unexpected effective configuration: {section}.{key}")
+                  try:
+                      connection, _ = receiver.accept()
+                  except BlockingIOError:
+                      pass
+                  else:
+                      connection.close()
+                      raise RuntimeError("Mezmo --list unexpectedly attempted ingestion")
+                  print("Validated isolated configuration-only dry run; no ingestion connection")
+          PY
+          trap - EXIT
+          finish
 
 
       - name: Regression applicability - package manager installed
@@ -234,7 +316,8 @@ jobs:
           check_test() {
             local status="$1"
             local duration="$2"
-            if [ "$status" = "passed" ]; then
+            local outcome="$3"
+            if [ "$status" = "passed" ] && [ "$outcome" = "success" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
@@ -242,21 +325,27 @@ jobs:
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}" "${{ steps.test1.outcome }}"
+          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}" "${{ steps.test2.outcome }}"
+          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}" "${{ steps.test3.outcome }}"
+          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}" "${{ steps.test4.outcome }}"
+          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}" "${{ steps.test5.outcome }}"
+          echo "core_failed=$FAILED" >> "$GITHUB_OUTPUT"
+          SKIPPED=0
+          if [ "${{ steps.test6.outcome }}" = "success" ] && \
+             [ "${{ steps.test6.outputs.status }}" = "skipped" ] && \
+             [ "${{ steps.test6.outputs.decision }}" = "not_applicable_package_manager" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
 
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ steps.test1.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test2.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test3.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test4.outputs.status }}" = "passed" ] && \
-             [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
+          if [ "$FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
           else
@@ -282,4 +371,3 @@ jobs:
             echo "| Test 4 - Architecture Verification | ${{ steps.test4.outputs.status || 'skipped' }} | ${{ steps.test4.outputs.duration || 0 }} |"
             echo "| Test 5 - Functional Validation | ${{ steps.test5.outputs.status || 'skipped' }} | ${{ steps.test5.outputs.duration || 0 }} |"
           } >> "$GITHUB_STEP_SUMMARY"
-
