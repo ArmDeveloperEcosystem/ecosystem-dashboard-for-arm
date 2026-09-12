@@ -123,6 +123,40 @@ class PersistentFailureTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.f.contexts()
 
+    def test_extra_or_contradictory_confirmation_history_fails_closed(self):
+        for entry in (
+            {"batch": 1, "retry": 2, "run_id": 30001, "classification": "failed"},
+            {"batch": 1, "retry": -1, "run_id": 30001, "classification": "failed"},
+            {"batch": 1, "retry": "1", "run_id": 30001, "classification": "failed"},
+            {"batch": 2, "retry": 1, "run_id": 30001, "classification": "failed"},
+        ):
+            with self.subTest(entry=entry):
+                self.f = EvidenceFixture()
+                self.f.audit["history"].append(entry)
+                with self.assertRaises(ValueError):
+                    self.f.contexts()
+                self.assertEqual(self.f.calls, [])
+
+    def test_both_package_failures_require_completed_unambiguous_failed_steps(self):
+        for record_name in ("original", "replacement"):
+            for mutation in (
+                lambda job: job.update(steps=[]),
+                lambda job: job["steps"][0].update(conclusion="success"),
+                lambda job: job["steps"][0].update(status="in_progress"),
+                lambda job: job["steps"][0].update(name=""),
+                lambda job: job["steps"][0].update(number=True),
+                lambda job: job["steps"].append(deepcopy(job["steps"][0])),
+                lambda job: job["steps"][0].update(started_at=fixture.UPDATED),
+            ):
+                with self.subTest(run=record_name, mutation=mutation):
+                    self.f = EvidenceFixture()
+                    record = getattr(self.f, record_name)
+                    endpoint = f"repos/{fixture.REPOSITORY}/actions/runs/{record['run_id']}/attempts/1/jobs?per_page=100"
+                    mutation(self.f.responses[endpoint][0]["jobs"][0])
+                    with self.assertRaises(ValueError):
+                        self.f.contexts()
+                    self.assertFalse(any(call.endswith("/logs") for call in self.f.calls))
+
     def test_failed_collector_and_incomplete_jobs_are_not_repairable(self):
         endpoint = f"repos/{fixture.REPOSITORY}/actions/runs/20001/attempts/1/jobs?per_page=100"
         for mutate in (lambda p: p[0]["jobs"][1].update(conclusion="failure"),
@@ -261,6 +295,29 @@ class ParentAndArchiveTests(unittest.TestCase):
 
 
 class SourceAndCLITests(unittest.TestCase):
+    def test_redaction_precedes_excerpt_truncation(self):
+        material = "SYNTHETIC-PRIVATE-MATERIAL"
+        for raw in (
+            "-----BEGIN PRIVATE KEY-----\n" + (material + "\n") * 1024 + "-----END PRIVATE KEY-----\n",
+            "api_key=" + "x" * evidence.MAX_LOG_EXCERPT + material + "\n",
+        ):
+            with self.subTest(prefix=raw[:32]):
+                excerpt = evidence.sanitize_log(raw.encode())
+                self.assertNotIn(material, excerpt)
+                self.assertIn("removed", excerpt)
+                self.assertLessEqual(len(excerpt), evidence.MAX_LOG_EXCERPT)
+
+    def test_sanitized_tail_retains_useful_diagnostics_without_credentials(self):
+        raw = ("old diagnostic\n" * 1024
+               + "Authorization: synthetic-credential\n"
+               + "Download https://example.org/package?signature=synthetic-query\n"
+               + "curl failed\n")
+        excerpt = evidence.sanitize_log(raw.encode())
+        self.assertNotIn("synthetic-credential", excerpt)
+        self.assertNotIn("synthetic-query", excerpt)
+        self.assertTrue(excerpt.endswith("curl failed"))
+        self.assertLessEqual(len(excerpt), evidence.MAX_LOG_EXCERPT)
+
     def test_source_size_is_checked_before_loading_blob(self):
         source = b"name: test\n"
         with mock.patch.object(evidence.subprocess, "run", side_effect=[

@@ -50,16 +50,10 @@ def select_context(bundle, slug, repository, sha, root):
 
 
 def model_context(context):
-    from smoke_repair_policy import APT_BUILD_DEPENDENCIES, PYTHON_BUILD_DEPENDENCIES
+    from smoke_repair_policy import policy_description
     output = {key: context[key] for key in MODEL_FIELDS}
     output["validation_feedback"] = (
-        "Enforced repair policy: change only existing run scalar contents in this workflow. "
-        "Keep all existing test commands, assertions, outputs, final gates, step IDs/names/order, "
-        "versions, metadata, action references, permissions and triggers unchanged. "
-        "Allowed changes are approved build-prerequisite additions, bounded build parallelism, "
-        "and bounded curl retry options. Do not propose unsupported edits; use unresolved_reason instead. "
-        "Approved apt build prerequisites: " + ", ".join(sorted(APT_BUILD_DEPENDENCIES)) + ". "
-        "Approved Python build prerequisites: " + ", ".join(sorted(PYTHON_BUILD_DEPENDENCIES)) + "."
+        "Enforced repair policy (including frozen final gates): " + policy_description()
     )
     return output
 

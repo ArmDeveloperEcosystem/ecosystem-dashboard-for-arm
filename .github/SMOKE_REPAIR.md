@@ -20,29 +20,29 @@ deploys, and cannot turn an original failure into a passing result.
 ## Layout-Admission Coverage
 
 The registered-topology scan reported for this change examined **960 registered
-packages**. Of these, **554 passed both policy and native contract layout
-derivation**, and **406 had unsupported layouts**. This is a coverage snapshot
+packages**. Of these, **553 passed both policy and native contract layout
+derivation**, and **407 had unsupported layouts**. This is a coverage snapshot
 of layout admission only, **not validated repair counts**, successful native
-runs, or evidence that 554 packages or their failure causes can be fixed.
+runs, or evidence that 553 packages or their failure causes can be fixed.
 
 The reported unsupported-layout breakdown is:
 
 | Admission rejection | Packages |
 | --- | ---: |
 | No `workflow_dispatch` | 374 |
-| Explicit secrets or tokens | 19 |
+| Explicit secrets or tokens | 20 |
 | Unsupported failure gate | 4 |
 | Timeout greater than 60 minutes | 1 |
 | Conditional job | 1 |
 | Unnamed steps | 7 |
-| Total unsupported | 406 |
+| Total unsupported | 407 |
 
 Callable-only workflows (`workflow_call` without `workflow_dispatch`) and
 delegated layouts outside the standalone native contract require manual
 handling. A supported layout is only a prerequisite: a real failure must still
 have authenticated evidence, a repair within the three allowed classes, policy
 admission, exact hosted Arm validation, and human review. Causes outside the
-bounded policy remain manual even for one of the 554 admitted layouts.
+bounded policy remain manual even for one of the 553 admitted layouts.
 
 **No package workflows were changed to force eligibility.** The scan does not
 authorize adding dispatch triggers, removing credential references, weakening
@@ -91,10 +91,12 @@ Authenticated persistent failure -> data-only model -> policy admission
    current `main` SHA, orchestration/run/attempt identities, exact artifact, both
    failed batch runs, package registration, and failed steps. It reads source
    from the authenticated base and prepares a bounded, sanitized public log
-   excerpt. Missing, ambiguous, or stale evidence fails closed.
+   excerpt. Both failures require completed, uniquely identified failing steps;
+   contradictory or extra confirmation history is rejected. Missing, ambiguous,
+   or stale evidence fails closed.
 2. **Request data only.** A separate analysis job projects the authenticated
-   context onto the model's allowlisted fields and includes enforced patch
-   policy and approved dependency names as validation feedback. It requests
+   context onto the model's allowlisted fields and includes the validator's full
+   policy description and approved dependency names as validation feedback. It requests
    one bounded OpenAI Responses proposal per package: `diagnosis`, `edits`, and
    `unresolved_reason`. Source and logs are untrusted data. The model has no
    tools, shell, web access, or authority to execute its output. Requests use
@@ -116,11 +118,16 @@ Authenticated persistent failure -> data-only model -> policy admission
    and runner evidence, and requires the original mandatory tests and final
    failure gate to complete successfully. Static checks, mock results, model
    claims, or a receipt alone cannot replace this live evidence.
+   All source workflow steps must be present with their exact names and numbers.
+   Requested runner labels alone are insufficient: the job must belong to the
+   standard GitHub-hosted runner group, and the repository must remain public.
 6. **Open only a verified draft.** Publication rechecks policy, the unchanged
    base and candidate identities, and live native evidence. Only then may the
    dedicated App open the exact draft PR with links to the original failure,
    confirmation failure, and native run. Unresolved or unsuccessful stages
    produce a manual-investigation report, not a placeholder PR or a fake pass.
+   After final native verification, the publisher rereads the draft's ownership,
+   commit, title, body, and disabled auto-merge state before reporting success.
 7. **Require human review and a new main cycle.** The user tests and examines
    the evidence; Chris reviews before a human merges with required checks and
    approvals. That smoke-code merge triggers a new full cycle on the new
@@ -142,7 +149,14 @@ Only these classes can be admitted within a supported package workflow:
 - The exact bounded retry suffix on an eligible existing setup curl download:
   `--retry N --retry-delay D --retry-max-time T`, with `N=1..5`, `D=1..10`, and
   `T` one of `30`, `60`, `90`, or `120`. The original HTTPS command and its
-  failure behavior remain intact.
+  failure behavior remain intact. Exactly one credential-free HTTPS URL and
+  supported download options are required; uploads, config files, multiple
+  transfers, and ambiguous or overridden failure flags require manual handling.
+
+In-place setup edits after multiline quotes, heredocs, command continuations,
+or other unsupported shell context require manual review. Command-looking text
+inside shell data is not an editable command. A permitted prefix before the
+entire unchanged original script remains a separate supported operation.
 
 The original test scripts, assertions, output writes/checks, and final gates are
 immutable. Approved prerequisites or parallelism may be prefixed before an
@@ -165,9 +179,17 @@ repository workflows share GitHub's API limits. Controllers recheck the free
 rate-limit endpoint at most every ten primary requests, retain a reserve for
 concurrent workers and reporting, and wait for an authenticated reset only
 when it fits the remaining deadline. Both refs are rechecked after a wait
-before dispatch, and a POST is never repeated. Publication's repeated native
-checks share one 180-second deadline. Unavailable quota or malformed rate
+before dispatch, and a POST is never repeated. The empty prior-run inventory,
+public repository check, ref checks, and dispatch reserve their quota together,
+so a quota wait cannot separate the inventory check from dispatch. Publication's
+repeated native checks and publication checkpoints share one 180-second deadline.
+Unavailable quota or malformed rate
 evidence stops verification without authorizing a PR.
+
+GitHub reads and writes are not atomic. An in-flight API call can outlast a
+checkpoint deadline, or concurrent changes can invalidate an already-created
+draft. Such cases report failure, not verified publication; a human may need to
+inspect the retained branch or draft. No automatic deletion or merging occurs.
 
 Structural admission and native success do not prove semantic equivalence or
 complete coverage. Dependency additions execute upstream code, and an unchanged
@@ -183,6 +205,11 @@ The required repository variables are:
 | `SMOKE_REPAIR_ENABLED` | Unset or `false` by default; exactly `true` only for an approved activation. |
 | `SMOKE_REPAIR_MODEL` | Explicit model supporting the adapter's strict Responses JSON schema; no hardcoded default or fallback. |
 | `SMOKE_REPAIR_APP_BOT_LOGIN` | Exact dedicated repair App login ending in `[bot]`, matching the installed App. |
+
+The approved model must support the exact strict schema, including `maxLength`
+and `maxItems`, not merely JSON output. The [official OpenAI documentation](https://developers.openai.com/api/docs/guides/structured-outputs)
+describes model-specific restrictions. Compatibility still requires the live pilot;
+offline adapter tests do not establish account access or model support.
 
 Keep the existing `DASHBOARD_DELIVERY_APP_BOT_LOGIN` configured: the publisher
 requires it to verify that the repair App is a **different** identity from the

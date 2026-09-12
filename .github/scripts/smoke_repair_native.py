@@ -258,7 +258,7 @@ its authorization of edited shell bodies is a separate prerequisite.
         "workflow_path": workflow_path, "package_slug": package_slug,
         "workflow_name": name, "called_job": job_id, "job_name": job_name,
         "permissions": permissions, "runner_labels": [RUNNER],
-        "required_steps": required, "final_gate": final_gate,
+        "required_steps": required, "final_gate": final_gate, "workflow_steps": descriptors,
         "metadata_digest": _digest(frozen),
     }
 
@@ -369,6 +369,11 @@ class NativeValidation:
             ref = self._api(f"repos/{stage['repository']}/git/ref/heads/{branch}")
             validate_current_ref(ref, expected_sha=sha, branch=branch)
 
+    def _public_repository(self, stage):
+        repository = _mapping(self._api(f"repos/{stage['repository']}"), "native repository")
+        if repository.get("full_name") != stage["repository"] or repository.get("private") is not False:
+            raise ContractError("free hosted native validation requires the exact public repository")
+
     def _source(self, stage, sha):
         query = urlencode({"ref": sha})
         source = _mapping(self._api(
@@ -398,6 +403,7 @@ class NativeValidation:
             if contract[key] != stage[key]:
                 raise ContractError(f"native contract {key} differs from stage")
         _match(contract["called_job"], _JOB, "called job")
+        self._public_repository(stage)
         self._current(stage)
         commit = _mapping(self._api(
             f"repos/{stage['repository']}/git/commits/{stage['candidate_sha']}"
@@ -536,6 +542,10 @@ class NativeValidation:
             return None
         _integer(job.get("runner_id"), "native runner ID")
         _text(job.get("runner_name"), "native runner name")
+        # Labels describe runs-on, not the runner that actually executed the job.
+        if (_integer(job.get("runner_group_id"), "native runner group ID", minimum=0) != 0
+                or job.get("runner_group_name") != "GitHub Actions"):
+            raise ContractError("native job did not execute on the standard GitHub-hosted runner group")
         started, ended = _when(job.get("started_at"), "job started_at"), _when(job.get("completed_at"), "job completed_at")
         if not _when(run["run_started_at"], "run started_at") <= started <= ended <= _when(run["updated_at"], "run updated_at"):
             raise ContractError("native job timestamps are outside run window")
@@ -562,9 +572,14 @@ class NativeValidation:
             step = by_name.get(expected["name"])
             if step is None or step["number"] != expected["number"]:
                 raise ContractError("mandatory test/final gate is missing or has the wrong number")
+        for expected in contract["workflow_steps"]:
+            step = by_name.get(expected["name"])
+            if step is None or step["number"] != expected["number"]:
+                raise ContractError("native workflow step inventory is incomplete or mismatched")
         return {key: job[key] for key in (
             "id", "run_id", "run_attempt", "name", "head_sha", "head_branch", "workflow_name",
-            "status", "conclusion", "started_at", "completed_at", "labels", "runner_id", "runner_name", "html_url",
+            "status", "conclusion", "started_at", "completed_at", "labels", "runner_id", "runner_name",
+            "runner_group_id", "runner_group_name", "html_url",
         )}, observed
 
     def _collect(self, stage, contract, workflow_id, run_id, *, allow_pending=False):
@@ -590,6 +605,7 @@ class NativeValidation:
         _same(run, latest, "completed native run snapshot")
         if self._unique_run(stage, contract, workflow_id, run_id) != run_id:
             raise ContractError("native run has no unique exact evidence")
+        self._public_repository(stage)
         self._current(stage)
         run_observation = {key: run[key] for key in (
             "id", "workflow_id", "run_attempt", "name", "path", "head_sha", "head_branch", "event",
@@ -630,11 +646,12 @@ class NativeValidation:
         identity = (stage["repository"], stage["branch"], stage["candidate_sha"], stage["workflow_path"])
         if identity in self._attempted:
             raise ContractError("this native dispatch was already attempted; never redispatch")
+        # Reserve the empty inventory (five reads), repository, refs, and POST.
+        # A reset wait must not make the no-prior-run observation stale.
+        self._rate_budget(minimum_requests=9)
         if self._runs(stage):
             raise ContractError("prior native runs exist for this workflow/branch/SHA; refusing duplicate dispatch")
-        # Reserve both ref reads and the single POST before checking the refs:
-        # quota waiting must never separate that final check from dispatch.
-        self._rate_budget(minimum_requests=3)
+        self._public_repository(stage)
         self._current(stage)
         self._attempted.add(identity)
         workflow_file = stage["workflow_path"].rsplit("/", 1)[-1]

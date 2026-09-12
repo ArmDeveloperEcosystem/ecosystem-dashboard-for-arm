@@ -43,7 +43,7 @@ opens a draft PR only after verified native success. The limit is 10 packages
 per incident and two parallel repairs; unsupported cases require manual work.
 
 Not all packages or failure causes are automatically repairable. A layout-only
-coverage scan of 960 registered packages admitted 554 layouts and rejected 406;
+coverage scan of 960 registered packages admitted 553 layouts and rejected 407;
 these are **not validated repair counts**. Callable-only or delegated layouts
 require manual handling. No package workflows were changed to force eligibility.
 See the [layout-admission coverage snapshot](.github/SMOKE_REPAIR.md#layout-admission-coverage).

@@ -365,6 +365,21 @@ class ClassifierTests(unittest.TestCase):
         raw = b"\n".join(log_bytes(DNS_ERROR).splitlines()[:-1]) + b"\n"
         self.assertEqual(self.classify(raw), "unknown_failure")
 
+    def test_date_only_log_timestamp_is_unknown_not_an_unhandled_exception(self):
+        for prefix in ("2026-09-11Z", "20260911Z", "2026-W37-5Z"):
+            with self.subTest(prefix=prefix):
+                raw = prefix.encode() + b" diagnostic line\n" + log_bytes(DNS_ERROR)
+                self.assertEqual(self.classify(raw), "unknown_failure")
+
+    def test_date_only_step_timestamps_are_unknown(self):
+        for key in ("started_at", "completed_at"):
+            with self.subTest(key=key):
+                job = deepcopy(self.job)
+                job["steps"][0][key] = "2026-09-11Z"
+                self.assertEqual(recovery.classify_retryable_failure(
+                    log_bytes(DNS_ERROR), job, command=CURL_COMMAND,
+                ), "unknown_failure")
+
     def test_curl22_without_observed_public_download_url_is_unknown(self):
         self.assertEqual(self.classify(log_bytes(HTTP_ERROR, command="./install-package")), "unknown_failure")
 
@@ -712,6 +727,34 @@ class RecoveryControllerTests(unittest.TestCase):
                 if outcome == "unavailable":
                     self.assertIsNone(failure["log_sha256"])
                     self.assertEqual(failure["log_error"], "logs unavailable")
+
+    def test_cli_malformed_diagnostic_timestamp_cannot_block_confirmation_or_mask_failure(self):
+        for outcome in ("success", "assertion"):
+            with self.subTest(outcome=outcome):
+                self.fixture = RecoveryFixture()
+                self.fixture.fail()
+                self.fixture.outcomes[1] = [outcome]
+                raw = b"2026-09-11Z diagnostic line\n" + log_bytes(DNS_ERROR)
+                self.fixture.logs[100010] = raw
+                manifest_path = self.root / "manifest.json"
+                original = contract.canonical_json(self.fixture.manifest) + "\n"
+                manifest_path.write_text(original)
+                status, _, stderr, _ = self.cli()
+                self.assertEqual(status, 0 if outcome == "success" else 1, stderr)
+                self.assertEqual([batch for batch, _ in self.fixture.posts], [1])
+                audit = self.audit()
+                self.assertEqual(audit["original_manifest"], self.fixture.manifest)
+                failure = audit["history"][0]["failures"][0]
+                self.assertEqual(failure["classification"], "unknown_failure")
+                self.assertEqual(failure["log_sha256"], hashlib.sha256(raw).hexdigest())
+                if outcome == "success":
+                    self.assert_final(json.loads(manifest_path.read_text()), changed={1})
+                    self.topology.reset_mock()
+                else:
+                    self.assertEqual(audit["status"], "failed")
+                    self.assertEqual(manifest_path.read_text(), original)
+                    self.assertEqual(audit["failed_batches"], [1])
+                    self.assertIn("failed confirmation", stderr)
 
     def test_only_validated_job_id_controls_log_endpoint(self):
         self.fixture.fail()

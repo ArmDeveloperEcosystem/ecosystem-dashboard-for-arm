@@ -51,7 +51,9 @@ _HARD_FAILURE = re.compile(
 
 
 def timestamp(value):
-    if not isinstance(value, str) or not value.endswith("Z"):
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z", value,
+    ):
         raise ContractError("API timestamp is not UTC")
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))

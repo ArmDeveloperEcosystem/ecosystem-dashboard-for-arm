@@ -509,6 +509,29 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
         self.publish(expected=1)
         self.assertEqual(self.api.prs, [])
 
+    def test_matching_arm_label_on_self_hosted_runner_cannot_publish(self):
+        self.staged()
+        self.api.mutate_native = lambda run, job: job.update(
+            runner_group_id=9, runner_group_name="GitHub Actions")
+        self.assertEqual(self.dispatch(expected=1)["status"], "not_passed")
+        self.publish(expected=1)
+        self.assertEqual(self.api.prs, [])
+        self.assertEqual(len(self.api.dispatches), 1)
+
+    def test_missing_setup_step_cannot_publish_a_green_job(self):
+        self.staged()
+        self.api.mutate_native = lambda run, job: job["steps"].pop(1)
+        self.assertEqual(self.dispatch(expected=1)["status"], "not_passed")
+        self.publish(expected=1)
+        self.assertEqual(self.api.prs, [])
+
+    def test_repository_becoming_private_after_validation_prevents_draft(self):
+        self.staged()
+        self.dispatch()
+        self.failures.responses[f"repos/{REPOSITORY}"]["private"] = True
+        self.publish(expected=1)
+        self.assertEqual(self.api.prs, [])
+
     def test_native_ambiguous_post_is_reconciled_not_redispatched(self):
         self.staged()
         self.api.ambiguous_post = True
@@ -551,6 +574,19 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
         self.publish(expected=1)
         self.assertEqual(checks, 2)
         self.assertEqual(self.api.prs, [])
+
+    def test_draft_changed_during_real_final_verification_emits_no_success(self):
+        self.staged()
+        self.dispatch()
+
+        def leave_draft(path):
+            if path == f"actions/jobs/{JOB_ID}" and self.api.prs:
+                self.api.prs[0]["draft"] = False
+
+        self.api.before_native_read = leave_draft
+        self.publish(expected=1)
+        self.assertEqual(len(self.api.prs), 1)
+        self.assertFalse(self.path("result.json").exists())
 
     def test_every_controller_imports_in_the_workflows_isolated_python_mode(self):
         for filename in ("smoke_repair_evidence.py", "smoke_repair_model.py", "smoke_repair_pipeline.py",

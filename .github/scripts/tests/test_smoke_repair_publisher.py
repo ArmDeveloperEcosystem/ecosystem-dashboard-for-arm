@@ -205,6 +205,7 @@ class FakeGitHub:
     def create_pull_request(self, config, *, body, head_sha):
         pr = {
             "number": len(self.prs) + 1, "state": "open", "draft": True,
+            "auto_merge": None,
             "title": config.title, "body": body, "user": {"login": config.expected_pr_author_login},
             "head": {"ref": config.head_branch, "sha": head_sha, "repo": {"full_name": REPOSITORY}},
             "base": {"ref": "main", "sha": BASE, "repo": {"full_name": REPOSITORY}},
@@ -439,6 +440,87 @@ class PublisherTests(unittest.TestCase):
         self.verifier.side_effect = lambda _, receipt: {**receipt, "rewritten": True}
         with self.assertRaisesRegex(module.PublishError, "unchanged"):
             self.open(staged)
+
+    def test_draft_leaving_review_during_final_native_check_is_not_success(self):
+        staged = self.stage()
+
+        def leave_draft(_, receipt):
+            if self.github.prs:
+                self.github.prs[0]["draft"] = False
+            return receipt
+
+        self.verifier.side_effect = leave_draft
+        with self.assertRaises(module.PublishError):
+            self.open(staged)
+        self.assertEqual(len(self.github.prs), 1)
+
+    def test_auto_merge_enabled_on_existing_draft_is_not_success(self):
+        staged = self.stage()
+        self.open(staged)
+        for value in ({"merge_method": "squash"}, False, "disabled"):
+            with self.subTest(value=value):
+                self.github.prs[0]["auto_merge"] = value
+                with self.assertRaises(module.PublishError):
+                    self.open(staged)
+        self.github.prs[0].pop("auto_merge")
+        with self.assertRaises(module.PublishError):
+            self.open(staged)
+
+    def test_final_draft_snapshot_binds_every_published_identity(self):
+        staged = self.stage()
+        self.open(staged)
+        original = copy.deepcopy(self.github.prs[0])
+        mutations = [lambda pr: pr.update(number=2), lambda pr: pr.update(body="changed"),
+                     lambda pr: pr.update(title="changed"), lambda pr: pr.update(state="closed"),
+                     lambda pr: pr.update(html_url="https://example.invalid/pr"),
+                     lambda pr: pr.update(auto_merge={"merge_method": "merge"}),
+                     lambda pr: pr["head"].update(sha="b" * 40),
+                     lambda pr: pr["base"].update(ref="other"),
+                     lambda pr: pr["user"].update(login="other[bot]")]
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                self.github.prs = [copy.deepcopy(original)]
+                checks = 0
+
+                def verify(_, receipt):
+                    nonlocal checks
+                    checks += 1
+                    if checks == 2:
+                        mutate(self.github.prs[0])
+                    return receipt
+
+                self.verifier.side_effect = verify
+                with self.assertRaises(module.PublishError):
+                    self.open(staged)
+
+    def test_invalid_or_expired_publication_deadline_prevents_remote_calls(self):
+        for value in (True, "180", float("inf"), float("nan"), 0):
+            with self.subTest(deadline=value):
+                with self.assertRaises(module.PublishError):
+                    self.open({}, native={"status": "not_passed"}, deadline=value)
+        self.assertEqual(self.github.calls, [])
+
+    def test_ref_checks_exhausting_publication_deadline_prevent_creation(self):
+        staged = self.stage()
+        now = 0.0
+        calls = 0
+
+        def verify(_, receipt):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                self.github.before = delay
+            return receipt
+
+        def delay(method, endpoint, payload):
+            nonlocal now
+            now = 181.0
+
+        self.verifier.side_effect = verify
+        with patch.object(module.time, "monotonic", side_effect=lambda: now):
+            with self.assertRaises(module.PublishError):
+                self.open(staged)
+        self.assertEqual(self.github.prs, [])
 
     def test_altered_receipt_fields_are_rejected(self):
         staged = self.stage()

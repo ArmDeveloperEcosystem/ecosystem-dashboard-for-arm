@@ -100,6 +100,7 @@ class GitHubFixture:
         self.workflow = {"id": WORKFLOW_ID, "path": PATH, "name": flow["name"], "state": "active"}
         self.commit = {"sha": CANDIDATE, "tree": {"sha": TREE}, "parents": [{"sha": BASE}]}
         self.main_sha, self.branch_sha = BASE, CANDIDATE
+        self.repository = {"full_name": REPOSITORY, "private": False}
         self.ref_overrides = {}
         self.content_overrides = {}
         self.run = {"id": RUN_ID, "run_attempt": 1, "workflow_id": WORKFLOW_ID, "path": PATH,
@@ -121,6 +122,7 @@ class GitHubFixture:
                     "workflow_name": flow["name"], "status": "completed", "conclusion": "success",
                     "started_at": when(10), "completed_at": when(100), "steps": observations,
                     "labels": [native.RUNNER], "runner_id": 44, "runner_name": "Hosted Agent",
+                    "runner_group_id": 0, "runner_group_name": "GitHub Actions",
                     "run_url": self.run["url"],
                     "url": f"https://api.github.com/repos/{REPOSITORY}/actions/jobs/{JOB_ID}",
                     "html_url": f"https://github.com/{REPOSITORY}/actions/runs/{RUN_ID}/job/{JOB_ID}"}
@@ -155,6 +157,8 @@ class GitHubFixture:
             self.on_call(endpoint, options)
         if endpoint == "rate_limit":
             return {"resources": {"core": {"limit": 1000, "remaining": 1000, "reset": int(time.time()) + 3600}}}
+        if endpoint == f"repos/{REPOSITORY}":
+            return deepcopy(self.repository)
         if not endpoint.startswith(f"repos/{REPOSITORY}/"):
             raise AssertionError(f"unexpected or non-repository-relative endpoint: {endpoint}")
         if not 0 < options["timeout"] <= 60 or options.get("pages"):
@@ -340,6 +344,22 @@ class NativeValidationTests(unittest.TestCase):
                         api.before_runs = [dict(api.run, event=event, run_attempt=attempt, status=status)]
                         self.assert_blocked(api, before_post=True)
 
+    def test_paginated_prior_run_inventory_never_dispatches(self):
+        self.api.before_runs = [dict(self.api.run, id=RUN_ID + index) for index in range(101)]
+        self.assert_blocked(self.api, before_post=True)
+        self.assertTrue(any("/runs?" in endpoint and "page=2" in endpoint
+                            for endpoint, _ in self.api.calls))
+
+    def test_empty_inventory_through_dispatch_uses_nine_reserved_requests(self):
+        self.dispatch()
+        endpoints = [endpoint for endpoint, _ in self.api.calls]
+        inventory = next(index for index, endpoint in enumerate(endpoints) if "/runs?" in endpoint)
+        posted = next(index for index, endpoint in enumerate(endpoints) if endpoint.endswith("/dispatches"))
+        final_reads = endpoints[inventory - 2:posted + 1]
+        self.assertEqual(len(final_reads), 9)
+        self.assertNotIn("rate_limit", final_reads)
+        self.assertEqual(self.clock.sleeps, [])
+
     def test_legacy_response_with_wrong_run_is_never_accepted(self):
         for field, value in (("head_sha", BASE), ("head_branch", "main"), ("event", "push"),
                              ("path", ".github/workflows/test-other.yml"), ("run_attempt", 2)):
@@ -409,6 +429,8 @@ class NativeValidationTests(unittest.TestCase):
             "labels": (["ubuntu-latest"], ["ubuntu-24.04"], ["self-hosted", native.RUNNER],
                        [native.RUNNER, native.RUNNER], [], native.RUNNER, None),
             "runner_id": (True, "44", 0, None), "runner_name": (None, "", "${{ arbitrary }}"),
+            "runner_group_id": (True, "0", 1, -1, None),
+            "runner_group_name": (None, "", "Default", "github actions"),
             "status": ("skipped", "unknown", True), "conclusion": ("failure", "skipped", "cancelled", "neutral", None),
         }
         for field, values in mutations.items():
@@ -417,6 +439,34 @@ class NativeValidationTests(unittest.TestCase):
                     api = GitHubFixture()
                     api.job[field] = value
                     self.assert_blocked(api)
+
+    def test_self_hosted_runner_with_matching_requested_label_is_not_hosted_proof(self):
+        self.api.job.update(runner_name="self-hosted-builder", runner_group_id=7,
+                            runner_group_name="Default")
+        self.assert_blocked(self.api)
+
+    def test_free_hosted_validation_requires_live_public_repository(self):
+        for repository in ({"full_name": REPOSITORY, "private": True},
+                           {"full_name": REPOSITORY}, {"full_name": REPOSITORY, "private": 0},
+                           {"full_name": "other/repo", "private": False}):
+            with self.subTest(repository=repository):
+                api = GitHubFixture()
+                api.repository = repository
+                self.assert_blocked(api, before_post=True)
+
+    def test_repository_becoming_private_invalidates_native_receipt(self):
+        receipt = self.dispatch()
+        self.api.repository["private"] = True
+        with self.assertRaises(ContractError):
+            self.validator().verify(self.api.stage, receipt, self.api.contract)
+
+    def test_missing_nonmandatory_workflow_step_is_incomplete_evidence(self):
+        for name in ("Install prerequisites", "Create test summary"):
+            with self.subTest(name=name):
+                api = GitHubFixture()
+                step = next(step for step in api.job["steps"] if step["name"] == name)
+                api.job["steps"].remove(step)
+                self.assert_blocked(api)
 
     def test_job_inventory_must_contain_exactly_one_expected_job(self):
         for kind in ("empty", "extra", "duplicate", "null", "scalar"):
@@ -926,6 +976,43 @@ class NativeRateLimitTests(unittest.TestCase):
         fixture.api = api
         validator.sleep = sleep
         with self.assertRaises(ContractError):
+            validator.dispatch_and_wait(fixture.stage, fixture.contract)
+        self.assertTrue(waited)
+        self.assertEqual(fixture.posts, [])
+
+    def test_prior_run_appearing_during_predispatch_quota_wait_prevents_post(self):
+        fixture = GitHubFixture()
+        original_api = fixture.api
+        validator = self.validator(fixture)
+        prepared = validator._prepare
+        waiting = False
+        waited = False
+
+        def prepare(*args):
+            nonlocal waiting
+            result = prepared(*args)
+            waiting = True
+            # Allow the initial inventory, then force the pre-POST quota wait.
+            validator._rate_credit = 5
+            return result
+
+        def api(endpoint, **options):
+            if endpoint == "rate_limit":
+                return {"resources": {"core": {"limit": 1000,
+                    "remaining": 0 if waiting and not waited else 1000,
+                    "reset": self.EPOCH + int(self.clock.now) + 10}}}
+            return original_api(endpoint, **options)
+
+        def sleep(seconds):
+            nonlocal waited
+            waited = True
+            self.clock.sleep(seconds)
+            fixture.before_runs = [deepcopy(fixture.run)]
+
+        fixture.api = api
+        validator._prepare = prepare
+        validator.sleep = sleep
+        with self.assertRaisesRegex(ContractError, "prior native runs"):
             validator.dispatch_and_wait(fixture.stage, fixture.contract)
         self.assertTrue(waited)
         self.assertEqual(fixture.posts, [])

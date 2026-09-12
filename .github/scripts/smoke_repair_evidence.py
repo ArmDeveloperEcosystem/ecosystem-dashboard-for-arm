@@ -200,7 +200,8 @@ def read_source(root, sha, relative):
 def sanitize_log(raw):
     if not isinstance(raw, bytes):
         return "Log unavailable."
-    text = raw.decode("utf-8", errors="replace")[-MAX_LOG_EXCERPT:]
+    # Keep credential markers until redaction; truncation can otherwise expose a tail.
+    text = raw.decode("utf-8", errors="replace")
     text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
     text = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*", "[private-key material removed]", text)
     lines = []
@@ -213,6 +214,31 @@ def sanitize_log(raw):
         line = re.sub(r"(https?://[^\s?#]+)\?[^\s]+", r"\1?[query removed]", line)
         lines.append("".join(c for c in line if c == "\t" or ord(c) >= 32))
     return "\n".join(lines)[-MAX_LOG_EXCERPT:]
+
+
+def failed_step_names(job):
+    steps = job.get("steps")
+    if not isinstance(steps, list) or not steps or any(not isinstance(step, dict) for step in steps):
+        raise ContractError("repair failed step inventory is missing")
+    names, numbers, failed = set(), set(), []
+    for step in steps:
+        name = step.get("name")
+        number = positive(step.get("number"), "failed job step number")
+        if (not isinstance(name, str) or not name.strip() or name in names or number in numbers
+                or step.get("status") != "completed"
+                or step.get("conclusion") not in {"success", "failure", "skipped"}):
+            raise ContractError("repair failed step inventory is ambiguous or incomplete")
+        names.add(name)
+        numbers.add(number)
+        if step["conclusion"] == "failure":
+            if not timestamp(job["started_at"]) <= timestamp(step.get("started_at")) <= timestamp(
+                step.get("completed_at")
+            ) <= timestamp(job["completed_at"]):
+                raise ContractError("repair failed step lies outside its job window")
+            failed.append(name)
+    if not failed:
+        raise ContractError("repair job failure has no observed failing step")
+    return failed
 
 
 def contexts_from_audit(audit, *, api, repository, sha, run_id, attempt, root, topology=None):
@@ -234,6 +260,23 @@ def contexts_from_audit(audit, *, api, repository, sha, run_id, attempt, root, t
     history, dispatches = audit.get("history"), audit.get("dispatches")
     if not isinstance(history, list) or not isinstance(dispatches, list) or any(not isinstance(item, dict) for item in history + dispatches):
         raise ContractError("repair audit history is malformed")
+    history_keys = set()
+    for entry in history:
+        if (type(entry.get("batch")) is not int or not 1 <= entry["batch"] <= len(definitions)
+                or type(entry.get("retry")) is not int or entry["retry"] not in {0, 1}
+                or entry.get("classification") not in {"success", "failed"}):
+            raise ContractError("repair history is outside the single-confirmation contract")
+        key = (entry["batch"], entry["retry"])
+        if key in history_keys:
+            raise ContractError("repair history contains duplicate run observations")
+        history_keys.add(key)
+    if batches != sorted(entry["batch"] for entry in history
+                         if entry["retry"] == 1 and entry["classification"] == "failed"):
+        raise ContractError("persistent failed-batch inventory contradicts confirmation history")
+    for entry in dispatches:
+        if (type(entry.get("batch")) is not int or not 1 <= entry["batch"] <= len(definitions)
+                or type(entry.get("retry")) is not int or entry["retry"] != 1):
+            raise ContractError("repair dispatch is outside the single-confirmation contract")
     seen_ids = {record["run_id"] for record in manifest["batches"]}
     seen_nonces = {record["dispatch_nonce"] for record in manifest["batches"]}
     contexts = []
@@ -274,20 +317,16 @@ def contexts_from_audit(audit, *, api, repository, sha, run_id, attempt, root, t
             pages = api.api(f"repos/{repository}/actions/runs/{record['run_id']}/attempts/1/jobs?per_page=100", pages=True)
             failed_in_each_run.append(validate_recovery_jobs(
                 pages, definition=definitions[batch - 1], run=run, repository=repository))
-        original_failed_names = {job["name"] for job in failed_in_each_run[0]}
+        original_failed_jobs = {job["name"]: job for job in failed_in_each_run[0]}
         for job in failed_in_each_run[1]:
-            if job["name"] not in original_failed_names:
+            if job["name"] not in original_failed_jobs:
                 continue
             registrations = [item for item in definitions[batch - 1].packages if expected_job_name(item) == job["name"]]
             if len(registrations) != 1:
                 raise ContractError("repair failed job has no unique package registration")
             registration = registrations[0]
-            steps = job.get("steps")
-            if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
-                raise ContractError("repair failed step inventory is missing")
-            failed_steps = [step["name"] for step in steps if step.get("conclusion") == "failure" and isinstance(step.get("name"), str)]
-            if not failed_steps:
-                raise ContractError("repair job failure has no observed failing step")
+            failed_step_names(original_failed_jobs[job["name"]])
+            failed_steps = failed_step_names(job)
             contexts.append({
                 "repository": repository, "base_sha": sha, "orchestration_id": orchestration_id,
                 "orchestrator_run_id": run_id, "orchestrator_run_attempt": attempt,

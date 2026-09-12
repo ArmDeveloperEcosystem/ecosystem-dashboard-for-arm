@@ -220,6 +220,17 @@ class ModelContextTests(PipelineTestCase):
         for value in ("assertions", "final gates", "permissions", "unresolved_reason"):
             self.assertIn(value, feedback)
 
+    def test_model_receives_current_policy_forms_and_bounds_without_a_second_summary(self):
+        import smoke_repair_model as model
+        projected = pipeline.model_context(context())
+        self.assertEqual("Enforced repair policy (including frozen final gates): " + policy.policy_description(),
+                         projected["validation_feedback"])
+        self.assertLessEqual(len(projected["validation_feedback"].encode()), model.MAX_FEEDBACK_BYTES)
+        request = model.build_request(projected, model="approved-model")
+        self.assertEqual(projected, json.loads(request["input"][1]["content"]))
+        self.assertEqual([], request["tools"])
+        self.assertIs(request["text"]["format"]["strict"], True)
+
     def test_missing_model_field_cannot_be_inferred_or_silently_omitted(self):
         for key in pipeline.MODEL_FIELDS:
             trusted = context()

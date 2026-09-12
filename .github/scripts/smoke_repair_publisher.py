@@ -23,6 +23,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import sys
@@ -58,6 +59,7 @@ Policy = Callable[[dict[str, Any], dict[str, Any]], Mapping[str, Any]]
 NativeVerifier = Callable[[dict[str, Any], dict[str, Any]], Mapping[str, Any]]
 LOCK_PATH = ".github/scripts/package_workflow_action_lock.json"
 MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
+PUBLICATION_SECONDS = 180
 CONTEXT_KEYS = {
     "repository", "base_sha", "orchestration_id", "orchestrator_run_id",
     "orchestrator_run_attempt", "package_slug", "workflow_path", "called_job",
@@ -602,15 +604,30 @@ def _pr_body(config, stage_receipt, native, policy_version, context):
     )
 
 
+def _publication_remaining(deadline):
+    if time.monotonic() >= deadline:
+        raise PublishError("publication verification deadline expired; no successful repair is claimed")
+
+
+def _manual_review_only(pull_request):
+    if "auto_merge" not in pull_request or pull_request["auto_merge"] is not None:
+        raise PublishError("repair draft must have authenticated disabled auto-merge")
+
+
 def open_pr(context: Mapping[str, Any], proposal: Mapping[str, Any], stage_receipt: Mapping[str, Any],
             native_receipt: Mapping[str, Any], *, repository_root: Path, validate_apply: Policy,
-            policy_version: str, verify_native: NativeVerifier, github=None) -> dict[str, Any]:
+            policy_version: str, verify_native: NativeVerifier, github=None, deadline=None) -> dict[str, Any]:
     """Open/recover one exact draft after the callback revalidates native evidence live.
 
     Native receipt uses smoke_repair_native's schema: schema_version, stage,
     contract_digest, status, run, job, steps. No supplied success verdict replaces
     verify_native. The callback may close over the trusted native contract.
 """
+    if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
+        raise PublishError("publication deadline must be finite")
+    bounded_deadline = time.monotonic() + PUBLICATION_SECONDS
+    deadline = bounded_deadline if deadline is None else min(deadline, bounded_deadline)
+    _publication_remaining(deadline)
     github = github or publisher.GhClient()
     context, proposal, root, git, config, runtime, source, lock, _ = _prepare(
         context, proposal, repository_root, validate_apply, policy_version, github)
@@ -647,6 +664,7 @@ def open_pr(context: Mapping[str, Any], proposal: Mapping[str, Any], stage_recei
     if audit != expected:
         raise PublishError("stage audit does not match context, source, policy, or producer")
     native = _native(native_receipt, staged, config, audit["native_contract_digest"])
+    _publication_remaining(deadline)
     verified = verify_native(copy.deepcopy(staged), copy.deepcopy(native))
     if _json(verified) != _json(native):
         raise PublishError("native verifier must return the unchanged live-verified receipt")
@@ -656,6 +674,7 @@ def open_pr(context: Mapping[str, Any], proposal: Mapping[str, Any], stage_recei
     history = _all_prs(github, config)
     existing = publisher._one_owned_open_pull_request(config, history)
     if existing is not None:
+        _manual_review_only(existing)
         if existing["head"]["sha"] != staged["candidate_sha"] or existing.get("body") != body or existing.get("title") != config.title:
             raise PublishError("existing repair draft differs from the exact verified audit")
         result = existing
@@ -665,12 +684,15 @@ def open_pr(context: Mapping[str, Any], proposal: Mapping[str, Any], stage_recei
         _verify_branch(git, config, staged, payloads)
         if _all_prs(github, config):
             raise PublishError("repair PR appeared during publication")
+        _publication_remaining(deadline)
         if _json(verify_native(copy.deepcopy(staged), copy.deepcopy(native))) != _json(native):
             raise PublishError("native validation changed immediately before publication")
         _guard(root, git, github, config, runtime)
         _verify_branch(git, config, staged, payloads)
+        _publication_remaining(deadline)
         result = github.create_pull_request(config, body=body, head_sha=staged["candidate_sha"])
         publisher._validate_pull_request_ownership(config, result, expected_state="open")
+        _manual_review_only(result)
         status = "created"
     verified_pr = publisher._wait_for_exact_pull_request(
         config, github, expected_number=publisher._pull_request_number(result),
@@ -681,10 +703,20 @@ def open_pr(context: Mapping[str, Any], proposal: Mapping[str, Any], stage_recei
         raise PublishError("published PR URL does not match its identity")
     _guard(root, git, github, config, runtime)
     _verify_branch(git, config, staged, payloads)
+    _publication_remaining(deadline)
     if _json(verify_native(copy.deepcopy(staged), copy.deepcopy(native))) != _json(native):
         raise PublishError("native validation changed during publication")
     _guard(root, git, github, config, runtime)
     _verify_branch(git, config, staged, payloads)
+    # Native verification can take minutes; its earlier PR snapshot is not final.
+    final_pr = publisher._one_owned_open_pull_request(config, _all_prs(github, config))
+    if (final_pr is None or publisher._pull_request_number(final_pr) != publisher._pull_request_number(verified_pr)
+            or final_pr["head"]["sha"] != staged["candidate_sha"]
+            or final_pr.get("body") != body or final_pr.get("title") != config.title
+            or final_pr.get("html_url") != expected_url):
+        raise PublishError("repair draft changed during final native verification")
+    _manual_review_only(final_pr)
+    _publication_remaining(deadline)
     return {"status": status, "pr_url": expected_url, "head_sha": staged["candidate_sha"],
             "repair_id": staged["repair_id"], "native_run_id": native["run"]["id"], "publisher": runtime}
 
@@ -751,8 +783,9 @@ def main(argv=None) -> int:
         else:
             native = _module("smoke_repair_cli_native", DIRECTORY / "smoke_repair_native.py")
             contract = _load(args.native_contract)
-            verification_deadline = time.monotonic() + 180
+            verification_deadline = time.monotonic() + PUBLICATION_SECONDS
             result = open_pr(context, proposal, _load(args.stage), _load(args.native_receipt),
+                             deadline=verification_deadline,
                              verify_native=lambda staged, receipt: native.verify_native_receipt(
                                  staged, receipt, contract, deadline=verification_deadline), **kwargs)
         # Receipts are written outside the checkout, never staged as candidate files.

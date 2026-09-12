@@ -160,6 +160,65 @@ class SmokeRepairPolicyTests(unittest.TestCase):
         self.reject('export MAKEFLAGS="-j4"', 'export MAKEFLAGS="-j8"', source)
         self.reject('export MAKEFLAGS="-j4"', 'export MAKEFLAGS="-j2 -i"', source)
 
+    def test_setup_data_and_continued_commands_are_not_editable_commands(self):
+        for old, new in (
+            ("sudo apt-get install -y build-essential", "sudo apt-get install -y build-essential libssl-dev"),
+            ('export MAKEFLAGS="-j4"', 'export MAKEFLAGS="-j2"'),
+            ("curl --fail https://example.org/widget.tar.gz",
+             "curl --fail https://example.org/widget.tar.gz --retry 3 --retry-delay 2 --retry-max-time 60"),
+        ):
+            for wrapper in (
+                "cat <<'EOF' > expected.txt\n{command}\nEOF\ncmp expected.txt actual.txt",
+                "printf '%s' '\n{command}\n' > expected.txt",
+                "printf '%s' \\\n{command}",
+                "expected=$(\n{command}\n)",
+                "expected=`\n{command}\n`",
+            ):
+                script = wrapper.format(command=old).replace("\n", "\n          ")
+                source = SOURCE.replace("sudo apt-get install -y build-essential", script)
+                with self.subTest(command=old, wrapper=wrapper):
+                    self.reject(old, new, source)
+
+    def test_whole_script_prerequisite_prefix_still_allows_unchanged_multiline_data(self):
+        source = SOURCE.replace("sudo apt-get install -y build-essential",
+                                "cat <<'EOF' > expected.txt\n          original baseline\n          EOF")
+        old = "        id: install\n        run: |\n"
+        result = self.validate(old, old + "          sudo apt-get install -y libssl-dev\n", source)
+        self.assertEqual(["install"], result["changed_step_ids"])
+
+    def test_retry_requires_unambiguous_https_download_and_effective_failure_flag(self):
+        original = "curl --fail --location https://example.org/widget-1.2.3.tar.gz -o widget.tar.gz"
+        for command in (
+            "curl -o -f https://example.org/widget.tar.gz",
+            "curl --output -f https://example.org/widget.tar.gz",
+            "curl --fail --no-fail https://example.org/widget.tar.gz",
+            "curl -f --next https://example.org/widget.tar.gz",
+            "curl --fail -- https://example.org/widget.tar.gz",
+            "curl --fail --config curl.conf https://example.org/widget.tar.gz",
+            "curl --fail -T widget.tar.gz https://example.org/upload",
+            "curl --fail -d value https://example.org/api",
+            "curl --fail https://example.org/widget.tar.gz http://example.org/other",
+            "curl --fail https://example.org/widget.tar.gz https://example.org/other",
+            "curl --fail --insecure https://example.org/widget.tar.gz",
+            "curl --fail https://user:password@example.org/widget.tar.gz",
+            "curl --fail https://",
+        ):
+            with self.subTest(command=command):
+                self.reject(command, command + " --retry 3 --retry-delay 2 --retry-max-time 60",
+                            SOURCE.replace(original, command))
+
+    def test_literal_download_options_and_short_failure_flag_clusters_remain_supported(self):
+        original = "curl --fail --location https://example.org/widget-1.2.3.tar.gz -o widget.tar.gz"
+        for command in (
+            "curl -fsSL https://example.org/widget.tar.gz -o widget.tar.gz",
+            "/usr/bin/curl -fL --url https://example.org/widget.tar.gz --output widget.tar.gz",
+            "curl --fail --silent --show-error --location --remote-name https://example.org/widget.tar.gz",
+        ):
+            with self.subTest(command=command):
+                result = self.validate(command, command + " --retry 3 --retry-delay 2 --retry-max-time 60",
+                                       SOURCE.replace(original, command))
+                self.assertEqual(["install"], result["changed_step_ids"])
+
     def test_removed_changed_or_masked_assertions_outputs_and_failures_are_rejected(self):
         for old, new in (
             ("test -s widget.tar.gz", "true"),
@@ -307,6 +366,58 @@ class SmokeRepairPolicyTests(unittest.TestCase):
             with self.subTest(length=len(text)), self.assertRaises(policy.RepairPolicyError):
                 policy.validate_proposal(context(text), proposal())
 
+    def test_explicit_token_or_secret_access_cannot_hide_in_expression_syntax(self):
+        for expression in (
+            "${{ github['token'] }}",
+            "${{ github [ 'token' ] }}",
+            "${{ format('}', github.token) }}",
+            "${{ format('}}', github['token']) }}",
+            "${{ format('}', secrets.BUILD_TOKEN) }}",
+        ):
+            source = SOURCE.replace("BASELINE_VERSION: '1.2.3'", "TOKEN: " + expression)
+            with self.subTest(expression=expression), self.assertRaises(policy.ManualRepairRequired):
+                policy.validate_proposal(context(source), proposal())
+
+    def test_whole_or_computed_github_context_access_requires_manual_review(self):
+        for expression in (
+            "${{ toJSON(github) }}",
+            "${{ github }}",
+            "${{ github[format('{0}', 'token')] }}",
+            '${{ github[format("{0}", "token")] }}',
+            "${{ github [ format('to{0}', 'ken') ] }}",
+            "${{ github[inputs.property] }}",
+            "${{ toJSON(github.*) }}",
+            "${{ format('}}', toJSON(github)) }}",
+            "${{ toJSON(GitHub) }}",
+            "${{ inputs.include_context && github || '' }}",
+            "${{ fromJSON('[]')[github] }}",
+        ):
+            source = SOURCE.replace("BASELINE_VERSION: '1.2.3'", "TOKEN: " + json.dumps(expression))
+            with self.subTest(expression=expression), self.assertRaises(policy.ManualRepairRequired):
+                policy.validate_proposal(context(source), proposal())
+
+    def test_literal_noncredential_github_properties_remain_supported(self):
+        for expression in (
+            "${{ github.sha }}",
+            "${{ github.repository }}",
+            "${{ github['sha'] }}",
+            "${{ github [ 'repository' ] }}",
+            "${{ toJSON(github.event) }}",
+            "${{ github.workspace }}/.github/scripts",
+        ):
+            source = SOURCE.replace("BASELINE_VERSION: '1.2.3'", "PUBLIC_VALUE: " + json.dumps(expression))
+            with self.subTest(expression=expression):
+                result = policy.validate_proposal(context(source), proposal())
+                self.assertEqual(["install"], result["changed_step_ids"])
+
+    def test_literal_repository_paths_in_expression_bearing_scripts_are_not_contexts(self):
+        old = "sudo apt-get install -y build-essential"
+        source = SOURCE.replace(old, old + '\n          VERSION="${{ steps.metadata.outputs.version }}"'
+                                '\n          echo "Failed to resolve release from GitHub during validation"'
+                                '\n          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "libssl-dev"')
+        result = policy.validate_proposal(context(source), proposal())
+        self.assertEqual(["install"], result["changed_step_ids"])
+
     def test_unresolved_diagnosis_never_authorizes_partial_edits(self):
         p = proposal()
         p["unresolved_reason"] = "Requires a probe change that this policy forbids."
@@ -408,6 +519,8 @@ class SmokeRepairPolicyTests(unittest.TestCase):
     def test_policy_prompt_exposes_only_reviewed_operations_and_limits(self):
         self.assertEqual("1", policy.POLICY_VERSION)
         prompt = policy.policy_description()
+        self.assertLessEqual(len(prompt.encode("utf-8")), 16 * 1024)
+        self.assertIn("computed github indexing", prompt)
         for value in ("12 nonoverlapping", "ORIGINAL", "verbatim", "unresolved_reason",
                       "libfuse3-dev", "setuptools", "GOMAXPROCS", "--retry-max-time",
                       "No URLs", "human draft review", "logs"):
