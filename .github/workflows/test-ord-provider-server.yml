@@ -84,12 +84,104 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       BASELINE_VERSION: "0.7.3"
+      NEXT_VERSION: "1.2.5"
       PACKAGE_SLUG: "ord-provider-server"
       LANE_KIND: "docker/image-or-cluster"
       DOWNLOAD_URL: "https://github.com/open-resource-discovery/provider-server/pkgs/container/provider-server"
       HOMEPAGE_URL: "https://open-resource-discovery.org/"
       OFFICIAL_DOCS: "https://github.com/open-resource-discovery/provider-server#usage"
       GITHUB_REPO: "open-resource-discovery/provider-server"
+      # Both releases must execute the same probe, using their declared bin layout.
+      ORD_SMOKE_COMMAND: |
+        set -euo pipefail
+        cd "$1"
+        npm ci
+        npm run build
+        # Dotenv 17 banners otherwise precede the candidate's --version output.
+        export DOTENV_CONFIG_QUIET=true
+        node --input-type=module - "$2" <<'NODE'
+        import assert from 'node:assert/strict';
+        import { spawn, spawnSync } from 'node:child_process';
+        import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+        import { createServer } from 'node:net';
+        import { tmpdir } from 'node:os';
+        import { isAbsolute, join, relative, resolve } from 'node:path';
+        import { setTimeout as delay } from 'node:timers/promises';
+
+        const expected = process.argv[2];
+        const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+        assert.equal(pkg.name, '@open-resource-discovery/provider-server');
+        assert.equal(pkg.version, expected, 'Source version does not match the pinned release');
+        const bin = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.['ord-provider-server'];
+        assert.equal(typeof bin, 'string', 'Missing declared CLI entrypoint');
+        const cli = realpathSync(bin);
+        const local = relative(realpathSync('.'), cli);
+        assert(local && !local.startsWith('..') && !isAbsolute(local), 'CLI must be in the release tree');
+        function invoke(flag) {
+          const result = spawnSync(process.execPath, [cli, flag], { encoding: 'utf8', timeout: 30000 });
+          assert.ifError(result.error);
+          assert.equal(result.status, 0, `${flag} failed: ${result.stderr}\n${result.stdout}`);
+          return result.stdout;
+        }
+        assert.equal(invoke('--version').trim(), expected, 'Executed CLI version mismatch');
+        const help = invoke('--help');
+        assert.match(help, /--directory/);
+        assert.match(help, /--base-url/);
+
+        // Port 0 is interpreted as 8080 upstream. Select a free loopback port instead.
+        const reservation = createServer();
+        await new Promise((ok, fail) => {
+          reservation.once('error', fail);
+          reservation.listen(0, '127.0.0.1', ok);
+        });
+        const port = reservation.address().port;
+        await new Promise((ok, fail) => reservation.close(error => error ? fail(error) : ok()));
+        const baseUrl = `http://127.0.0.1:${port}`;
+        const temporary = mkdtempSync(join(tmpdir(), 'ord-smoke-'));
+        const server = spawn(process.execPath, [cli, '-d', resolve('example'),
+          '--base-url', baseUrl, '--host', '127.0.0.1', '--port', String(port)],
+          { cwd: temporary, stdio: ['ignore', 'pipe', 'pipe'] });
+        let log = '';
+        let stopped = false;
+        const closed = new Promise(ok => server.once('close', () => { stopped = true; ok(); }));
+        server.once('error', error => { log += String(error); });
+        server.stdout.on('data', data => { log = (log + data).slice(-131072); });
+        server.stderr.on('data', data => { log = (log + data).slice(-131072); });
+        try {
+          let response;
+          for (let attempt = 0; attempt < 60; attempt++) {
+            assert(!stopped, `Server exited before readiness: ${log}`);
+            try {
+              response = await fetch(`${baseUrl}/.well-known/open-resource-discovery`,
+                { redirect: 'error', signal: AbortSignal.timeout(2000) });
+              if (response.ok) break;
+            } catch { /* The private server may still be starting. */ }
+            await delay(250);
+          }
+          assert(response?.ok, 'ORD discovery endpoint did not become ready');
+          const config = await response.json();
+          assert.equal(config.baseUrl, baseUrl);
+          const documents = config.openResourceDiscoveryV1?.documents;
+          assert(Array.isArray(documents) && documents.length > 0, 'No ORD example documents');
+          const documentUrl = new URL(documents[0].url, baseUrl);
+          assert.equal(documentUrl.origin, baseUrl, 'Document must be served by this process');
+          const documentResponse = await fetch(documentUrl, { redirect: 'error', signal: AbortSignal.timeout(5000) });
+          assert(documentResponse.ok, 'ORD example document request failed');
+          assert.equal(typeof (await documentResponse.json()).openResourceDiscovery, 'string');
+          await delay(250);
+          assert(!stopped, `Server exited during HTTP validation: ${log}`);
+          console.log(`ORD_SMOKE_PASSED version=${expected} cli=${bin} discovery=200 document=200 port=${port}`);
+        } catch (error) {
+          console.error(log);
+          throw error;
+        } finally {
+          if (!stopped) server.kill('SIGTERM');
+          const force = setTimeout(() => { if (!stopped) server.kill('SIGKILL'); }, 5000);
+          await closed;
+          clearTimeout(force);
+          rmSync(temporary, { recursive: true, force: true });
+        }
+        NODE
 
     outputs:
       contract_version: "2.0"
@@ -139,7 +231,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # original: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: Install baseline source or artifact
         id: install
@@ -569,40 +661,16 @@ jobs:
           IDENTITY_EXPECT="${{ steps.expectations.outputs.identity_expect }}"
           EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
           if [ "$PACKAGE_SLUG" = "ord-provider-server" ]; then
+            STATUS=failed
+            trap 'echo "status=$STATUS" >> "$GITHUB_OUTPUT"; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
             if [ "$MODE" != "github_source" ]; then
               echo "status=failed" >> "$GITHUB_OUTPUT"
               echo "note=ORD Provider Server runtime smoke requires the checked-out source tree." >> "$GITHUB_OUTPUT"
               exit 1
             fi
-            cd baseline-src
-            npm ci
-            npm run build
-            node dist/src/cli.js --help | grep -Eiq 'ord-provider-server|directory|base-url'
-            node dist/src/cli.js \
-              -d ./example \
-              --base-url 'http://127.0.0.1:18080' \
-              --host 127.0.0.1 \
-              --port 18080 >/tmp/ord-provider-server.log 2>&1 &
-            SERVER_PID=$!
-            trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
-            for _ in {1..30}; do
-              if curl -fsS http://127.0.0.1:18080/.well-known/open-resource-discovery >/tmp/ord-provider-config.json; then
-                break
-              fi
-              sleep 1
-            done
-            if grep -Eiq 'openResourceDiscovery|documents|baseUrl' /tmp/ord-provider-config.json; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Built the Node package and served the checked-in ORD example over HTTP on the Arm64 runner." >> "$GITHUB_OUTPUT"
-            else
-              cat /tmp/ord-provider-server.log || true
-              cat /tmp/ord-provider-config.json || true
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=ORD Provider Server did not serve the expected ORD discovery endpoint." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            bash -euo pipefail -c "$ORD_SMOKE_COMMAND" -- baseline-src "$BASELINE_VERSION"
+            STATUS=passed
+            echo "note=Built the pinned Node package, verified its CLI version/help, and served ORD discovery and an example document over HTTP on Arm64." >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ "$MODE" = "github_source" ]; then
@@ -663,24 +731,29 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          next_version_override: ${{ env.NEXT_VERSION }}
+          candidate_tag_override: v${{ env.NEXT_VERSION }}
           limited_cpu_probe: |
-            cd next-src
-            npm ci
-            npm run build
-            node dist/src/cli.js --help | grep -Eiq 'ord-provider-server|directory|base-url'
-          limited_cpu_description: "Built the next ORD Provider Server Node package and executed its CLI help path on the Arm64 runner. Full HTTP fixture coverage remains in Tests 1-5 for the pinned baseline."
-          defer_on_limited_cpu_probe_failure: "true"
+            bash -euo pipefail -c "$ORD_SMOKE_COMMAND" -- next-src "$LATEST_VERSION"
+          limited_cpu_description: "Required candidate probe: npm ci/build, declared CLI version/help, HTTP ORD discovery and example document, matching the baseline probe. Execution success or failure is reported in regression_status and regression_result."
+          defer_on_limited_cpu_probe_failure: "false"
 
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
+          set -euo pipefail
           T1="${{ steps.test1.outputs.status || '' }}"
           T2="${{ steps.test2.outputs.status || '' }}"
           T3="${{ steps.test3.outputs.status || '' }}"
           T4="${{ steps.test4.outputs.status || '' }}"
           T5="${{ steps.test5.outputs.status || '' }}"
           T6="${{ steps.test6.outputs.status || '' }}"
+          OUTCOMES=(
+            "${{ steps.test1.outcome }}" "${{ steps.test2.outcome }}"
+            "${{ steps.test3.outcome }}" "${{ steps.test4.outcome }}"
+            "${{ steps.test5.outcome }}" "${{ steps.test6.outcome }}"
+          )
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -690,27 +763,26 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
+          CORE_FAILED=0
+          STATUSES=("$T1" "$T2" "$T3" "$T4" "$T5" "$T6")
+          for INDEX in 0 1 2 3 4 5; do
+            if [ "${STATUSES[$INDEX]}" = "passed" ] && [ "${OUTCOMES[$INDEX]}" = "success" ]; then
               PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
             else
-              SKIPPED=$((SKIPPED + 1))
+              FAILED=$((FAILED + 1))
+              if [ "$INDEX" -lt 5 ]; then CORE_FAILED=$((CORE_FAILED + 1)); fi
+              echo "::error::Required Test $((INDEX + 1)): status=${STATUSES[$INDEX]:-missing}, outcome=${OUTCOMES[$INDEX]:-missing}"
             fi
           done
           DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
-          CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
-              CORE_FAILED=$((CORE_FAILED + 1))
-            fi
-          done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -720,6 +792,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          [ "$FAILED" -eq 0 ]
 
       - name: Create test summary
         if: always()
