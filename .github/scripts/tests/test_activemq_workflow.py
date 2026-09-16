@@ -21,15 +21,26 @@ INFO: Using java '/usr/lib/jvm/default-java//bin/java'
 /usr/bin/activemq: 437: "/usr/lib/jvm/default-java//bin/java" -Xms512M -Xmx512M -Dorg.apache.activemq.UseDedicatedTaskRunner=true             --add-reads=java.xml=java.logging           --add-opens java.base/java.security=ALL-UNNAMED           --add-opens java.base/java.net=ALL-UNNAMED           --add-opens java.base/java.lang=ALL-UNNAMED           --add-opens java.base/java.util=ALL-UNNAMED           --add-opens java.naming/javax.naming.spi=ALL-UNNAMED           --add-opens java.rmi/sun.rmi.transport.tcp=ALL-UNNAMED           --add-opens java.base/java.util.concurrent=ALL-UNNAMED           --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED           --add-exports=java.base/sun.net.www.protocol.http=ALL-UNNAMED           --add-exports=java.base/sun.net.www.protocol.https=ALL-UNNAMED           --add-exports=java.base/sun.net.www.protocol.jar=ALL-UNNAMED           --add-exports=jdk.xml.dom/org.w3c.dom.html=ALL-UNNAMED           --add-exports=jdk.naming.rmi/com.sun.jndi.url.rmi=ALL-UNNAMED           -Dactivemq.classpath="/var/lib/activemq/conf:/var/lib/activemq/../lib/:"           -Dactivemq.home="/usr/share/activemq"           -Dactivemq.base="/var/lib/activemq/"           -Dactivemq.conf="/var/lib/activemq/conf"           -Dactivemq.data="/var/lib/activemq/data"           -Djolokia.conf="file:/var/lib/activemq/conf/jolokia-access.xml"                      -jar "/usr/share/activemq/bin/activemq.jar" --help : not found
 '''
 
-# Representative help structure from ActiveMQ 5.17.6 ShellCommand, not a
-# claim that this fixture was captured from a successful native execution.
-VALID_HELP = '''INFO: Loading '/usr/share/activemq/activemq-options'
-INFO: Using java '/usr/lib/jvm/default-java/bin/java'
-Usage: Main [--extdir <dir>] [task] [task-options] [task data]
+# Actual help body from hosted Arm run 35038406743, job 104612609847,
+# lines 1327-1356. Timestamps removed; GitHub's final-line masking retained.
+# The producer succeeded, but the original check incorrectly required the
+# start description to match a "Start" prefix instead of task-row structure.
+VALID_HELP = '''Usage: Main [--extdir <dir>] [task] [task-options] [task data]
 
 Tasks:
     browse                   - Display selected messages in a specified destination.
-    start                    - Starts a broker using the given configuration file.
+    bstat                    - Performs a predefined query that displays useful statistics regarding the specified broker
+    consumer                 - Receives messages from the broker
+    create                   - Creates a runnable broker instance in the specified path.
+    decrypt                  - Decrypts given text
+    dstat                    - Performs a predefined query that displays useful tabular statistics regarding the specified destination type
+    encrypt                  - Encrypts given text
+    export                   - Exports a stopped brokers data files to an archive file
+    list                     - Lists all available brokers in the specified JMX context
+    producer                 - Sends messages to the broker
+    purge                    - Delete selected destination's messages that matches the message selector
+    query                    - Display selected broker component's attributes and statistics.
+    start                    - Creates and starts a broker using a configuration file, or a broker URI.
     stop                     - Stops a running broker specified by the broker name.
 
 Task Options (Options specific to each task):
@@ -39,6 +50,11 @@ Task Options (Options specific to each task):
 
 Task Data:
     - Information needed by each specific task.
+
+JMX system property options:
+    -Dactivemq.jmx.url=<jmx service uri> (default is: 'service:jmx:rmi:///jndi/rmi://localhost:1099/jmxrmi')
+    -Dactivemq.jmx.user=<user name>
+    -Dactivemq.jmx.***
 '''
 
 
@@ -166,6 +182,29 @@ os.execvp(sys.argv[4], sys.argv[4:])
         for text in invalid:
             with self.subTest(output=text):
                 self.assert_help_failed(HELP_OUTPUT=text)
+
+    def test_hosted_help_accepts_task_structure_without_requiring_description_prose(self):
+        old_match = subprocess.run(
+            ["grep", "-Eq", r"^[[:space:]]+start[[:space:]]+-[[:space:]]+Start"],
+            input=VALID_HELP, text=True,
+        )
+        self.assertEqual(1, old_match.returncode, "Captured help must reproduce the hosted rejection")
+        for description in ("Creates and starts a broker using a configuration file, or a broker URI.",
+                            "Starts a broker using the given configuration file."):
+            with self.subTest(description=description):
+                help_text = re.sub(r"(?m)^(    start\s+- ).*$", r"\g<1>" + description, VALID_HELP)
+                result, outputs = self.run_step("test3", HELP_OUTPUT=help_text)
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertEqual("passed", outputs["status"])
+                self.assertEqual("0", outputs["help_exit_code"])
+
+    def test_start_task_row_still_requires_exact_command_separator_and_description(self):
+        for row in ("    restart                  - Creates and starts a broker.",
+                    "    start                    - ", "    start                    -     ",
+                    "    start                      Creates and starts a broker."):
+            with self.subTest(row=row):
+                help_text = re.sub(r"(?m)^    start .*$", row, VALID_HELP)
+                self.assert_help_failed(HELP_OUTPUT=help_text)
 
     def test_launcher_and_jvm_errors_cannot_hide_beside_help(self):
         for error in (LAUNCHER_FAILURE, 'Error: Unable to access jarfile /missing/activemq.jar',

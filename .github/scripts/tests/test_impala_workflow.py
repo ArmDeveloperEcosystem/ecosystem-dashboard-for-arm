@@ -1,5 +1,6 @@
 """Execute Impala discovery, candidate probes and summary with controlled producers."""
 
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -19,6 +20,8 @@ import package_result_policy as result_policy
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows/test-impala.yml"
 BASELINE = "4.5.0"
 CANDIDATE = "4.5.2"
+PACKAGE_BYTES = b"controlled Impala package fixture\n"
+PACKAGE_SHA256 = hashlib.sha256(PACKAGE_BYTES).hexdigest()
 
 
 class ImpalaWorkflowTests(unittest.TestCase):
@@ -35,7 +38,8 @@ class ImpalaWorkflowTests(unittest.TestCase):
         self.env = {"HOME": str(self.root), "PATH": str(self.bin),
                     "PYTHONDONTWRITEBYTECODE": "1", "FIXTURE_ROOT": str(self.root),
                     "IMPALA_VERSION": BASELINE, "GITHUB_OUTPUT": str(self.root / "output")}
-        self.values = {"steps.install.outcome": "success",
+        self.values = {"github.token": "unit-test-token",
+                       "steps.install.outcome": "success",
                        "steps.install.outputs.image_tag": "fixture-arm64",
                        "steps.install.outputs.work_dir": str(self.root),
                        "steps.version.outcome": "success",
@@ -43,6 +47,7 @@ class ImpalaWorkflowTests(unittest.TestCase):
                        "steps.version.outputs.latest": CANDIDATE,
                        "steps.version.outputs.discovery_status": "success",
                        "steps.version.outputs.next_url": self.release(CANDIDATE)["assets"][0]["browser_download_url"],
+                       "steps.version.outputs.next_sha256": PACKAGE_SHA256,
                        "steps.test6.outputs.current_version": BASELINE,
                        "steps.test6.outputs.latest_version": CANDIDATE,
                        "steps.test6.outputs.next_installed_version": CANDIDATE,
@@ -53,31 +58,50 @@ class ImpalaWorkflowTests(unittest.TestCase):
             self.values[f"steps.test{number}.outcome"] = "success"
         (self.root / "impala-shell-version.txt").write_text(f"Impala Shell v{BASELINE}-RELEASE (build)\n")
         (self.root / "impalad-version.txt").write_text(f"impalad version {BASELINE}-RELEASE RELEASE (build)\n")
+        (self.root / "candidate-bytes").write_bytes(PACKAGE_BYTES)
         self.pages = [[self.release(CANDIDATE), self.release(BASELINE)]]
         self.stub("python3", r'''
 import io
 import json
 import os
+from email.message import Message
 from pathlib import Path
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import urllib.response
 
 root = Path(os.environ['FIXTURE_ROOT'])
-def response(url, timeout):
-    assert timeout == 30
-    assert url.startswith('https://api.github.com/repos/apache/impala/releases?per_page=100&page=')
-    with (root / 'requests').open('a') as log:
-        log.write(url + '\n')
-    if os.environ.get('API_ERROR'):
-        raise urllib.error.HTTPError(url, 403, 'fixture API error', {}, None)
-    if os.environ.get('API_BAD_JSON'):
-        return io.StringIO('{')
-    pages = json.loads((root / 'pages.json').read_text())
-    page = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['page'][0])
-    return io.StringIO(json.dumps(pages[page - 1]))
-urllib.request.urlopen = response
+class FixtureTransport(urllib.request.HTTPHandler, urllib.request.HTTPSHandler):
+    def http_open(self, request):
+        url = request.full_url
+        with (root / 'requests').open('a') as log:
+            log.write(url + '\n')
+        assert request.timeout == 30
+        assert request.get_header('Authorization') == 'Bearer unit-test-token'
+        assert request.get_header('Accept') == 'application/vnd.github+json'
+        assert url.startswith('https://api.github.com/repos/apache/impala/releases?per_page=100&page=')
+        headers = Message()
+        if os.environ.get('API_REDIRECT'):
+            headers['Location'] = os.environ['API_REDIRECT']
+            response = urllib.response.addinfourl(io.BytesIO(b'redirect'), headers, url,
+                int(os.environ.get('API_REDIRECT_CODE', '302')))
+            response.msg = 'Found'
+            return response
+        if os.environ.get('API_ERROR'):
+            raise urllib.error.HTTPError(url, 403, 'fixture API error', {}, None)
+        pages = json.loads((root / 'pages.json').read_text())
+        page = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['page'][0])
+        data = b'{' if os.environ.get('API_BAD_JSON') else json.dumps(pages[page - 1]).encode()
+        response = urllib.response.addinfourl(io.BytesIO(data), headers, url, 200)
+        response.msg = 'OK'
+        return response
+    https_open = http_open
+
+build_opener = urllib.request.build_opener
+urllib.request.build_opener = lambda *handlers: build_opener(FixtureTransport(), *handlers)
+urllib.request.install_opener(urllib.request.build_opener())
 sys.argv = sys.argv[1:]
 exec(compile(sys.stdin.read(), 'workflow-inline-python', 'exec'))
 ''')
@@ -86,13 +110,21 @@ import os
 from pathlib import Path
 import sys
 root = Path(os.environ['FIXTURE_ROOT'])
+assert 'GH_TOKEN' not in os.environ and 'GITHUB_TOKEN' not in os.environ
+assert '--header' not in sys.argv and '-H' not in sys.argv
+assert sys.argv[sys.argv.index('--proto') + 1] == '=https'
+assert sys.argv[sys.argv.index('--proto-redir') + 1] == '=https'
 (root / 'download-url').write_text(sys.argv[-1])
+destination = Path(sys.argv[sys.argv.index('-o') + 1])
+destination.write_bytes(b'corrupt' if os.environ.get('CORRUPT_DOWNLOAD') else (root / 'candidate-bytes').read_bytes())
 sys.exit(int(os.environ.get('CURL_RC', '0')))
 ''')
         self.stub("dpkg-deb", r'''
 import os
 from pathlib import Path
 import sys
+(Path(os.environ['FIXTURE_ROOT']) / 'extraction-called').touch()
+assert 'GH_TOKEN' not in os.environ and 'GITHUB_TOKEN' not in os.environ
 assert sys.argv[1] == '-x'
 if os.environ.get('EXTRACT_RC'):
     sys.exit(int(os.environ['EXTRACT_RC']))
@@ -109,6 +141,8 @@ for name in ('sbin/impalad', 'shell/impala-shell'):
 import os
 from pathlib import Path
 import sys
+(Path(os.environ['FIXTURE_ROOT']) / 'runtime-called').touch()
+assert 'GH_TOKEN' not in os.environ and 'GITHUB_TOKEN' not in os.environ
 assert sys.argv[1:5] == ['run', '--rm', '--platform', 'linux/arm64']
 assert sys.argv[-1] == '--version'
 kind = 'SHELL' if sys.argv[-2].endswith('/impala-shell') else 'SERVER'
@@ -128,7 +162,8 @@ sys.exit(int(os.environ.get(kind + '_RC', '0')))
     def release(version, **updates):
         name = f"apache-impala-{version}-RELEASE_hive-3.1.3000.7.3.1.0-160-aarch64.ubuntu-20.04.deb"
         result = {"tag_name": version, "draft": False, "prerelease": False,
-                  "assets": [{"name": name, "state": "uploaded", "size": 1109295090,
+                  "assets": [{"name": name, "state": "uploaded", "size": len(PACKAGE_BYTES),
+                              "digest": "sha256:" + PACKAGE_SHA256,
                               "browser_download_url": f"https://github.com/apache/impala/releases/download/{version}/{name}"}]}
         result.update(updates)
         return result
@@ -152,11 +187,13 @@ sys.exit(int(os.environ.get(kind + '_RC', '0')))
         (self.root / "pages.json").write_text(json.dumps(self.pages))
         output = Path(self.env["GITHUB_OUTPUT"])
         output.write_text("")
+        step_env = {key: self.render(value) for key, value in self.steps[name].get("env", {}).items()}
         result = subprocess.run(["/bin/bash", "-e", "-o", "pipefail", "-c", self.render(self.steps[name]["run"])],
-                                cwd=self.root, env={**self.env, **env}, capture_output=True, text=True, timeout=30)
+                                cwd=self.root, env={**self.env, **step_env, **env}, capture_output=True, text=True, timeout=30)
         lines = [line.split("=", 1) for line in output.read_text().splitlines()]
         outputs = dict(lines)
         self.assertEqual(len(lines), len(outputs), "Duplicate output keys")
+        self.assertNotIn("unit-test-token", result.stdout + result.stderr + output.read_text())
         return result, outputs
 
     def publish(self, name, result, outputs):
@@ -187,7 +224,14 @@ sys.exit(int(os.environ.get(kind + '_RC', '0')))
         self.assertEqual("ubuntu-24.04-arm", self.job["runs-on"])
         self.assertIs(False, self.job["steps"][0]["with"]["persist-credentials"])
         self.assertNotIn("secrets.", WORKFLOW.read_text())
-        self.assertNotIn("github.token", WORKFLOW.read_text())
+        self.assertEqual({"contents": "read"}, yaml.safe_load(WORKFLOW.read_text())["permissions"])
+        self.assertEqual({"GH_TOKEN": "${{ github.token }}"}, self.steps["version"]["env"])
+        self.assertEqual(1, WORKFLOW.read_text().count("github.token"))
+        self.assertNotIn("GH_TOKEN", self.job["env"])
+        for step in self.job["steps"]:
+            if step.get("id") != "version":
+                self.assertNotIn("GH_TOKEN", step.get("env", {}))
+                self.assertNotIn("GITHUB_TOKEN", step.get("env", {}))
         self.assertTrue(self.steps["version"]["continue-on-error"])
         self.assertIn("steps.summary.outputs.regression_status", self.job["outputs"]["regression_status"])
         self.assertNotIn("'skipped'", self.job["outputs"]["regression_status"])
@@ -229,10 +273,12 @@ sys.exit(int(os.environ.get(kind + '_RC', '0')))
         result, version = self.run_step("version")
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(CANDIDATE, version["latest"])
+        self.assertEqual(PACKAGE_SHA256, version["next_sha256"])
         self.assertEqual(self.release(CANDIDATE)["assets"][0]["browser_download_url"], version["next_url"])
         self.publish("version", result, version)
         result, regression = self.run_step("test6")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("Verified candidate SHA-256: " + PACKAGE_SHA256, result.stdout)
         self.assertEqual(("passed", "next_install_validated", BASELINE, CANDIDATE, CANDIDATE),
                          tuple(regression[key] for key in ("status", "decision", "current_version", "latest_version", "next_installed_version")))
         self.assertEqual(version["next_url"], (self.root / "download-url").read_text())
@@ -258,6 +304,106 @@ sys.exit(int(os.environ.get(kind + '_RC', '0')))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(CANDIDATE, outputs["latest"])
         self.assertEqual(2, len((self.root / "requests").read_text().splitlines()))
+
+    def test_real_redirect_handler_rejects_every_redirect_before_second_request(self):
+        for code in (301, 302, 303, 307, 308):
+            for target in ("https://off-origin.invalid/releases.json", "http://api.github.com/releases",
+                           "https://api.github.com/same-origin-redirect", "//off-origin.invalid/releases.json"):
+                with self.subTest(code=code, target=target):
+                    requests = self.root / "requests"
+                    requests.write_text("")
+                    result, outputs = self.run_step("version", API_REDIRECT=target, API_REDIRECT_CODE=str(code))
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(f"HTTP Error {code}", result.stderr)
+                    self.assertNotIn("discovery_status", outputs)
+                    self.assertNotIn("next_url", outputs)
+                    self.assertEqual(["https://api.github.com/repos/apache/impala/releases?per_page=100&page=1"],
+                                     requests.read_text().splitlines())
+                    self.publish("version", result, outputs)
+                    result, outputs = self.run_step("test6")
+                    self.assert_failed(result, outputs, "next_lookup_failed")
+                    self.publish("test6", result, outputs)
+                    self.assert_summary_failed()
+        self.assertFalse((self.root / "download-url").exists())
+        self.assertFalse((self.root / "extraction-called").exists())
+        self.assertFalse((self.root / "runtime-called").exists())
+
+    def test_missing_read_token_fails_before_api_request(self):
+        result, outputs = self.run_step("version", GH_TOKEN="")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("requires a read token", result.stderr)
+        self.assertFalse((self.root / "requests").exists())
+        self.publish("version", result, outputs)
+        self.assert_failed(*self.run_step("test6"), "next_lookup_failed")
+
+    def test_discovery_token_cannot_reach_download_extraction_or_runtime(self):
+        result, outputs = self.run_step("version")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.publish("version", result, outputs)
+        # Step-only credentials are absent normally; accidental inherited tokens are cleared too.
+        for env in ({}, {"GH_TOKEN": "unit-test-token", "GITHUB_TOKEN": "unit-test-token"}):
+            with self.subTest(env=bool(env)):
+                result, outputs = self.run_step("test6", **env)
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertEqual("passed", outputs["status"])
+        self.assertTrue((self.root / "extraction-called").exists())
+        self.assertEqual(["SHELL", "SERVER"] * 2, (self.root / "docker-calls").read_text().splitlines())
+
+    def test_missing_or_malformed_official_digest_never_downloads_or_executes(self):
+        missing = object()
+        for digest in (missing, None, "", False, 123, {}, [], PACKAGE_SHA256, "sha256:",
+                       "sha256:" + "a" * 63, "sha256:" + "a" * 65, "sha256:" + "g" * 64,
+                       "SHA256:" + PACKAGE_SHA256, "sha256:" + "A" * 64,
+                       "sha256:" + PACKAGE_SHA256 + "\n", " sha256:" + PACKAGE_SHA256):
+            with self.subTest(digest=digest):
+                release = self.release(CANDIDATE)
+                if digest is missing:
+                    del release["assets"][0]["digest"]
+                else:
+                    release["assets"][0]["digest"] = digest
+                self.pages = [[release, self.release(BASELINE)]]
+                result, outputs = self.run_step("version")
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("requires a valid SHA-256 digest", result.stderr)
+                self.assertEqual(CANDIDATE, outputs["latest"])
+                for key in ("discovery_status", "next_url", "next_sha256"):
+                    self.assertNotIn(key, outputs)
+                self.publish("version", result, outputs)
+                result, outputs = self.run_step("test6")
+                self.assert_failed(result, outputs, "next_lookup_failed")
+                self.publish("test6", result, outputs)
+                self.assert_summary_failed()
+        self.assertFalse((self.root / "download-url").exists())
+        self.assertFalse((self.root / "extraction-called").exists())
+        self.assertFalse((self.root / "runtime-called").exists())
+
+    def test_missing_or_malformed_carried_digest_fails_before_download(self):
+        for digest in ("", "unknown", "sha256:" + PACKAGE_SHA256, "a" * 63, "A" * 64):
+            with self.subTest(digest=digest):
+                self.values["steps.version.outputs.next_sha256"] = digest
+                self.assert_failed(*self.run_step("test6"), "next_lookup_failed")
+        self.assertFalse((self.root / "download-url").exists())
+        self.assertFalse((self.root / "extraction-called").exists())
+        self.assertFalse((self.root / "runtime-called").exists())
+
+    def test_digest_mismatch_blocks_extraction_and_runtime_and_fails_summary(self):
+        for digest, env in (("0" * 64, {}), (PACKAGE_SHA256, {"CORRUPT_DOWNLOAD": "1"})):
+            with self.subTest(digest=digest, env=env):
+                release = self.release(CANDIDATE)
+                release["assets"][0]["digest"] = "sha256:" + digest
+                self.pages = [[release, self.release(BASELINE)]]
+                result, outputs = self.run_step("version")
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(digest, outputs["next_sha256"])
+                self.publish("version", result, outputs)
+                result, outputs = self.run_step("test6", **env)
+                self.assert_failed(result, outputs, "next_install_failed", 1)
+                self.assertIn("SHA-256 mismatch; refusing extraction", result.stderr)
+                self.assertTrue((self.root / "download-url").exists())
+                self.assertFalse((self.root / "extraction-called").exists())
+                self.assertFalse((self.root / "runtime-called").exists())
+                self.publish("test6", result, outputs)
+                self.assert_summary_failed()
 
     def test_complete_discovery_is_required_for_no_newer_skip(self):
         self.pages = [[self.release(BASELINE), self.release("4.4.1")]]
