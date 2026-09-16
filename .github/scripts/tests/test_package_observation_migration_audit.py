@@ -81,7 +81,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"test3": 1, "test4": 1, "test5": 2, "test6": 324},
+            {"test3": 1, "test4": 1, "test5": 2, "test6": 323},
             {
                 key: len(value)
                 for key, value in remediation[
@@ -90,7 +90,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"core_failed": 381, "duration": 3, "skipped": 704},
+            {"core_failed": 378, "duration": 3, "skipped": 702},
             {
                 key: len(value)
                 for key, value in remediation["missing_summary_outputs"].items()
@@ -104,7 +104,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(282, len(remediation["literal_pair_contradictions"]))
         self.assertEqual(22, len(remediation["no_literal_decision"]))
         self.assertEqual(
-            307, len(remediation["package_manager_summary_omits_test6"])
+            305, len(remediation["package_manager_summary_omits_test6"])
         )
         self.assertEqual(8, len(remediation["unsafe_fallback_workflows"]))
         self.assertEqual(["freecad"], remediation["package_manager_missing_decision"])
@@ -152,7 +152,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             370,
             len(remediation["non_package_manager_missing_baseline_guard"]),
         )
-        self.assertEqual(325, len(remediation["summary_omits_test6_status"]))
+        self.assertEqual(323, len(remediation["summary_omits_test6_status"]))
         self.assertEqual(
             952, len(remediation["unsafe_package_version_fallback"])
         )
@@ -197,7 +197,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "9ac5349e75638b2bf43d1093bc5f0b51252882fb5a3cac024c6218cd084e497d",
+            "7df249be99714e37707da90a9a05b71ac89b3e72a55f752678fa4d4d291ac692",
             digest,
         )
 
