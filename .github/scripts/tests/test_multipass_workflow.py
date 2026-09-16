@@ -21,6 +21,8 @@ WORKFLOW = ROOT / ".github/workflows/test-multipass.yml"
 VERSION = "1.16.4"
 CERT = "/var/snap/multipass/common/data/multipassd/multipass_root_cert.pem"
 CERT_ERROR = f"[error] [client] Caught an unhandled exception: failed to open file '{CERT}': No such file or directory(2)\n"
+# Native hosted job 104615986142 at 501e23c, log lines 383-385: query exit 2.
+SOCKET_ERROR = "find failed: multipass socket access denied\n"
 HELP = """Usage: multipass [options] <command>
 Create, control and connect to Ubuntu instances.
 Available commands:
@@ -54,11 +56,12 @@ class MultipassWorkflowTests(unittest.TestCase):
                         ACTIVE_CALLS=str(self.root / "active-calls"),
                         ARCH="aarch64", SNAP_RC="0", START_RC="0", ACTIVE_RC="0", CERT_RC="0",
                         ACTIVE_READY_AFTER="1", CERT_READY_AFTER="1", TIMEOUT_TARGET="",
-                        VERSION_STDOUT=json.dumps({"multipass": VERSION, "multipassd": VERSION}) + "\n",
+                        VERSION_STDOUT=json.dumps({"multipass": VERSION}) + "\n",
                         VERSION_STDERR="", VERSION_RC="0",
                         BANNER_STDOUT=f"multipass   {VERSION}\nmultipassd  {VERSION}\n",
                         BANNER_STDERR="", BANNER_RC="0", HELP_STDOUT=HELP, HELP_STDERR="", HELP_RC="0",
-                        FIND_STDOUT=FIND, FIND_STDERR="", FIND_RC="0")
+                        FIND_STDOUT=FIND, FIND_STDERR="", FIND_RC="0", SOCKET_ERROR=SOCKET_ERROR,
+                        SUDO_FIND_RC="0")
         self.values = {
             "runner.environment": "github-hosted",
             "steps.install.outcome": "success",
@@ -91,6 +94,10 @@ case "$*" in
     printf '%s' "$HELP_STDERR" >&2
     exit "$HELP_RC" ;;
   'find --format json')
+    if [ "${MULTIPASS_FIXTURE_PRIVILEGED:-0}" != 1 ]; then
+      printf '%s' "$SOCKET_ERROR" >&2
+      exit 2
+    fi
     printf '%s' "$FIND_STDOUT"
     printf '%s' "$FIND_STDERR" >&2
     exit "$FIND_RC" ;;
@@ -101,6 +108,13 @@ esac
         self.tool("sudo", f"""
 printf 'sudo %s\n' "$*" >> "$CALLS"
 case "$*" in
+  '-n /snap/bin/multipass find --format json')
+    if [ "$SUDO_FIND_RC" != 0 ]; then
+      echo 'sudo: image query denied' >&2
+      exit "$SUDO_FIND_RC"
+    fi
+    export MULTIPASS_FIXTURE_PRIVILEGED=1
+    exec multipass find --format json ;;
   'snap install multipass') exit "$SNAP_RC" ;;
   'systemctl start snap.multipass.multipassd.service') exit "$START_RC" ;;
   'systemctl is-active --quiet snap.multipass.multipassd.service')
@@ -125,7 +139,7 @@ esac
 printf 'timeout %s %s %s\n' "$1" "$2" "$3" >> "$CALLS"
 case "$1:$2:$3" in
   --kill-after=5s:300s:sudo|--kill-after=5s:30s:sudo|--kill-after=2s:5s:sudo|\
-  --kill-after=5s:120s:bash|--kill-after=5s:30s:multipass|--kill-after=5s:120s:multipass) ;;
+  --kill-after=5s:120s:bash|--kill-after=5s:30s:multipass|--kill-after=5s:120s:sudo) ;;
   *) exit 98 ;;
 esac
 shift 2
@@ -288,7 +302,7 @@ exec "$@"
     def test_cli_timeout_cannot_pass(self):
         for step in ("test2", "test3", "test4"):
             with self.subTest(step=step):
-                result, _ = self.rejected(step, TIMEOUT_TARGET="multipass")
+                result, _ = self.rejected(step, TIMEOUT_TARGET="sudo" if step == "test4" else "multipass")
                 self.assertEqual(124, result.returncode)
                 self.assertIn("exit=124", result.stdout)
 
@@ -313,8 +327,53 @@ exec "$@"
             result, _ = self.rejected(step, **{f"{prefix}_RC": "1", f"{prefix}_STDOUT": "",
                                               f"{prefix}_STDERR": CERT_ERROR})
             self.assertIn(CERT_ERROR, result.stderr)
-            self.assertNotIn("sudo", self.calls())
-            self.assertNotIn("snap", self.calls())
+            self.assertNotIn("systemctl", self.calls())
+            self.assertNotIn("snap list", self.calls())
+            if step == "test4":
+                self.assertIn("sudo -n /snap/bin/multipass find --format json\n", self.calls())
+            else:
+                self.assertNotIn("sudo", self.calls())
+
+    def test_captured_client_only_version_does_not_prove_socket_access(self):
+        result, fields = self.run_step("version")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(VERSION, fields["version"])
+        self.assertNotIn("multipassd", result.stdout)
+        denied = subprocess.run([str(self.bin / "multipass"), "find", "--format", "json"],
+                                cwd=self.root, env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(2, denied.returncode)
+        self.assertEqual("", denied.stdout)
+        self.assertEqual(SOCKET_ERROR, denied.stderr)
+        result, fields = self.run_step("test4")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("passed", fields["status"])
+        self.assertIn("sudo -n /snap/bin/multipass find --format json\n", self.calls())
+        self.assertIn("Validated 1 available image records", result.stdout)
+
+    def test_captured_socket_denial_under_sudo_still_fails_summary(self):
+        result, fields = self.rejected("test4", FIND_STDOUT="", FIND_STDERR=SOCKET_ERROR, FIND_RC="2")
+        self.assertEqual(2, result.returncode)
+        self.assertIn(SOCKET_ERROR, result.stderr)
+        self.assertIn("multipass find --format json exit=2", result.stdout)
+        self.assertIn("sudo -n /snap/bin/multipass find --format json\n", self.calls())
+        self.assertNotIn("systemctl", self.calls())
+        self.record("test4", result, fields)
+        result, regression = self.run_step("test6")
+        self.assertEqual("baseline_failed", regression["decision"])
+        self.record("test6", result, regression)
+        result, summary = self.run_step("summary")
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(("4", "1", "1", "1", "failure", "failing"),
+                         tuple(summary[key] for key in ("passed", "failed", "skipped", "core_failed", "overall_status", "badge_status")))
+
+    def test_sudo_execution_failure_preserves_exit_and_cannot_pass(self):
+        for rc in (1, 127):
+            with self.subTest(rc=rc):
+                result, _ = self.rejected("test4", SUDO_FIND_RC=str(rc))
+                self.assertEqual(rc, result.returncode)
+                self.assertIn("sudo: image query denied", result.stderr)
+                self.assertIn(f"exit={rc}", result.stdout)
+                self.assertNotIn("multipass find --format json", self.calls().splitlines())
 
     def test_active_daemon_valid_payload_with_failed_exit_cannot_turn_summary_green(self):
         original = dict(self.values)
