@@ -6,11 +6,16 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
 
 import yaml
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import package_observation_migration_audit as audit  # noqa: E402
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows/test-electron.yml"
@@ -172,6 +177,12 @@ fi
             "timeout --kill-after=5s 20s", "xvfb-run -a", "electron --version",
             "timeout --kill-after=5s 20s", "xvfb-run -a", "electron --abi",
         ])
+
+    def test_terminal_outputs_remain_visible_to_the_migration_auditor(self):
+        root = Path(__file__).resolve().parents[3]
+        for output in ("status", "duration"):
+            with self.subTest(output=output):
+                self.assertTrue(audit._step_emits_output(root, self.steps["test3"], output))
 
     def test_positive_integer_abi_is_not_hardcoded(self):
         for value in ("1", "145", "99999"):
