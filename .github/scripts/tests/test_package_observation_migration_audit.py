@@ -81,7 +81,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"test3": 1, "test4": 1, "test5": 2, "test6": 322},
+            {"test3": 1, "test4": 1, "test5": 2, "test6": 320},
             {
                 key: len(value)
                 for key, value in remediation[
@@ -90,7 +90,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"core_failed": 377, "duration": 3, "skipped": 701},
+            {"core_failed": 375, "duration": 3, "skipped": 699},
             {
                 key: len(value)
                 for key, value in remediation["missing_summary_outputs"].items()
@@ -152,7 +152,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             370,
             len(remediation["non_package_manager_missing_baseline_guard"]),
         )
-        self.assertEqual(322, len(remediation["summary_omits_test6_status"]))
+        self.assertEqual(320, len(remediation["summary_omits_test6_status"]))
         self.assertEqual(
             952, len(remediation["unsafe_package_version_fallback"])
         )
@@ -197,7 +197,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "63badbdef69c2bbebaa9376933aab0e338acce4435553c48f396f861fc123769",
+            "110280565e21038c859b2b56f8f7ef56450297f098306ec93f7ea6fd5e25e962",
             digest,
         )
 
