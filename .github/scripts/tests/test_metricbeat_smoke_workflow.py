@@ -21,6 +21,10 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github/workflows/test-metricbeat.yml"
 sys.path.insert(0, str(ROOT / ".github/scripts"))
 import package_observation_migration_audit as audit  # noqa: E402
+import package_result_policy as policy  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import test_active_collector_failure_evidence as collector_helpers  # noqa: E402
 
 BASELINE = "9.0.4"
 CANDIDATE = "9.0.5"
@@ -34,6 +38,11 @@ def version_output(version):
 
 
 class MetricbeatSmokeWorkflowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        collector_helpers.ActiveCollectorFailureEvidenceTests.setUpClass()
+        cls.collector = collector_helpers.ActiveCollectorFailureEvidenceTests.source
+
     def setUp(self):
         self.workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
         self.job = self.workflow["jobs"]["test-metricbeat"]
@@ -145,6 +154,7 @@ exit "$FILE_EXIT"
                 self.env[f"{prefix}_{kind}_EXIT"] = "0"
                 self.env[f"{prefix}_{kind}_SIGNAL"] = ""
         self.values = {"steps.install.outputs.baseline_version": BASELINE,
+                       "steps.install.outcome": "success",
                        "steps.install.outputs.install_status": "success",
                        "steps.install.outputs.binary_path": str(self.baseline),
                        "steps.install.outputs.config_path": str(self.config),
@@ -165,7 +175,7 @@ exit "$FILE_EXIT"
         path.chmod(0o755)
         return path
 
-    def run_step(self, step, values=None, **environment):
+    def render(self, source, values=None):
         context = {**self.values, **(values or {})}
 
         def expression(match):
@@ -179,13 +189,88 @@ exit "$FILE_EXIT"
                     return str(context[term])
             return ""
 
-        script = re.sub(r"\$\{\{\s*(.*?)\s*\}\}", expression, self.steps[step]["run"])
+        return re.sub(r"\$\{\{\s*(.*?)\s*\}\}", expression, source)
+
+    def run_step(self, step, values=None, **environment):
+        script = self.render(self.steps[step]["run"], values)
         self.output.write_text("")
         self.calls.write_text("")
         (self.root / "date-started").unlink(missing_ok=True)
         result = subprocess.run([self.bash, "-euo", "pipefail", "-c", script], cwd=self.root,
                                 env={**self.env, **environment}, capture_output=True, text=True, timeout=10)
         return result, dict(line.split("=", 1) for line in self.output.read_text().splitlines())
+
+    def collect(self, summary, values, conclusions):
+        context = {**values, **{f"steps.summary.outputs.{key}": value for key, value in summary.items()},
+                   "steps.metadata.outputs.package_slug": "metricbeat", "github.job": "test-metricbeat",
+                   "github.run_id": "123", "github.run_attempt": "1"}
+        outputs = {key: self.render(value, context) for key, value in self.job["outputs"].items()}
+        job = {"id": 456, "name": "test-metricbeat / test-metricbeat", "conclusion": summary["overall_status"],
+               "html_url": "https://github.com/example/project/actions/runs/123/job/456",
+               "steps": [{"name": self.steps[f"test{i}"]["name"], "number": i, "conclusion": conclusion}
+                         for i, conclusion in enumerate(conclusions, 1)]}
+        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
+            root = Path(temporary)
+            (root / ".github").mkdir()
+            (root / ".github/scripts").symlink_to(ROOT / ".github/scripts")
+            env = {**self.env, "GH_TOKEN": "", "BATCH_NUMBER": "10", "BATCH_TITLE": "Batch 10",
+                   "NEEDS_JSON": json.dumps({"test-metricbeat": {"result": job["conclusion"], "outputs": outputs}}),
+                   "RUN_JOBS_JSON": json.dumps({"jobs": [job]}),
+                   "GITHUB_SERVER_URL": "https://github.com", "GITHUB_API_URL": "https://api.github.com",
+                   "GITHUB_REPOSITORY": "example/project", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+                   "GITHUB_OUTPUT": str(root / "outputs"), "GITHUB_STEP_SUMMARY": str(root / "summary")}
+            process = subprocess.run([sys.executable, "-B", "-c", self.collector], cwd=root, env=env,
+                                     capture_output=True, text=True, timeout=20)
+            path = root / "test-results/metricbeat-test-results/metricbeat.json"
+            return process, json.loads(path.read_text()) if path.exists() else None
+
+    def run_checks(self, failed_core=(), prerequisite_values=None, candidate_failure=False):
+        values = {**self.values, **(prerequisite_values or {})}
+        prerequisites_ok = (
+            values.get("steps.install.outcome", "success") == "success"
+            and values.get("steps.install.outputs.install_status") == "success"
+            and values.get("steps.version.outcome") == "success"
+            and values.get("steps.version.outputs.version") == BASELINE
+        )
+        conclusions = []
+        for index in range(1, 7):
+            step = f"test{index}"
+            if index <= 5 and not prerequisites_ok:
+                fields, outcome = {}, "skipped"
+            else:
+                environment = {}
+                moved = self.baseline.with_name("hidden-metricbeat")
+                if index in failed_core:
+                    if index == 1:
+                        self.baseline.rename(moved)
+                    else:
+                        kind = {2: "VERSION", 3: "HELP", 4: "CONFIG", 5: "MODULES"}[index]
+                        environment[f"BASE_{kind}_EXIT"] = "1"
+                if index == 6 and candidate_failure:
+                    environment["NEXT_VERSION_EXIT"] = "1"
+                try:
+                    result, fields = self.run_step(step, values, **environment)
+                    outcome = "success" if result.returncode == 0 else "failure"
+                finally:
+                    if moved.exists():
+                        moved.rename(self.baseline)
+            for key in ("status", "duration", "decision", "current_version", "latest_version",
+                        "next_installed_version", "regression_result", "comparison"):
+                values[f"steps.{step}.outputs.{key}"] = fields.get(key, "")
+            values[f"steps.{step}.outcome"] = outcome
+            conclusions.append(outcome)
+        result, summary = self.run_step("summary", values)
+        self.assertEqual(result.returncode == 0, summary["overall_status"] == "success")
+        return summary, values, conclusions
+
+    def test_collector_rejects_original_masked_core_failure(self):
+        summary, values, conclusions = self.run_checks(failed_core={3})
+        self.assertEqual(conclusions, ["success", "success", "failure", "success", "success", "success"])
+        self.assertEqual((summary["passed"], summary["failed"], summary["skipped"]), ("4", "1", "1"))
+        process, payload = self.collect(summary, values, ["success"] * 6)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("metricbeat: emitted failure counts contradict test details", process.stderr)
+        self.assertIsNone(payload)
 
     def assert_failed(self, step, **environment):
         result, fields = self.run_step(step, **environment)
@@ -201,6 +286,10 @@ exit "$FILE_EXIT"
     def test_only_scoped_assertions_and_summary_changed(self):
         unchanged = copy.deepcopy(self.workflow)
         for step in unchanged["jobs"]["test-metricbeat"]["steps"]:
+            if step.get("id") in {f"test{i}" for i in range(1, 7)}:
+                step.pop("if", None)
+                if step["id"] != "test6":
+                    step["continue-on-error"] = "true"
             if step.get("id") in {"version", "test2", "test3", "test4", "test5", "test6", "summary"} or step["name"] == "Create test summary":
                 step.pop("run", None)
         self.assertEqual(hashlib.sha256(json.dumps(unchanged, sort_keys=True).encode()).hexdigest(), UNCHANGED_SHA256)
@@ -209,6 +298,66 @@ exit "$FILE_EXIT"
         for step in ("test3", "test4", "test5", "test6"):
             self.assertNotIn("export config", self.steps[step]["run"])
             self.assertNotIn("strict.perms=false", self.steps[step]["run"])
+
+    def test_core_scheduling_exposes_failures_and_depends_only_on_prerequisites(self):
+        for index in range(1, 7):
+            step = self.steps[f"test{index}"]
+            self.assertNotIn("continue-on-error", step)
+            if index <= 5:
+                self.assertEqual(step["if"], "always() && steps.install.outcome == 'success' && steps.install.outputs.install_status == 'success' && steps.version.outcome == 'success' && steps.version.outputs.version == env.BASELINE_VERSION")
+            else:
+                self.assertEqual(step["if"], "always()")
+
+    def test_all_32_executed_core_failure_combinations_match_actual_collector(self):
+        for mask in range(32):
+            failures = {index for index in range(1, 6) if mask & (1 << (index - 1))}
+            with self.subTest(failed_core=sorted(failures)):
+                summary, values, conclusions = self.run_checks(failed_core=failures)
+                self.assertEqual(conclusions[:5], ["failure" if i in failures else "success" for i in range(1, 6)])
+                self.assertEqual(conclusions[5], "success", "baseline guard is an executed explanation, not an assertion failure")
+                process, payload = self.collect(summary, values, conclusions)
+                self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+                expected = (5 - len(failures), len(failures), 1) if failures else (6, 0, 0)
+                self.assertEqual(tuple(int(summary[key]) for key in ("passed", "failed", "skipped")), expected)
+                self.assertEqual(tuple(payload["tests"][key] for key in ("passed", "failed", "skipped")), expected)
+                self.assertEqual(payload["metadata"]["core_failed"], len(failures))
+                self.assertEqual([detail["status"] for detail in payload["tests"]["details"][:5]],
+                                 ["failed" if i in failures else "passed" for i in range(1, 6)])
+                self.assertEqual(payload["tests"]["details"][5]["status"], "skipped" if failures else "passed")
+                self.assertEqual(policy.validate_publishable_result(payload), "failure" if failures else "success")
+
+    def test_actual_candidate_failure_collects_without_masking_core_results(self):
+        summary, values, conclusions = self.run_checks(candidate_failure=True)
+        self.assertEqual(conclusions, ["success"] * 5 + ["failure"])
+        process, payload = self.collect(summary, values, conclusions)
+        self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+        self.assertEqual(tuple(payload["tests"][key] for key in ("passed", "failed", "skipped")), (5, 1, 0))
+        self.assertEqual(payload["tests"]["details"][5]["status"], "failed")
+        self.assertEqual(payload["metadata"]["core_failed"], 0)
+        self.assertEqual(policy.validate_publishable_result(payload), "failure")
+
+    def test_prerequisite_failures_collect_truthful_unexecuted_core_skips(self):
+        version_result, version_fields = self.run_step("version", BASE_VERSION_EXIT="1")
+        self.assertNotEqual(version_result.returncode, 0)
+        cases = [{"steps.install.outcome": "failure", "steps.install.outputs.install_status": "",
+                  "steps.version.outcome": "skipped", "steps.version.outputs.version": ""},
+                 {"steps.version.outcome": "failure", "steps.version.outputs.version": version_fields["version"]}]
+        for prerequisites in cases:
+            with self.subTest(prerequisites=prerequisites):
+                summary, values, conclusions = self.run_checks(prerequisite_values=prerequisites)
+                self.assertEqual(conclusions, ["skipped"] * 5 + ["success"])
+                self.assertEqual(values["steps.test6.outputs.status"], "skipped")
+                self.assertEqual(values["steps.test6.outputs.decision"], "baseline_failed")
+                process, payload = self.collect(summary, values, conclusions)
+                self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+                self.assertEqual(tuple(payload["tests"][key] for key in ("passed", "failed", "skipped")), (0, 0, 6))
+                self.assertEqual(payload["metadata"]["core_failed"], 0)
+                self.assertEqual(payload["run"]["status"], "failure")
+                self.assertEqual(payload["metadata"]["badge_status"], "failing")
+                self.assertTrue(all(detail["status"] == "skipped" for detail in payload["tests"]["details"]))
+                # The strict publication policy still rejects unexecuted core tests.
+                with self.assertRaisesRegex(ValueError, "unsupported status 'skipped'"):
+                    policy.validate_publishable_result(payload)
 
     def test_status_duration_and_summary_outputs_remain_auditable(self):
         for step in (f"test{i}" for i in range(1, 7)):
