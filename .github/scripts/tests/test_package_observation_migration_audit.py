@@ -90,7 +90,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"core_failed": 375, "duration": 3, "skipped": 699},
+            {"core_failed": 375, "duration": 3, "skipped": 698},
             {
                 key: len(value)
                 for key, value in remediation["missing_summary_outputs"].items()
@@ -109,7 +109,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(8, len(remediation["unsafe_fallback_workflows"]))
         self.assertEqual(["freecad"], remediation["package_manager_missing_decision"])
         self.assertEqual(
-            {"test1": 26, "test2": 32, "test3": 33, "test4": 26, "test5": 29},
+            {"test1": 25, "test2": 32, "test3": 33, "test4": 26, "test5": 29},
             {
                 key: len(value)
                 for key, value in remediation["baseline_literal_skip"].items()
@@ -149,7 +149,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             [], remediation["invalid_workflow_call_observation_output"]
         )
         self.assertEqual(
-            370,
+            369,
             len(remediation["non_package_manager_missing_baseline_guard"]),
         )
         self.assertEqual(320, len(remediation["summary_omits_test6_status"]))
@@ -197,7 +197,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "110280565e21038c859b2b56f8f7ef56450297f098306ec93f7ea6fd5e25e962",
+            "de1a6c0cb19fbf9ba3ba41fa8a6bceb576fa95b50875f60aef77354b763c334c",
             digest,
         )
 
