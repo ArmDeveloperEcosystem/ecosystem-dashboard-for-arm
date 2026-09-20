@@ -82,6 +82,25 @@ jobs:
     env:
       BASELINE_VERSION: "2.5.6"
       NEXT_VERSION: "2.5.7"
+      MILVUS_COMPOSE_MINIO_PATCH: |
+        import sys
+        from pathlib import Path
+        import yaml
+
+        path = Path(sys.argv[1])
+        compose = yaml.safe_load(path.read_text())
+        minio = compose["services"]["minio"]
+        upstream = "minio/minio:RELEASE.2023-03-20T20-16-18Z"
+        # Same upstream release from MinIO's official Quay registry, pinned to Linux/Arm64.
+        replacement = (
+            "quay.io/" + upstream
+            + "@sha256:d6b74c01202ef9366bb88c304777e8d5d96c6b443e5dc8ac8e31f34469c495e7"
+        )
+        if minio["image"] not in (upstream, replacement):
+            raise SystemExit(f"Unexpected MinIO dependency image: {minio['image']}")
+        minio["image"] = replacement
+        path.write_text(yaml.safe_dump(compose, sort_keys=False))
+        print(f"MinIO dependency image: {replacement}")
 
     outputs:
       contract_version: "2.0"
@@ -129,7 +148,7 @@ jobs:
           WORK_DIR="/tmp/milvus-${VERSION}"
           COMPOSE_PATH="${WORK_DIR}/milvus-standalone-docker-compose.yml"
           COMPOSE_URL="https://github.com/milvus-io/milvus/releases/download/v${VERSION}/milvus-standalone-docker-compose.yml"
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "curl"
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "curl python3-yaml"
 
           sudo rm -rf "$WORK_DIR"
           mkdir -p "$WORK_DIR"
@@ -285,7 +304,18 @@ jobs:
           export COMPOSE_PROJECT_NAME="milvus-baseline-${{ github.run_id }}"
           export DOCKER_VOLUME_DIRECTORY="${{ steps.install.outputs.work_dir }}"
 
-          docker compose -f "${{ steps.install.outputs.compose_path }}" up -d >/tmp/milvus-up.log 2>&1
+          if /usr/bin/python3 -c "$MILVUS_COMPOSE_MINIO_PATCH" "${{ steps.install.outputs.compose_path }}" \
+            && docker compose -f "${{ steps.install.outputs.compose_path }}" up -d >/tmp/milvus-up.log 2>&1; then
+            :
+          else
+            cat /tmp/milvus-up.log || true
+            docker compose -f "${{ steps.install.outputs.compose_path }}" ps || true
+            docker compose -f "${{ steps.install.outputs.compose_path }}" logs --no-color --tail=100 || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           for _ in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:9091/healthz >/dev/null 2>&1; then
@@ -328,11 +358,19 @@ jobs:
 
           RUN_IMAGE=$(docker inspect milvus-standalone --format '{{.Config.Image}}')
           HEALTH=$(docker inspect milvus-standalone --format '{{.State.Health.Status}}')
-          HELP_OUTPUT=$(docker exec milvus-standalone /milvus/bin/milvus run --help 2>&1 || true)
+          # Help flags follow the server type; "run --help" is an unknown-server error (255).
+          HELP_RC=0
+          HELP_OUTPUT=$(docker exec milvus-standalone /milvus/bin/milvus run standalone --help 2>&1) || HELP_RC=$?
+          echo "Milvus standalone help exit code: $HELP_RC"
 
           if [ "$RUN_IMAGE" = "$IMAGE" ] \
             && [ "$HEALTH" = "healthy" ] \
-            && printf '%s\n' "$HELP_OUTPUT" | grep -q "milvus run"; then
+            && [ "$HELP_RC" -eq 0 ] \
+            && printf '%s\n' "$HELP_OUTPUT" | grep -Fxq 'milvus run [server type] [flags]' \
+            && printf '%s\n' "$HELP_OUTPUT" | grep -Fxq '[flags]' \
+            && printf '%s\n' "$HELP_OUTPUT" | grep -Fxq '[server type]' \
+            && printf '%s\n' "$HELP_OUTPUT" | grep -Eq '^[[:space:]]+standalone[[:space:]]*$' \
+            && ! printf '%s\n' "$HELP_OUTPUT" | grep -Eiq 'error|failed|fatal|panic|unknown'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "$HELP_OUTPUT"
@@ -447,7 +485,8 @@ jobs:
             exit 1
           fi
 
-          if DOCKER_VOLUME_DIRECTORY="$WORK_DIR" docker compose -f "$COMPOSE_PATH" config >/tmp/milvus-next-config.log 2>&1; then
+          if /usr/bin/python3 -c "$MILVUS_COMPOSE_MINIO_PATCH" "$COMPOSE_PATH" \
+            && DOCKER_VOLUME_DIRECTORY="$WORK_DIR" docker compose -f "$COMPOSE_PATH" config >/tmp/milvus-next-config.log 2>&1; then
             :
           else
             cat /tmp/milvus-next-config.log || true
@@ -464,7 +503,19 @@ jobs:
             exit 1
           fi
 
-          docker compose -f "$COMPOSE_PATH" up -d >/tmp/milvus-next-up.log 2>&1
+          if ! docker compose -f "$COMPOSE_PATH" up -d >/tmp/milvus-next-up.log 2>&1; then
+            cat /tmp/milvus-next-up.log || true
+            docker compose -f "$COMPOSE_PATH" ps || true
+            docker compose -f "$COMPOSE_PATH" logs --no-color --tail=100 || true
+            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Candidate Milvus ${LATEST} compose startup failed on Arm64; see startup and service logs." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           HEALTH_OK=false
           for _ in $(seq 1 60); do
@@ -478,13 +529,21 @@ jobs:
           NEXT_ARCH=$(docker image inspect "$NEXT_IMAGE" --format '{{.Architecture}}' || true)
           RUN_IMAGE=$(docker inspect milvus-standalone --format '{{.Config.Image}}' || true)
           HEALTH=$(docker inspect milvus-standalone --format '{{.State.Health.Status}}' || true)
-          HELP_OUTPUT=$(docker exec milvus-standalone /milvus/bin/milvus run --help 2>&1 || true)
+          # Help flags follow the server type; "run --help" is an unknown-server error (255).
+          HELP_RC=0
+          HELP_OUTPUT=$(docker exec milvus-standalone /milvus/bin/milvus run standalone --help 2>&1) || HELP_RC=$?
+          echo "Milvus standalone help exit code: $HELP_RC"
 
           if [ "$HEALTH_OK" = true ] \
             && [ "$NEXT_ARCH" = "arm64" ] \
             && [ "$RUN_IMAGE" = "$NEXT_IMAGE" ] \
             && [ "$HEALTH" = "healthy" ] \
-            && printf '%s\n' "$HELP_OUTPUT" | grep -q "milvus run"; then
+            && [ "$HELP_RC" -eq 0 ] \
+            && printf '%s\n' "$HELP_OUTPUT" | grep -Fxq 'milvus run [server type] [flags]' \
+            && printf '%s\n' "$HELP_OUTPUT" | grep -Fxq '[flags]' \
+            && printf '%s\n' "$HELP_OUTPUT" | grep -Fxq '[server type]' \
+            && printf '%s\n' "$HELP_OUTPUT" | grep -Eq '^[[:space:]]+standalone[[:space:]]*$' \
+            && ! printf '%s\n' "$HELP_OUTPUT" | grep -Eiq 'error|failed|fatal|panic|unknown'; then
             echo "next_installed_version=$NEXT_REPORTED" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"

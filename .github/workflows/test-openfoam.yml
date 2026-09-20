@@ -77,6 +77,12 @@ on:
 jobs:
   test-openfoam:
     runs-on: ubuntu-24.04-arm
+    env:
+      LC_ALL: C
+      # Ubuntu splits binaries/libraries from data; its source-tree bashrc calls
+      # helpers that are not shipped. The runtime finds etc/ via WM_PROJECT_DIR.
+      WM_PROJECT_DIR: /usr/share/openfoam
+      FOAM_TUTORIALS: /usr/share/doc/openfoam-examples/examples
     outputs:
       contract_version: "2.0"
       package_slug: ${{ steps.metadata.outputs.package_slug }}
@@ -124,14 +130,9 @@ jobs:
           
           # Try installing from standard repositories first
           if sudo apt-get install -y openfoam; then
+             test -s "$WM_PROJECT_DIR/etc/controlDict"
              echo "OpenFOAM installed successfully"
              echo "install_status=success" >> $GITHUB_OUTPUT
-             BASHRC_PATH=$(
-               find /usr/lib /opt /usr/share \
-                 \( -path '*/openfoam*/etc/bashrc' -o -path '*/OpenFOAM*/etc/bashrc' \) \
-                 2>/dev/null | head -n 1 || true
-             )
-             echo "bashrc_path=$BASHRC_PATH" >> $GITHUB_OUTPUT
           else
              echo "OpenFOAM installation failed"
              echo "install_status=failed" >> $GITHUB_OUTPUT
@@ -214,40 +215,36 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          BASHRC_PATH="${{ steps.install.outputs.bashrc_path }}"
-          find_openfoam_bin() {
-            command -v "$1" 2>/dev/null || true
-            return 0
-          }
-          if [ -n "$BASHRC_PATH" ] && [ -f "$BASHRC_PATH" ]; then
-            # shellcheck disable=SC1090
-            set +u
-            source "$BASHRC_PATH"
-            set -u
-          fi
-          FOAM_VERSION_BIN="$(find_openfoam_bin foamVersion)"
-          ICOFOAM_BIN="$(find_openfoam_bin icoFoam)"
-          BLOCKMESH_BIN="$(find_openfoam_bin blockMesh)"
-
-          OUTPUT=$({
-            [ -n "$FOAM_VERSION_BIN" ] && "$FOAM_VERSION_BIN" 2>&1 || true
-            [ -n "$ICOFOAM_BIN" ] && "$ICOFOAM_BIN" -help 2>&1 || true
-            [ -n "$ICOFOAM_BIN" ] && "$ICOFOAM_BIN" --help 2>&1 || true
-            [ -n "$BLOCKMESH_BIN" ] && "$BLOCKMESH_BIN" -help 2>&1 || true
-          } || true)
-          printf '%s\n' "$OUTPUT" > /tmp/openfoam-help.log
-          if [ -n "$OUTPUT" ] && printf '%s\n' "$OUTPUT" | grep -Ei -q "OpenFOAM|icoFoam|blockMesh|usage|solver|case|version"; then
-             echo "✓ Help command works"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             cat /tmp/openfoam-help.log || true
-             echo "✗ Help command failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          test -s "$WM_PROJECT_DIR/etc/controlDict"
+          LOG_DIR=$(mktemp -d "$RUNNER_TEMP/openfoam-help.XXXXXX")
+          for TOOL in icoFoam blockMesh; do
+            BIN=$(command -v "$TOOL")
+            echo "Running $BIN -help (WM_PROJECT_DIR=$WM_PROJECT_DIR)"
+            set +e
+            timeout --kill-after=5s 30s "$BIN" -help 2>&1 | tee "$LOG_DIR/$TOOL.log"
+            RESULTS=("${PIPESTATUS[@]}")
+            set -e
+            echo "$TOOL -help exit status: ${RESULTS[0]}; log writer: ${RESULTS[1]}"
+            test "${RESULTS[0]}" -eq 0
+            test "${RESULTS[1]}" -eq 0
+            grep -Eq "^Usage: $TOOL \\[OPTIONS\\]" "$LOG_DIR/$TOOL.log"
+            if grep -Eiq 'FOAM FATAL|error while loading shared libraries' "$LOG_DIR/$TOOL.log"; then
+              exit 1
+            fi
+          done
+          finish 0
 
             # ============================================================
       # UPDATE THIS: Calculate summary based on your number of tests
@@ -282,43 +279,48 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          BASHRC_PATH="${{ steps.install.outputs.bashrc_path }}"
-          find_openfoam_bin() {
-            command -v "$1" 2>/dev/null || true
-            return 0
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
           }
-          if [ -n "$BASHRC_PATH" ] && [ -f "$BASHRC_PATH" ]; then
-            # shellcheck disable=SC1090
-            set +u
-            source "$BASHRC_PATH"
-            set -u
-          fi
-          FOAM_VERSION_BIN="$(find_openfoam_bin foamVersion)"
-          ICOFOAM_BIN="$(find_openfoam_bin icoFoam)"
-          BLOCKMESH_BIN="$(find_openfoam_bin blockMesh)"
-          FOAMEXEC_BIN="$(find_openfoam_bin foamExec)"
-          : > /tmp/openfoam-functional.log
-          # Basic functional check: use real OpenFOAM entry points, not a nonexistent openfoam wrapper
-          if { [ -n "$FOAM_VERSION_BIN" ] && "$FOAM_VERSION_BIN" > /tmp/openfoam-functional.log 2>&1; } || \
-             { [ -n "$ICOFOAM_BIN" ] && "$ICOFOAM_BIN" -help >> /tmp/openfoam-functional.log 2>&1; } || \
-             { [ -n "$ICOFOAM_BIN" ] && "$ICOFOAM_BIN" --help >> /tmp/openfoam-functional.log 2>&1; } || \
-             { [ -n "$BLOCKMESH_BIN" ] && "$BLOCKMESH_BIN" -help >> /tmp/openfoam-functional.log 2>&1; } || \
-             { [ -n "$BLOCKMESH_BIN" ] && "$BLOCKMESH_BIN" --help >> /tmp/openfoam-functional.log 2>&1; } || \
-             { [ -n "$FOAMEXEC_BIN" ] && "$FOAMEXEC_BIN" -help >> /tmp/openfoam-functional.log 2>&1; }; then
-            echo "✓ Basic functional check passed"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          elif grep -Ei -q "icoFoam|blockMesh|OpenFOAM|usage|solver|case|version" /tmp/openfoam-functional.log; then
-            echo "✓ Basic functional check passed"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            cat /tmp/openfoam-functional.log || true
-            echo "✗ Basic functional check failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          trap 'finish "$?"' EXIT
+          test -s "$WM_PROJECT_DIR/etc/controlDict"
+          CASE_DIR=$(mktemp -d "$RUNNER_TEMP/openfoam-cavity.XXXXXX")
+          cp -R "$FOAM_TUTORIALS/incompressible/icoFoam/cavity/cavity/." "$CASE_DIR"
+          # Use the packaged 20x20x1 cavity: 100 time steps, ending at t=0.5.
+          test ! -e "$CASE_DIR/constant/polyMesh"
+          test ! -e "$CASE_DIR/0.5"
+          for TOOL in blockMesh icoFoam; do
+            BIN=$(command -v "$TOOL")
+            echo "Running $BIN -case $CASE_DIR (WM_PROJECT_DIR=$WM_PROJECT_DIR)"
+            set +e
+            timeout --kill-after=5s 120s "$BIN" -case "$CASE_DIR" 2>&1 | tee "$CASE_DIR/$TOOL.log"
+            RESULTS=("${PIPESTATUS[@]}")
+            set -e
+            echo "$TOOL exit status: ${RESULTS[0]}; log writer: ${RESULTS[1]}"
+            test "${RESULTS[0]}" -eq 0
+            test "${RESULTS[1]}" -eq 0
+            grep -Eq '^End[[:space:]]*$' "$CASE_DIR/$TOOL.log"
+            if grep -Eiq 'FOAM FATAL|error while loading shared libraries' "$CASE_DIR/$TOOL.log"; then
+              exit 1
+            fi
+          done
+          grep -Eq '^Time = 0\.5[[:space:]]*$' "$CASE_DIR/icoFoam.log"
+          grep -Eq 'Solving for Ux,' "$CASE_DIR/icoFoam.log"
+          grep -Eq 'Solving for p,' "$CASE_DIR/icoFoam.log"
+          for FIELD in constant/polyMesh/points constant/polyMesh/faces constant/polyMesh/owner constant/polyMesh/boundary 0.5/U 0.5/p; do
+            test -s "$CASE_DIR/$FIELD"
+            echo "Verified generated $FIELD"
+          done
+          echo "Cavity mesh and icoFoam solve completed at t=0.5"
+          finish 0
 
       - name: Regression applicability - package manager installed
         id: test6
@@ -338,12 +340,13 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
           TOTAL_DURATION=0
 
           # Check icoFoam binary
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test1.outcome }}" == "success" ] && [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -351,7 +354,7 @@ jobs:
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
           # Check blockMesh binary
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test2.outcome }}" == "success" ] && [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -359,7 +362,7 @@ jobs:
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
           # Run Help Command
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test3.outcome }}" == "success" ] && [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -367,7 +370,7 @@ jobs:
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
           # Architecture Verification
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test4.outcome }}" == "success" ] && [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -375,7 +378,7 @@ jobs:
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
           # Functional Validation
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test5.outcome }}" == "success" ] && [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -384,6 +387,7 @@ jobs:
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "core_failed=$FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
           if [ $FAILED -eq 0 ]; then
