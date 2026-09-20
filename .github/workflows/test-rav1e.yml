@@ -423,7 +423,7 @@ jobs:
 
       - name: Test 1 - Check package-specific baseline markers
         id: test1
-        continue-on-error: true
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -472,7 +472,7 @@ jobs:
 
       - name: Test 2 - Check published package metadata
         id: test2
-        continue-on-error: true
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -490,7 +490,7 @@ jobs:
 
       - name: Test 3 - Check package-specific docs and manifests
         id: test3
-        continue-on-error: true
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -536,7 +536,7 @@ jobs:
 
       - name: Test 4 - Verify Arm64 runner and lane assumptions
         id: test4
-        continue-on-error: true
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -554,18 +554,25 @@ jobs:
 
       - name: Test 5 - Run bounded package-specific smoke
         id: test5
-        continue-on-error: true
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          STATUS=failed
+          finish_probe() {
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+          }
+          trap finish_probe EXIT
           RELEASE_JSON=$(mktemp)
-          curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" -o "$RELEASE_JSON"
+          curl -fsSL --connect-timeout 10 --max-time 60 \
+            -H "Authorization: Bearer ${GH_TOKEN:?}" \
+            "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" -o "$RELEASE_JSON"
           RAV1E_URL=$(jq -r '.assets[] | select(.name | test("^rav1e-.*linux-aarch64\\.tar\\.gz$")) | .browser_download_url' "$RELEASE_JSON" | head -1)
           if [ -z "$RAV1E_URL" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
             echo "note=Latest rav1e release did not publish a linux-aarch64 CLI tarball, so no reliable generic Ubuntu Arm binary smoke can run." >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           mkdir -p rav1e-bin
@@ -583,13 +590,16 @@ jobs:
           PY
           rav1e-bin/rav1e --limit 1 --speed 10 --quantizer 255 -o smoke.ivf smoke.y4m
           test -s smoke.ivf
-          echo "status=passed" >> "$GITHUB_OUTPUT"
           echo "note=Downloaded the latest linux-aarch64 rav1e release binary, verified version/help, and encoded a one-frame 16x16 Y4M fixture." >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          STATUS=passed
+          trap - EXIT
+          finish_probe
 
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
         uses: ./.github/actions/generic-source-regression-check
         with:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
@@ -599,7 +609,9 @@ jobs:
           candidate_tag_override: "v0.8.1"
           limited_cpu_probe: |
             RELEASE_JSON=$(mktemp)
-            curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${CANDIDATE_TAG}" -o "$RELEASE_JSON"
+            curl -fsSL --connect-timeout 10 --max-time 60 \
+              -H "Authorization: Bearer ${GH_TOKEN:?}" \
+              "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${CANDIDATE_TAG}" -o "$RELEASE_JSON"
             RAV1E_URL=$(jq -r '.assets[] | select(.name | test("^rav1e-.*linux-aarch64\\.tar\\.gz$")) | .browser_download_url' "$RELEASE_JSON" | head -1)
             [ -n "$RAV1E_URL" ]
             mkdir -p rav1e-next-bin
@@ -623,12 +635,19 @@ jobs:
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -637,37 +656,41 @@ jobs:
           D6="${{ steps.test6.outputs.duration || '0' }}"
           PASSED=0
           FAILED=0
-          SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
+          CORE_FAILED=0
+          INDEX=0
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5" "$T6:$O6"; do
+            INDEX=$((INDEX + 1))
+            STATUS=failed
+            if [ "$RESULT" = "passed:success" ]; then
+              STATUS=passed
               PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
             else
-              SKIPPED=$((SKIPPED + 1))
+              FAILED=$((FAILED + 1))
+              if [ "$INDEX" -le 5 ]; then
+                CORE_FAILED=$((CORE_FAILED + 1))
+              fi
             fi
+            echo "test${INDEX}_status=$STATUS" >> "$GITHUB_OUTPUT"
           done
           DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
-          CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
-              CORE_FAILED=$((CORE_FAILED + 1))
-            fi
-          done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
-          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "skipped=0" >> "$GITHUB_OUTPUT"
           echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
 
       - name: Create test summary
         if: always()
@@ -680,12 +703,12 @@ jobs:
           tests_failed: ${{ steps.summary.outputs.failed || '0' }}
           tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
           duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
-          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
-          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
-          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
-          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
-          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_status: ${{ steps.summary.outputs.test1_status || 'failed' }}
+          test2_status: ${{ steps.summary.outputs.test2_status || 'failed' }}
+          test3_status: ${{ steps.summary.outputs.test3_status || 'failed' }}
+          test4_status: ${{ steps.summary.outputs.test4_status || 'failed' }}
+          test5_status: ${{ steps.summary.outputs.test5_status || 'failed' }}
+          test6_status: ${{ steps.summary.outputs.test6_status || 'failed' }}
           test6_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
           regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
           regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
