@@ -48,9 +48,11 @@ class Rav1eSmokeWorkflowTests(unittest.TestCase):
         self.output = self.root / "output"
         self.env = {
             **os.environ, **self.job["env"], "GH_TOKEN": "offline-fixture-token",
+            "GITHUB_TOKEN": "another-offline-fixture-token",
             "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
             "GITHUB_OUTPUT": str(self.output), "FIXTURE_ROOT": str(self.root),
-            "TMPDIR": str(self.root), "FIXTURE_FAILURE": "",
+            "TMPDIR": str(self.root), "RUNNER_TEMP": str(self.root), "FIXTURE_FAILURE": "",
+            "FIXTURE_RELEASE_TAG": "v0.8.1",
         }
         self.tool("curl", '''
             import json, os, pathlib, shutil, sys
@@ -77,9 +79,14 @@ class Rav1eSmokeWorkflowTests(unittest.TestCase):
                         "name": "rav1e-0.8.1-linux-aarch64.tar.gz",
                         "browser_download_url": "https://github.com/xiph/rav1e/releases/download/v0.8.1/rav1e-0.8.1-linux-aarch64.tar.gz",
                     }]
-                    output.write_text(json.dumps({"tag_name": "v0.8.1", "assets": assets}))
+                    output.write_text(json.dumps({"tag_name": os.environ["FIXTURE_RELEASE_TAG"], "assets": assets}))
             else:
                 assert not authorized, "Do not forward the API token to asset downloads"
+                assert "GH_TOKEN" not in os.environ and "GITHUB_TOKEN" not in os.environ
+                assert args[args.index("--connect-timeout") + 1] == "10"
+                assert args[args.index("--max-time") + 1] == "180"
+                assert args[args.index("--proto") + 1] == "=https"
+                assert args[args.index("--proto-redir") + 1] == "=https"
                 assert url == "https://github.com/xiph/rav1e/releases/download/v0.8.1/rav1e-0.8.1-linux-aarch64.tar.gz"
                 if failure == "download":
                     sys.exit(22)
@@ -94,14 +101,47 @@ class Rav1eSmokeWorkflowTests(unittest.TestCase):
             pathlib.Path("next-src").mkdir()
             pathlib.Path("next-src/README.md").write_text("offline source fixture")
         ''')
+        self.tool("timeout", '''
+            import json, os, pathlib, subprocess, sys
+            args = sys.argv[1:]
+            assert "GH_TOKEN" not in os.environ and "GITHUB_TOKEN" not in os.environ
+            assert args[0] == "--kill-after=5s"
+            mode = args[3]
+            assert args[1] == ("90s" if mode == "--limit" else "30s")
+            root = pathlib.Path(os.environ["FIXTURE_ROOT"])
+            with (root / "timers.jsonl").open("a") as stream:
+                stream.write(json.dumps({"mode": mode, "seconds": args[1]}) + "\\n")
+            failure = os.environ["FIXTURE_FAILURE"]
+            timed_mode = "encode" if mode == "--limit" else mode.removeprefix("--")
+            deadline = 0.1 if failure == timed_mode + "_timeout" else float(args[1][:-1])
+            try:
+                process = subprocess.run(args[2:], timeout=deadline)
+                sys.exit(process.returncode)
+            except subprocess.TimeoutExpired:
+                sys.exit(124)
+        ''')
         encoder = f"#!{sys.executable}\n" + textwrap.dedent('''
-            import os, pathlib, sys
+            import os, pathlib, struct, sys, time
+            assert "GH_TOKEN" not in os.environ and "GITHUB_TOKEN" not in os.environ
             args = sys.argv[1:]
             failure = os.environ["FIXTURE_FAILURE"]
             if args in (["--version"], ["--help"]):
                 if failure == args[0][2:]:
                     sys.exit(7)
-                print("rav1e 0.8.1 (offline fixture)" if args == ["--version"] else "Usage: fixture")
+                if failure == args[0][2:] + "_timeout":
+                    time.sleep(5)
+                if failure == args[0][2:] + "_empty":
+                    sys.exit(0)
+                if failure == args[0][2:] + "_wrong":
+                    print("unrelated encoder 99.99.99")
+                elif failure == "version_near_match" and args == ["--version"]:
+                    print("rav1e 0.8.10 (v0.8.10) (release)")
+                elif failure == "help_incomplete" and args == ["--help"]:
+                    print("Usage: rav1e [OPTIONS] <INPUT>\\n--limit")
+                elif args == ["--version"]:
+                    print("rav1e 0.8.1 (v0.8.1) (release)\\nrustc 1.87.0 (17067e9ac 2025-05-09) aarch64-unknown-linux-musl\\nCompiled CPU Features: neon")
+                else:
+                    print("Usage: rav1e [OPTIONS] <INPUT>\\n--limit --speed --quantizer --output")
             else:
                 assert args[:6] == ["--limit", "1", "--speed", "10", "--quantizer", "255"]
                 assert args[6] == "-o"
@@ -109,7 +149,35 @@ class Rav1eSmokeWorkflowTests(unittest.TestCase):
                 header = b"YUV4MPEG2 W16 H16 F1:1 Ip A1:1 C420jpeg\\nFRAME\\n"
                 assert data == header + bytes([128]) * 384
                 target = pathlib.Path(args[7])
-                target.write_bytes(b"" if failure == "empty" else b"offline encoded fixture")
+                if failure == "encode_timeout":
+                    time.sleep(5)
+                if failure == "no_output":
+                    sys.exit(0)
+                magic = b"JUNK" if failure == "wrong_format" else b"DKIF"
+                codec = b"VP90" if failure == "wrong_codec" else b"AV01"
+                width = 32 if failure == "wrong_size" else 16
+                count = 2 if failure == "wrong_count" else 0
+                header_size = 33 if failure == "wrong_header_size" else 32
+                rate = 0 if failure == "wrong_rate" else 1
+                header = struct.pack("<4sHH4sHHIIII", magic, 0, header_size, codec, width, 16, rate, 1, count, 0)
+                payload = b"structural fixture only, not a decoded AV1 claim"
+                length = 0 if failure == "zero_frame" else len(payload)
+                timestamp = 1 if failure == "wrong_timestamp" else 0
+                frame = struct.pack("<IQ", length, timestamp) + payload
+                output = header + frame
+                if failure == "truncated_header":
+                    output = header[:16]
+                elif failure == "truncated_frame":
+                    output = output[:-1]
+                elif failure == "extra_frame":
+                    output += frame
+                elif failure == "junk":
+                    output = b"not an IVF bitstream"
+                elif failure == "empty":
+                    output = b""
+                elif failure == "oversized":
+                    output = b"x" * (1024 * 1024 + 1)
+                target.write_bytes(output)
                 if failure == "encode":
                     sys.exit(9)
                 print("offline encoder fixture consumed one 16x16 frame")
@@ -119,6 +187,8 @@ class Rav1eSmokeWorkflowTests(unittest.TestCase):
             info.mode = 0o755
             info.size = len(encoder.encode())
             archive.addfile(info, io.BytesIO(encoder.encode()))
+        process, _, _ = self.run_script(self.steps["runtime_probe"]["run"])
+        self.assertEqual(0, process.returncode, process.stderr)
 
     def tool(self, name, body):
         path = self.bin / name
@@ -231,12 +301,15 @@ class Rav1eSmokeWorkflowTests(unittest.TestCase):
                 self.assertEqual(1, sum(line.startswith("status=") for line in lines))
                 self.assertEqual(1, sum(line.startswith("duration=") for line in lines))
                 self.assertIn("offline encoder fixture consumed one 16x16 frame", process.stdout)
+                self.assertIn("Verified rav1e 0.8.1: AV01 IVF 16x16, one complete frame", process.stdout)
                 if i == 6:
                     self.assertEqual("limited_cpu_smoke_validated", outputs["decision"])
         requests = [json.loads(line) for line in (self.root / "requests.jsonl").read_text().splitlines()]
         self.assertEqual([True, False, True, False], [r["authorized"] for r in requests])
         self.assertTrue(requests[0]["url"].endswith("/releases/latest"))
         self.assertTrue(requests[2]["url"].endswith("/releases/tags/v0.8.1"))
+        timers = [json.loads(line) for line in (self.root / "timers.jsonl").read_text().splitlines()]
+        self.assertEqual(["30s", "30s", "90s"] * 2, [entry["seconds"] for entry in timers])
 
     def test_all_acquisition_and_cli_errors_emit_failure_not_skip(self):
         for i in (5, 6):
@@ -252,6 +325,55 @@ class Rav1eSmokeWorkflowTests(unittest.TestCase):
                     else:
                         self.assertEqual("limited_cpu_smoke_failed", outputs["decision"])
                         self.assertEqual("limited_cpu_probe_failed", outputs["next_installed_version"])
+
+    def test_zero_exit_false_outputs_are_not_successful_smokes(self):
+        for number in (5, 6):
+            for failure in ("version_empty", "version_wrong", "version_near_match", "help_empty", "help_wrong", "help_incomplete", "no_output",
+                            "junk", "wrong_format", "wrong_codec", "wrong_size", "wrong_count", "wrong_rate",
+                            "wrong_header_size", "wrong_timestamp", "truncated_header", "truncated_frame",
+                            "extra_frame", "zero_frame", "oversized"):
+                with self.subTest(probe=number, failure=failure):
+                    process, outputs, _ = self.run_probe(number, failure)
+                    self.assertEqual("failed", outputs["status"])
+                    if number == 5:
+                        self.assertNotEqual(0, process.returncode)
+                    else:
+                        self.assertEqual("limited_cpu_smoke_failed", outputs["decision"])
+                        self.assertNotEqual("0.8.1", outputs["next_installed_version"])
+
+    def test_runtime_timeouts_propagate_as_failure_not_deferred(self):
+        for number in (5, 6):
+            for failure in ("version_timeout", "help_timeout", "encode_timeout"):
+                with self.subTest(probe=number, failure=failure):
+                    _, outputs, _ = self.run_probe(number, failure)
+                    self.assertEqual("failed", outputs["status"])
+                    if number == 6:
+                        self.assertEqual("limited_cpu_smoke_failed", outputs["decision"])
+
+    def test_old_valid_output_cannot_rescue_no_output_encode(self):
+        for number in (5, 6):
+            with self.subTest(probe=number):
+                _, outputs, _ = self.run_probe(number)
+                self.assertEqual("passed", outputs["status"])
+                path = self.root / ("smoke.ivf" if number == 5 else "smoke-next.ivf")
+                self.assertTrue(path.is_file())
+                _, outputs, _ = self.run_probe(number, "no_output")
+                self.assertEqual("failed", outputs["status"])
+                self.assertFalse(path.exists())
+
+    def test_selected_release_tag_binds_the_observed_cli_version(self):
+        for number in (5, 6):
+            for tag in ("v0.8.2", "", "not-a-version"):
+                with self.subTest(probe=number, tag=tag):
+                    self.env["FIXTURE_RELEASE_TAG"] = tag
+                    _, outputs, _ = self.run_probe(number)
+                    self.assertEqual("failed", outputs["status"])
+
+    def test_runtime_help_and_ivf_claims_exclude_baseline_runtime_and_decoding(self):
+        self.assertIn("source/metadata-only", self.steps["test5"]["run"])
+        description = self.steps["test6"]["with"]["limited_cpu_description"]
+        self.assertIn("Baseline 0.3.2 remains source/metadata-only", description)
+        self.assertIn("Decode, throughput, quality and long-form encoding are not validated", description)
 
     def test_missing_workflow_token_fails_before_any_request(self):
         for i in (5, 6):
