@@ -172,6 +172,28 @@ jobs:
                       process = subprocess.Popen([command, "agent", "--conf", str(home / "conf"),
                           "--conf-file", str(config), "--name", "smoke"], env=env,
                           stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+
+                      def signal_owned_group(sig):
+                          try:
+                              os.killpg(process.pid, sig)
+                          except ProcessLookupError:
+                              pass
+
+                      def wait_owned_group(timeout):
+                          deadline = time.monotonic() + timeout
+                          while True:
+                              process.poll()
+                              try:
+                                  os.killpg(process.pid, 0)
+                              except ProcessLookupError:
+                                  return True
+                              except PermissionError:
+                                  # An uncertain group state is not proof of cleanup.
+                                  pass
+                              if time.monotonic() >= deadline:
+                                  return False
+                              time.sleep(0.05)
+
                       try:
                           deadline = time.monotonic() + 45
                           delivered = False
@@ -184,17 +206,21 @@ jobs:
                               time.sleep(0.25)
                           if not delivered or process.poll() is not None:
                               raise RuntimeError("Flume agent did not deliver and commit the exact event")
-                          print(f"Flume {expected}: spool source -> memory channel -> file sink delivered {token}")
                       finally:
-                          if process.poll() is None:
-                              os.killpg(process.pid, signal.SIGTERM)
-                              try:
-                                  process.wait(timeout=10)
-                              except subprocess.TimeoutExpired:
-                                  os.killpg(process.pid, signal.SIGKILL)
-                                  process.wait(timeout=5)
+                          try:
+                              # The new session is ours even after its leader exits.
+                              signal_owned_group(signal.SIGTERM)
+                              if not wait_owned_group(10):
+                                  signal_owned_group(signal.SIGKILL)
+                                  if not wait_owned_group(5):
+                                      raise RuntimeError("Flume owned process group remained after forced shutdown")
                                   raise RuntimeError("Flume agent required forced shutdown")
-                          print(log.read_text(), file=sys.stderr, end="")
+                              returncode = process.wait(timeout=5)
+                              if returncode not in (0, -signal.SIGTERM, 128 + signal.SIGTERM):
+                                  raise RuntimeError(f"Flume agent shutdown returned unexpected exit {returncode}")
+                          finally:
+                              print(log.read_text(), file=sys.stderr, end="")
+                      print(f"Flume {expected}: spool source -> memory channel -> file sink delivered {token}")
           else:
               raise SystemExit("Unknown Flume probe mode")
           PY

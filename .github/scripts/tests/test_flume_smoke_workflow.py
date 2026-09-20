@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -27,6 +28,7 @@ class FlumeWorkflowTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="flume-workflow-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
+        self.addCleanup(self.cleanup_agents)
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.bash = shutil.which("bash")
@@ -43,7 +45,9 @@ class FlumeWorkflowTests(unittest.TestCase):
                     "GITHUB_STEP_SUMMARY": str(self.root / "summary"),
                     "FLUME_HOME": str(self.root / "flume"), "FLUME_INSTALL_STATUS": "success",
                     "FIXTURE_ROOT": str(self.root), "CLI_VERSION": "auto", "CLI_RC": "0",
-                    "AGENT_MODE": "deliver", "HELP_RC": "0"}
+                    "AGENT_MODE": "deliver", "HELP_RC": "0",
+                    "SHUTDOWN_RC": "0", "SHUTDOWN_SIGNAL": "", "DEFAULT_TERM": "0",
+                    "IGNORE_TERM": "0", "SPAWN_CHILD": "0", "LEADER_EXIT": "0"}
         self.values = {"steps.install.outcome": "success",
                        "steps.install.outputs.install_status": "success",
                        "steps.install.outputs.baseline_version": BASELINE,
@@ -106,6 +110,7 @@ if mode == 'help':
     print('Usage: flume-ng help')
     sys.exit(int(os.environ['HELP_RC']))
 assert mode == 'agent'
+(root / 'agent-group').write_text(str(os.getpgrp()))
 assert sys.argv[sys.argv.index('--name') + 1] == 'smoke'
 config = Path(sys.argv[sys.argv.index('--conf-file') + 1])
 props = dict(line.split(' = ', 1) for line in config.read_text().splitlines())
@@ -120,18 +125,37 @@ if mode == 'exit':
     sys.exit(1)
 if mode == 'no-event':
     sys.exit(0)
-if mode in ('deliver', 'wrong-event', 'uncommitted'):
+if mode in ('wrong-event', 'uncommitted'):
     data = (spool / 'event.txt').read_bytes()
     (sink / 'result').write_bytes(b'wrong-event\n' if mode == 'wrong-event' else data)
     if mode != 'uncommitted':
         (spool / 'event.txt').rename(spool / 'event.txt.COMPLETED')
-    if mode != 'deliver':
+    sys.exit(0)
+if os.environ['SPAWN_CHILD'] == '1':
+    child = os.fork()
+    if child == 0:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        (root / 'agent-child-pid').write_text(str(os.getpid()))
+        while True:
+            time.sleep(0.05)
+    while not (root / 'agent-child-pid').exists():
+        time.sleep(0.005)
+    if os.environ['LEADER_EXIT'] == '1':
+        print('fixture leader exited before cleanup', flush=True)
         sys.exit(0)
 (root / 'agent-pid').write_text(str(os.getpid()))
 def stop(signum, frame):
     (root / 'agent-stopped').write_text(str(signum))
-    sys.exit(0)
-signal.signal(signal.SIGTERM, stop)
+    print('fixture shutdown exit ' + os.environ['SHUTDOWN_RC'], file=sys.stderr, flush=True)
+    if os.environ['SHUTDOWN_SIGNAL']:
+        os.kill(os.getpid(), getattr(signal, os.environ['SHUTDOWN_SIGNAL']))
+    sys.exit(int(os.environ['SHUTDOWN_RC']))
+signal.signal(signal.SIGTERM, signal.SIG_IGN if os.environ['IGNORE_TERM'] == '1' else
+              signal.SIG_DFL if os.environ['DEFAULT_TERM'] == '1' else stop)
+print('fixture agent ready', flush=True)
+if mode == 'deliver':
+    (sink / 'result').write_bytes((spool / 'event.txt').read_bytes())
+    (spool / 'event.txt').rename(spool / 'event.txt.COMPLETED')
 while True:
     time.sleep(0.05)
 ''')
@@ -144,6 +168,29 @@ while True:
     def write_stub(self, path, source):
         path.write_text(f"#!{sys.executable}\n" + source)
         path.chmod(0o755)
+
+    def cleanup_agents(self):
+        group_file = self.root / "agent-group"
+        if not group_file.exists():
+            return
+        group = int(group_file.read_text())
+        for name in ("agent-pid", "agent-child-pid"):
+            path = self.root / name
+            if path.exists():
+                try:
+                    if os.getpgid(int(path.read_text())) == group:
+                        os.killpg(group, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def assert_owned_agents_gone(self):
+        for name in ("agent-pid", "agent-child-pid"):
+            path = self.root / name
+            if path.exists():
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(int(path.read_text()), 0)
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(int((self.root / "agent-group").read_text()), 0)
 
     def expression(self, source, values):
         def atom(term):
@@ -303,6 +350,94 @@ while True:
         with self.assertRaises(ProcessLookupError):
             os.kill(int((self.root / "agent-pid").read_text()), 0)
         self.assertFalse(list(self.root.glob("flume-smoke-*/")))
+
+    def test_expected_owned_sigterm_returns_pass(self):
+        for environment in ({"SHUTDOWN_RC": "0"}, {"SHUTDOWN_RC": "143"}, {"DEFAULT_TERM": "1"}):
+            with self.subTest(environment=environment):
+                result, output = self.step("test5", **environment)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output["status"], "passed")
+                self.assertIn("delivered flume-smoke-", result.stdout)
+                self.assert_owned_agents_gone()
+
+    def test_delivered_event_cannot_hide_unexpected_shutdown_exit_or_signal(self):
+        for step in ("test5", "test6"):
+            for environment in ({"SHUTDOWN_RC": "23"}, {"SHUTDOWN_SIGNAL": "SIGUSR1"}):
+                with self.subTest(step=step, environment=environment):
+                    result, output = self.step(step, **environment)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(output["status"], "failed")
+                    self.assertIn("shutdown returned unexpected exit", result.stderr)
+                    self.assertIn("fixture shutdown exit", result.stderr)
+                    self.assertNotIn("delivered flume-smoke-", result.stdout)
+                    self.assert_owned_agents_gone()
+
+    def test_forced_leader_shutdown_fails_and_preserves_log(self):
+        result, output = self.step("test5", IGNORE_TERM="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(output["status"], "failed")
+        self.assertIn("required forced shutdown", result.stderr)
+        self.assertIn("fixture agent ready", result.stderr)
+        self.assertNotIn("delivered flume-smoke-", result.stdout)
+        self.assert_owned_agents_gone()
+
+    def test_live_descendant_cannot_survive_successful_leader_shutdown(self):
+        unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                     start_new_session=True)
+        try:
+            result, output = self.step("test5", SPAWN_CHILD="1")
+            self.assertIsNone(unrelated.poll(), "Cleanup must not target a different process group")
+        finally:
+            unrelated.terminate()
+            unrelated.wait(timeout=5)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(output["status"], "failed")
+        self.assertIn("forced shutdown", result.stderr)
+        self.assertIn("fixture shutdown exit 0", result.stderr)
+        self.assertNotIn("delivered flume-smoke-", result.stdout)
+        self.assert_owned_agents_gone()
+
+    def test_owned_group_is_cleaned_when_leader_already_exited(self):
+        result, output = self.step("test5", SPAWN_CHILD="1", LEADER_EXIT="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(output["status"], "failed")
+        self.assertIn("forced shutdown", result.stderr)
+        self.assertIn("fixture leader exited before cleanup", result.stderr)
+        self.assertNotIn("delivered flume-smoke-", result.stdout)
+        self.assert_owned_agents_gone()
+
+    def test_group_permission_uncertainty_is_bounded_and_never_assumed_empty(self):
+        driver = """import errno, os, runpy, sys, time
+from unittest.mock import patch
+real_killpg, real_clock = os.killpg, time.monotonic
+start, checks = real_clock(), 0
+persistent = sys.argv[3] == 'persistent'
+def killpg(pid, sig):
+    global checks
+    if sig == 0:
+        checks += 1
+        if persistent or checks == 1:
+            raise PermissionError(errno.EPERM, 'fixture uncertain group state')
+    return real_killpg(pid, sig)
+with patch('os.killpg', side_effect=killpg), patch('time.monotonic', side_effect=lambda: start + (real_clock() - start) * 20):
+    sys.argv = [sys.argv[1], 'event', sys.argv[2], '1.10.0']
+    runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+        for mode in ("transient", "persistent"):
+            with self.subTest(mode=mode):
+                result = subprocess.run(
+                    [sys.executable, "-c", driver, str(self.root / "flume-smoke.py"),
+                     self.env["FLUME_HOME"], mode], env=self.env,
+                    capture_output=True, text=True, timeout=15,
+                )
+                if mode == "transient":
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("delivered flume-smoke-", result.stdout)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("remained after forced shutdown", result.stderr)
+                    self.assertNotIn("delivered flume-smoke-", result.stdout)
+                self.assert_owned_agents_gone()
 
     def test_directory_or_startup_alone_is_not_functional_success(self):
         for mode in ("exit", "no-event", "wrong-event", "uncommitted"):
