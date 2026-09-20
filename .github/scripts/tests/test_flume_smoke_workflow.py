@@ -32,7 +32,7 @@ class FlumeWorkflowTests(unittest.TestCase):
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.bash = shutil.which("bash")
-        for name in ("bash", "cat", "chmod", "date", "grep", "head", "mkdir", "mktemp",
+        for name in ("bash", "cat", "chmod", "date", "grep", "gzip", "head", "mkdir", "mktemp",
                      "mv", "rm", "sed", "tar", "tr"):
             (self.bin / name).symlink_to(shutil.which(name))
         (self.bin / "python3").symlink_to(sys.executable)

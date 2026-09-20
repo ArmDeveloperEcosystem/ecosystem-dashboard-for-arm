@@ -54,7 +54,7 @@ class MetricbeatSmokeWorkflowTests(unittest.TestCase):
         self.bin.mkdir()
         self.bash = shutil.which("bash")
         self.assertIsNotNone(self.bash)
-        for name in ("grep", "cp", "chmod", "tar", "mktemp"):
+        for name in ("grep", "cp", "chmod", "gzip", "tar", "mktemp"):
             executable = shutil.which(name)
             self.assertIsNotNone(executable)
             (self.bin / name).symlink_to(executable)
