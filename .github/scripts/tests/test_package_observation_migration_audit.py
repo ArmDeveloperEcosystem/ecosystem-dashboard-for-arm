@@ -39,8 +39,8 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             {
                 "shared_smoke": 13,
                 "emitter_only": 23,
-                "generic_source": 92,
-                "fully_custom": 832,
+                "generic_source": 91,
+                "fully_custom": 833,
             },
             {
                 key: len(value)
@@ -90,19 +90,19 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"core_failed": 375, "duration": 3, "skipped": 698},
+            {"core_failed": 375, "duration": 3, "skipped": 697},
             {
                 key: len(value)
                 for key, value in remediation["missing_summary_outputs"].items()
             },
         )
         self.assertEqual(
-            399,
+            398,
             len(remediation["package_manager_missing_explicit_skip_counter"]),
         )
-        self.assertEqual(77, len(remediation["package_manager_non_skipped_status"]))
-        self.assertEqual(282, len(remediation["literal_pair_contradictions"]))
-        self.assertEqual(22, len(remediation["no_literal_decision"]))
+        self.assertEqual(76, len(remediation["package_manager_non_skipped_status"]))
+        self.assertEqual(281, len(remediation["literal_pair_contradictions"]))
+        self.assertEqual(23, len(remediation["no_literal_decision"]))
         self.assertEqual(
             304, len(remediation["package_manager_summary_omits_test6"])
         )
@@ -126,7 +126,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             13, len(remediation["shared_smoke_baseline_skip_callers"])
         )
         self.assertEqual(
-            92, len(remediation["generic_source_missing_baseline_facts"])
+            91, len(remediation["generic_source_missing_baseline_facts"])
         )
         self.assertEqual(
             406, len(remediation["package_manager_missing_baseline_guard"])
@@ -149,7 +149,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             [], remediation["invalid_workflow_call_observation_output"]
         )
         self.assertEqual(
-            369,
+            370,
             len(remediation["non_package_manager_missing_baseline_guard"]),
         )
         self.assertEqual(320, len(remediation["summary_omits_test6_status"]))
@@ -197,7 +197,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "de1a6c0cb19fbf9ba3ba41fa8a6bceb576fa95b50875f60aef77354b763c334c",
+            "67587c8cb54841dce5213974008c3c6e29d8cdd9ade53f116e2cc06733d4538d",
             digest,
         )
 
