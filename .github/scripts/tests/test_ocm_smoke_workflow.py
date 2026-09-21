@@ -5,10 +5,13 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 
 import yaml
 
@@ -44,11 +47,23 @@ print(107 if p.exists() else 100)
 p.touch()
 """)
         self.tool("uname", "import os; print(os.environ.get('ARCH', 'aarch64'))\n")
-        self.tool("go", """import os, sys, time
+        self.tool("go", """import json, os, shutil, sys, time
 from pathlib import Path
 root = Path(os.environ['FIXTURE_ROOT'])
 with (root / 'calls').open('a') as f:
     f.write('go ' + ' '.join(sys.argv[1:]) + '\\n')
+with (root / 'go-argv').open('a') as f:
+    f.write(json.dumps(sys.argv[1:]) + '\\n')
+if sys.argv[1] == 'build':
+    assert sys.argv[1:5] == ['build', '-trimpath', '-o', str(root / 'ocm-smoke')], sys.argv
+    assert len(sys.argv) == 6 and sys.argv[5] in (
+        'ocm.software/ocm/cmd/ocm', 'ocm.software/ocm/cmd/ocm-cli'), sys.argv
+    rc = int(os.environ.get('BUILD_RC', '0'))
+    if not rc:
+        target = Path(sys.argv[4])
+        shutil.copyfile(root / 'bin/ocm-cli-fixture', target)
+        target.chmod(0o755)
+    sys.exit(rc)
 assert sys.argv[1:] in (['list', './...'], ['list', './cmd/...']), sys.argv
 prefix = 'GO' if sys.argv[-1] == './...' else 'CMD'
 if os.environ.get('GO_STALL') == '1':
@@ -62,11 +77,35 @@ if rc:
     print('smithy-go@v1.12.1: proxy.golang.org INTERNAL_ERROR', file=sys.stderr)
 sys.exit(rc)
 """)
+        self.tool("file", """import os, sys
+from pathlib import Path
+root = Path(os.environ['FIXTURE_ROOT'])
+assert sys.argv[1:] == [str(root / 'ocm-smoke')], sys.argv
+assert Path(sys.argv[1]).is_file()
+with (root / 'calls').open('a') as f:
+    f.write('file ' + sys.argv[1] + '\\n')
+print(sys.argv[1] + ': ' + os.environ.get(
+    'FILE_OUTPUT', 'ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked'))
+""")
+        self.tool("ocm-cli-fixture", """import os, sys
+from pathlib import Path
+assert sys.argv[1:] in (['version'], ['--help']), sys.argv
+with (Path(os.environ['FIXTURE_ROOT']) / 'calls').open('a') as f:
+    f.write('cli ' + sys.argv[1] + '\\n')
+print('controlled OCM CLI fixture')
+sys.exit(int(os.environ.get('VERSION_RC' if sys.argv[1] == 'version' else 'HELP_RC', '0')))
+""")
         # Portable deadline fixture: run and reap the controlled tool, without GNU timeout.
         self.tool("timeout", """import os, subprocess, sys
 from pathlib import Path
-assert sys.argv[1] == '--kill-after=10s', sys.argv
-assert sys.argv[2] == ('900s' if sys.argv[-1] == './...' else '180s'), sys.argv
+command = sys.argv[3:]
+if command[0] == 'go':
+    assert sys.argv[1] == '--kill-after=10s', sys.argv
+    assert sys.argv[2] == ('180s' if command == ['go', 'list', './cmd/...'] else '900s'), sys.argv
+else:
+    assert command[0] == str(Path(os.environ['FIXTURE_ROOT']) / 'ocm-smoke'), sys.argv
+    assert command[1:] in (['version'], ['--help']), sys.argv
+    assert sys.argv[1:3] == ['--kill-after=5s', '20s'], sys.argv
 with (Path(os.environ['FIXTURE_ROOT']) / 'calls').open('a') as f:
     f.write('timeout ' + ' '.join(sys.argv[1:3]) + '\\n')
 try:
@@ -225,6 +264,14 @@ sys.exit(result.returncode)
         self.assertIn("This does not build or run the OCM CLI.", candidate["with"]["limited_cpu_description"])
         self.assertNotRegex(WORKFLOW.read_text(), r"GOSUMDB|GONOSUMDB|GOPROXY|insecure|continue-on-error")
 
+    def test_audit_recognizes_all_test_status_and_duration_outputs(self):
+        with patch.object(sys, "path", [str(ROOT / ".github/scripts"), *sys.path]):
+            import package_observation_migration_audit as audit
+        for n in range(1, 7):
+            for output in ("status", "duration"):
+                with self.subTest(test=n, output=output):
+                    self.assertTrue(audit._step_emits_output(ROOT, self.steps[f"test{n}"], output))
+
     def test_source_graph_positive_and_collector_agree(self):
         summary, values, conclusions = self.run_checks()
         self.assertEqual((summary["passed"], summary["failed"], summary["skipped"]), ("6", "0", "0"))
@@ -257,6 +304,102 @@ sys.exit(result.returncode)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(fields["status"], "failed")
         self.assertEqual(fields["duration"], "7")
+
+    def test_optional_cli_build_argv_arm_evidence_and_version(self):
+        (self.root / "baseline-src/cmd").mkdir()
+        for package in ("ocm.software/ocm/cmd/ocm", "ocm.software/ocm/cmd/ocm-cli"):
+            with self.subTest(package=package):
+                (self.root / "calls").unlink(missing_ok=True)
+                (self.root / "go-argv").unlink(missing_ok=True)
+                result, fields = self.step("test5", CMD_OUTPUT=package + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((fields["status"], fields["duration"]), ("passed", "7"))
+                self.assertIn("Built and executed the OCM CLI", fields["note"])
+                self.assertEqual([json.loads(line) for line in (self.root / "go-argv").read_text().splitlines()],
+                                 [["list", "./..."], ["list", "./cmd/..."],
+                                  ["build", "-trimpath", "-o", str(self.root / "ocm-smoke"), package]])
+                self.assertEqual((self.root / "calls").read_text().splitlines(), [
+                    "timeout --kill-after=10s 900s", "go list ./...",
+                    "timeout --kill-after=10s 180s", "go list ./cmd/...",
+                    "timeout --kill-after=10s 900s", f"go build -trimpath -o {self.root / 'ocm-smoke'} {package}",
+                    f"file {self.root / 'ocm-smoke'}", "timeout --kill-after=5s 20s", "cli version"])
+
+    def test_optional_cli_help_fallback(self):
+        (self.root / "baseline-src/cmd").mkdir()
+        result, fields = self.step("test5", CMD_OUTPUT="ocm.software/ocm/cmd/ocm\n", VERSION_RC="2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((fields["status"], fields["duration"]), ("passed", "7"))
+        self.assertEqual((self.root / "calls").read_text().splitlines()[-4:],
+                         ["timeout --kill-after=5s 20s", "cli version",
+                          "timeout --kill-after=5s 20s", "cli --help"])
+
+    def test_optional_cli_failures_remain_terminal(self):
+        (self.root / "baseline-src/cmd").mkdir()
+        for env, code, cli_calls, checked_file in (
+            ({"VERSION_RC": "2", "HELP_RC": "9"}, 9, ["cli version", "cli --help"], True),
+            ({"BUILD_RC": "17"}, 17, [], False),
+            ({"FILE_OUTPUT": "ELF 64-bit LSB executable, x86-64, version 1 (SYSV)"}, 1, [], True),
+        ):
+            with self.subTest(env=env):
+                (self.root / "calls").unlink(missing_ok=True)
+                (self.root / "ocm-smoke").unlink(missing_ok=True)
+                result, fields = self.step("test5", CMD_OUTPUT="ocm.software/ocm/cmd/ocm\n", **env)
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertEqual((fields["status"], fields["duration"]), ("failed", "7"))
+                calls = (self.root / "calls").read_text().splitlines()
+                self.assertEqual([line for line in calls if line.startswith("cli ")], cli_calls)
+                self.assertEqual(f"file {self.root / 'ocm-smoke'}" in calls, checked_file)
+
+    def test_native_gnu_timeout_stops_process_group(self):
+        timeout = shutil.which("timeout")
+        if timeout is None:
+            self.skipTest("GNU timeout is not installed")
+        version = subprocess.run([timeout, "--version"], capture_output=True, text=True, timeout=5)
+        if version.returncode != 0 or "GNU coreutils" not in version.stdout:
+            self.skipTest("timeout is not GNU coreutils")
+        ps = shutil.which("ps")
+        if os.name != "posix" or ps is None:
+            self.skipTest("POSIX process groups and ps are required")
+        self.tool("stubborn", """import os, signal, subprocess, sys, time
+from pathlib import Path
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+with (Path(os.environ['FIXTURE_ROOT']) / 'owned-pids').open('a') as f:
+    f.write(f'{os.getpid()} {os.getpgrp()}\\n')
+if len(sys.argv) == 1:
+    subprocess.Popen([sys.executable, __file__, 'child'])
+while True:
+    time.sleep(0.05)
+""")
+        process = subprocess.Popen([timeout, "--kill-after=0.3s", "1s", sys.executable,
+                                    str(self.bin / "stubborn")], env=self.env, start_new_session=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            _, stderr = process.communicate(timeout=5)
+            self.assertNotEqual(process.returncode, 0, stderr)
+            owned = [tuple(map(int, line.split())) for line in (self.root / "owned-pids").read_text().splitlines()]
+            self.assertEqual(len(owned), 2, "both the command and its child must have started")
+            self.assertEqual({group for _, group in owned}, {process.pid})
+            deadline = time.monotonic() + 3
+            while True:
+                executing = []
+                for pid, group in owned:
+                    state = subprocess.run([ps, "-o", "pgid=,stat=", "-p", str(pid)],
+                                           capture_output=True, text=True, timeout=1)
+                    self.assertIn(state.returncode, (0, 1), state.stderr)
+                    fields = state.stdout.split()
+                    if fields and int(fields[0]) == group and not fields[1].startswith("Z"):
+                        executing.append(pid)
+                if not executing or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+            self.assertEqual(executing, [], "GNU timeout left an executing descendant")
+        finally:
+            # Only this test's new session/process group is ever signalled.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate(timeout=5)
 
     def test_each_core_unexpected_failure_has_status_and_duration(self):
         cases = {1: {"steps.install.outputs.install_status": "failed"},
