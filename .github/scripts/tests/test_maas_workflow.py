@@ -61,14 +61,27 @@ class MaasWorkflowTests(unittest.TestCase):
         target.write_text("#!/bin/bash\nset -eu\n" + script)
         target.chmod(0o755)
 
-    def render(self, source):
+    def render(self, source, values=None):
+        context = {**self.values, **(values or {})}
+
+        def atom(term):
+            term = term.strip()
+            if " == " in term:
+                left, right = term.split(" == ", 1)
+                return atom(left) == atom(right)
+            if term == "always()":
+                return True
+            if term.startswith("'") and term.endswith("'"):
+                return term[1:-1]
+            return context.get(term, "")
+
         def expression(match):
-            for term in match[1].split("||"):
-                term = term.strip()
-                if term.startswith("'") and term.endswith("'"):
-                    return term[1:-1]
-                if self.values.get(term):
-                    return self.values[term]
+            for alternative in match[1].split("||"):
+                value = True
+                for term in alternative.split("&&"):
+                    value = atom(term) if value else value
+                if value:
+                    return str(value)
             return ""
         return re.sub(r"\$\{\{\s*(.*?)\s*\}\}", expression, source)
 
@@ -97,6 +110,87 @@ class MaasWorkflowTests(unittest.TestCase):
                 "workflow.sha256": hashlib.sha256(WORKFLOW.read_bytes()).hexdigest()}.items():
                 (directory / name).write_text(text)
         return result, outputs
+
+    def run_checks(self, environments=None):
+        for number in range(1, 7):
+            name = f"test{number}"
+            if self.render("${{ " + self.steps[name]["if"] + " }}"):
+                environment = {"DOCKER_STDOUT": "Upgrades database schema for MAAS regiond.\n--database\n"} if number == 3 else {}
+                environment.update((environments or {}).get(name, {}))
+                process, outputs = self.run_step(name, **environment)
+                outcome = "success" if process.returncode == 0 else "failure"
+            else:
+                outputs, outcome = {}, "skipped"
+            self.values[f"steps.{name}.outcome"] = outcome
+            for field in ("status", "duration", "decision", "installation_method", "current_version",
+                          "latest_version", "next_installed_version", "regression_result", "comparison"):
+                self.values[f"steps.{name}.outputs.{field}"] = outputs.get(field, "")
+        process, summary = self.run_step("summary")
+        self.assertEqual(process.returncode == 0, summary["overall_status"] == "success")
+        return summary
+
+    def collect(self, summary, conclusions=None):
+        repository = WORKFLOW.parents[2]
+        action = yaml.safe_load((repository / ".github/actions/collect-batch-results/action.yml").read_text())
+        source = action["runs"]["steps"][0]["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        context = {**{f"steps.summary.outputs.{key}": value for key, value in summary.items()},
+                   "steps.metadata.outputs.package_slug": "maas", "github.job": "test-maas",
+                   "github.run_id": "123", "github.run_attempt": "1"}
+        outputs = {key: self.render(value, context) for key, value in self.job["outputs"].items()}
+        states = conclusions or [self.values.get(f"steps.test{i}.outcome", "") for i in range(1, 7)]
+        job = {"id": 456, "name": "test-maas / test-maas", "conclusion": summary["overall_status"],
+               "html_url": "https://github.com/example/project/actions/runs/123/job/456",
+               "steps": [{"name": self.steps[f"test{i}"]["name"], "number": i, "conclusion": state}
+                         for i, state in enumerate(states, 1)]}
+        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
+            root = Path(temporary)
+            (root / ".github").mkdir()
+            (root / ".github/scripts").symlink_to(repository / ".github/scripts")
+            environment = {**self.env, "GH_TOKEN": "", "BATCH_NUMBER": "14", "BATCH_TITLE": "Batch 14",
+                "NEEDS_JSON": json.dumps({"test-maas": {"result": job["conclusion"], "outputs": outputs}}),
+                "RUN_JOBS_JSON": json.dumps({"jobs": [job]}),
+                "GITHUB_SERVER_URL": "https://github.com", "GITHUB_API_URL": "https://api.github.com",
+                "GITHUB_REPOSITORY": "example/project", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+                "GITHUB_OUTPUT": str(root / "outputs"), "GITHUB_STEP_SUMMARY": str(root / "summary")}
+            process = subprocess.run([sys.executable, "-B", "-c", source], cwd=root, env=environment,
+                                     capture_output=True, text=True, timeout=15)
+            path = root / "test-results/maas-test-results/maas.json"
+            return process, json.loads(path.read_text()) if path.exists() else None
+
+    def assert_collected(self, summary):
+        process, payload = self.collect(summary)
+        self.assertEqual(0, process.returncode, process.stderr)
+        self.assertEqual(summary["overall_status"], payload["run"]["status"])
+        for field in ("passed", "failed", "skipped"):
+            self.assertEqual(int(summary[field]), payload["tests"][field])
+        self.assertEqual(int(summary["core_failed"]), payload["metadata"]["core_failed"])
+        return payload
+
+    def test_raw_core_failures_are_not_masked_and_checks_are_independent(self):
+        for number in range(1, 6):
+            step = self.steps[f"test{number}"]
+            self.assertNotIn("continue-on-error", step)
+            self.assertEqual(step["if"], "always() && steps.install.outcome == 'success' && steps.install.outputs.installation_method == 'deb' && steps.version.outcome == 'success'")
+        self.assertEqual("always()", self.steps["test6"]["if"])
+        self.assertEqual("always()", self.steps["summary"]["if"])
+
+    def test_actual_core_shell_success_and_applicability_reach_unchanged_collector(self):
+        summary = self.run_checks()
+        self.assertEqual(("5", "0", "1", "0"), tuple(summary[k] for k in ("passed", "failed", "skipped", "core_failed")))
+        self.assertEqual("not_applicable_package_manager", self.values["steps.test6.outputs.decision"])
+        payload = self.assert_collected(summary)
+        self.assertEqual("skipped", payload["tests"]["details"][-1]["status"])
+
+    def test_raw_core_failure_and_terminal_outputs_reach_unchanged_collector(self):
+        for number in range(1, 6):
+            with self.subTest(number=number):
+                summary = self.run_checks({f"test{number}": {"DOCKER_RC": "37"}})
+                self.assertEqual(("4", "1", "1", "1"), tuple(summary[k] for k in ("passed", "failed", "skipped", "core_failed")))
+                self.assertEqual("failure", self.values[f"steps.test{number}.outcome"])
+                self.assertEqual("failed", self.values[f"steps.test{number}.outputs.status"])
+                self.assertTrue(self.values[f"steps.test{number}.outputs.duration"].isdigit())
+                self.assertEqual("baseline_failed", self.values["steps.test6.outputs.decision"])
+                self.assert_collected(summary)
 
     def test_every_shell_block_parses(self):
         for step in self.job["steps"]:
@@ -164,21 +258,35 @@ class MaasWorkflowTests(unittest.TestCase):
                 self.assertEqual("0", invalid["skipped"])
 
     def test_install_failure_is_a_valid_failure_row_and_has_exact_reason(self):
+        self.tool("docker", '''
+printf '%s\\n' "$*" >> "$HOME/docker-calls"
+case "$1:$2" in
+  container:inspect) exit 1 ;;
+  exec:*) printf '%s\\n' 'MAAS Noble PPA InRelease: 503 Service Unavailable' >&2; exit 100 ;;
+esac
+''')
+        result, outputs = self.run_step("install")
+        self.assertEqual(100, result.returncode, result.stderr)
+        self.assertIn("503 Service Unavailable", result.stderr)
+        self.assertEqual({}, outputs)
+        calls = (self.root / "docker-calls").read_text()
         self.values["steps.install.outcome"] = "failure"
-        for number in range(1, 6):
-            self.values[f"steps.test{number}.outputs.status"] = "failed"
-            self.values[f"steps.test{number}.outcome"] = "failure"
-        result, regression = self.run_step("test6", DOCKER_RC="37")
-        self.assertEqual(0, result.returncode)
-        self.assertEqual("baseline_install_failed", regression["decision"])
-        self.values.update({f"steps.test6.outputs.{k}": v for k, v in regression.items()})
-        result, summary = self.run_step("summary")
-        self.assertEqual(1, result.returncode)
-        self.assertEqual(("0", "5", "1", "5"), tuple(summary[k] for k in ("passed", "failed", "skipped", "core_failed")))
-        self.assertEqual("failure", self.validate_row(regression, summary))
+        self.values["steps.install.outputs.installation_method"] = ""
+        self.values["steps.version.outcome"] = "skipped"
+        self.values["steps.version.outputs.version"] = ""
+        self.values["steps.version.outputs.installation_method"] = ""
+        summary = self.run_checks()
+        self.assertEqual("baseline_install_failed", self.values["steps.test6.outputs.decision"])
+        self.assertEqual("success", self.values["steps.test6.outcome"])
+        self.assertEqual(("0", "0", "6", "0"), tuple(summary[k] for k in ("passed", "failed", "skipped", "core_failed")))
+        self.assertEqual("failure", summary["overall_status"])
+        self.assertEqual(calls, (self.root / "docker-calls").read_text())
+        self.assert_collected(summary)
         self.values["steps.test6.outputs.decision"] = "baseline_failed"
         result, invalid = self.run_step("summary")
-        self.assertEqual("0", invalid["skipped"])
+        self.assertEqual(1, result.returncode)
+        self.assertEqual("5", invalid["skipped"])
+        self.assertEqual("1", invalid["failed"])
 
     def test_core_missing_status_outcome_or_duration_never_passes(self):
         for number in range(1, 6):
@@ -192,7 +300,7 @@ class MaasWorkflowTests(unittest.TestCase):
                         self.values[key] = value
                         result, outputs = self.run_step("summary")
                         self.assertEqual(1, result.returncode, result.stderr)
-                        self.assertEqual("1", outputs["core_failed"])
+                        self.assertEqual("0" if field == "outcome" and value in ("", "skipped") else "1", outputs["core_failed"])
                         self.assertEqual("failing", outputs["badge_status"])
                         self.assertEqual("failure", outputs["overall_status"])
                 self.values[key] = original
@@ -211,7 +319,8 @@ class MaasWorkflowTests(unittest.TestCase):
                     self.values[key] = value
                     result, outputs = self.run_step("summary")
                     self.assertEqual(1, result.returncode, result.stderr)
-                    self.assertEqual(("5", "1", "0", "0", "failure"),
+                    expected = ("5", "0", "1", "0", "failure") if key == "steps.test6.outcome" and value in ("", "skipped") else ("5", "1", "0", "0", "failure")
+                    self.assertEqual(expected,
                         tuple(outputs[k] for k in ("passed", "failed", "skipped", "core_failed", "overall_status")))
             self.values[key] = original
 
@@ -223,8 +332,69 @@ class MaasWorkflowTests(unittest.TestCase):
             self.values[key] = ""
             result, outputs = self.run_step("summary")
             self.assertEqual(1, result.returncode)
-            self.assertEqual("5", outputs["core_failed"])
+            self.assertEqual("0", outputs["core_failed"])
             self.values[key] = original
+
+    def test_unexecuted_or_missing_steps_count_as_skips_without_success(self):
+        for outcome in ("skipped", ""):
+            with self.subTest(outcome=outcome):
+                for number in range(1, 7):
+                    self.values[f"steps.test{number}.outcome"] = outcome
+                    for field in ("status", "duration", "decision", "installation_method"):
+                        self.values[f"steps.test{number}.outputs.{field}"] = ""
+                result, summary = self.run_step("summary")
+                self.assertEqual(1, result.returncode)
+                self.assertEqual(("0", "0", "6", "0", "0"), tuple(summary[k] for k in ("passed", "failed", "skipped", "core_failed", "duration")))
+                self.assert_collected(summary)
+
+    def test_missing_version_skips_core_checks_and_preserves_baseline_guard(self):
+        self.values["steps.version.outcome"] = "failure"
+        self.values["steps.version.outputs.version"] = ""
+        summary = self.run_checks()
+        self.assertEqual("baseline_failed", self.values["steps.test6.outputs.decision"])
+        self.assertEqual(("0", "0", "6", "0"), tuple(summary[k] for k in ("passed", "failed", "skipped", "core_failed")))
+        self.assert_collected(summary)
+
+    def test_raw_failure_overrides_missing_or_false_passed_output(self):
+        for number in range(1, 6):
+            for status in ("passed", ""):
+                with self.subTest(number=number, status=status):
+                    self.run_checks()
+                    self.values[f"steps.test{number}.outcome"] = "failure"
+                    self.values[f"steps.test{number}.outputs.status"] = status
+                    result, regression = self.run_step("test6", DOCKER_RC="97")
+                    self.assertEqual(0, result.returncode)
+                    self.values.update({f"steps.test6.outputs.{key}": value for key, value in regression.items()})
+                    result, summary = self.run_step("summary")
+                    self.assertEqual(1, result.returncode)
+                    self.assertEqual(("4", "1", "1", "1"), tuple(summary[k] for k in ("passed", "failed", "skipped", "core_failed")))
+                    self.assert_collected(summary)
+
+    def test_unchanged_collector_rejects_missing_success_outputs_and_masked_failures(self):
+        for field in ("status", "duration"):
+            with self.subTest(field=field):
+                self.run_checks()
+                self.values[f"steps.test5.outputs.{field}"] = ""
+                result, summary = self.run_step("summary")
+                self.assertEqual(1, result.returncode)
+                process, payload = self.collect(summary)
+                self.assertNotEqual(0, process.returncode)
+                self.assertIn("emitted failure counts contradict test details", process.stderr)
+                self.assertIsNone(payload)
+        summary = self.run_checks({"test5": {"DOCKER_RC": "37"}})
+        process, payload = self.collect(summary, conclusions=["success"] * 6)
+        self.assertNotEqual(0, process.returncode)
+        self.assertIn("emitted failure counts contradict test details", process.stderr)
+        self.assertIsNone(payload)
+
+    def test_unchanged_collector_rejects_original_five_synthetic_failures(self):
+        self.values["steps.install.outcome"] = "failure"
+        summary = self.run_checks()
+        summary.update(failed="5", core_failed="5", skipped="1")
+        process, payload = self.collect(summary)
+        self.assertNotEqual(0, process.returncode)
+        self.assertIn("emitted failed/core=5/5, details failed/core=0/0", process.stderr)
+        self.assertIsNone(payload)
 
     def test_baseline_guards_skip_without_calling_package_manager(self):
         self.values["steps.install.outcome"] = "failure"
