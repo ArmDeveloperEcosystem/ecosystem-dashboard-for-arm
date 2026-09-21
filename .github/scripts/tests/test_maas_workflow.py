@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -198,6 +199,83 @@ class MaasWorkflowTests(unittest.TestCase):
                 result = subprocess.run(["bash", "-n"], input=self.render(step["run"]),
                                         text=True, capture_output=True)
                 self.assertEqual(0, result.returncode, step["name"] + result.stderr)
+
+    def run_apt_install_commands(self, fail_at="0"):
+        source = self.steps["install"]["run"]
+        commands = [line.strip() for line in source.splitlines()
+                    if line.strip().startswith(("APT_OPTIONS=", "apt-get "))]
+        self.assertEqual(5, len(commands))
+        calls = self.root / "apt-calls"
+        calls.write_text("")
+        self.tool("apt-get", '''
+printf '%s\\n' "$*" >> "$HOME/apt-calls"
+if [ "$(wc -l < "$HOME/apt-calls" | tr -d ' ')" = "$APT_FAIL_AT" ]; then
+  exit 100
+fi
+''')
+        result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", "\n".join(commands)],
+            env={**self.env, "APT_FAIL_AT": fail_at}, cwd=self.root,
+            capture_output=True, text=True, timeout=15)
+        return result, [shlex.split(line) for line in calls.read_text().splitlines()]
+
+    def test_apt_download_retries_are_bounded_and_partial_indexes_fail_closed(self):
+        result, calls = self.run_apt_install_commands()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(4, len(calls))
+        options = ["-o", "Acquire::Retries=3", "-o", "Acquire::http::Timeout=30",
+                   "-o", "Acquire::https::Timeout=30"]
+        for call in calls:
+            self.assertEqual(options, call[:6])
+        self.assertEqual(["--error-on=any", "update"], calls[0][6:])
+        self.assertEqual(["--error-on=any", "update"], calls[2][6:])
+        self.assertEqual(["install", "-y", "--no-install-recommends",
+                          "maas-region-api=" + self.job["env"]["MAAS_DEB_VERSION"], "postgresql-16"], calls[3][6:])
+        self.assertEqual(20, self.job["timeout-minutes"])
+        self.assertIn("signed-by=/usr/share/keyrings/maas-smoke.gpg", self.steps["install"]["run"])
+
+    def test_apt_failure_stops_before_subsequent_install_commands(self):
+        for fail_at in range(1, 5):
+            with self.subTest(fail_at=fail_at):
+                result, calls = self.run_apt_install_commands(str(fail_at))
+                self.assertEqual(100, result.returncode, result.stderr)
+                self.assertEqual(fail_at, len(calls))
+
+    def test_key_download_has_bounded_retries_and_preserves_failure(self):
+        source = self.steps["install"]["run"]
+        download = source[source.index("curl --fail "):source.index("KEY_FINGERPRINTS=")]
+        self.tool("curl", 'printf "%s\\n" "$*" > "$HOME/curl-call"\nexit "$CURL_RC"\n')
+        for code in (0, 22, 28, 60):
+            with self.subTest(code=code):
+                result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", download],
+                    env={**self.env, "CURL_RC": str(code)}, cwd=self.root,
+                    capture_output=True, text=True, timeout=15)
+                self.assertEqual(code, result.returncode, result.stderr)
+        arguments = shlex.split((self.root / "curl-call").read_text())
+        for flag, value in (("--connect-timeout", "10"), ("--max-time", "30"),
+                            ("--retry", "3"), ("--retry-delay", "5"), ("--retry-max-time", "150")):
+            self.assertEqual(value, arguments[arguments.index(flag) + 1])
+        self.assertIn("--retry-all-errors", arguments)
+        self.assertIn("https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x3AB6DCF1F234E78DAA9C104204E7FDC5684D4A1C", arguments)
+        self.assertNotIn("--insecure", arguments)
+
+    def test_signing_key_requires_exactly_one_pinned_primary_and_successful_gpg(self):
+        source = "\n".join(line.strip() for line in self.steps["install"]["run"].splitlines()
+                           if line.strip().startswith(("KEY_FINGERPRINTS=", 'test "$KEY_FINGERPRINTS"')))
+        self.assertEqual(2, len(source.splitlines()))
+        fingerprint = "3AB6DCF1F234E78DAA9C104204E7FDC5684D4A1C"
+        valid = f"pub:-:4096:1:04E7FDC5684D4A1C::::::\nfpr:::::::::{fingerprint}:\n"
+        subkey = "sub:-:4096:1:1234567890ABCDEF::::::\nfpr:::::::::" + "A" * 40 + ":\n"
+        wrong = valid.replace(fingerprint, "B" * 40)
+        self.tool("gpg", 'printf "%s" "$GPG_LISTING"\nexit "$GPG_RC"\n')
+        for listing, code, succeeds in ((valid, 0, True), (valid + subkey, 0, True),
+                                        ("", 0, False), (wrong, 0, False),
+                                        (valid + wrong, 0, False), (wrong + valid, 0, False),
+                                        (subkey, 0, False), (valid, 2, False)):
+            with self.subTest(listing=listing, code=code):
+                result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", source],
+                    env={**self.env, "GPG_LISTING": listing, "GPG_RC": str(code)},
+                    cwd=self.root, capture_output=True, text=True, timeout=15)
+                self.assertEqual(succeeds, result.returncode == 0, result.stderr)
 
     def test_actual_auditor_sees_all_contract_outputs(self):
         for number in range(1, 7):
