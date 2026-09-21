@@ -266,11 +266,15 @@ fi
         valid = f"pub:-:4096:1:04E7FDC5684D4A1C::::::\nfpr:::::::::{fingerprint}:\n"
         subkey = "sub:-:4096:1:1234567890ABCDEF::::::\nfpr:::::::::" + "A" * 40 + ":\n"
         wrong = valid.replace(fingerprint, "B" * 40)
+        secret = wrong.replace("pub:", "sec:")
+        secret_subkey = subkey.replace("sub:", "ssb:")
         self.tool("gpg", 'printf "%s" "$GPG_LISTING"\nexit "$GPG_RC"\n')
         for listing, code, succeeds in ((valid, 0, True), (valid + subkey, 0, True),
                                         ("", 0, False), (wrong, 0, False),
                                         (valid + wrong, 0, False), (wrong + valid, 0, False),
-                                        (subkey, 0, False), (valid, 2, False)):
+                                        (subkey, 0, False), (valid, 2, False),
+                                        (valid + secret, 0, False), (secret + valid, 0, False),
+                                        (valid + secret_subkey, 0, False)):
             with self.subTest(listing=listing, code=code):
                 result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", source],
                     env={**self.env, "GPG_LISTING": listing, "GPG_RC": str(code)},
