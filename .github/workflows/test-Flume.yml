@@ -122,6 +122,108 @@ jobs:
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=Flume" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/opensource_packages/Flume" >> "$GITHUB_OUTPUT"
+      - name: Prepare bounded Flume runtime probe
+        id: probe
+        run: |
+          cat > "$RUNNER_TEMP/flume-smoke.py" <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import signal
+          import subprocess
+          import sys
+          import tempfile
+          import time
+          import uuid
+
+          mode, home, expected = sys.argv[1:]
+          home = Path(home).resolve()
+          command = str(home / "bin/flume-ng")
+          env = dict(os.environ, FLUME_HOME=str(home))
+          if mode == "version":
+              result = subprocess.run([command, "version"], env=env, text=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+              print(result.stdout, file=sys.stderr, end="")
+              versions = re.findall(r"(?m)^Flume ([0-9]+\.[0-9]+\.[0-9]+)\s*$", result.stdout)
+              if result.returncode != 0 or versions != [expected]:
+                  raise SystemExit("Flume version command failed or did not report the exact target")
+              print(versions[0])
+          elif mode == "event":
+              # A private spool-to-file flow exercises the agent without opening a port.
+              with tempfile.TemporaryDirectory(prefix="flume-smoke-", dir=os.environ["RUNNER_TEMP"]) as temp:
+                  root = Path(temp)
+                  spool, sink = root / "spool", root / "sink"
+                  spool.mkdir()
+                  sink.mkdir()
+                  token = "flume-smoke-" + uuid.uuid4().hex
+                  (spool / "event.txt").write_text(token + "\n")
+                  config = root / "agent.conf"
+                  config.write_text("\n".join([
+                      "smoke.sources = source", "smoke.channels = channel", "smoke.sinks = sink",
+                      "smoke.sources.source.type = spooldir", f"smoke.sources.source.spoolDir = {spool}",
+                      "smoke.sources.source.channels = channel", "smoke.channels.channel.type = memory",
+                      "smoke.channels.channel.capacity = 10", "smoke.channels.channel.transactionCapacity = 1",
+                      "smoke.sources.source.batchSize = 1", "smoke.sinks.sink.type = file_roll",
+                      "smoke.sinks.sink.channel = channel", f"smoke.sinks.sink.sink.directory = {sink}",
+                      "smoke.sinks.sink.sink.rollInterval = 0", "smoke.sinks.sink.sink.batchSize = 1",
+                  ]) + "\n")
+                  log = root / "agent.log"
+                  with log.open("w") as output:
+                      process = subprocess.Popen([command, "agent", "--conf", str(home / "conf"),
+                          "--conf-file", str(config), "--name", "smoke"], env=env,
+                          stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+
+                      def signal_owned_group(sig):
+                          try:
+                              os.killpg(process.pid, sig)
+                          except ProcessLookupError:
+                              pass
+
+                      def wait_owned_group(timeout):
+                          deadline = time.monotonic() + timeout
+                          while True:
+                              process.poll()
+                              try:
+                                  os.killpg(process.pid, 0)
+                              except ProcessLookupError:
+                                  return True
+                              except PermissionError:
+                                  # An uncertain group state is not proof of cleanup.
+                                  pass
+                              if time.monotonic() >= deadline:
+                                  return False
+                              time.sleep(0.05)
+
+                      try:
+                          deadline = time.monotonic() + 45
+                          delivered = False
+                          while time.monotonic() < deadline and process.poll() is None:
+                              delivered = any(token.encode() in path.read_bytes().splitlines()
+                                              for path in sink.iterdir() if path.is_file())
+                              if delivered and (spool / "event.txt.COMPLETED").exists():
+                                  break
+                              delivered = False
+                              time.sleep(0.25)
+                          if not delivered or process.poll() is not None:
+                              raise RuntimeError("Flume agent did not deliver and commit the exact event")
+                      finally:
+                          try:
+                              # The new session is ours even after its leader exits.
+                              signal_owned_group(signal.SIGTERM)
+                              if not wait_owned_group(10):
+                                  signal_owned_group(signal.SIGKILL)
+                                  if not wait_owned_group(5):
+                                      raise RuntimeError("Flume owned process group remained after forced shutdown")
+                                  raise RuntimeError("Flume agent required forced shutdown")
+                              returncode = process.wait(timeout=5)
+                              if returncode not in (0, -signal.SIGTERM, 128 + signal.SIGTERM):
+                                  raise RuntimeError(f"Flume agent shutdown returned unexpected exit {returncode}")
+                          finally:
+                              print(log.read_text(), file=sys.stderr, end="")
+                      print(f"Flume {expected}: spool source -> memory channel -> file sink delivered {token}")
+          else:
+              raise SystemExit("Unknown Flume probe mode")
+          PY
       - name: Install Flume (Tarball)
         id: install
         continue-on-error: true
@@ -139,14 +241,14 @@ jobs:
             echo "baseline_version=$FLUME_VERSION" >> "$GITHUB_OUTPUT"
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
             echo "install_blocker=download_failed" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
           
           if ! tar -xzf flume.tar.gz; then
             echo "baseline_version=$FLUME_VERSION" >> "$GITHUB_OUTPUT"
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
             echo "install_blocker=extract_failed" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
           mv apache-flume-${FLUME_VERSION}-bin flume
           
@@ -165,7 +267,7 @@ jobs:
              echo "baseline_version=$FLUME_VERSION" >> "$GITHUB_OUTPUT"
              echo "install_status=failed" >> $GITHUB_OUTPUT
              echo "install_blocker=baseline_layout_missing" >> "$GITHUB_OUTPUT"
-             exit 0
+             exit 1
           fi
       
       - name: Resolve Flume install state
@@ -174,9 +276,10 @@ jobs:
         run: |
           set -euo pipefail
           ROOT="$GITHUB_WORKSPACE/flume"
-          STATUS="${{ steps.install.outputs.install_status || steps.install.conclusion || 'failed' }}"
+          STATUS="failed"
           BLOCKER="${{ steps.install.outputs.install_blocker || '' }}"
-          if [ -x "$ROOT/bin/flume-ng" ]; then
+          if [ "${{ steps.install.outcome }}" = "success" ] && \
+             [ "${{ steps.install.outputs.install_status }}" = "success" ] && [ -x "$ROOT/bin/flume-ng" ]; then
             STATUS="success"
             BLOCKER=""
           fi
@@ -188,19 +291,12 @@ jobs:
 
       - name: Get Flume version
         id: version
-        if: always()
+        if: always() && steps.install_state.outputs.install_status == 'success'
         run: |
           set -euo pipefail
-          if [ "${FLUME_INSTALL_STATUS:-failed}" != "success" ]; then
-            echo "version=${{ steps.install.outputs.baseline_version || env.FLUME_BASELINE_VERSION }}" >> "$GITHUB_OUTPUT"
-            echo "Detected Flume version: ${{ steps.install.outputs.baseline_version || env.FLUME_BASELINE_VERSION }}"
-            exit 0
-          fi
-          # flume-ng version
-          export PATH="${FLUME_HOME:-$PWD/flume}/bin:$PATH"
-          VERSION=$(flume-ng version 2>&1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
-          if [ -z "$VERSION" ]; then
-            VERSION="unknown"
+          if ! VERSION=$(python3 "$RUNNER_TEMP/flume-smoke.py" version "$FLUME_HOME" "$FLUME_BASELINE_VERSION"); then
+            echo "version=unknown" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected Flume version: $VERSION"
@@ -208,14 +304,14 @@ jobs:
       - name: Test 1 - Check flume-ng binary exists
         id: test1
         if: always()
-        continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           if [ "${FLUME_INSTALL_STATUS:-failed}" != "success" ]; then
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "Baseline installation failed: ${FLUME_INSTALL_BLOCKER:-unknown}"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
             echo "duration=0" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
           
           if [ -x "flume/bin/flume-ng" ]; then
@@ -232,8 +328,7 @@ jobs:
       
       - name: Test 2 - Check flume version command
         id: test2
-        if: always()
-        continue-on-error: true
+        if: always() && steps.install_state.outputs.install_status == 'success'
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -244,7 +339,9 @@ jobs:
           fi
           export PATH="${FLUME_HOME:-$PWD/flume}/bin:$PATH"
           
-          if flume-ng version 2>&1 | grep -q "Flume"; then
+          if [ "${{ steps.version.outcome }}" = "success" ] && \
+             [ "${{ steps.version.outputs.version }}" = "$FLUME_BASELINE_VERSION" ] && \
+             python3 "$RUNNER_TEMP/flume-smoke.py" version "$FLUME_HOME" "$FLUME_BASELINE_VERSION"; then
             echo "✓ flume version command works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -258,8 +355,7 @@ jobs:
       
       - name: Test 3 - Check flume help output
         id: test3
-        if: always()
-        continue-on-error: true
+        if: always() && steps.install_state.outputs.install_status == 'success'
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -270,7 +366,8 @@ jobs:
           fi
           export PATH="${FLUME_HOME:-$PWD/flume}/bin:$PATH"
           
-          if flume-ng help 2>&1 | grep -qi "usage\|help"; then
+          if timeout 30 "$FLUME_HOME/bin/flume-ng" help > "$RUNNER_TEMP/flume-help.log" 2>&1 && \
+             grep -Ei "usage|help" "$RUNNER_TEMP/flume-help.log"; then
             echo "✓ flume help command works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -284,8 +381,7 @@ jobs:
       
       - name: Test 4 - Architecture Verification
         id: test4
-        if: always()
-        continue-on-error: true
+        if: always() && steps.install_state.outputs.install_status == 'success'
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -309,10 +405,9 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 5 - Functional Validation (Configuration)
+      - name: Test 5 - Functional Validation (Event delivery)
         id: test5
-        if: always()
-        continue-on-error: true
+        if: always() && steps.install_state.outputs.install_status == 'success'
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -321,30 +416,11 @@ jobs:
             echo "duration=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # create a dummy config file
-          cat > flume.conf <<EOF
-          a1.sources = r1
-          a1.sinks = k1
-          a1.channels = c1
-          a1.sources.r1.type = netcat
-          a1.sources.r1.bind = localhost
-          a1.sources.r1.port = 44444
-          a1.sinks.k1.type = logger
-          a1.channels.c1.type = memory
-          a1.sources.r1.channels = c1
-          a1.sinks.k1.channel = c1
-          EOF
-          
-          # Just check if we can parse it (dry run-ish, or just valid file)
-          # Flume doesn't have a strict dry-run, but we can check if it starts and we kill it?
-          # Or just verify java process starts?
-          # Let's just assume passed if binary works for now, or check for libs.
-          
-          if [ -d "flume/lib" ]; then
-             echo "✓ Libs directory found"
+          if python3 "$RUNNER_TEMP/flume-smoke.py" event "$FLUME_HOME" "$FLUME_BASELINE_VERSION"; then
+             echo "Flume delivered the exact event through the configured agent"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
-             echo "✗ Libs directory missing"
+             echo "Flume event delivery failed"
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
           fi
@@ -360,7 +436,7 @@ jobs:
           CURRENT="$(echo "${{ steps.version.outputs.version || 'unknown' }}" | tr -d '[:space:]' | sed 's/^v//')"
           LATEST="${FLUME_NEXT_VERSION}"
 
-          if [ "${{ steps.install_state.outputs.install_status || steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+          if [ "${{ steps.install_state.outputs.install_status || 'failed' }}" != "success" ]; then
             echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
             echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
@@ -376,7 +452,7 @@ jobs:
           NEXT_INSTALLED="not_installed"
           DECISION="next_lookup_failed"
           REGRESSION_RESULT="Next version install failed on Arm64"
-          COMPARISON="Current pinned Flume version ${CURRENT} passed smoke tests in this run, but the next regression candidate version could not be resolved automatically."
+          COMPARISON="Baseline Flume ${CURRENT} is checked separately by Tests 1-5; the next regression candidate could not be resolved."
           STATUS="failed"
 
           if [ -z "$LATEST" ]; then
@@ -388,43 +464,41 @@ jobs:
             COMPARISON="Current pinned baseline already matches the newest public stable upstream release, so there is no newer stable Arm64 candidate for a genuine Test 6 upgrade check."
             STATUS="skipped"
           else
-            NEXT_DIR=$(mktemp -d /tmp/flume-next-XXXXXX)
+            NEXT_DIR=$(mktemp -d "$RUNNER_TEMP/flume-next-XXXXXX")
+            trap 'rm -rf "$NEXT_DIR"' EXIT
             NEXT_TARBALL="$NEXT_DIR/flume.tar.gz"
             if bash .github/scripts/download-with-fallback.sh \
               "$NEXT_TARBALL" \
               "https://downloads.apache.org/flume/${LATEST}/apache-flume-${LATEST}-bin.tar.gz" \
               "https://archive.apache.org/dist/flume/${LATEST}/apache-flume-${LATEST}-bin.tar.gz"; then
-              tar -xzf "$NEXT_TARBALL" -C "$NEXT_DIR"
-              NEXT_HOME=$(find "$NEXT_DIR" -maxdepth 1 -type d -name "apache-flume-${LATEST}-bin" | head -1)
+              NEXT_HOME="$NEXT_DIR/apache-flume-${LATEST}-bin"
               NEXT_BIN="$NEXT_HOME/bin/flume-ng"
-              if [ -n "$NEXT_HOME" ] && [ -x "$NEXT_BIN" ]; then
-                NEXT_VERSION_OUTPUT=$(env -u FLUME_HOME FLUME_HOME="$NEXT_HOME" PATH="$NEXT_HOME/bin:$PATH" "$NEXT_BIN" version 2>&1 || true)
-                NEXT_VERSION_OUTPUT_ONE_LINE=$(printf '%s' "$NEXT_VERSION_OUTPUT" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')
-                NEXT_INSTALLED_VERSION=$(printf '%s\n' "$NEXT_VERSION_OUTPUT" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
-                NEXT_CORE_JAR=$(find "$NEXT_HOME/lib" -type f -name "flume-ng-core-${LATEST}.jar" -print -quit || true)
-                if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ] || [ -n "$NEXT_CORE_JAR" ]; then
-                  NEXT_INSTALLED="${NEXT_INSTALLED_VERSION:-$LATEST}"
+              if tar -xzf "$NEXT_TARBALL" -C "$NEXT_DIR" && [ -x "$NEXT_BIN" ]; then
+                NEXT_INSTALLED_VERSION="unknown"
+                if NEXT_INSTALLED_VERSION=$(python3 "$RUNNER_TEMP/flume-smoke.py" version "$NEXT_HOME" "$LATEST") && \
+                   python3 "$RUNNER_TEMP/flume-smoke.py" event "$NEXT_HOME" "$LATEST"; then
+                  NEXT_INSTALLED="$NEXT_INSTALLED_VERSION"
                   DECISION="next_install_validated"
                   REGRESSION_RESULT="Next version installed successfully on Arm64"
-                  COMPARISON="Current pinned Flume version ${CURRENT} passed smoke tests in this run. Regression validation downloaded candidate version ${LATEST} on Arm64, and the extracted distribution exposed the official flume-ng binary plus versioned core library layout for ${LATEST}. Raw version output: ${NEXT_VERSION_OUTPUT_ONE_LINE:-none}"
+                  COMPARISON="Baseline Flume ${CURRENT} is checked separately by Tests 1-5. Candidate ${LATEST} reported the exact version with exit zero and delivered a unique event through a spool source, memory channel and file sink on Arm64."
                   STATUS="passed"
                 else
                   NEXT_INSTALLED="${NEXT_INSTALLED_VERSION:-unknown}"
                   DECISION="next_install_failed"
-                  REGRESSION_RESULT="Next version installed but reported a version mismatch on Arm64"
-                  COMPARISON="Current pinned Flume version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} extracted on Arm64 without exposing either a matching flume-ng version string or the expected flume-ng-core-${LATEST}.jar marker. Raw output: ${NEXT_VERSION_OUTPUT_ONE_LINE:-none}"
+                  REGRESSION_RESULT="Next version command or event delivery failed on Arm64"
+                  COMPARISON="Baseline Flume ${CURRENT} is checked separately by Tests 1-5. Candidate ${LATEST} failed the exact zero-exit version command or bounded event-delivery check; a versioned JAR alone cannot pass."
                 fi
               else
                 NEXT_INSTALLED="install_failed"
                 DECISION="next_install_failed"
                 REGRESSION_RESULT="Next version install failed on Arm64"
-                COMPARISON="Current pinned Flume version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} did not extract a usable Arm64 Flume distribution."
+                COMPARISON="Baseline Flume ${CURRENT} is checked separately by Tests 1-5. Candidate ${LATEST} did not extract a usable Flume distribution."
               fi
             else
               NEXT_INSTALLED="install_failed"
               DECISION="next_install_failed"
               REGRESSION_RESULT="Next version install failed on Arm64"
-              COMPARISON="Current pinned Flume version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} could not be downloaded on Arm64."
+              COMPARISON="Baseline Flume ${CURRENT} is checked separately by Tests 1-5. Candidate ${LATEST} could not be downloaded on Arm64."
             fi
           fi
 
@@ -499,18 +573,18 @@ jobs:
         with:
           package_name: "Flume"
           version: ${{ steps.version.outputs.version }}
-          install_status: ${{ steps.install_state.outputs.install_status || steps.install.outputs.install_status || 'success' }}
+          install_status: ${{ steps.install_state.outputs.install_status || 'failed' }}
           test1_label: "Check flume-ng binary exists"
           test2_label: "Check flume version command"
           test3_label: "Check flume help output"
           test4_label: "Architecture Verification"
-          test5_label: "Functional Validation (Configuration)"
-          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
-          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
-          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
-          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
-          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
-          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test5_label: "Functional Validation (Event delivery)"
+          test1_status: ${{ steps.test1.outcome == 'success' && steps.test1.outputs.status || steps.test1.outcome == 'skipped' && 'skipped' || 'failed' }}
+          test2_status: ${{ steps.test2.outcome == 'success' && steps.test2.outputs.status || steps.test2.outcome == 'skipped' && 'skipped' || 'failed' }}
+          test3_status: ${{ steps.test3.outcome == 'success' && steps.test3.outputs.status || steps.test3.outcome == 'skipped' && 'skipped' || 'failed' }}
+          test4_status: ${{ steps.test4.outcome == 'success' && steps.test4.outputs.status || steps.test4.outcome == 'skipped' && 'skipped' || 'failed' }}
+          test5_status: ${{ steps.test5.outcome == 'success' && steps.test5.outputs.status || steps.test5.outcome == 'skipped' && 'skipped' || 'failed' }}
+          test6_status: ${{ steps.test6.outcome == 'success' && steps.test6.outputs.status || steps.test6.outcome == 'skipped' && 'skipped' || 'failed' }}
           test1_duration: ${{ steps.test1.outputs.duration || '0' }}
           test2_duration: ${{ steps.test2.outputs.duration || '0' }}
           test3_duration: ${{ steps.test3.outputs.duration || '0' }}
@@ -528,6 +602,9 @@ jobs:
       - name: Finalize workflow status
         if: always()
         run: |
-          if [ "${{ steps.summary.outputs.should_fail || 'false' }}" = "true" ]; then
+          if [ "${{ steps.summary.outcome }}" != "success" ] || \
+             [ "${{ steps.summary.outputs.should_fail }}" != "0" ] || \
+             [ "${{ steps.summary.outputs.overall_status }}" != "success" ] || \
+             [ "${{ steps.version.outcome }}" != "success" ]; then
             exit 1
           fi
