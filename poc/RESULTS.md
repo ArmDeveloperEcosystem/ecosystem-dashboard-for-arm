@@ -3,69 +3,92 @@
 Base: upstream `main`, `e1871540f0a3e42e7588ab44b09e4796de967fd8`.
 Review: [PR #1092](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/pull/1092).
 
-This local review build implements Pareena's first-feature scope: accurate
-natural-language discovery of real Linux dashboard packages. Independent review
-identified corrections that were incorporated into the search and regression
-checks. No deployment or public catalog changes were performed.
+This revision fixes confirmed search and evidence-attribution defects in the
+local first-feature PoC. It is suitable for reviewing the implementation and its
+limits; it is not a claim that general natural-language discovery is complete.
+Production deployment and broader requirement acceptance remain separate.
 
-## What works
+## What changed
 
-The Linux dashboard calls Arm KB `/search`, resolves trusted hits to its real
-catalog, and supplements retrieval using catalog descriptions and reviewed
-capability aliases. All 1,177 Linux records retain their original details and
-resources. Stable per-file identities distinguish editions. Searches and basic
-refinements update the displayed rows and filters. Displayed identities are
-restricted to catalog records; no LLM or model API key is required. Default
-production and Windows search remain unchanged.
+- Conversational framing is interpreted separately from software requirements.
+  Ordinary vector-database questions work, filter-only follow-ups retain their
+  subject, and a new request such as `Only web servers` changes the subject.
+- KB retrieval preserves the semantic query order. Attributed KB passages can
+  establish a workload absent from a short catalog description; catalog identity
+  and software-role checks still control which records can appear.
+- Postgres is retained for relational queries despite its additional JSON support.
+  Transfer tools and products that merely use databases are excluded from database
+  role requests. Transfer-workload requests can still find transfer tools.
+- Requested attributes, negation, product editions and article attribution are
+  checked before admission. URL syntax is not treated as capability evidence.
+  Generic requests require positive evidence for remaining concepts rather than
+  a partial word match that silently drops a requirement.
+- KB caller waiting is bounded at eight seconds with at most four admitted
+  requests. Slow or unavailable retrieval uses the labelled catalog fallback.
+- A PR workflow builds the catalog and runs offline Python and JavaScript search
+  regressions. Live-provider evaluation remains separate from deterministic CI.
+
+All 1,177 Linux catalog records keep their existing details and links. Displayed
+identities come from those records. No LLM is used. Default production and
+Windows search remain unchanged; the feature is enabled by local PoC config.
 
 ## Verification
 
 | Check | Result |
 |---|---|
 | Existing repository regression suite, pinned Hugo 0.130.0 extended | 113 passed |
-| Python search and API tests | 22 passed |
-| Search-only dependency lock | Installed in a fresh environment; `pip check` passed |
-| JavaScript search interaction tests | 8 passed |
-| Live KB search scenario checks | 20 of 20 passed; named positive and negative checks |
-| Enabled/disabled Linux and Windows build checks | Passed; production defaults retained |
-| Local-only tracking-script gates | Passed; production configuration unchanged |
-| Desktop browser | Search, refinements, filters and expanded package evidence checked |
-| Mobile browser, 390 × 844 | Search layout inspected; no horizontal clipping observed |
-| Python static checks | No undefined names or unused imports under Ruff F rules |
+| Python intent, relevance, API and bounded-client tests | 122 passed |
+| JavaScript interaction contracts | 8 passed |
+| Main HTTP scenario suite | 37/37 passed |
+| Independent disclosed regression queries | 36/38 met expectations; two empty-result recall misses |
+| Independent additional query probes | 2/8 met expectations; six empty-result recall misses |
+| Independent targeted evidence/precision checks | 10/10 passed |
+| Search-only dependency lock | Fresh environment; `pip check` passed |
+| Local and default production Hugo builds | Passed; Linux opt-in and Windows boundaries checked |
+| Controlled slow-KB integration through the real HTTP API | Labelled catalog results returned in 8.201 seconds, before the 15-second browser deadline |
+| Browser interactions | Natural question, typed refinement, subject change, JSON workload, package expansion and constraint explanation checked |
+| Static checks | Ruff F rules, workflow actionlint and whitespace checks passed |
 
-The live search evaluation is saved in `evaluation/live-search-final.json`.
-Its named positive and negative cases cover vector databases, model serving,
-monitoring, web servers, object storage, relational databases, orchestration,
-message brokers/queues, caching, package names and unverifiable requests.
-These checks do **not** establish general search precision or exhaustive
-edge-case coverage. `live-search-initial.json` preserves the early baseline for
-comparison.
+The independent review returned 108 rows representing 63 distinct, real catalog
+IDs. No known precision exclusion failed in its final sample. Two disclosed
+queries used labelled fallback; the eight additional probes used live KB
+retrieval. Maximum observed independent HTTP response time was 7.56 seconds.
+These scenario counts are not a statistical accuracy score.
 
-Independent review corrections include duplicate-edition identities, negative
-and specific-licence constraints, incidental capability mentions, unsupported
-metadata interpretations, broker/queue plurals, and preserving Kafka when its
-description mentions clients. Regression checks preserve these corrections.
+Evidence: [main HTTP scenarios](evaluation/live-search-revised.json),
+[independent review](evaluation/independent/review.md), and
+[controlled slow-KB HTTP check](evaluation/http-deadline.json). Source hashes
+bind findings to the reviewed code. The earlier `live-search-initial.json` and
+`live-search-final.json` files preserve historical 20-case runs and do not
+represent this revision's broader evaluation.
 
-## Boundaries for review
+Hugo emits the existing missing-page-layout and IsSet warnings. The pinned Python
+test dependencies emit two deprecation warnings; these checks have no test failures.
 
-- Search is a KB-plus-catalog retrieval baseline with finite vocabulary. The raw
-  KB corpus includes learning paths and unrelated platforms. Catalog-only
-  matches and outage fallbacks are labelled. Stakeholder query evaluation and
-  KB-owner confirmation remain necessary before staging.
-- Catalog identity validation prevents invented package records; it does not
-  guarantee relevance for every query. Sparse descriptions and unfamiliar
-  paraphrases may miss valid packages. Reviewers should supply representative
-  queries and expected results.
-- Results keep the existing table's alphabetical order. The backend caps
-  results at 50 and asks users to refine. Recorded tests do not mean every test
-  passed. Unverifiable constraints receive an explicit notice.
-- Follow-up refinements cover the supported filter interactions. The PoC does
-  not provide unrestricted conversational reasoning, package certification or
-  migration assessment.
-- This loopback application is not a deployed internal service. Staging needs
-  approved hosting and access controls, KB API ownership and quotas, operational
-  monitoring and deployment review. This branch does not claim production
-  readiness or 100% testing.
+## Remaining limits
 
-See [README.md](README.md) for local setup, suggested review queries, KB access
-configuration and test reproduction commands.
+This is a conservative KB-plus-catalog baseline with reviewed capability
+vocabulary. It can miss unfamiliar phrasing or requested details absent from the
+retrieved evidence. Stronger precision checks intentionally prefer no match to
+an unsupported capability claim. Passing regression examples does not establish
+accuracy across arbitrary language, and real catalog identities alone do not
+prove relevance.
+
+The public KB corpus includes learning paths and unrelated platforms. Final
+independent checks still miss eight natural-language requests, including a TLS
+toolkit, configuration management with playbooks, and converting scans into text.
+Several expected packages were absent from raw KB hits, while strict catalog
+matching and limited inflection handling also miss valid descriptions. These
+are remaining discovery gaps, not evidence that those packages are unavailable.
+Broader stakeholder-query evaluation and KB-owner review of corpus coverage and
+retrieval options are needed before feature acceptance or staging sign-off.
+
+Results retain alphabetical table order and are capped at 50. Recorded tests do
+not mean all tests passed. Follow-ups cover supported filters; unsupported OR,
+exclusion, licence-specific, version and certification constraints are explained
+rather than guessed. Timed-out KB workers keep their slots until completion;
+the eight-second caller bound is not a hard network-cancellation or shutdown bound.
+
+This loopback application is not a deployed internal service. Staging still needs
+approved hosting/access, KB ownership and quotas, operational monitoring and
+broader relevance acceptance. See [README.md](README.md) for setup and commands.

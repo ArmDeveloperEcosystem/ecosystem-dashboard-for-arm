@@ -66,7 +66,8 @@ class Catalog:
         package = parse_qs(url.query).get("package", [""])[0]
         if package:
             return self.by_url_id.get(package, [])
-        # Articles may propose candidates; relevance and facts still come from the catalog.
+        # Articles propose candidates only. The search service must separately
+        # validate evidence attribution, software roles and query requirements.
         title = str(hit.get("title") or "") + " " + str(hit.get("heading") or "")
         matched = []
         for p in self.packages:

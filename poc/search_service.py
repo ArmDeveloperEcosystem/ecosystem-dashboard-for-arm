@@ -1,7 +1,7 @@
 """KB-first search, catalog identity validation, and transparent catalog reranking.
 
-No language model determines package existence or support. Capability aliases only
-expand query vocabulary; package membership is always established by catalog text.
+No language model determines package existence or support. Catalog identities and
+software roles remain authoritative; scoped KB evidence can establish use cases.
 """
 
 from __future__ import annotations
@@ -9,140 +9,29 @@ import os
 import re
 import time
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, Counter
 import httpx
 from .catalog import Catalog, words
+from .kb_client import fetch_kb
 
-# Reviewed vocabulary, not package lists. New capability groups require evaluation.
-CAPABILITIES = {
-    "vector search": (
-        (
-            "vector database",
-            "vector search",
-            "embedding",
-            "embeddings",
-            "similarity search",
-            "semantic search",
-            "rag",
-        ),
-        (
-            "vector database",
-            "vector search",
-            "embedding",
-            "similarity search",
-            "data as vectors",
-        ),
-    ),
-    "monitoring": (
-        ("monitor", "monitoring", "metrics", "observability", "alerting", "telemetry"),
-        ("monitoring", "monitor", "metrics", "observability", "alerting", "telemetry"),
-    ),
-    "model serving": (
-        (
-            "llm",
-            "inference",
-            "serve language models",
-            "serving models",
-            "run language models",
-            "large language model",
-            "model serving",
-        ),
-        ("inference", "model serving", "llm", "large language model"),
-    ),
-    "message streaming": (
-        (
-            "message broker",
-            "message queue",
-            "stream events",
-            "event streaming",
-            "pub/sub",
-        ),
-        (
-            "message broker",
-            "messaging broker",
-            "message queue",
-            "messaging middleware",
-            "event streaming",
-            "messaging and streaming",
-            "messaging platform",
-            "streaming data platform",
-            "pub/sub",
-        ),
-    ),
-    "cache": (
-        ("cache", "caching", "in-memory store"),
-        ("cache", "caching", "in-memory data store"),
-    ),
-    "relational database": (
-        (
-            "relational database",
-            "relational sql database",
-            "sql database",
-            "relational data",
-        ),
-        ("relational", "sql database"),
-    ),
-    "web serving": (
-        ("web server", "http server", "reverse proxy", "serve web pages"),
-        (
-            "web server",
-            "http server",
-            "reverse proxy",
-            "web serving",
-            "reverse proxying",
-            "proxy for tcp and http",
-        ),
-    ),
-    "object storage": (
-        ("object storage", "s3 compatible", "s3-compatible"),
-        ("object storage", "s3-compatible", "s3 compatible"),
-    ),
-    "container orchestration": (
-        ("container orchestration", "manage containers", "orchestrate containers"),
-        (
-            "container orchestration",
-            "automating deployment, scaling, and management of containerized applications",
-            "container orchestration platform",
-            "orchestration engine",
-            "kubernetes service",
-            "kubernetes distribution",
-            "kubernetes control plane",
-            "containerization platform",
-            "openshift container platform",
-        ),
-    ),
-}
-STOP = words(
-    "a an the i me we us my our want need looking find show discover suggest recommend software packages package tools tool solutions solution for to of on in with that which and or are is can do please linux arm arm64 aarch64 server servers open source opensource commercial only ones those works work supports support use used using help could would you as provide provides designed run running available about it all"
+from .intent import normal, parse_intent
+from .relevance import (
+    capability_groups,
+    covered_groups,
+    requested_attributes,
+    verified_attributes,
+    query_terms,
+    stems,
+    kb_evidence,
+    database_role,
+    remaining_concepts,
+    verifies_concepts,
+    role_allowed,
+    requested_catalog_roles,
+    positive_stems,
+    transfer_request,
+    transfer_role,
 )
-
-
-def normal(value):
-    text = re.sub(
-        r"\s+", " ", value.lower().replace("open-source", "open source")
-    ).strip()
-    for plural, singular in [
-        ("databases", "database"),
-        ("servers", "server"),
-        ("models", "model"),
-        ("embeddings", "embedding"),
-        ("brokers", "broker"),
-        ("queues", "queue"),
-    ]:
-        text = re.sub(r"\b" + plural + r"\b", singular, text)
-    return text
-
-
-def capability_groups(query):
-    text = normal(query)
-    return [
-        name
-        for name, (triggers, _) in CAPABILITIES.items()
-        if any(
-            re.search(r"(?<!\w)" + re.escape(normal(t)) + r"(?!\w)", text)
-            for t in triggers
-        )
-    ]
 
 
 class SearchService:
@@ -154,6 +43,14 @@ class SearchService:
         )
         self.cache = OrderedDict()
         self.lock = threading.Lock()
+        self.word_frequency = Counter()
+        self.title_licenses = {}
+        for package in catalog.packages:
+            self.word_frequency.update(package["_words"])
+            self.title_licenses.setdefault(normal(package["title"]), set()).add(
+                package["license"]
+            )
+            package["_positive_description"] = positive_stems(package["description"])
 
     def retrieve(self, query):
         with self.lock:
@@ -167,16 +64,7 @@ class SearchService:
             token = os.getenv("ARM_KB_API_TOKEN")
             if token:
                 headers["Authorization"] = "Bearer " + token
-            with httpx.Client(
-                timeout=12, follow_redirects=False, trust_env=True
-            ) as client:
-                r = client.get(
-                    self.endpoint, params={"q": query, "k": 50}, headers=headers
-                )
-                r.raise_for_status()
-                if len(r.content) > 2_000_000:
-                    raise ValueError("KB response exceeds limit")
-                response = r.json()
+            response = fetch_kb(self.endpoint, query, headers)
         if not isinstance(response, dict) or not isinstance(
             response.get("results"), list
         ):
@@ -189,32 +77,16 @@ class SearchService:
         return hits
 
     def search(self, query, filters=None, previous_query=None, filters_override=False):
-        filters = dict(filters or {})
-        constraints = {
-            "license": filters.get("license", "all"),
-            "category": filters.get("category"),
-            "tested_only": bool(filters.get("tested_only", False)),
-        }
-        if constraints["category"] in ("", "All", "all"):
-            constraints["category"] = None
-        notices = []
-        original_constraints = constraints.copy()
-        q = normal(query)
-        refinement = bool(re.match(r"^(only|just|show only|filter|and only)\b", q))
-        subject = normal(previous_query) if refinement and previous_query else q
-        if not filters_override and ("open source" in q or "opensource" in q):
-            constraints["license"] = "opensource"
-        if not filters_override and re.search(r"\bcommercial\b", q):
-            constraints["license"] = "commercial"
-        if not filters_override and re.search(
-            r"\b(tested|tests|test records|test evidence)\b", q
-        ):
-            constraints["tested_only"] = True
-        # Do not imply support for constraints that this PoC cannot establish.
-        unsupported = re.search(
-            r"\b(fastest|cheapest|best performance|tco|apache (?:license|2(?:\.0)?)|mit license|gpl|bsd license|permissive|license|licenses|licensing|gpu|cuda|version|versions|privacy|production ready|production-ready|certified|guarantee|after 20\d\d|before 20\d\d|since 20\d\d|not|no|never|untested|excluding|without)\b",
-            q,
+        intent = parse_intent(
+            query,
+            previous_query=previous_query,
+            filters=filters,
+            filters_override=filters_override,
+            package_titles=(p["title"] for p in self.catalog.packages),
         )
+        constraints = intent.constraints
+        subject = intent.subject
+        notices = []
         base = {
             "query": query,
             "interpreted_query": subject,
@@ -226,49 +98,29 @@ class SearchService:
             "total": 0,
             "catalog_count": len(self.catalog.packages),
         }
-        if unsupported and not any(
-            q == normal(p["title"]) for p in self.catalog.packages
-        ):
-            base["constraints"] = original_constraints
-            notices.append(
-                "This search cannot verify that constraint from the catalog. Try a software capability, license type, category or recorded-test filter."
-            )
+        if intent.clarification:
+            notices.append(intent.clarification)
             return base
-        if refinement and not previous_query:
-            notices.append(
-                "Start with the kind of software you need, then refine the results."
-            )
-            return base
-        if not q:
+        if not normal(query):
             base.update(status="ok", mode="catalog", total=len(self.catalog.packages))
             return base
         groups = capability_groups(subject)
-        # Strip platform/license boilerplate before semantic retrieval; it otherwise dominates hits.
-        tokens = (
-            words(subject)
-            - STOP
-            - words("recorded verified tests tested test evidence ones")
-        )
-        if not tokens and not groups:
+        terms = query_terms(subject)
+        attributes = requested_attributes(subject, groups)
+        concepts = remaining_concepts(subject, groups, attributes)
+        required_roles = requested_catalog_roles(subject)
+        transfer = bool(transfer_request(subject))
+        if not terms and not groups:
             notices.append(
                 "Describe a capability, for example “databases for storing embeddings”."
             )
             return base
-        retrieval_query = " ".join(groups) if groups else " ".join(sorted(tokens))
-        base["retrieval_query"] = retrieval_query
-        group_vocabulary = set()
-        for group in groups:
-            group_vocabulary.update(words(normal(" ".join(CAPABILITIES[group][0]))))
-        residual = (
-            tokens
-            - group_vocabulary
-            - words(
-                "store storing stored data database databases server servers tool tools build building describe need capable capability scalable scale large efficient efficiently high performance"
-            )
-        )
+        # Preserve the user's semantic relationships, including workload context.
+        # Sorting words or replacing the query with aliases loses that information.
+        base["retrieval_query"] = subject
         kb_ok = True
         try:
-            hits = self.retrieve(retrieval_query)
+            hits = self.retrieve(subject)
         except (httpx.HTTPError, ValueError, TypeError, KeyError):
             hits = []
             kb_ok = False
@@ -277,186 +129,142 @@ class SearchService:
             )
         candidates = {}
         for position, hit in enumerate(hits):
-            for p in self.catalog.resolve_hit(hit):
-                candidates.setdefault(p["id"], (position, hit))
+            resolved = self.catalog.resolve_hit(hit)
+            for package in resolved:
+                # A longer edition name in an article must not supply feature
+                # evidence for a shorter differently scoped catalog identity.
+                name = normal(package["title"])
+                shadowed = any(
+                    name != normal(other["title"])
+                    and re.search(
+                        r"(?<!\w)" + re.escape(name) + r"(?!\w)", normal(other["title"])
+                    )
+                    for other in resolved
+                )
+                peers = [
+                    other["title"]
+                    for other in resolved
+                    if other["id"] != package["id"]
+                    and normal(other["title"]) != name
+                    and not re.search(
+                        r"(?<!\w)" + re.escape(normal(other["title"])) + r"(?!\w)", name
+                    )
+                    and (
+                        not groups
+                        or all(role_allowed(other, group) for group in groups)
+                    )
+                ]
+                candidates.setdefault(package["id"], []).append(
+                    (position, hit, shadowed, peers)
+                )
         ranked = []
-        for p in self.catalog.packages:
+        for package in self.catalog.packages:
             if (
                 constraints["license"] != "all"
-                and p["license"] != constraints["license"]
+                and package["license"] != constraints["license"]
             ):
                 continue
             category = constraints["category"]
             if category and normal(category) not in (
-                normal(p["category"]),
-                normal(p["parent_category"]),
+                normal(package["category"]),
+                normal(package["parent_category"]),
             ):
                 continue
-            if constraints["tested_only"] and not p["has_recorded_tests"]:
+            if constraints["tested_only"] and not package["has_recorded_tests"]:
                 continue
-            name = normal(p["title"])
-            exact = q == name or subject == name
-            name_match = bool(
-                len(name) > 2
-                and re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", subject)
+            name = normal(package["title"])
+            exact = subject == name
+            text = normal(package["description"])
+            if not exact and not required_roles <= package["_positive_description"]:
+                continue
+            if transfer and not exact and not transfer_role(package):
+                continue
+            catalog_groups = covered_groups(package, text, groups)
+            overlap = terms & stems(package["_text"])
+            # Capability intent and explicit sub-features are separate. Ordinary
+            # question/filler words do not become mandatory catalog claims.
+            # Without a recognized role, dropping a remaining concept can change
+            # the request (packet processing is not packet capture).
+            catalog_match = verified_attributes(text, attributes) and (
+                len(catalog_groups) == len(groups)
+                and verified_attributes(text, attributes)
+                and verifies_concepts(text, concepts)
+                if groups
+                else bool(terms) and verifies_concepts(text, concepts, require_all=True)
             )
-            text = normal(p["description"])
-            group_matches = [
-                g
-                for g in groups
-                if any(
-                    re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", text)
-                    and not re.search(
-                        r"(?:\bno|\bnot|\bwithout|\bnon)\W+(?:\w+\W+){0,2}"
-                        + re.escape(term),
-                        text,
-                    )
-                    for term in CAPABILITIES[g][1]
+            best_kb = None
+            kb_groups = []
+            ambiguous = len(words(name)) == 1 and self.word_frequency[name] >= 6
+            for position, hit, shadowed, peers in candidates.get(package["id"], []):
+                passage = kb_evidence(
+                    package,
+                    hit,
+                    ambiguous,
+                    shadowed,
+                    peers,
+                    len(self.title_licenses[name]) > 1,
                 )
-            ]
-            if "database" in words(subject) and not exact and not name_match:
-                if not any(
-                    term in text
-                    for term in ("database", "data warehouse", "data store")
-                ):
+                if not passage:
                     continue
-                if any(
-                    term in text[:150]
-                    for term in (
-                        "benchmark",
-                        "driver",
-                        "connector",
-                        "client",
-                        "text-to-sql",
-                        "library",
-                        "extension",
-                    )
-                ):
-                    continue
-            # Named capabilities are constraints: unrelated KB hits cannot populate results.
-            if (
-                "object storage" in groups
-                and any(
-                    term in text[:140]
-                    for term in (
-                        "command-line tool",
-                        "command line tool",
-                        "client",
-                        "sdk",
-                    )
+                evidence = text + " " + passage
+                matched = covered_groups(package, evidence, groups)
+                evidence_match = verified_attributes(evidence, attributes) and (
+                    len(matched) == len(groups)
+                    and verified_attributes(evidence, attributes)
+                    and verifies_concepts(evidence, concepts)
+                    if groups
+                    else bool(terms)
+                    and verifies_concepts(evidence, concepts, require_all=True)
                 )
-                and not exact
-            ):
+                if evidence_match:
+                    best_kb = (position, hit, passage)
+                    kb_groups = matched
+                    break
+            if not exact and not catalog_match and not best_kb:
                 continue
+            # A plain database request remains a role request, even when KB evidence
+            # describes another product's database dependency.
             if (
-                "cache" in groups
-                and "memory" in tokens
-                and not any(
-                    t in text for t in ("in-memory", "in memory", "memory cache")
-                )
+                "database" in terms
+                and not transfer
                 and not exact
+                and not database_role(package)
             ):
                 continue
-            if (
-                "container orchestration" in groups
-                and p["category"]
-                not in ("Containers and Orchestration", "Platform / Infrastructure")
-                and not exact
-            ):
-                continue
-            # A capability mentioned as a client/dependency is not the package's role.
-            # Categories provide a conservative role boundary for the pilot.
-            if (
-                "monitoring" in groups
-                and p["category"] not in ("Observability", "Monitoring/Observability")
-                and not exact
-            ):
-                continue
-            if (
-                "web serving" in groups
-                and any(
-                    t in text[:160]
-                    for t in (
-                        "benchmark",
-                        "memory allocator",
-                        "client library",
-                        "testing tool",
-                    )
-                )
-                and not exact
-            ):
-                continue
-            if (
-                "message streaming" in groups
-                and any(
-                    t in text[:160]
-                    for t in ("library", "client for", "connector", "benchmark")
-                )
-                and not exact
-            ):
-                continue
-            if (
-                groups
-                and residual
-                and not all(
-                    any(
-                        w == term or (len(term) > 4 and w.startswith(term))
-                        for w in p["_words"]
-                    )
-                    for term in residual
-                )
-                and not exact
-            ):
-                continue
-            if groups and len(group_matches) != len(groups) and not exact:
-                continue
-            overlap = tokens & p["_words"]
-            relevant = bool(
-                exact or group_matches or (tokens and len(overlap) == len(tokens))
-            )
-            if not relevant:
-                continue
-            kb = candidates.get(p["id"])
-            score = (
-                (100 if exact else 0)
-                + (30 if name_match else 0)
-                + 8 * len(group_matches)
-                + 3 * len(overlap)
-                + (6 / (1 + kb[0]) if kb else 0)
-            )
-            for g in group_matches:
-                score += sum(3 for term in CAPABILITIES[g][1] if term in text[:150])
-            if kb:
-                reason = (
-                    "Knowledge-base match, verified against this catalog entry. "
-                    + str(p["description"])[:210]
-                )
+            group_matches = catalog_groups if catalog_match else kb_groups
+            score = (100 if exact else 0) + 8 * len(group_matches) + 3 * len(overlap)
+            if best_kb:
+                score += 12 / (1 + best_kb[0])
                 source = "kb_and_catalog"
-                evidence = kb[1]["url"]
+                evidence_url = best_kb[1]["url"]
+                reason = (
+                    "Matched Arm knowledge-base evidence; package identity verified in this catalog. "
+                    + str(package["description"])[:210]
+                )
             else:
+                source = "catalog_description"
+                evidence_url = package["url"]
                 reason = (
                     "Matches " + ", ".join(group_matches) + ". "
                     if group_matches
                     else "Matches the recorded package description. "
-                ) + str(p["description"])[:210]
-                source = "catalog_description"
-                evidence = p["url"]
+                ) + str(package["description"])[:210]
             ranked.append(
                 (
                     score,
                     {
-                        "id": p["id"],
-                        "title": p["title"],
+                        "id": package["id"],
+                        "title": package["title"],
                         "reason": reason,
-                        "evidence_url": evidence,
+                        "evidence_url": evidence_url,
                         "match_source": source,
-                        "category": p["category"],
-                        "license": p["license"],
-                        "has_recorded_tests": p["has_recorded_tests"],
+                        "category": package["category"],
+                        "license": package["license"],
+                        "has_recorded_tests": package["has_recorded_tests"],
                     },
                 )
             )
-        ranked.sort(key=lambda x: (-x[0], x[1]["title"].lower()))
+        ranked.sort(key=lambda item: (-item[0], item[1]["title"].lower()))
         base["results"] = [item for _, item in ranked[:50]]
         base["total"] = len(base["results"])
         base["mode"] = "hybrid" if kb_ok else "catalog_fallback"
@@ -466,16 +274,19 @@ class SearchService:
             "mapped_packages": len(candidates),
             "capabilities": groups,
             "returned_limit": 50,
+            "evidence_admitted": sum(
+                p["match_source"] == "kb_and_catalog" for _, p in ranked[:50]
+            ),
         }
         if constraints["tested_only"]:
             notices.append(
                 "Recorded Linux Arm64 tests only. A recorded test is not a guarantee that every test passed; expand the package to review the evidence."
             )
-        if not ranked and residual:
+        if not ranked and (attributes or concepts):
             notices.append(
-                "No matching catalog description verifies all requested terms: "
-                + ", ".join(sorted(residual))
-                + "."
+                "The available evidence does not verify the requested attributes: "
+                + ", ".join(sorted(set(label for label, _ in attributes) | concepts))
+                + ". Try a broader capability or clarify the requirement."
             )
         if not ranked:
             notices.append(
