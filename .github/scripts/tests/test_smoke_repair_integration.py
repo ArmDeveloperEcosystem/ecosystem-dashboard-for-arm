@@ -1,11 +1,11 @@
-"""Synthetic pre-catalog recovery integration: real controllers, fake storage/APIs.
+"""Recovery integration: real controllers and catalog, fake storage/APIs.
 
 The actual Zlib workflow is never executed. Actions observations are fixtures,
 not a mocked native verdict: dispatch and both publisher verification passes run
 NativeValidation. Git/catalog acquisition and transport are the only fakes.
-The catalog is absent from this synthetic base; successful draft fixtures do not
-prove current repository PR contracts. SourceBindingTests below cover real
-catalog rejection separately.
+The source inventory and native observations remain synthetic. These fixtures
+exercise catalog-bound publication, not live authentication or package execution.
+SourceBindingTests also exercise actual local Git and stale-catalog rejection.
 """
 
 from __future__ import annotations
@@ -157,7 +157,8 @@ class IntegrationAPI(publisher_fixture.FakeGitHub):
             sha = path.removeprefix("git/commits/")
             commit = self.git.commits[sha]
             return {"sha": sha, "tree": {"sha": self.git.tree(commit["entries"])},
-                    "parents": [{"sha": parent} for parent in commit["parents"]]}
+                    "parents": [{"sha": parent} for parent in commit["parents"]],
+                    "committer": commit.get("committer")}
         if path == workflow_api:
             return {"id": WORKFLOW_ID, "path": self.workflow_path, "name": self.flow["name"], "state": "active"}
         if path in (workflow_api + "/runs", f"actions/runs/{RUN_ID}/attempts/1/jobs"):
@@ -211,7 +212,8 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
         self.lock = {"schema_version": 3, "hardened_workflow_sha256": publisher.supply.workflow_snapshot_sha256(self.snapshot),
                      "hardened_topology_sha256": "d" * 64, "updated_at": "unchanged", "actions": [],
                      "containers": [], "permission_exceptions": []}
-        self.files = {WORKFLOW: self.source, BATCH: batch_source, publisher.LOCK_PATH: json.dumps(self.lock) + "\n"}
+        self.files = {WORKFLOW: self.source, BATCH: batch_source, publisher.LOCK_PATH: json.dumps(self.lock) + "\n",
+                      publisher.CATALOG_PATH: (ROOT / publisher.CATALOG_PATH).read_text()}
         for relative, text in self.files.items():
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -448,6 +450,13 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
         stage = self.stage()
         self.assertEqual(stage["branch"], f"automation/smoke-repair/{PARENT_ID}-1-zlib")
         self.assertEqual(set(stage), publisher.STAGE_KEYS)
+        anchor = stage["source_anchor"]
+        self.assertIsNotNone(anchor)
+        self.assertEqual(self.git.commits[stage["candidate_sha"]]["parents"], [anchor["sha"]])
+        catalog = json.loads(self.git.blobs[self.git.commits[stage["candidate_sha"]]["entries"][publisher.CATALOG_PATH][1]])
+        record = next(record for record in catalog["records"] if record["slug"] == "zlib")
+        self.assertEqual(record["workflow"]["sha256"], stage["source_digest"])
+        self.assertEqual(record["registries"]["pip"]["evidence"][0]["source_revision"], anchor["sha"])
         self.assertEqual(self.api.prs, [])
         self.assertEqual(self.api.dispatches, [])
         self.assertEqual(self.git.entries, self.git.base_entries)
@@ -701,7 +710,7 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
 
 
 class SourceBindingTests(unittest.TestCase):
-    """Real source bytes/local Git, but a partial fixture proving rejection only."""
+    """Real source bytes/local Git; a partial fixture, not full fleet execution."""
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -721,6 +730,7 @@ class SourceBindingTests(unittest.TestCase):
             "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_AUTHOR_NAME": "Synthetic fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
             "GIT_COMMITTER_NAME": "Synthetic fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+            "TZ": "UTC",
         }
         self.git("init", "-q")
         self.git("remote", "add", "origin", "https://github.com/example/dashboard.git")
@@ -734,10 +744,17 @@ class SourceBindingTests(unittest.TestCase):
             "failed_steps": ["Install Zlib"], "log_excerpt": "synthetic missing prerequisite",
             "batch": 3, "initial_run_id": 200, "confirmation_run_id": 201, "confirmation_job_id": 202,
         }
-        old = 'bash .github/actions/apt-bootstrap/bootstrap.sh --packages "zlib1g-dev build-essential pkg-config"'
+        install = next(step for step in exact._yaml_mapping(self.source.encode(), "Zlib fixture")["jobs"]["test-zlib"]["steps"]
+                       if step.get("id") == "install")
+        old = next(line for line in install["run"].splitlines()
+                   if line.startswith("bash .github/actions/apt-bootstrap/bootstrap.sh --packages "))
+        arguments = shlex.split(old)
+        packages = arguments[arguments.index("--packages") + 1].split()
+        prerequisite = next(package for package in ("libssl-dev", "cmake", "ninja-build") if package not in packages)
+        arguments[arguments.index("--packages") + 1] = " ".join([*packages, prerequisite])
         self.proposal = {
             "diagnosis": "Add an approved prerequisite without modifying the tests.",
-            "edits": [{"path": WORKFLOW, "old": old, "new": old[:-1] + ' libssl-dev"'}],
+            "edits": [{"path": WORKFLOW, "old": old, "new": shlex.join(arguments)}],
             "unresolved_reason": "",
         }
         self.candidate = policy.validate_proposal(self.context, self.proposal)["candidate_source"]
@@ -766,7 +783,17 @@ class SourceBindingTests(unittest.TestCase):
             (self.root / WORKFLOW).write_text(self.source)
         self.assertEqual(self.git("status", "--porcelain"), "")
 
-    def test_admit_cli_reports_manual_rebinding_without_candidate_artifact(self):
+    def stale_catalog(self):
+        value = json.loads(self.catalog_bytes)
+        next(record for record in value["records"] if record["slug"] == "zlib")["workflow"]["sha256"] = "f" * 64
+        self.catalog_bytes = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+        (self.root / publisher.CATALOG_PATH).write_bytes(self.catalog_bytes)
+        self.git("add", "--", publisher.CATALOG_PATH)
+        self.git("-c", "commit.gpgsign=false", "commit", "-qm", "Synthetic stale catalog")
+        self.context["base_sha"] = self.git("rev-parse", "HEAD").strip()
+
+    def test_stale_catalog_cli_rejects_without_candidate_artifact(self):
+        self.stale_catalog()
         context, proposal, output = (self.artifacts / name for name in ("context.json", "proposal.json", "candidate.json"))
         context.write_text(json.dumps(self.context))
         proposal.write_text(json.dumps(self.proposal))
@@ -777,13 +804,14 @@ class SourceBindingTests(unittest.TestCase):
             result = publisher.main(["admit", "--context", str(context), "--proposal", str(proposal),
                                      "--repository-root", str(self.root), "--output", str(output)])
         self.assertEqual(result, 1)
-        self.assertEqual(stderr.getvalue(), publisher.CATALOG_REBINDING_DIAGNOSTIC + "\n")
+        self.assertEqual(stderr.getvalue(), "smoke repair publication failed closed; no successful repair is claimed.\n")
         self.assertFalse(output.exists())
         github.assert_not_called()
         reseal.assert_not_called()
         self.assertEqual(self.git("status", "--porcelain"), "")
 
-    def test_real_catalog_guard_blocks_all_publisher_entries_without_remote_effects(self):
+    def test_stale_catalog_blocks_all_publisher_entries_without_remote_effects(self):
+        self.stale_catalog()
         github, verifier = Mock(), Mock()
         original = deepcopy((self.context, self.proposal, self.record))
         real_git = publisher.publisher.Git(self.root)
@@ -812,7 +840,7 @@ class SourceBindingTests(unittest.TestCase):
                                           verify_native=verifier, github=github, **kwargs),
             ):
                 with self.subTest(operation=operation), self.assertRaisesRegex(
-                    publisher.PublishError, "manual repair required.*trusted source rebinding is not implemented"
+                    publisher.PublishError, "catalog target does not bind the reviewed base workflow"
                 ):
                     operation()
         reseal.assert_not_called()
@@ -824,6 +852,34 @@ class SourceBindingTests(unittest.TestCase):
         self.assertEqual((self.root / WORKFLOW).read_text(), self.source)
         self.assertEqual(self.git("status", "--porcelain"), "")
         self.assertNotIn("automation/smoke-repair/", self.git("for-each-ref", "--format=%(refname)"))
+
+    def test_rebound_catalog_points_to_actual_source_commit_and_preserves_history(self):
+        base = self.context["base_sha"]
+        (self.root / WORKFLOW).write_text(self.candidate)
+        self.git("add", "--", WORKFLOW)
+        self.git("-c", "commit.gpgsign=false", "commit", "-qm", "Synthetic source anchor")
+        anchor = self.git("rev-parse", "HEAD").strip()
+        timestamp = publisher._utc_timestamp(self.git("show", "-s", "--format=%cI", anchor).strip())
+        rebound = publisher.bindings.rebind_catalog(
+            self.catalog_bytes, package_slug="zlib", workflow_path=WORKFLOW,
+            original_source=self.source, candidate_source=self.candidate,
+            source_commit=anchor, verified_by="repair[bot]", verified_at=timestamp,
+        )
+        (self.root / publisher.CATALOG_PATH).write_text(rebound)
+        self.git("add", "--", publisher.CATALOG_PATH)
+        self.git("-c", "commit.gpgsign=false", "commit", "-qm", "Synthetic final binding")
+        final = self.git("rev-parse", "HEAD").strip()
+        self.assertEqual(self.git("show", "-s", "--format=%P", final).strip(), anchor)
+        self.assertEqual(self.git("show", "-s", "--format=%P", anchor).strip(), base)
+        self.assertEqual(self.git("show", f"{base}:{publisher.CATALOG_PATH}").encode(), self.catalog_bytes)
+        self.record = next(record for record in json.loads(rebound)["records"] if record["slug"] == "zlib")
+        self.assertEqual(self.validate_target(), (WORKFLOW, publisher._digest(self.candidate)))
+        for kind in ("pip", "npm"):
+            item = self.record["registries"][kind]["evidence"][0]
+            self.assertEqual(item["source_revision"], anchor)
+            self.assertEqual(item["evidence_sha256"], publisher._digest(self.git("show", f"{anchor}:{WORKFLOW}")))
+            self.assertEqual(item["verified_by"], "repair[bot]")
+        self.assertEqual(self.git("status", "--porcelain"), "")
 
 
 class RegisteredNativeLayoutTests(unittest.TestCase):

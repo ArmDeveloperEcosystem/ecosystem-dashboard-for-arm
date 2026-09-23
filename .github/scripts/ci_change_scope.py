@@ -37,6 +37,7 @@ SMOKE_SCRIPTS = frozenset({
     ".github/scripts/package_result_policy.py",
     ".github/scripts/promote_package_results.py",
     ".github/scripts/smoke_recovery.py",
+    ".github/scripts/smoke_repair_bindings.py",
     ".github/scripts/smoke_repair_evidence.py",
     ".github/scripts/smoke_repair_model.py",
     ".github/scripts/smoke_repair_native.py",
@@ -74,6 +75,7 @@ SMOKE_SUPPORT = frozenset({
     ".github/scripts/tests/test_source_only_candidate_reporting.py",
     ".github/scripts/tests/test_vidgear_summary.py",
     ".github/scripts/tests/test_smoke_repair_integration.py",
+    ".github/scripts/tests/test_smoke_repair_bindings.py",
     ".github/scripts/tests/test_smoke_repair_skill.py",
 })
 
@@ -351,18 +353,20 @@ def classify_paths(paths: Iterable[str]) -> dict[str, bool]:
             and len(parts) == 4
             else ""
         )
-        is_router = path in {ROUTING_SCRIPT, ROUTING_TEST}
+        is_shared = path in {ROUTING_SCRIPT, ROUTING_TEST,
+                             "build_steps/validate_package_identity_catalog.py",
+                             "tests/test_package_identity_catalog.py"}
         is_smoke = bool(SMOKE_WORKFLOW_RE.fullmatch(path)) or (
             path in SMOKE_SCRIPTS
             or path in SMOKE_SUPPORT
             or tested_script in SMOKE_SCRIPTS | SMOKE_SUPPORT
             or bool(SMOKE_WORKFLOW_TEST_RE.fullmatch(path))
             or is_action
-            or is_router
+            or is_shared
         )
         smoke = smoke or is_smoke
-        # Unknown changes build conservatively; the shared router affects both.
-        dashboard = dashboard or not is_smoke or is_router
+        # Unknown changes build conservatively; shared validators affect both.
+        dashboard = dashboard or not is_smoke or is_shared
     return {"smoke": smoke, "dashboard": dashboard}
 
 

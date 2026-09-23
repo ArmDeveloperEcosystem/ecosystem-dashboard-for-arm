@@ -47,11 +47,12 @@ _JOB = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,99}\Z", re.ASCII)
 _WORKFLOW = re.compile(r"\.github/workflows/test-[A-Za-z0-9][A-Za-z0-9_-]{0,99}\.yml\Z", re.ASCII)
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})\Z", re.ASCII)
+_UTC_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z", re.ASCII)
 _PENDING = {"queued", "in_progress", "pending", "requested", "waiting"}
 _STAGE_KEYS = {
     "schema_version", "repository", "repair_id", "base_sha", "branch",
     "candidate_sha", "tree_sha", "workflow_path", "package_slug",
-    "proposal_digest", "source_digest",
+    "proposal_digest", "source_digest", "source_anchor",
 }
 _CONTRACT_KEYS = {
     "called_job", "job_name", "mandatory_steps", "gate_step", "workflow_path", "source_digest",
@@ -104,9 +105,9 @@ def _same(left, right, label):
         raise ContractError(f"{label} does not match authenticated evidence")
 
 
-def _version(value, keys, label):
+def _version(value, keys, label, *, version=1):
     _mapping(value, label)
-    if set(value) != keys or type(value.get("schema_version")) is not int or value["schema_version"] != 1:
+    if set(value) != keys or type(value.get("schema_version")) is not int or value["schema_version"] != version:
         raise ContractError(f"{label} has an unsupported schema")
 
 
@@ -118,13 +119,27 @@ def _workflow_path(value):
 
 
 def validate_stage(stage):
-    """Validate the exact policy/publisher staging schema without performing I/O."""
-    _version(stage, _STAGE_KEYS, "stage")
+    """Validate the exact policy/publisher staging schema without performing I/O.
+
+    The trusted publisher reserves null anchors for the catalog-absent legacy path.
+    """
+    _version(stage, _STAGE_KEYS, "stage", version=2)
     validate_repository(stage["repository"])
     for field in ("base_sha", "candidate_sha", "tree_sha"):
         validate_sha(stage[field], label=field)
     if stage["candidate_sha"] == stage["base_sha"]:
         raise ContractError("native candidate must differ from base")
+    anchor = stage["source_anchor"]
+    if anchor is not None:
+        _mapping(anchor, "source anchor")
+        if set(anchor) != {"sha", "tree_sha", "verified_at"}:
+            raise ContractError("source anchor has an unsupported schema")
+        for field in ("sha", "tree_sha"):
+            validate_sha(anchor[field], label=f"source anchor {field}")
+        if anchor["sha"] in (stage["base_sha"], stage["candidate_sha"]):
+            raise ContractError("source anchor must differ from base and candidate")
+        _match(anchor["verified_at"], _UTC_TIME, "source anchor verified_at")
+        _when(anchor["verified_at"], "source anchor verified_at")
     slug = _match(stage["package_slug"], _SLUG, "package slug")
     repair = re.compile(r"[1-9][0-9]{0,19}-[1-9][0-9]{0,9}-" + re.escape(slug) + r"\Z", re.ASCII)
     _match(stage["repair_id"], repair, "repair ID")
@@ -410,16 +425,37 @@ class NativeValidation:
         ), "candidate commit")
         if commit.get("sha") != stage["candidate_sha"] or _mapping(commit.get("tree"), "candidate tree").get("sha") != stage["tree_sha"]:
             raise ContractError("candidate commit/tree differs from stage")
+        anchor = stage["source_anchor"]
+        parent_sha = anchor["sha"] if anchor is not None else stage["base_sha"]
         parents = commit.get("parents")
         if (not isinstance(parents, list) or len(parents) != 1
-                or _mapping(parents[0], "candidate parent").get("sha") != stage["base_sha"]):
-            raise ContractError("candidate is not a single commit on the trusted base")
+                or _mapping(parents[0], "candidate parent").get("sha") != parent_sha):
+            raise ContractError("candidate does not have the expected single parent")
+        anchor_source = None
+        if anchor is not None:
+            anchor_commit = _mapping(self._api(
+                f"repos/{stage['repository']}/git/commits/{anchor['sha']}"
+            ), "source anchor commit")
+            if (anchor_commit.get("sha") != anchor["sha"]
+                    or _mapping(anchor_commit.get("tree"), "source anchor tree").get("sha") != anchor["tree_sha"]):
+                raise ContractError("source anchor commit/tree differs from stage")
+            parents = anchor_commit.get("parents")
+            if (not isinstance(parents, list) or len(parents) != 1
+                    or _mapping(parents[0], "source anchor parent").get("sha") != stage["base_sha"]):
+                raise ContractError("source anchor is not a single commit on the trusted base")
+            committer = _mapping(anchor_commit.get("committer"), "source anchor committer")
+            if _when(committer.get("date"), "source anchor commit date") != _when(anchor["verified_at"], "source anchor verified_at"):
+                raise ContractError("source anchor commit date differs from stage")
+            self._current(stage)
+            anchor_source = self._source(stage, anchor["sha"])
         expected = None
         for sha in (stage["base_sha"], stage["candidate_sha"]):
             self._current(stage)
             raw = self._source(stage, sha)
             if sha == stage["candidate_sha"] and hashlib.sha256(raw).hexdigest() != stage["source_digest"]:
                 raise ContractError("candidate workflow source digest differs from stage")
+            if sha == stage["candidate_sha"] and anchor_source is not None and raw != anchor_source:
+                raise ContractError("source anchor workflow differs from candidate")
             derived = _derive_expectations(
                 raw, repository=stage["repository"],
                 base_sha=stage["base_sha"], workflow_path=stage["workflow_path"],

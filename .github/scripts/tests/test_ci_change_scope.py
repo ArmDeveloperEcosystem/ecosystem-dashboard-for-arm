@@ -651,6 +651,11 @@ class DeploymentReceiptCLITests(unittest.TestCase):
 
 
 class ClassificationTests(unittest.TestCase):
+    def test_shared_catalog_validator_runs_both_routes(self) -> None:
+        for path in ("build_steps/validate_package_identity_catalog.py", "tests/test_package_identity_catalog.py"):
+            with self.subTest(path=path):
+                self.assertEqual(scope.classify_paths([path]), {"smoke": True, "dashboard": True})
+
     def test_smoke_execution_closure_and_its_tests_do_not_deploy(self) -> None:
         paths = [
             ".github/workflows/test-nginx.yml",

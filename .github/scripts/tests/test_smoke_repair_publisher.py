@@ -140,6 +140,8 @@ class FakeGit:
             output = " ".join(self.commits[args[-1]]["parents"])
         elif args[:3] == ("show", "-s", "--format=%B"):
             output = self.commits[args[-1]]["message"]
+        elif args[:3] == ("show", "-s", "--format=%cI"):
+            output = self.commits[args[-1]]["committer"]["date"]
         else:
             raise AssertionError(f"unexpected Git operation: {args}")
         return subprocess.CompletedProcess(args, status, output, "")
@@ -189,8 +191,10 @@ class FakeGitHub:
             return {"sha": tree}
         if method == "POST" and endpoint.endswith("/git/commits"):
             sha = hashlib.sha1(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-            self.git.commits[sha] = {**copy.deepcopy(payload), "entries": self.trees[payload["tree"]]}
+            self.git.commits[sha] = {**copy.deepcopy(payload), "entries": self.trees[payload["tree"]],
+                                     "committer": {"date": "2026-09-23T09:00:00Z"}}
             return {"sha": sha, "tree": {"sha": payload["tree"]}, "message": payload["message"],
+                    "committer": copy.deepcopy(self.git.commits[sha]["committer"]),
                     "parents": [{"sha": parent} for parent in payload["parents"]]}
         if method == "POST" and endpoint.endswith("/git/refs"):
             branch = payload["ref"].removeprefix("refs/heads/")
@@ -219,7 +223,7 @@ class FakeGitHub:
 
 
 class PublisherTests(unittest.TestCase):
-    """Synthetic pre-catalog publisher fixtures, not full repository PR proof."""
+    """Synthetic publisher storage/API fixtures; real catalog cases are separate."""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -321,14 +325,25 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual((self.root / WORKFLOW).read_text(), SOURCE)
 
     def catalog(self):
-        return {"schema_version": "1.1", "corpus": {"entry_count": 1}, "records": [
-            {"slug": "example", "workflow": {
-                "path": WORKFLOW, "presence": "present", "sha256": module._digest(SOURCE),
-            }},
-        ]}
+        content_path = "content/linux/opensource_packages/example.md"
+        content_digest = module._digest("synthetic package page")
+        source_digest = module._digest(SOURCE)
+        evidence = {"source_kind": "generated_workflow", "source_locator": WORKFLOW,
+                    "source_revision": BASE, "evidence_sha256": source_digest,
+                    "verified_at": "2026-09-01T00:00:00Z", "verified_by": "fixture-reviewer",
+                    "rationale": "Exact repository bytes at the reviewed base commit are provided as advisory evidence; they do not establish a registry identity or exhaustive registry coverage."}
+        corpus = hashlib.sha256("".join(f"{path}\0sha256:{sha}\n" for path, sha in sorted(
+            ((content_path, content_digest), (WORKFLOW, source_digest)))).encode()).hexdigest()
+        return {"schema_version": "1.1", "corpus": {"entry_count": 1,
+                "content_root": "content/linux/opensource_packages", "corpus_sha256": corpus},
+                "records": [{"slug": "example", "content_path": content_path,
+                             "content_sha256": content_digest,
+                             "workflow": {"path": WORKFLOW, "presence": "present", "sha256": source_digest},
+                             "registries": {name: {"status": "unknown", "identities": [], "exhaustive": False,
+                                                    "evidence": [copy.deepcopy(evidence)]} for name in ("pip", "npm")}}]}
 
     def bind_catalog(self, value):
-        raw = value if isinstance(value, str) else json.dumps(value)
+        raw = value if isinstance(value, str) else json.dumps(value, indent=2, sort_keys=True) + "\n"
         (self.root / module.CATALOG_PATH).write_text(raw)
         self.git.base_entries[module.CATALOG_PATH] = ("100644", module._blob_id(raw))
         self.git.entries = copy.deepcopy(self.git.base_entries)
@@ -346,19 +361,27 @@ class PublisherTests(unittest.TestCase):
         self.assertFalse(any(call[0] in {"hash-object", "write-tree", "update-index", "fetch", "ls-remote"}
                              for call in self.git.calls))
 
-    def test_catalog_bound_candidate_requires_manual_repair_before_reseal(self):
+    def test_catalog_bound_admission_is_token_free_and_preserves_reviewed_bytes(self):
         self.bind_catalog(self.catalog())
-        self.reject_catalog("manual repair required.*trusted source rebinding is not implemented")
+        before = (self.root / module.CATALOG_PATH).read_bytes()
+        with patch.dict(os.environ, {}, clear=True):
+            artifact = module.build_candidate(self.context, self.proposal, repository_root=self.root,
+                                               validate_apply=self.policy)
+        self.assertEqual(artifact["catalog_base_digest"], hashlib.sha256(before).hexdigest())
+        self.assertNotIn("candidate_catalog", artifact)
+        self.assertEqual((self.root / module.CATALOG_PATH).read_bytes(), before)
+        self.assertEqual(self.github.calls, [])
         self.assertEqual(self.git.entries, self.git.base_entries)
 
     def test_catalog_rejection_precedes_remote_preparation_and_native_verification(self):
         self.bind_catalog(self.catalog())
+        self.context["package_slug"] = "other"
         with patch.dict(os.environ, {}, clear=True), patch.object(
             module, "reseal_workflow_lock", side_effect=AssertionError("must stop before reseal")
         ):
-            with self.assertRaisesRegex(module.PublishError, "manual repair required"):
+            with self.assertRaisesRegex(module.PublishError, "canonical catalog workflow path"):
                 self.stage()
-            with self.assertRaisesRegex(module.PublishError, "manual repair required"):
+            with self.assertRaisesRegex(module.PublishError, "canonical catalog workflow path"):
                 module.open_pr(self.context, self.proposal, {}, {}, repository_root=self.root,
                                validate_apply=self.policy, policy_version="1",
                                verify_native=self.verifier, github=self.github)
@@ -414,7 +437,7 @@ class PublisherTests(unittest.TestCase):
         (self.root / module.CATALOG_PATH).unlink()
         self.reject_catalog("clean worktree")
         with self.assertRaisesRegex(module.PublishError, "missing"):
-            module._require_unchanged_catalog_binding(self.root, self.git, self.context, CANDIDATE)
+            module._catalog_base(self.root, self.git, self.context, CANDIDATE)
 
     def test_catalog_symlink_and_symlink_parent_are_rejected(self):
         self.bind_catalog(self.catalog())
@@ -423,7 +446,7 @@ class PublisherTests(unittest.TestCase):
         target.symlink_to(self.root.parent / "catalog.json")
         self.reject_catalog("symlinks")
         target.unlink()
-        target.write_text(json.dumps(self.catalog()))
+        target.write_text(json.dumps(self.catalog(), indent=2, sort_keys=True) + "\n")
         parent = self.root / ".github"
         parent.rename(self.root.parent / "github")
         parent.symlink_to(self.root.parent / "github", target_is_directory=True)
@@ -435,7 +458,65 @@ class PublisherTests(unittest.TestCase):
             with self.subTest(entry=entry):
                 self.git.base_entries[module.CATALOG_PATH] = entry
                 with self.assertRaises(module.PublishError):
-                    module._require_unchanged_catalog_binding(self.root, self.git, self.context, CANDIDATE)
+                    module._catalog_base(self.root, self.git, self.context, CANDIDATE)
+
+    def test_catalog_repair_has_two_exact_commits_and_only_final_native_evidence(self):
+        original = self.catalog()
+        self.bind_catalog(original)
+        staged = self.stage()
+        self.assertEqual(staged["schema_version"], 2)
+        anchor = staged["source_anchor"]
+        self.assertEqual(self.git.commits[anchor["sha"]]["parents"], [BASE])
+        final = self.git.commits[staged["candidate_sha"]]
+        self.assertEqual(final["parents"], [anchor["sha"]])
+        self.assertEqual(self.git.commits[anchor["sha"]]["entries"][module.CATALOG_PATH], self.git.base_entries[module.CATALOG_PATH])
+        catalog = json.loads(self.git.blobs[final["entries"][module.CATALOG_PATH][1]])
+        self.assertEqual(catalog["records"][0]["workflow"]["sha256"], module._digest(CANDIDATE))
+        for registry in catalog["records"][0]["registries"].values():
+            evidence = registry["evidence"][0]
+            self.assertEqual(evidence["source_revision"], anchor["sha"])
+            self.assertEqual(evidence["verified_by"], "repair[bot]")
+            self.assertEqual(evidence["verified_at"], anchor["verified_at"])
+            self.assertEqual(registry["status"], "unknown")
+        self.assertEqual(self.git.branches[staged["branch"]], staged["candidate_sha"])
+        self.assertNotEqual(anchor["sha"], staged["candidate_sha"])
+        wrong = self.native(staged)
+        wrong["run"]["head_sha"] = anchor["sha"]
+        with self.assertRaises(module.PublishError):
+            self.open(staged, wrong)
+        self.assertEqual(self.github.prs, [])
+        self.assertEqual(self.open(staged)["status"], "created")
+        self.assertEqual(json.loads((self.root / module.CATALOG_PATH).read_text()), original)
+
+    def test_catalog_or_source_anchor_tampering_prevents_draft(self):
+        self.bind_catalog(self.catalog())
+        staged = self.stage()
+        final = self.git.commits[staged["candidate_sha"]]
+        anchor = self.git.commits[staged["source_anchor"]["sha"]]
+        for target, key, bad in ((anchor, "parents", ["f" * 40]), (anchor, "message", "unowned"),
+                                 (anchor, "committer", {"date": "2026-09-23T09:00:01Z"}),
+                                 (final["entries"], module.CATALOG_PATH, ("100644", "f" * 40)),
+                                 (anchor["entries"], WORKFLOW, self.git.base_entries[WORKFLOW])):
+            with self.subTest(key=key):
+                original = copy.deepcopy(target[key])
+                target[key] = bad
+                try:
+                    with self.assertRaises(module.PublishError):
+                        self.open(staged)
+                    self.assertEqual(self.github.prs, [])
+                finally:
+                    target[key] = original
+
+    def test_catalog_repair_cannot_omit_or_substitute_anchor(self):
+        self.bind_catalog(self.catalog())
+        staged = self.stage()
+        for anchor in (None, {}, {**staged["source_anchor"], "sha": BASE},
+                       {**staged["source_anchor"], "verified_at": "invalid"}):
+            with self.subTest(anchor=anchor):
+                forged = {**staged, "source_anchor": anchor}
+                with self.assertRaises(module.PublishError):
+                    self.open(forged)
+        self.assertEqual(self.github.prs, [])
 
     def test_stage_has_frozen_schema_create_only_ref_and_no_pr(self):
         staged = self.stage()

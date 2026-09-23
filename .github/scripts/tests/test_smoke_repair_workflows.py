@@ -150,6 +150,24 @@ class RepairWorkflowTests(unittest.TestCase):
                         self.assertEqual(step["with"]["if-no-files-found"], "error")
                         self.assertIn("github.run_attempt", step["with"]["name"])
 
+    def test_catalog_validation_uses_exact_base_and_pinned_hugo_before_write_token(self):
+        steps = self.package["jobs"]["stage"]["steps"]
+        validation = next(step for step in steps if step.get("name") == "Validate exact reviewed catalog before delivery credentials")
+        mint = next(step for step in steps if step.get("id") == "repair_token")
+        self.assertLess(steps.index(validation), steps.index(mint))
+        self.assertNotIn("if", validation)
+        self.assertNotIn("continue-on-error", validation)
+        self.assertNotIn("secrets.", str(validation))
+        self.assertEqual(validation["env"], {
+            "REVIEWED_BASE_SHA": "${{ github.sha }}", "HUGO_VERSION": "0.130.0",
+            "HUGO_ARM64_ARCHIVE_SHA256": "025785b56d6217d2528ad8782680332851acae0d78cc9f86a27f8e03ec1afa3c",
+        })
+        for command in ("set -euo pipefail", "sha256sum --check --strict",
+                        'test "$(git rev-parse HEAD)" = "$REVIEWED_BASE_SHA"',
+                        "python3 -I -B build_steps/validate_package_identity_catalog.py",
+                        '--revision "$REVIEWED_BASE_SHA" --hugo-binary "$install_dir/hugo"'):
+            self.assertIn(command, validation["run"])
+
     def test_owner_report_waits_for_repair_and_preserves_failed_outcome(self):
         notify = self.parent["jobs"]["notify"]
         self.assertIn("repair", notify["needs"])

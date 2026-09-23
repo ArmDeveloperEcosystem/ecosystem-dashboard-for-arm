@@ -27,6 +27,7 @@ from orchestration_contract import ContractError, MainAdvanced
 
 REPOSITORY = "example/eco-tom"
 BASE, CANDIDATE, TREE = "a" * 40, "b" * 40, "c" * 40
+ANCHOR, ANCHOR_TREE = "e" * 40, "f" * 40
 RUN_ID, JOB_ID, WORKFLOW_ID = 1079001, 1079002, 1079003
 PATH = ".github/workflows/test-sample.yml"
 
@@ -82,23 +83,28 @@ class Clock:
 class GitHubFixture:
     """Serves only hardcoded repository-relative routes; never invokes gh."""
 
-    def __init__(self, flow=None):
+    def __init__(self, flow=None, *, anchored=False):
         flow = source_workflow() if flow is None else flow
         self.base_source = encode_source(flow)
         candidate_flow = deepcopy(flow)
         next(iter(candidate_flow["jobs"].values()))["steps"][0]["run"] += "export CMAKE_BUILD_PARALLEL_LEVEL=2\n"
         self.candidate_source = encode_source(candidate_flow)
-        self.stage = {"schema_version": 1, "repository": REPOSITORY, "repair_id": "1079-1-sample",
+        self.stage = {"schema_version": 2, "repository": REPOSITORY, "repair_id": "1079-1-sample",
                       "base_sha": BASE, "branch": "automation/smoke-repair/1079-1-sample",
                       "candidate_sha": CANDIDATE, "tree_sha": TREE, "workflow_path": PATH,
                       "package_slug": "sample", "proposal_digest": "d" * 64,
-                      "source_digest": digest(self.candidate_source)}
+                      "source_digest": digest(self.candidate_source), "source_anchor": None}
+        if anchored:
+            self.stage["source_anchor"] = {"sha": ANCHOR, "tree_sha": ANCHOR_TREE, "verified_at": when(0)}
         self.contract = native.derive_native_contract(
             self.base_source, repository=REPOSITORY, base_sha=BASE, workflow_path=PATH,
             package_slug="sample", source_digest=self.stage["source_digest"],
         )
         self.workflow = {"id": WORKFLOW_ID, "path": PATH, "name": flow["name"], "state": "active"}
-        self.commit = {"sha": CANDIDATE, "tree": {"sha": TREE}, "parents": [{"sha": BASE}]}
+        self.commit = {"sha": CANDIDATE, "tree": {"sha": TREE}, "parents": [{"sha": ANCHOR if anchored else BASE}]}
+        self.anchor_commit = {"sha": ANCHOR, "tree": {"sha": ANCHOR_TREE},
+                              "parents": [{"sha": BASE}], "committer": {"date": when(0)}}
+        self.anchor_source = self.candidate_source
         self.main_sha, self.branch_sha = BASE, CANDIDATE
         self.repository = {"full_name": REPOSITORY, "private": False}
         self.ref_overrides = {}
@@ -175,11 +181,13 @@ class GitHubFixture:
             response.update(deepcopy(self.ref_overrides.get(branch, {})))
         elif path == f"git/commits/{CANDIDATE}":
             response = self.commit
+        elif path == f"git/commits/{ANCHOR}":
+            response = self.anchor_commit
         elif path == f"contents/{PATH}":
             sha = query["ref"][0]
-            if sha not in (BASE, CANDIDATE):
+            if sha not in (BASE, CANDIDATE, ANCHOR):
                 raise AssertionError(sha)
-            raw = self.base_source if sha == BASE else self.candidate_source
+            raw = {BASE: self.base_source, CANDIDATE: self.candidate_source, ANCHOR: self.anchor_source}[sha]
             response = {"type": "file", "path": PATH, "encoding": "base64", "size": len(raw),
                         "content": base64.b64encode(raw).decode(),
                         "sha": hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()}
@@ -251,6 +259,9 @@ class NativeValidationTests(unittest.TestCase):
 
     def test_valid_dispatch_and_read_only_publisher_verification(self):
         receipt = self.dispatch()
+        self.assertEqual(receipt["schema_version"], 1)
+        self.assertEqual(receipt["stage"]["schema_version"], 2)
+        self.assertIsNone(receipt["stage"]["source_anchor"])
         self.assertEqual(receipt["status"], "passed")
         self.assertEqual(receipt["stage"], self.api.stage)
         self.assertEqual(receipt["run"]["id"], RUN_ID)
@@ -270,6 +281,64 @@ class NativeValidationTests(unittest.TestCase):
         self.assertIn(f"repos/{REPOSITORY}/actions/jobs/{JOB_ID}", reads)
         self.assertTrue(any(f"/attempts/1/jobs?" in endpoint for endpoint in reads))
         self.assertTrue(any(f"/contents/{PATH}?ref={CANDIDATE}" in endpoint for endpoint in reads))
+
+    def test_source_anchor_dispatches_only_final_candidate_and_is_reverified(self):
+        for date in (when(0), "2026-01-01T00:00:00+00:00", "2025-12-31T18:00:00-06:00",
+                     "2026-01-01T01:00:00+01:00", "2026-01-01T00:00:00.000000Z"):
+            with self.subTest(date=date):
+                api = GitHubFixture(anchored=True)
+                api.anchor_commit["committer"]["date"] = date
+                api.contract["schema_version"] = 1
+                receipt = self.dispatch(api)
+                self.assertEqual(receipt["schema_version"], 1)
+                self.assertEqual(receipt["stage"], api.stage)
+                self.assertEqual(receipt["run"]["head_sha"], CANDIDATE)
+                self.assertEqual(receipt["job"]["head_sha"], CANDIDATE)
+                before = len(api.calls)
+                self.assertEqual(self.validator(api).verify(api.stage, receipt, api.contract), receipt)
+                self.assertEqual(len(api.posts), 1)
+                self.assertEqual(api.posts[0][1]["payload"], {"ref": api.stage["branch"]})
+                for calls in (api.calls[:before], api.calls[before:]):
+                    endpoints = [endpoint for endpoint, _ in calls]
+                    self.assertIn(f"repos/{REPOSITORY}/git/commits/{ANCHOR}", endpoints)
+                    for sha in (BASE, ANCHOR, CANDIDATE):
+                        self.assertIn(f"repos/{REPOSITORY}/contents/{PATH}?ref={sha}", endpoints)
+                    for endpoint in endpoints:
+                        if "/runs?" in endpoint:
+                            self.assertEqual(parse_qs(urlsplit(endpoint).query)["head_sha"], [CANDIDATE])
+
+    def test_source_only_anchor_run_cannot_validate_final_candidate(self):
+        for field in ("head_sha", "head_commit", "job", "all"):
+            with self.subTest(field=field):
+                api = GitHubFixture(anchored=True)
+                if field in ("head_sha", "all"):
+                    api.run["head_sha"] = ANCHOR
+                if field in ("head_commit", "all"):
+                    api.run["head_commit"]["id"] = ANCHOR
+                if field in ("job", "all"):
+                    api.job["head_sha"] = ANCHOR
+                self.assert_blocked(api)
+                self.assertEqual(len(api.posts), 1)
+
+    def test_source_only_anchor_receipt_cannot_validate_final_candidate(self):
+        for field in ("stage", "run", "job", "all"):
+            with self.subTest(field=field):
+                api = GitHubFixture(anchored=True)
+                receipt = self.dispatch(api)
+                if field in ("stage", "all"):
+                    receipt["stage"].update(candidate_sha=ANCHOR, tree_sha=ANCHOR_TREE, source_anchor=None)
+                if field in ("run", "all"):
+                    receipt["run"]["head_sha"] = ANCHOR
+                if field in ("job", "all"):
+                    receipt["job"]["head_sha"] = ANCHOR
+                with self.assertRaises(ContractError):
+                    self.validator(api).verify(api.stage, receipt, api.contract)
+                self.assertEqual(len(api.posts), 1)
+
+    def test_source_only_anchor_branch_is_never_dispatched(self):
+        api = GitHubFixture(anchored=True)
+        api.branch_sha = ANCHOR
+        self.assert_blocked(api, before_post=True)
 
     def test_receipt_has_no_shared_mutable_references(self):
         receipt = self.dispatch()
@@ -738,7 +807,7 @@ class NativeValidationTests(unittest.TestCase):
 
     def test_stage_schema_ref_and_digest_validation(self):
         mutations = {
-            "schema_version": (True, 1.0, 2), "repository": ("https://evil.invalid", "../repo", "org/repo?x", None),
+            "schema_version": (True, 1, 1.0, 2.0, 3, None), "repository": ("https://evil.invalid", "../repo", "org/repo?x", None),
             "base_sha": (True, "a" * 39, "A" * 40), "candidate_sha": (BASE, "b" * 39, None),
             "tree_sha": ("c" * 39, None), "repair_id": ("0-1-sample", "1079-0-sample", "01079-1-sample", "1079-1-other"),
             "branch": ("main", "refs/heads/automation/smoke-repair/1079-1-sample", "automation/smoke-repair/1079-2-sample"),
@@ -762,6 +831,113 @@ class NativeValidationTests(unittest.TestCase):
         for stage in (None, [], dict(self.api.stage, unexpected=True)):
             with self.assertRaises(ContractError):
                 native.validate_stage(stage)
+
+    def test_source_anchor_schema_is_exact_and_validated_before_io(self):
+        anchor = GitHubFixture(anchored=True).stage["source_anchor"]
+        invalid = [False, True, "anchor", 1, [], {}, dict(anchor, unexpected=True)]
+        invalid += [{key: value for key, value in anchor.items() if key != field} for field in anchor]
+        mutations = {
+            "sha": (BASE, CANDIDATE, None, True, "E" * 40, "e" * 39, "e" * 41, "g" * 40),
+            "tree_sha": (None, True, "F" * 40, "f" * 39, "f" * 41, "g" * 40),
+            "verified_at": (None, True, "", "2026-01-01", "2026-01-01T00:00:00",
+                            "2026-01-01T00:00:00+00:00", "2025-12-31T18:00:00-06:00",
+                            "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00z",
+                            "2026-1-01T00:00:00Z", "2026-01-01T00:00:00Z\n",
+                            "2026-02-29T00:00:00Z", "2026-04-31T00:00:00Z",
+                            "0000-01-01T00:00:00Z", "2026-13-01T00:00:00Z",
+                            "2026-01-01T24:00:00Z", "2026-01-01T00:00:60Z"),
+        }
+        invalid += [dict(anchor, **{field: value}) for field, values in mutations.items() for value in values]
+        for value in invalid:
+            with self.subTest(anchor=value):
+                api = GitHubFixture(anchored=True)
+                api.stage["source_anchor"] = value
+                self.assert_blocked(api, before_post=True)
+                self.assertEqual(api.calls, [])
+        for date in ("2024-02-29T23:59:59Z", "0001-01-01T00:00:00Z", "9999-12-31T23:59:59Z"):
+            with self.subTest(date=date):
+                stage = deepcopy(GitHubFixture(anchored=True).stage)
+                stage["source_anchor"]["verified_at"] = date
+                self.assertEqual(native.validate_stage(stage), stage)
+
+    def test_stage_v1_without_source_anchor_is_not_accepted(self):
+        self.api.stage["schema_version"] = 1
+        del self.api.stage["source_anchor"]
+        self.assert_blocked(self.api, before_post=True)
+        self.assertEqual(self.api.calls, [])
+
+    def test_source_anchor_candidate_requires_exactly_one_anchor_parent(self):
+        for parents in (None, {}, [], [None], [{}], [{"sha": BASE}], [{"sha": CANDIDATE}],
+                        [{"sha": ANCHOR}, {"sha": BASE}], [{"sha": ANCHOR}, {"sha": ANCHOR}]):
+            with self.subTest(parents=parents):
+                api = GitHubFixture(anchored=True)
+                api.commit["parents"] = parents
+                self.assert_blocked(api, before_post=True)
+
+    def test_source_anchor_cannot_be_omitted_from_two_commit_stage(self):
+        api = GitHubFixture(anchored=True)
+        api.stage["source_anchor"] = None
+        self.assert_blocked(api, before_post=True)
+
+    def test_source_anchor_commit_tree_parent_and_date_are_authenticated(self):
+        mutations = {
+            "sha": (BASE, CANDIDATE, None, "E" * 40),
+            "tree": (None, {}, {"sha": TREE}, {"sha": "F" * 40}),
+            "parents": (None, {}, [], [None], [{}], [{"sha": ANCHOR}], [{"sha": CANDIDATE}],
+                        [{"sha": BASE}, {"sha": ANCHOR}], [{"sha": BASE}, {"sha": BASE}]),
+            "committer": (None, {}, {"date": None}, {"date": when(1)}, {"date": "2026-02-29T00:00:00Z"},
+                          {"date": "2026-01-01T00:00:00"}, {"date": "2026-01-01T00:00:00.000001Z"},
+                          {"date": "2026-01-01T00:00:00-06:00"}),
+        }
+        for mode in ("dispatch", "verify"):
+            for field, values in mutations.items():
+                for value in values:
+                    with self.subTest(mode=mode, field=field, value=value):
+                        api = GitHubFixture(anchored=True)
+                        receipt = self.dispatch(api) if mode == "verify" else None
+                        api.anchor_commit[field] = value
+                        if mode == "dispatch":
+                            self.assert_blocked(api, before_post=True)
+                        else:
+                            with self.assertRaises(ContractError):
+                                self.validator(api).verify(api.stage, receipt, api.contract)
+                            self.assertEqual(len(api.posts), 1)
+
+    def test_source_anchor_workflow_bytes_must_equal_candidate_and_digest(self):
+        for mode in ("dispatch", "verify"):
+            for defect in ("base_source", "anchor_only", "candidate_only", "both"):
+                with self.subTest(mode=mode, defect=defect):
+                    api = GitHubFixture(anchored=True)
+                    receipt = self.dispatch(api) if mode == "verify" else None
+                    if defect == "base_source":
+                        api.anchor_source = api.base_source
+                    if defect in ("anchor_only", "both"):
+                        api.anchor_source += b"\n# different bytes\n"
+                    if defect in ("candidate_only", "both"):
+                        api.candidate_source += b"\n# different bytes\n"
+                    if defect == "candidate_only":
+                        api.stage["source_digest"] = digest(api.candidate_source)
+                        api.contract["source_digest"] = api.stage["source_digest"]
+                        if receipt is not None:
+                            receipt["stage"] = deepcopy(api.stage)
+                            receipt["contract_digest"] = native._digest(api.contract)
+                    if mode == "dispatch":
+                        self.assert_blocked(api, before_post=True)
+                    else:
+                        with self.assertRaises(ContractError):
+                            self.validator(api).verify(api.stage, receipt, api.contract)
+                        self.assertEqual(len(api.posts), 1)
+
+    def test_source_anchor_receipt_metadata_cannot_be_changed(self):
+        api = GitHubFixture(anchored=True)
+        receipt = self.dispatch(api)
+        for field, value in (("sha", "d" * 40), ("tree_sha", TREE), ("verified_at", when(1)), ("extra", True)):
+            with self.subTest(field=field):
+                changed = deepcopy(receipt)
+                changed["stage"]["source_anchor"][field] = value
+                with self.assertRaises(ContractError):
+                    self.validator(api).verify(api.stage, changed, api.contract)
+        self.assertEqual(len(api.posts), 1)
 
     def test_candidate_commit_tree_and_parent_must_match_stage(self):
         for field, value in (("sha", BASE), ("tree", {"sha": BASE}), ("tree", None), ("parents", []),
@@ -796,7 +972,8 @@ class NativeValidationTests(unittest.TestCase):
         self.api.contract["policy_version"] = "other-policy"
         with self.assertRaises(ContractError):
             self.validator().verify(self.api.stage, receipt, self.api.contract)
-        for extra in ({"runner_labels": ["self-hosted"]}, {"schema_version": True}, {"permissions": {"contents": "write"}}):
+        for extra in ({"runner_labels": ["self-hosted"]}, {"schema_version": True}, {"schema_version": 2},
+                      {"permissions": {"contents": "write"}}):
             api = GitHubFixture()
             api.contract.update(extra)
             self.assert_blocked(api, before_post=True)
@@ -813,10 +990,10 @@ class NativeValidationTests(unittest.TestCase):
         overrides = ({"encoding": "none"}, {"content": "not base64!"}, {"content": "AAAA"}, {"content": None},
                      {"type": "symlink"}, {"path": ".github/workflows/test-other.yml"}, {"size": True},
                      {"size": native.MAX_WORKFLOW_BYTES + 1}, {"size": 1}, {"sha": "e" * 40})
-        for sha in (BASE, CANDIDATE):
+        for sha in (BASE, CANDIDATE, ANCHOR):
             for override in overrides:
                 with self.subTest(sha=sha[0], override=override):
-                    api = GitHubFixture()
+                    api = GitHubFixture(anchored=sha == ANCHOR)
                     api.content_overrides[sha] = override
                     self.assert_blocked(api, before_post=True)
         self.api.candidate_source += b"\n# not bound to stage\n"
@@ -833,15 +1010,18 @@ class NativeValidationTests(unittest.TestCase):
                      lambda flow: job(flow)["steps"][-2].update(run="exit 0\n"),
                      lambda flow: job(flow)["steps"][-1].update(run="exit 0\n"),
                      lambda flow: flow.update(env={"UNTRUSTED": "changed"})]
-        for mutation in mutations:
-            with self.subTest(mutation=mutation):
-                api = GitHubFixture()
-                api.source_changed(mutation)
-                self.assert_blocked(api, before_post=True)
+        for anchored in (False, True):
+            for mutation in mutations:
+                with self.subTest(anchored=anchored, mutation=mutation):
+                    api = GitHubFixture(anchored=anchored)
+                    api.source_changed(mutation)
+                    api.anchor_source = api.candidate_source
+                    self.assert_blocked(api, before_post=True)
 
     def test_verification_rejects_any_changed_receipt_observation(self):
         receipt = self.dispatch()
         mutations = [lambda value: value.update(status="success"), lambda value: value.update(schema_version=True),
+                     lambda value: value.update(schema_version=2),
                      lambda value: value.update(contract_digest="e" * 64),
                      lambda value: value.update(tests_passed=6),
                      lambda value: value["run"].update(id=True), lambda value: value["run"].update(id=RUN_ID + 1),

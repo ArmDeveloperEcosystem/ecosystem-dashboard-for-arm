@@ -32,18 +32,22 @@ model, stage a candidate, or open a repair draft.
 This is not a universal fixer. It never automatically approves, merges, or
 deploys, and cannot turn an original failure into a passing result.
 
-**Source rebinding is also blocked, independently of model authentication.**
-The publisher's two-file contract permits only the package workflow and its
-mechanical action-lock reseal. A changed workflow also invalidates the package
-identity catalog and fixed workflow-snapshot assertions in PR CI. Trusted,
-provenance-preserving updates of those bindings are not implemented. Admission
-therefore rejects a catalog-bound repair before lock generation, publisher
-credentials, or remote writes. All 960 currently registered package workflows
-are catalog-bound; this PR cannot yet deliver their automatic repair drafts,
-even after model authentication is connected. Existing positive integration
-fixtures describe the legacy pre-catalog contract, not current production
-repair capability. Negative integration tests use the real Zlib workflow and
-catalog validator to verify this stop without weakening either contract.
+**Catalog-bound source repair uses two immutable commits.** Trusted code first
+records only the admitted workflow on the reviewed base. A final child commit
+contains the mechanical action-lock reseal and catalog binding to that actual
+source commit. Only the selected workflow, action lock, and catalog may differ
+from the base. The catalog compiler preserves package/registry identities and
+decisions; it refreshes recognized advisory generated-workflow evidence with
+the actual source commit, App attribution and commit time, plus the corpus
+digest. Prior evidence remains in Git history. Unsupported evidence remains
+manual; a digest update never impersonates an earlier reviewer.
+
+Stage schema 2 binds the source anchor and final candidate separately. Publisher
+and native verifier authenticate the anchor's parent, tree, time, and source;
+only the final candidate can supply native success. No test expectations are
+rewritten in repair candidates. PR CI checks committed-source snapshots and the
+authenticated PR-base transition instead of maintenance-only current hashes.
+Offline tests are still not proof of live authentication or a deployed repair.
 
 ## Layout-Admission Coverage
 
@@ -53,7 +57,7 @@ derivation**, and **407 had unsupported layouts**. This is a coverage snapshot
 of layout admission only, **not validated repair counts**, successful native
 runs, or evidence that 553 packages or their failure causes can be fixed.
 It is not a fresh scan of the September 23 main-branch update and does not
-override the source-binding stop described above.
+establish live repair coverage or override source/evidence admission checks.
 
 The reported unsupported-layout breakdown is:
 
@@ -136,14 +140,20 @@ Authenticated persistent failure -> data-only model -> policy admission
    supported workflow layout, narrow repair classes, frozen test/gate behavior,
    and shell syntax. Syntax checking is not execution or proof of repair. This
    check runs before a delivery token is minted and is repeated later. The
-   catalog-binding check currently requires manual work for a changed,
-   catalog-bound workflow; the later stages below are not reachable for it.
+   catalog-binding plan also requires exact base digests, valid corpus inventory,
+   and supported advisory evidence before write credentials are minted.
+   The stage job also validates the complete immutable base catalog with the
+   existing validator and checksum-pinned Hugo before minting its App token.
 4. **Stage an immutable candidate.** The dedicated repair App creates one new
    `automation/smoke-repair/<run-id>-<attempt>-<package-slug>` branch at a bound
-   candidate SHA. Existing incident branches or PR history are not overwritten.
-   The allowed diff is the admitted package workflow plus the trusted mechanical
-   reseal of its action-lock data; the model cannot change action pins or choose
-   lock edits. The publisher does not check out or run candidate code.
+   final candidate SHA. Existing incident branches or PR history are not overwritten.
+   Catalog-bound repair records a workflow-only source anchor and then a child
+   commit containing the resealed lock and catalog. The final diff is exactly
+   those three files; genuinely pre-catalog fixtures retain the two-file path.
+   The model cannot edit the catalog, evidence, action pins, lock, or tests.
+   Publication independently rebuilds these bytes and verifies both commits.
+   The publisher does not check out or run candidate code. A failed staging
+   attempt may leave unreferenced Git objects; it does not reuse an old branch.
 5. **Validate on real hosted Arm.** A separate controller dispatches the actual
    package workflow on the candidate branch using `ubuntu-24.04-arm`. It binds
    the run and attempt to the exact candidate, verifies the native job identity
@@ -166,6 +176,10 @@ Authenticated persistent failure -> data-only model -> policy admission
    `main`, including all batches and Global Summary. Candidate-only success
    does not verify the whole fleet, retroactively clear the original failure,
    publish generated results, or authorize deployment.
+   Use a merge commit, not squash/rebase, for catalog-bound repair PRs so the
+   source anchor remains reachable in main history. The publisher's PR body
+   states this requirement; it is not a repository-wide settings change or an
+   enforced per-PR merge-method restriction. Include it in pilot approval.
 
 ## Repository Repair Skill
 
@@ -368,9 +382,9 @@ workflows, publisher jobs, or shared secrets.
    routine-operation policy above. Retained required reviewers mean approval
    pauses, even with `SMOKE_REPAIR_ENABLED=true`. No configuration, protection
    removal, or live integration was performed in this documentation change.
-   Separately, review and implement trusted source rebinding before activation.
-   It must preserve real evidence-commit provenance and every catalog/CI
-   assertion, not let the model edit metadata or tests. Validate a complete
+   Review the source-anchor and mechanical binding implementation before activation.
+   It must preserve real evidence-commit provenance and catalog/CI checks,
+   not let the model edit metadata or tests. Validate a complete
    resulting candidate against the existing PR contracts, then perform native
    validation on that exact final SHA. Editing bindings after native validation
    invalidates the receipt and requires a fresh candidate validation.
@@ -383,6 +397,50 @@ workflows, publisher jobs, or shared secrets.
 4. Investigate unsupported or unresolved failures manually using the linked run
    and job evidence. Missing configuration, model refusal, policy rejection,
    native failure, resource limits, or stale identities must not become green.
+
+## Owner Approval Request
+
+Request the integration decision before writing authentication-specific code;
+this is not merely a secret or final enable switch. No approval is implied by
+existing onboarding access or by green offline tests.
+
+> We request approval to reuse the existing Arm model service for bounded
+> smoke-test repair in the public
+> `ArmDeveloperEcosystem/ecosystem-dashboard-for-arm` repository (PR #1079).
+> After a package fails its original and one confirmation run, the service
+> would return one data-only repair proposal. Independent policy checks and
+> actual hosted Arm tests on the final candidate must pass before a draft PR
+> opens. Humans review and merge; the model cannot weaken tests, merge, or deploy.
+>
+> Please authorize this use case and provide the supported connection method
+> for a public caller: an approved short-lived authentication integration or an
+> existing authorized model-call service. The internal token action cannot be
+> consumed directly by this public repository. We are not requesting publication
+> of internal code, a new runner/service, or credentials in Slack.
+>
+> Scope the caller to protected reviewed `main`, the orchestrator ->
+> `smoke-repair.yml` -> `smoke-repair-package.yml` chain, and the `propose` job
+> in `smoke-repair-analysis`. Confirm the approved model and schema support,
+> source/log data policy, network/TLS requirements, token/caller restrictions,
+> usage budget, and the owners who will configure access. Limits are ten
+> packages per incident, two parallel repairs, and one proposal per package.
+> Package testing remains on free GitHub-hosted Arm; model usage may have cost.
+>
+> Separately, repository administrators should approve the dedicated App and
+> protected environments specified above. Repair stays disabled during
+> implementation. A live pilot and routine activation need later explicit
+> approval after code review and configuration verification.
+
+The owner's response must name the approved method and immutable implementation
+reference, authorized caller/execution location, model and data conditions,
+budget owner, required configuration, and any outstanding approvals. A generic
+permission to use AI does not supply an authentication protocol. Do not create
+an OIDC/IAM integration, publish an internal action, change repository visibility,
+or install infrastructure identity on a testing server without that decision.
+
+For local complete contract tests, explicitly set `AUTHENTICATED_BASE_COMMIT`
+to the reviewed comparison commit. The CI workflows supply GitHub's PR base;
+the tests never infer it from a candidate-controlled parent or lock value.
 
 Native dispatch refuses a pre-existing run for the same workflow, branch, and
 candidate SHA. Rerunning only a failed native job can therefore stop with a

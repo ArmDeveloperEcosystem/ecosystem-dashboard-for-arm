@@ -29,6 +29,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlencode
@@ -52,6 +53,7 @@ publisher = _module(
     DIRECTORY.parent / "actions/publish-generated-data-pr/generated_data_pr.py",
 )
 supply = _module("smoke_repair_supply_chain", DIRECTORY / "package_workflow_supply_chain.py")
+bindings = _module("smoke_repair_bindings", DIRECTORY / "smoke_repair_bindings.py")
 from orchestration_contract import decode_json, validate_repository, validate_sha  # noqa: E402
 
 PublishError = publisher.PublishError
@@ -70,21 +72,11 @@ CONTEXT_KEYS = {
 STAGE_KEYS = {
     "schema_version", "repository", "repair_id", "base_sha", "branch",
     "candidate_sha", "tree_sha", "workflow_path", "package_slug",
-    "proposal_digest", "source_digest",
+    "proposal_digest", "source_digest", "source_anchor",
 }
 AUDIT_KEYS = (STAGE_KEYS - {"candidate_sha"}) | {
     "called_job", "base_source_digest", "context_digest", "native_contract_digest", "policy_version", "publisher",
 }
-CATALOG_REBINDING_DIAGNOSTIC = (
-    "manual repair required: candidate invalidates the unchanged package identity catalog; "
-    "trusted source rebinding is not implemented"
-)
-
-
-class ManualCatalogRebindingRequired(PublishError):
-    """The two-file repair contract cannot update reviewed catalog evidence."""
-
-
 def _json(value: object) -> str:
     try:
         text = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -296,15 +288,15 @@ def _read_base(root, git, base, path):
     return text
 
 
-def _require_unchanged_catalog_binding(root, git, context, source):
-    """Reject stale bindings, not authorize or manufacture catalog provenance."""
+def _catalog_base(root, git, context, source):
+    """Read exact reviewed bytes and validate a token-free rebinding plan."""
     publisher._verify_regular_path_boundary(root, CATALOG_PATH, require_file=False)
     entry = git.run("ls-tree", "-z", context["base_sha"], "--", CATALOG_PATH).stdout
     if not entry:
         # Only genuinely pre-catalog bases may use the legacy two-file contract.
         if (root / CATALOG_PATH).exists() or publisher._index_entries(git, CATALOG_PATH):
             raise PublishError("catalog is present but absent from the reviewed base")
-        return
+        return None
     raw = _read_base(root, git, context["base_sha"], CATALOG_PATH)
     try:
         catalog = decode_json(raw)
@@ -338,8 +330,14 @@ def _require_unchanged_catalog_binding(root, git, context, source):
     target = targets[0]
     if target["presence"] != "present" or target["sha256"] != _digest(context["source_text"]):
         raise PublishError("catalog target does not bind the reviewed base workflow")
-    if target["sha256"] != _digest(source):
-        raise ManualCatalogRebindingRequired(CATALOG_REBINDING_DIAGNOSTIC)
+    try:
+        bindings.validate_catalog_rebinding(
+            raw, package_slug=slug, workflow_path=path,
+            original_source=context["source_text"], candidate_source=source,
+        )
+    except ValueError as exc:
+        raise PublishError("catalog cannot be mechanically rebound") from exc
+    return raw
 
 
 def _action_locations(value, prefix=()):
@@ -420,12 +418,13 @@ def _prepare(context, proposal, root, policy, policy_version, github):
     git = publisher.Git(root)
     artifact = build_candidate(context, proposal, repository_root=root,
                                validate_apply=policy, policy_version=policy_version)
+    catalog = _catalog_base(root, git, context, artifact["candidate_source"])
     config, runtime = _runtime(context)
     _clean_base(root, git, config)
     _runtime_guard(github, config, runtime)
     github.setup_git_auth()
     _guard(root, git, github, config, runtime)
-    return context, proposal, root, git, config, runtime, artifact["candidate_source"], artifact["candidate_lock"], artifact["policy_result"]
+    return context, proposal, root, git, config, runtime, artifact["candidate_source"], artifact["candidate_lock"], artifact["policy_result"], catalog
 
 
 def build_candidate(context: Mapping[str, Any], proposal: Mapping[str, Any], *,
@@ -435,8 +434,8 @@ def build_candidate(context: Mapping[str, Any], proposal: Mapping[str, Any], *,
 
     The returned JSON artifact is data for the caller's actionlint/bash -n
     preflight. This function parses YAML but never executes proposed commands.
-    All current catalog-bound workflow repairs remain manual: this two-file
-    contract cannot rebind catalog evidence or establish its source provenance.
+    Catalog provenance is planned here, then bound to an actual source commit
+    during staging. Catalog bytes and publisher credentials never enter the model.
     """
     context = _context(context)
     proposal = _proposal(proposal, context["workflow_path"])
@@ -461,7 +460,7 @@ def build_candidate(context: Mapping[str, Any], proposal: Mapping[str, Any], *,
         or admitted.get("semantic_equivalence_proven") is not False
     ):
         raise PublishError("policy result has inconsistent source digests or review requirements")
-    _require_unchanged_catalog_binding(root, git, context, source)
+    catalog = _catalog_base(root, git, context, source)
     lock = reseal_workflow_lock(root, base_sha=config.expected_base_sha,
                                workflow_path=context["workflow_path"], source=source, repair_id=repair_id)
     _clean_base(root, git, config)
@@ -470,26 +469,71 @@ def build_candidate(context: Mapping[str, Any], proposal: Mapping[str, Any], *,
         "repair_id": repair_id, "workflow_path": context["workflow_path"],
         "context_digest": _digest(_json(context)), "proposal_digest": _digest(_json(proposal)),
         "policy_version": policy_version, "candidate_source": source, "candidate_lock": lock,
+        "catalog_base_digest": None if catalog is None else _digest(catalog),
         "policy_result": admitted,
     }
     _json(artifact)
     return artifact
 
 
-def _metadata(context, proposal, config, runtime, source, policy_version, native_contract_digest):
+def _metadata(context, proposal, config, runtime, source, policy_version, native_contract_digest,
+              source_anchor=None):
     return {
-        "schema_version": 1, "repository": config.repository, "repair_id": config.repair_id,
+        "schema_version": 2, "repository": config.repository, "repair_id": config.repair_id,
         "base_sha": config.expected_base_sha, "branch": config.head_branch,
         "workflow_path": context["workflow_path"], "package_slug": context["package_slug"],
         "called_job": context["called_job"], "proposal_digest": _digest(_json(proposal)),
         "source_digest": _digest(source), "base_source_digest": _digest(context["source_text"]),
         "context_digest": _digest(_json(context)), "policy_version": policy_version,
         "native_contract_digest": native_contract_digest, "publisher": runtime,
+        "source_anchor": source_anchor,
     }
 
 
 def _commit_message(metadata):
     return f"Stage smoke repair {metadata['repair_id']}\n\nSmoke-Repair-Receipt: {_json(metadata)}\n"
+
+
+def _anchor_message(metadata):
+    return f"Record smoke repair source {metadata['repair_id']}\n\nSmoke-Repair-Source: {_json(metadata)}\n"
+
+
+def _utc_timestamp(value):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|\+00:00)", value):
+        raise PublishError("source anchor has no canonical UTC commit time")
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise PublishError("source anchor commit time is invalid") from exc
+
+
+def _validate_anchor(anchor, *, base_sha, candidate_sha=None):
+    if anchor is None:
+        return
+    if not isinstance(anchor, dict) or set(anchor) != {"sha", "tree_sha", "verified_at"}:
+        raise PublishError("source anchor has an unsupported schema")
+    for key in ("sha", "tree_sha"):
+        validate_sha(anchor[key])
+    if anchor["sha"] in {base_sha, candidate_sha} or _utc_timestamp(anchor["verified_at"]) != anchor["verified_at"]:
+        raise PublishError("source anchor identity or timestamp is invalid")
+
+
+def _payloads(context, source, lock, catalog, anchor, config):
+    payloads = {context["workflow_path"]: source, LOCK_PATH: lock}
+    _validate_anchor(anchor, base_sha=context["base_sha"])
+    if (catalog is None) != (anchor is None):
+        raise PublishError("catalog and source anchor must be bound together")
+    if catalog is not None:
+        try:
+            payloads[CATALOG_PATH] = bindings.rebind_catalog(
+                catalog, package_slug=context["package_slug"], workflow_path=context["workflow_path"],
+                original_source=context["source_text"], candidate_source=source,
+                source_commit=anchor["sha"], verified_by=config.expected_pr_author_login,
+                verified_at=anchor["verified_at"],
+            )
+        except ValueError as exc:
+            raise PublishError("catalog rebinding failed") from exc
+    return payloads
 
 
 def _candidate_tree(git, config, payloads):
@@ -515,7 +559,7 @@ def stage(context: Mapping[str, Any], proposal: Mapping[str, Any], proposed_sour
           policy_version: str, github=None) -> dict[str, Any]:
     """Create a new incident branch; reject all pre-existing branches or PR history."""
     github = github or publisher.GhClient()
-    context, proposal, root, git, config, runtime, source, lock, policy_result = _prepare(
+    context, proposal, root, git, config, runtime, source, lock, policy_result, catalog = _prepare(
         context, proposal, repository_root, validate_apply, policy_version, github)
     if source != proposed_source:
         raise PublishError("admitted source does not match reapplied policy")
@@ -531,10 +575,36 @@ def stage(context: Mapping[str, Any], proposal: Mapping[str, Any], proposed_sour
         raise PublishError("native and policy contracts disagree on the admitted package")
     if publisher._remote_head_sha(git, config.head_branch) is not None or _all_prs(github, config):
         raise PublishError("incident branch or PR history already exists; refusing replay")
-    payloads = {context["workflow_path"]: source, LOCK_PATH: lock}
-    tree = _candidate_tree(git, config, payloads)
     metadata = _metadata(context, proposal, config, runtime, source, policy_version, _digest(_json(contract)))
-    metadata["tree_sha"] = tree
+    anchor = None
+    if catalog is not None:
+        anchor_metadata = {**metadata, "tree_sha": _candidate_tree(git, config, {context["workflow_path"]: source})}
+        source_commit = _publish_commit(root, git, github, config, runtime,
+                                        {context["workflow_path"]: source}, anchor_metadata["tree_sha"],
+                                        _anchor_message(anchor_metadata), config.expected_base_sha)
+        anchor = {"sha": source_commit["sha"], "tree_sha": anchor_metadata["tree_sha"],
+                  "verified_at": _utc_timestamp(source_commit.get("committer", {}).get("date"))}
+        _validate_anchor(anchor, base_sha=config.expected_base_sha)
+    payloads = _payloads(context, source, lock, catalog, anchor, config)
+    tree = _candidate_tree(git, config, payloads)
+    metadata.update(tree_sha=tree, source_anchor=anchor)
+    commit = _publish_commit(root, git, github, config, runtime, payloads, tree,
+                             _commit_message(metadata), anchor["sha"] if anchor else config.expected_base_sha)
+    candidate = commit["sha"]
+    _guard(root, git, github, config, runtime)
+    if publisher._remote_head_sha(git, config.head_branch) is not None or _all_prs(github, config):
+        raise PublishError("incident branch or PR appeared during staging")
+    github._api("POST", f"repos/{config.repository}/git/refs", {
+        "ref": f"refs/heads/{config.head_branch}", "sha": candidate,
+    })
+    receipt = {key: value for key, value in {**metadata, "candidate_sha": candidate}.items() if key in STAGE_KEYS}
+    _guard(root, git, github, config, runtime)
+    if _verify_branch(git, config, receipt, payloads) != metadata:
+        raise PublishError("staged commit audit differs from its trusted producer")
+    return receipt
+
+
+def _publish_commit(root, git, github, config, runtime, payloads, tree, message, parent):
     tree_entries = []
     # Only trusted Git database writes occur here; no candidate checkout or hooks.
     for path, text in payloads.items():
@@ -553,39 +623,33 @@ def stage(context: Mapping[str, Any], proposal: Mapping[str, Any], proposed_sour
         raise PublishError("GitHub candidate tree differs from the local allowlisted tree")
     _guard(root, git, github, config, runtime)
     commit = github._api("POST", f"repos/{config.repository}/git/commits", {
-        "message": _commit_message(metadata), "tree": tree, "parents": [config.expected_base_sha],
+        "message": message, "tree": tree, "parents": [parent],
     })
     if not isinstance(commit, dict):
         raise PublishError("GitHub returned an invalid candidate commit")
     candidate = validate_sha(commit.get("sha"))
     if (
         commit.get("tree", {}).get("sha") != tree
-        or [parent.get("sha") for parent in commit.get("parents", [])] != [config.expected_base_sha]
-        or commit.get("message", "").rstrip("\n") != _commit_message(metadata).rstrip("\n")
+        or [entry.get("sha") for entry in commit.get("parents", [])] != [parent]
+        or commit.get("message", "").rstrip("\n") != message.rstrip("\n")
     ):
         raise PublishError("GitHub candidate commit does not bind the staged receipt")
-    _guard(root, git, github, config, runtime)
-    if publisher._remote_head_sha(git, config.head_branch) is not None or _all_prs(github, config):
-        raise PublishError("incident branch or PR appeared during staging")
-    github._api("POST", f"repos/{config.repository}/git/refs", {
-        "ref": f"refs/heads/{config.head_branch}", "sha": candidate,
-    })
-    receipt = {key: value for key, value in {**metadata, "candidate_sha": candidate}.items() if key in STAGE_KEYS}
-    _guard(root, git, github, config, runtime)
-    if _verify_branch(git, config, receipt, payloads) != metadata:
-        raise PublishError("staged commit audit differs from its trusted producer")
-    return receipt
+    return commit
 
 
 def _verify_branch(git, config, receipt, payloads):
     candidate = receipt["candidate_sha"]
+    anchor = receipt["source_anchor"]
+    _validate_anchor(anchor, base_sha=config.expected_base_sha, candidate_sha=candidate)
+    if (CATALOG_PATH in payloads) != (anchor is not None):
+        raise PublishError("candidate catalog has no exact source anchor")
     if publisher._remote_head_sha(git, config.head_branch) != candidate:
         raise PublishError("incident branch no longer matches its stage receipt")
     git.run("fetch", "--no-tags", "origin", f"refs/heads/{config.head_branch}")
     if git.text("rev-parse", "--verify", "FETCH_HEAD^{commit}") != candidate:
         raise PublishError("incident branch changed during fetch")
-    if git.text("show", "-s", "--format=%P", candidate).split() != [config.expected_base_sha]:
-        raise PublishError("incident branch is not one commit on the reviewed base")
+    if git.text("show", "-s", "--format=%P", candidate).split() != [anchor["sha"] if anchor else config.expected_base_sha]:
+        raise PublishError("incident branch does not have its exact reviewed parent")
     if git.text("rev-parse", f"{candidate}^{{tree}}") != receipt["tree_sha"]:
         raise PublishError("candidate tree does not match stage receipt")
     message = git.run("show", "-s", "--format=%B", candidate).stdout.rstrip("\n")
@@ -599,9 +663,22 @@ def _verify_branch(git, config, receipt, payloads):
         or any(metadata.get(key) != value for key, value in receipt.items() if key != "candidate_sha")
     ):
         raise PublishError("candidate audit does not bind the exact stage receipt")
+    if anchor is not None:
+        if (git.text("show", "-s", "--format=%P", anchor["sha"]).split() != [config.expected_base_sha]
+                or git.text("rev-parse", f"{anchor['sha']}^{{tree}}") != anchor["tree_sha"]
+                or _utc_timestamp(git.text("show", "-s", "--format=%cI", anchor["sha"])) != anchor["verified_at"]):
+            raise PublishError("source anchor parent, tree, or commit time differs from receipt")
+        source_metadata = {**metadata, "source_anchor": None, "tree_sha": anchor["tree_sha"]}
+        if git.run("show", "-s", "--format=%B", anchor["sha"]).stdout.rstrip("\n") != _anchor_message(source_metadata).rstrip("\n"):
+            raise PublishError("source anchor has no exact publisher ownership receipt")
+        changes = git.run("diff", "--name-only", "--no-renames", "-z", config.expected_base_sha, anchor["sha"], "--").stdout
+        workflow = receipt["workflow_path"]
+        if (publisher._nul_paths(changes, description="source anchor diff") != (workflow,)
+                or _entry(git, anchor["sha"], workflow) != (_entry(git, config.expected_base_sha, workflow)[0], _blob_id(payloads[workflow]))):
+            raise PublishError("source anchor must contain only the exact admitted workflow")
     changes = git.run("diff", "--name-only", "--no-renames", "-z", config.expected_base_sha, candidate, "--").stdout
     if set(publisher._nul_paths(changes, description="candidate diff")) != set(payloads):
-        raise PublishError("candidate diff extends outside the admitted workflow and mechanical lock")
+        raise PublishError("candidate diff extends outside the admitted workflow and trusted source bindings")
     for path, source in payloads.items():
         mode, blob = _entry(git, candidate, path)
         if mode != _entry(git, config.expected_base_sha, path)[0] or blob != _blob_id(source):
@@ -655,7 +732,10 @@ def _pr_body(config, stage_receipt, native, policy_version, context):
         f"- Stage receipt SHA-256: `{_digest(_json(stage_receipt))}`\n"
         f"- Native receipt SHA-256: `{_digest(_json(native))}`\n\n"
         "Native package workflow validation passed. This is not full-fleet validation "
-        "or a deployment. The action lock change is a trusted mechanical reseal. "
+        "or a deployment. Lock and catalog changes are trusted mechanical source bindings. "
+        "Catalog-bound repairs include a source-only commit followed by the final bindings commit; "
+        "only the final commit was tested. "
+        "Merge with a merge commit, not squash or rebase, to retain the catalog source anchor in main history. "
         "Independent human review and required checks remain mandatory. "
         "This automation does not approve, merge, or deploy.\n"
     )
@@ -686,15 +766,15 @@ def open_pr(context: Mapping[str, Any], proposal: Mapping[str, Any], stage_recei
     deadline = bounded_deadline if deadline is None else min(deadline, bounded_deadline)
     _publication_remaining(deadline)
     github = github or publisher.GhClient()
-    context, proposal, root, git, config, runtime, source, lock, _ = _prepare(
+    context, proposal, root, git, config, runtime, source, lock, _, catalog = _prepare(
         context, proposal, repository_root, validate_apply, policy_version, github)
     staged = _object(stage_receipt, "stage receipt")
-    if set(staged) != STAGE_KEYS or type(staged.get("schema_version")) is not int or staged["schema_version"] != 1:
+    if set(staged) != STAGE_KEYS or type(staged.get("schema_version")) is not int or staged["schema_version"] != 2:
         raise PublishError("unsupported stage receipt schema")
     _json(staged)
     for field in ("candidate_sha", "tree_sha"):
         validate_sha(staged[field])
-    payloads = {context["workflow_path"]: source, LOCK_PATH: lock}
+    payloads = _payloads(context, source, lock, catalog, staged["source_anchor"], config)
     if staged["candidate_sha"] == staged["base_sha"]:
         raise PublishError("candidate must differ from base")
     for key, value in {
@@ -716,7 +796,7 @@ def open_pr(context: Mapping[str, Any], proposal: Mapping[str, Any], stage_recei
     _positive(producer["run_id"], "stage publisher run ID")
     _positive(producer["run_attempt"], "stage publisher attempt")
     _runtime_guard(github, config, producer)
-    expected = _metadata(context, proposal, config, producer, source, policy_version, audit["native_contract_digest"])
+    expected = _metadata(context, proposal, config, producer, source, policy_version, audit["native_contract_digest"], staged["source_anchor"])
     expected["tree_sha"] = staged["tree_sha"]
     if audit != expected:
         raise PublishError("stage audit does not match context, source, policy, or producer")
@@ -851,9 +931,6 @@ def main(argv=None) -> int:
         if args.command == "open-pr":
             _write_publication_outputs(result, context["repository"])
         return 0
-    except ManualCatalogRebindingRequired:
-        print(CATALOG_REBINDING_DIAGNOSTIC, file=sys.stderr)
-        return 1
     except Exception:
         # Dependency errors can include remote responses, proposal text, or secrets.
         print("smoke repair publication failed closed; no successful repair is claimed.", file=sys.stderr)
