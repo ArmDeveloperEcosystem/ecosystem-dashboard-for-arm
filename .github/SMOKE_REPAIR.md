@@ -32,13 +32,28 @@ model, stage a candidate, or open a repair draft.
 This is not a universal fixer. It never automatically approves, merges, or
 deploys, and cannot turn an original failure into a passing result.
 
+**Source rebinding is also blocked, independently of model authentication.**
+The publisher's two-file contract permits only the package workflow and its
+mechanical action-lock reseal. A changed workflow also invalidates the package
+identity catalog and fixed workflow-snapshot assertions in PR CI. Trusted,
+provenance-preserving updates of those bindings are not implemented. Admission
+therefore rejects a catalog-bound repair before lock generation, publisher
+credentials, or remote writes. All 960 currently registered package workflows
+are catalog-bound; this PR cannot yet deliver their automatic repair drafts,
+even after model authentication is connected. Existing positive integration
+fixtures describe the legacy pre-catalog contract, not current production
+repair capability. Negative integration tests use the real Zlib workflow and
+catalog validator to verify this stop without weakening either contract.
+
 ## Layout-Admission Coverage
 
-The registered-topology scan reported for this change examined **960 registered
-packages**. Of these, **553 passed both policy and native contract layout
+The pre-refresh September 12 scan examined **960 registered packages**. Of these,
+**553 passed both policy and native contract layout
 derivation**, and **407 had unsupported layouts**. This is a coverage snapshot
 of layout admission only, **not validated repair counts**, successful native
 runs, or evidence that 553 packages or their failure causes can be fixed.
+It is not a fresh scan of the September 23 main-branch update and does not
+override the source-binding stop described above.
 
 The reported unsupported-layout breakdown is:
 
@@ -120,7 +135,9 @@ Authenticated persistent failure -> data-only model -> policy admission
 3. **Admit the patch.** Trusted code independently checks the exact edit anchors,
    supported workflow layout, narrow repair classes, frozen test/gate behavior,
    and shell syntax. Syntax checking is not execution or proof of repair. This
-   check runs before a delivery token is minted and is repeated later.
+   check runs before a delivery token is minted and is repeated later. The
+   catalog-binding check currently requires manual work for a changed,
+   catalog-bound workflow; the later stages below are not reachable for it.
 4. **Stage an immutable candidate.** The dedicated repair App creates one new
    `automation/smoke-repair/<run-id>-<attempt>-<package-slug>` branch at a bound
    candidate SHA. Existing incident branches or PR history are not overwritten.
@@ -351,6 +368,12 @@ workflows, publisher jobs, or shared secrets.
    routine-operation policy above. Retained required reviewers mean approval
    pauses, even with `SMOKE_REPAIR_ENABLED=true`. No configuration, protection
    removal, or live integration was performed in this documentation change.
+   Separately, review and implement trusted source rebinding before activation.
+   It must preserve real evidence-commit provenance and every catalog/CI
+   assertion, not let the model edit metadata or tests. Validate a complete
+   resulting candidate against the existing PR contracts, then perform native
+   validation on that exact final SHA. Editing bindings after native validation
+   invalidates the receipt and requires a fresh candidate validation.
 3. Approve a bounded live test on reviewed `main`, explicitly enable repair, and
    use the main orchestrator's manual dispatch. Verify real failures, exact
    artifacts, token scopes, candidate execution, and draft ownership end to end.
