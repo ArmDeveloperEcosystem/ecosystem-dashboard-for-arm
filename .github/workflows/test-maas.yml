@@ -261,19 +261,23 @@ jobs:
           docker inspect "$MAAS_CONTAINER"
           docker exec -i -e "MAAS_DEB_VERSION=$MAAS_DEB_VERSION" "$MAAS_CONTAINER" bash -seuo pipefail <<'INSTALL'
           export DEBIAN_FRONTEND=noninteractive LC_ALL=C.UTF-8 LANG=C.UTF-8 TZ=UTC
+          APT_OPTIONS=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
           mkdir /smoke
           printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
           chmod 755 /usr/sbin/policy-rc.d
           test "$(dpkg --print-architecture)" = arm64
-          apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl gnupg file binutils sudo lsb-release
-          curl -fLsS --max-time 60 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x3AB6DCF1F234E78DAA9C104204E7FDC5684D4A1C' -o /smoke/maas-key.asc
-          test "$(gpg --show-keys --with-colons /smoke/maas-key.asc | awk -F: '$1=="fpr" {print $10; exit}')" = 3AB6DCF1F234E78DAA9C104204E7FDC5684D4A1C
+          apt-get "${APT_OPTIONS[@]}" --error-on=any update
+          apt-get "${APT_OPTIONS[@]}" install -y --no-install-recommends ca-certificates curl gnupg file binutils sudo lsb-release
+          curl --fail --location --silent --show-error --connect-timeout 10 --max-time 30 \
+            --retry 3 --retry-all-errors --retry-delay 5 --retry-max-time 150 \
+            'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x3AB6DCF1F234E78DAA9C104204E7FDC5684D4A1C' -o /smoke/maas-key.asc
+          KEY_FINGERPRINTS=$(gpg --batch --show-keys --with-colons /smoke/maas-key.asc | awk -F: '$1=="sec" || $1=="ssb" {exit 1} $1=="pub" {primary=1; next} primary && $1=="fpr" {print $10; primary=0}')
+          test "$KEY_FINGERPRINTS" = 3AB6DCF1F234E78DAA9C104204E7FDC5684D4A1C
           gpg --dearmor < /smoke/maas-key.asc > /usr/share/keyrings/maas-smoke.gpg
           printf '%s\n' 'deb [arch=arm64 signed-by=/usr/share/keyrings/maas-smoke.gpg] https://ppa.launchpadcontent.net/maas/3.6/ubuntu noble main' > /etc/apt/sources.list.d/maas-smoke.list
-          apt-get update
+          apt-get "${APT_OPTIONS[@]}" --error-on=any update
           apt-cache policy maas-region-api python3-django-maas python3-temporalio temporal postgresql-16
-          apt-get install -y --no-install-recommends "maas-region-api=$MAAS_DEB_VERSION" postgresql-16
+          apt-get "${APT_OPTIONS[@]}" install -y --no-install-recommends "maas-region-api=$MAAS_DEB_VERSION" postgresql-16
           dpkg-query -W -f='${binary:Package}\t${Version}\t${Architecture}\t${db:Status-Abbrev}\n' > /smoke/installed-packages.tsv
           INSTALL
           echo "installation_method=deb" >> "$GITHUB_OUTPUT"
@@ -295,95 +299,95 @@ jobs:
 
       - name: Test 1 - Actual server executable and package ownership
         id: test1
-        continue-on-error: true
+        if: always() && steps.install.outcome == 'success' && steps.install.outputs.installation_method == 'deb' && steps.version.outcome == 'success'
         run: |
           set -euo pipefail
-          START_TIME=$(date +%s)
-          finish() {
-            rc=$?
+          START_TIME=$SECONDS
+          finish_test() {
+            local rc="$1"
             trap - EXIT
             if [ "$rc" -eq 0 ]; then
               echo "status=passed" >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            echo "duration=$((SECONDS - START_TIME))" >> "$GITHUB_OUTPUT"
             exit "$rc"
           }
-          trap finish EXIT
+          trap 'finish_test "$?"' EXIT
           docker exec "$MAAS_CONTAINER" bash -seuo pipefail -c '
             test -x /usr/sbin/maas-region
             test -f /usr/lib/python3/dist-packages/maasserver/api/tags.py
             test "$(dpkg-query -S /usr/sbin/maas-region)" = "maas-region-api: /usr/sbin/maas-region"
             test "$(dpkg-query -S /usr/lib/python3/dist-packages/maasserver/api/tags.py)" = "python3-django-maas: /usr/lib/python3/dist-packages/maasserver/api/tags.py"
           '
-          finish
+          finish_test 0
 
       - name: Test 2 - Server runtime version bound to the installed deb and source
         id: test2
-        continue-on-error: true
+        if: always() && steps.install.outcome == 'success' && steps.install.outputs.installation_method == 'deb' && steps.version.outcome == 'success'
         run: |
           set -euo pipefail
-          START_TIME=$(date +%s)
-          finish() {
-            rc=$?
+          START_TIME=$SECONDS
+          finish_test() {
+            local rc="$1"
             trap - EXIT
             if [ "$rc" -eq 0 ]; then
               echo "status=passed" >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            echo "duration=$((SECONDS - START_TIME))" >> "$GITHUB_OUTPUT"
             exit "$rc"
           }
-          trap finish EXIT
+          trap 'finish_test "$?"' EXIT
           printf '%s\n' "$MAAS_IDENTITY" | docker exec -i \
             -e "MAAS_VERSION=$MAAS_VERSION" -e "MAAS_DEB_VERSION=$MAAS_DEB_VERSION" \
             -e "MAAS_SOURCE_REVISION=$MAAS_SOURCE_REVISION" "$MAAS_CONTAINER" python3 -
-          finish
+          finish_test 0
 
       - name: Test 3 - Installed region database management command
         id: test3
-        continue-on-error: true
+        if: always() && steps.install.outcome == 'success' && steps.install.outputs.installation_method == 'deb' && steps.version.outcome == 'success'
         run: |
           set -euo pipefail
-          START_TIME=$(date +%s)
-          finish() {
-            rc=$?
+          START_TIME=$SECONDS
+          finish_test() {
+            local rc="$1"
             trap - EXIT
             if [ "$rc" -eq 0 ]; then
               echo "status=passed" >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            echo "duration=$((SECONDS - START_TIME))" >> "$GITHUB_OUTPUT"
             exit "$rc"
           }
-          trap finish EXIT
+          trap 'finish_test "$?"' EXIT
           HELP_OUTPUT=$(docker exec "$MAAS_CONTAINER" maas-region dbupgrade --help)
           printf '%s\n' "$HELP_OUTPUT"
           printf '%s\n' "$HELP_OUTPUT" | grep -Fq 'Upgrades database schema for MAAS regiond.'
           printf '%s\n' "$HELP_OUTPUT" | grep -Fq -- '--database'
-          finish
+          finish_test 0
 
       - name: Test 4 - Architecture Verification
         id: test4
-        continue-on-error: true
+        if: always() && steps.install.outcome == 'success' && steps.install.outputs.installation_method == 'deb' && steps.version.outcome == 'success'
         run: |
           set -euo pipefail
-          START_TIME=$(date +%s)
-          finish() {
-            rc=$?
+          START_TIME=$SECONDS
+          finish_test() {
+            local rc="$1"
             trap - EXIT
             if [ "$rc" -eq 0 ]; then
               echo "status=passed" >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            echo "duration=$((SECONDS - START_TIME))" >> "$GITHUB_OUTPUT"
             exit "$rc"
           }
-          trap finish EXIT
+          trap 'finish_test "$?"' EXIT
           test "$(uname -m)" = aarch64
           docker exec -i "$MAAS_CONTAINER" bash -seuo pipefail <<'ARCH'
           test "$(uname -m)" = aarch64
@@ -399,26 +403,26 @@ jobs:
             grep -Eq 'Machine: +AArch64$' /smoke/elf-header.txt
           done < /smoke/native-modules.txt
           ARCH
-          finish
+          finish_test 0
 
       - name: Test 5 - Real MAAS API, PostgreSQL migrations and authenticated tag persistence
         id: test5
-        continue-on-error: true
+        if: always() && steps.install.outcome == 'success' && steps.install.outputs.installation_method == 'deb' && steps.version.outcome == 'success'
         run: |
           set -euo pipefail
-          START_TIME=$(date +%s)
-          finish() {
-            rc=$?
+          START_TIME=$SECONDS
+          finish_test() {
+            local rc="$1"
             trap - EXIT
             if [ "$rc" -eq 0 ]; then
               echo "status=passed" >> "$GITHUB_OUTPUT"
             else
               echo "status=failed" >> "$GITHUB_OUTPUT"
             fi
-            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            echo "duration=$((SECONDS - START_TIME))" >> "$GITHUB_OUTPUT"
             exit "$rc"
           }
-          trap finish EXIT
+          trap 'finish_test "$?"' EXIT
           docker exec -i -e "MAAS_VERSION=$MAAS_VERSION" -e "MAAS_API_SERVER=$MAAS_API_SERVER" \
             -e "MAAS_API_PROOF=$MAAS_API_PROOF" "$MAAS_CONTAINER" bash -seuo pipefail <<'SMOKE'
           export LC_ALL=C.UTF-8 LANG=C.UTF-8 TZ=UTC MAAS_REGION_CONFIG=/smoke/regiond.conf
@@ -474,7 +478,7 @@ jobs:
           test "$ready" = 1
           timeout --signal=TERM --kill-after=5s 90s python3 -u /smoke/api-proof.py
           SMOKE
-          finish
+          finish_test 0
 
       - name: Regression applicability - package manager installed
         id: test6
@@ -537,12 +541,16 @@ jobs:
              [ "${{ steps.version.outputs.version }}" = "$MAAS_VERSION" ]; then PROVENANCE=1; fi
           check_test() {
             local status="$1" outcome="$2" duration="$3"
+            if [ "$outcome" = skipped ] || [ -z "$outcome" ]; then
+              SKIPPED=$((SKIPPED + 1))
+              return
+            fi
             if [[ "$duration" =~ ^[0-9]{1,7}$ ]]; then
               TOTAL_DURATION=$((TOTAL_DURATION + 10#$duration))
             else
               status=failed
             fi
-            if [ "$status" = passed ] && [ "$outcome" = success ] && [ "$PROVENANCE" = 1 ]; then
+            if [ "$status" = passed ] && [ "$outcome" = success ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
@@ -558,11 +566,11 @@ jobs:
           if [ "${{ steps.test6.outcome }}:${{ steps.test6.outputs.status }}" = success:skipped ]; then
             case "${{ steps.test6.outputs.decision }}" in
               not_applicable_package_manager)
-                if [ "$CORE_FAILED" = 0 ] && [ "$PROVENANCE" = 1 ] && [ "${{ steps.test6.outputs.installation_method }}" = deb ]; then REGRESSION_VALID=1; fi ;;
+                if [ "$PASSED" = 5 ] && [ "$PROVENANCE" = 1 ] && [ "${{ steps.test6.outputs.installation_method }}" = deb ]; then REGRESSION_VALID=1; fi ;;
               baseline_install_failed)
-                if [ "$CORE_FAILED" -gt 0 ] && [ "$INSTALL_OK" = 0 ]; then REGRESSION_VALID=1; fi ;;
+                if [ "$INSTALL_OK" = 0 ]; then REGRESSION_VALID=1; fi ;;
               baseline_failed)
-                if [ "$CORE_FAILED" -gt 0 ] && [ "$INSTALL_OK" = 1 ]; then REGRESSION_VALID=1; fi ;;
+                if [ "$INSTALL_OK" = 1 ] && { [ "$PASSED" -lt 5 ] || [ "$PROVENANCE" = 0 ]; }; then REGRESSION_VALID=1; fi ;;
             esac
           fi
           DURATION="${{ steps.test6.outputs.duration }}"
@@ -571,7 +579,9 @@ jobs:
           else
             REGRESSION_VALID=0
           fi
-          if [ "$REGRESSION_VALID" = 1 ]; then
+          if [ "${{ steps.test6.outcome }}" = skipped ] || [ -z "${{ steps.test6.outcome }}" ]; then
+            SKIPPED=$((SKIPPED + 1))
+          elif [ "$REGRESSION_VALID" = 1 ]; then
             SKIPPED=$((SKIPPED + 1))
           else
             FAILED=$((FAILED + 1))
@@ -581,14 +591,12 @@ jobs:
           echo "skipped=${SKIPPED}" >> "$GITHUB_OUTPUT"
           echo "core_failed=${CORE_FAILED}" >> "$GITHUB_OUTPUT"
           echo "duration=${TOTAL_DURATION}" >> "$GITHUB_OUTPUT"
-          if [ "$FAILED" = 0 ]; then
+          # Provenance and complete baseline evidence are prerequisites, not synthetic core failures.
+          if [ "$PASSED" = 5 ] && [ "$FAILED" = 0 ] && [ "$PROVENANCE" = 1 ] && [ "$REGRESSION_VALID" = 1 ]; then
             echo "badge_status=passing" >> "$GITHUB_OUTPUT"
-          else
-            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
-          fi
-          if [ "${FAILED}" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
           else
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -612,4 +620,5 @@ jobs:
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> "$GITHUB_STEP_SUMMARY"
