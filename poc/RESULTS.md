@@ -1,15 +1,13 @@
-# Conversational package search — production candidate validation
+# Conversational package search — validation and release status
 
 Date: 23 September 2026. Review: [PR #1092](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/pull/1092).
 Base: upstream `main`, `e1871540f0a3e42e7588ab44b09e4796de967fd8`.
 
-This revision closes the eight previously documented natural-language recall
-misses, fixes additional independent-review findings, and supplies a deployable
-API with an explicit production configuration. It has been exercised locally on
-Linux Arm64 behind a certificate-verified HTTPS proxy. It is a candidate for the
-team's staging and release process; the live dashboard has not been changed.
+The search implementation has passed the checks below, including a Linux Arm64
+API image behind a certificate-verified local HTTPS proxy. It is ready for team
+review and staging acceptance; the live dashboard has not been changed.
 
-## Product changes
+## What was validated
 
 - English stemming and conversational framing recover ordinary paraphrases while
   preserving requested capabilities. TLS toolkits, playbooks, graph relationships,
@@ -30,23 +28,17 @@ team's staging and release process; the live dashboard has not been changed.
 
 All 1,177 Linux identities remain backed by existing dashboard source files.
 No LLM is added. Default builds keep existing search; the production overlay is
-an explicit opt-in. Windows search remains unchanged.
+an explicit opt-in. Windows search remains unchanged. See the [implementation
+guide](README.md) for behavior and limitations and the [deployment
+runbook](deploy/README.md) for runtime limits, routing, rollout and rollback.
 
-## Operational changes
+## Recorded implementation validation
 
-The service now validates deployment settings, host/origin and explicit proxy
-trust; enforces actual streamed body size/time, concurrency and rate limits;
-rejects malformed/deep JSON; sanitizes internal errors; and exposes private
-liveness/readiness with bounded provider work and lifecycle cleanup. Aggregate
-status, latency, fallback and error logs omit raw queries and tokens.
-
-Deployment artifacts include a nonroot API image with a digest-pinned Python
-base, a runtime-only dependency lock, minimal build context, production Hugo
-configuration, same-origin proxy route and rollout/rollback runbook. API and
-static output must share the same generated catalog. The CI workflow now builds
-and exercises the API image under production settings after deterministic tests.
-
-## Verification
+These results belong to the implementation preserved at
+[`69b7eed6c`](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/commit/69b7eed6c4447ac9371b64b6946f0b21196cf998).
+The subsequent PR cleanup changes documentation, evaluation runner layout/output
+handling and CI report retention. Application, UI, dependency, deployment-runtime
+and test bytes are unchanged; all query fixtures and assertions are retained.
 
 | Check | Result |
 |---|---|
@@ -55,7 +47,7 @@ and exercises the API image under production settings after deterministic tests.
 | JavaScript interaction contracts | 8 passed |
 | Main HTTP scenarios | 37/37 passed |
 | Previous independent queries, including all eight earlier misses | 46/46 passed |
-| New independent query set | 35/35 passed; every returned record reviewed |
+| Independent query set | 35/35 passed; every returned record reviewed |
 | Production-profile real HTTP boundaries | 17/17 passed |
 | Targeted evidence and failure probes | 9/9 passed |
 | Final Linux Arm64 API container | 18/18 checks passed; nonroot, read-only, matching catalog digest |
@@ -73,19 +65,39 @@ response time was 8.232 seconds. Unsupported/context-only cases may complete
 without contacting the provider. These are finite scenario checks, not a statistical
 accuracy benchmark or an agreed production latency objective.
 
-The current evidence bundle is [production evaluation](evaluation/production/).
-It records source hashes, request results, exact image identifiers and limitations.
-Earlier `evaluation/independent/` and `live-search-*.json` files are historical
-snapshots; their previously reported misses do not describe this revision.
+The [archived evidence bundle](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/tree/69b7eed6c4447ac9371b64b6946f0b21196cf998/poc/evaluation/production)
+retains source hashes, complete request results, image identifiers and limitations.
+The [independent review](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/blob/69b7eed6c4447ac9371b64b6946f0b21196cf998/poc/evaluation/production/review.md)
+and [TLS proxy review](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/blob/69b7eed6c4447ac9371b64b6946f0b21196cf998/poc/evaluation/production/tls-proxy-review.md)
+are pinned to that immutable revision. Removing generated reports from the PR's
+current tree does not remove this historical evidence from Git history.
 
 One old main-suite expectation was corrected after independent review: the
 query `Reverse proxy web servers` requires both roles. NGINX and NGINX Plus are
 required; Haproxy (proxy/load balancer only in its catalog description) and
 Gunicorn (web server without reverse-proxy evidence) are excluded. This strengthens
 role checks and removes a mistaken expected positive; no other expectation was
-weakened. The 35 new query wordings were fixed before the first candidate was
+weakened. The 35 independent query wordings were fixed before the first candidate was
 reviewed; additional negative assertions were added when manual review found
 unrelated results. Every returned row in the independent 35-query sample was reviewed, not only required names.
+
+## Checks after PR cleanup
+
+The 209 Python and 8 JavaScript checks pass on the unchanged application/test
+bytes. The relocated runners preserve the 38, 8 and 35 case files byte-for-byte,
+and the main evaluator retains all 33 scenarios plus 4 refinement cases.
+Recorded HTTP responses were replayed against those assertions; the relocated
+17 boundary and 9 targeted probes and controlled capacity/rate checks were also
+executed locally. This verifies runner behavior without presenting historical
+live-KB results as a newly collected benchmark.
+
+Reusable cases and runners stay in [evaluation/](evaluation/). They are disclosed
+regressions, not future unseen accuracy tests. New reports default to ignored
+`.poc/evaluation/`; CI attaches only its controlled reports and tested revision
+metadata for 30 days. The PR's checks show the final candidate's deterministic
+tests and container smoke result. Preserve approved CI artifacts externally if
+longer retention is required; the historical evidence links above do not expire
+with CI artifacts.
 
 Hugo retains existing missing-layout/IsSet warnings. Python tests retain two
 upstream deprecation warnings. Dependency audit covers the pinned application

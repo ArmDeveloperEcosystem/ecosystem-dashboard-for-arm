@@ -13,7 +13,7 @@ gh pr checkout 1092
 
 ## Run locally
 
-Prerequisites: Python 3.11+ and Hugo extended 0.130.0 (the upstream CI version,
+Prerequisites: Python 3.12 and Hugo extended 0.130.0 (the upstream CI version,
 used for the final build and regression suite). Download the extended binary for
 your platform from the [Hugo 0.130.0 release](https://github.com/gohugoio/hugo/releases/tag/v0.130.0)
 and put it on PATH. JavaScript tests also require Node.js with `node:test`
@@ -22,14 +22,12 @@ From the repository root:
 
 ```sh
 python3 -m venv .venv
-.venv/bin/python -m pip install -r poc/requirements.txt
+.venv/bin/python -m pip install -r poc/requirements.lock.txt
 .venv/bin/python -m poc.dev
 ```
 
-`poc/requirements.lock.txt` records the exact dependency versions used for this
-validation. Install from that file to reproduce them. On this workstation, the
-verified Hugo binary is at `.poc/tools/hugo-bin/hugo`; add its directory to PATH
-before building or running the upstream tests.
+The lock file pins the versions used for validation. Put Hugo on PATH before
+launching the demo or running repository tests.
 
 - Dashboard: <http://127.0.0.1:8765/linux/>
 - API contract: <http://127.0.0.1:8765/api/docs>
@@ -124,12 +122,12 @@ retrieval options still require confirmation with the KB owner.
 
 ## Tests and review
 
-Build the local catalog first (`python -m poc.dev`, then stop it), then:
+Build the local catalog first (`python -m poc.dev`, then stop it). Controlled
+unit and interaction checks do not require the live KB:
 
 ```sh
 .venv/bin/python -m pytest poc/tests -q
 node --test poc/tests/ui_search.test.cjs
-.venv/bin/python -m poc.evaluate_search
 ```
 
 The upstream repository tests additionally need PyYAML (`6.0.3` was used here).
@@ -140,29 +138,64 @@ It is not required by the search application:
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
 ```
 
-On this Mac, use the installed Command Line Tools without changing the Xcode
-licence state when running the upstream suite:
+On macOS, if Git asks for an Xcode licence despite installed Command Line Tools,
+use them for the upstream suite without changing system settings:
 
 ```sh
-PATH="$PWD/.poc/tools/hugo-bin:/Library/Developer/CommandLineTools/usr/bin:$PATH" \
+PATH="/Library/Developer/CommandLineTools/usr/bin:$PATH" \
 DEVELOPER_DIR=/Library/Developer/CommandLineTools \
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
 ```
 
-To test the running HTTP API rather than the in-process service, use:
+With the local demo running, exercise the HTTP API and configured KB:
 
 ```sh
 .venv/bin/python -m poc.evaluate_search --base-url http://127.0.0.1:8765
+.venv/bin/python poc/evaluation/run_cases.py
+.venv/bin/python poc/evaluation/run_cases.py --cases fresh_cases.json \
+  --output .poc/evaluation/fresh-http.json
+.venv/bin/python poc/evaluation/run_heldout.py
 ```
 
-The live evaluator uses public KB metadata and writes dated results. Unit tests
-use controlled inputs and do not establish live-provider quality. Keep evidence
-and results with the tested commit; [RESULTS.md](RESULTS.md) records this run.
+These cover 37 main scenarios, 38 earlier independent cases, 8 earlier recall
+misses, and 35 independent-review cases respectively. They are now disclosed
+regressions, not a future unseen accuracy benchmark. Reports default to ignored
+`.poc/evaluation/`; `--output` chooses another location. Each runner exits nonzero
+on failed checks. Without `--base-url`, the main evaluator runs in process and
+still uses the configured KB. Live results depend on provider state; deterministic
+unit tests do not establish live-provider quality.
 
-The PR's conversational-search workflow builds the local dashboard and runs the
-Python search/API and JavaScript interaction tests with controlled KB inputs.
-Live-provider evaluation and browser review are separate checks. Current counts,
-independent review findings and release prerequisites are in [RESULTS.md](RESULTS.md).
+For controlled HTTP boundary and body-timeout probes, start a separate local
+API-only listener in another terminal (keep the normal demo on port 8765):
+
+```sh
+ARM_SEARCH_PUBLIC_ORIGIN=https://dashboard.example \
+ARM_SEARCH_SERVE_STATIC=false ARM_SEARCH_DOCS_ENABLED=false \
+ARM_KB_SEARCH_URL=http://127.0.0.1:9 ARM_SEARCH_BODY_TIMEOUT=0.15 \
+ARM_SEARCH_REQUESTS_PER_MINUTE=1000 \
+.venv/bin/python -m poc.serve --port 8771
+```
+
+Then run the probes; stop that listener with Ctrl-C afterwards:
+
+```sh
+.venv/bin/python poc/evaluation/run_boundaries.py \
+  --base-url http://127.0.0.1:8771 --host dashboard.example
+.venv/bin/python poc/evaluation/run_targeted.py --slow-body-port 8771
+.venv/bin/python poc/evaluation/run_operations.py
+```
+
+The operations runner starts and stops its own controlled services on ports
+8772–8774 and writes private local logs. The boundary and operations checks use
+local simulated inputs; they are not production capacity measurements. See
+the [deployment runbook](deploy/README.md) for the container smoke test.
+
+The PR workflow builds both Hugo profiles, runs Python and JavaScript tests, and
+builds and probes the Linux Arm64 API image. It attaches revision metadata, JUnit,
+JavaScript TAP and container-smoke reports as **30-day CI artifacts**. It does not
+upload local live-provider reports or query history. Archive approved evidence
+with its revision before artifact expiry. Historical review evidence and the
+remaining release inputs are linked in [RESULTS.md](RESULTS.md).
 
 ## Deployment and operation
 

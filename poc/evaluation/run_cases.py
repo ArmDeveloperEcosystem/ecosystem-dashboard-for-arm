@@ -90,10 +90,15 @@ def assess(case, payload, catalog):
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:8765")
-    parser.add_argument("--output", default="regression-http-rerun.json")
-    parser.add_argument("--cases", default="regression_cases.json")
+    parser.add_argument(
+        "--output", type=Path, default=ROOT / ".poc/evaluation/regression-http.json"
+    )
+    parser.add_argument(
+        "--cases", default="regression_cases.json",
+        help="Case filename alongside this runner, or an absolute path",
+    )
     parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args()
     catalog = Catalog(ROOT / ".poc/public/poc-catalog.json")
@@ -105,7 +110,7 @@ def main():
         try:
             with httpx.Client(timeout=30) as client:
                 response = client.post(
-                    args.base_url + "/api/search", json=case["request"]
+                    args.base_url.rstrip("/") + "/api/search", json=case["request"]
                 )
                 entry["http_status"] = response.status_code
                 response.raise_for_status()
@@ -142,7 +147,8 @@ def main():
         "purpose": "Finite independent scenario checks; the summary is not an accuracy rate.",
         "cases": results,
     }
-    destination = CASE_DIR / args.output
+    destination = args.output
+    destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(output, indent=2) + "\n")
     print("Evidence:", destination)
     for entry in results:
@@ -164,6 +170,8 @@ def main():
         "of",
         len(results),
     )
+    if not all(entry["assessment"]["scenario_check_passed"] for entry in results):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

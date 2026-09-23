@@ -212,7 +212,7 @@ def check_response(response, catalog, expected, forbidden, constraints=None):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--output", default="poc/evaluation/live-search-revised.json")
+    p.add_argument("--output", type=Path, default=Path(".poc/evaluation/main-http.json"))
     p.add_argument(
         "--base-url", help="Run through the HTTP API, e.g. http://127.0.0.1:8765"
     )
@@ -274,7 +274,8 @@ def main():
         "total_scenarios": len(results),
         "results": results,
     }
-    Path(args.output).write_text(json.dumps(out, indent=2))
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(out, indent=2) + "\n")
     if out["passed_scenarios"] != len(results):
         raise SystemExit(1)
 

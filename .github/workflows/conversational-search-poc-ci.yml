@@ -34,6 +34,24 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Record tested revision
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p .poc/ci-results
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          Path('.poc/ci-results/revision.json').write_text(json.dumps({
+              'pr_head_sha': os.environ['PR_HEAD_SHA'],
+              'tested_merge_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+          }, indent=2) + '\n')
+          PY
+
       - name: Install checksum-pinned Hugo
         shell: bash
         env:
@@ -70,10 +88,14 @@ jobs:
         run: hugo --config config.toml,poc/config.local.toml --destination .poc/public
 
       - name: Test query interpretation, relevance and API contracts
-        run: python -m pytest poc/tests -q
+        run: python -m pytest poc/tests -q --junitxml=.poc/ci-results/python-tests.xml
 
       - name: Test browser interaction contracts
-        run: node --test poc/tests/ui_search.test.cjs
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test --test-reporter=tap poc/tests/ui_search.test.cjs \
+            | tee .poc/ci-results/javascript-tests.tap
 
       - name: Build production-path catalog and API image
         run: |
@@ -83,4 +105,21 @@ jobs:
           docker build -f poc/deploy/Dockerfile -t arm-dashboard-search:ci .
 
       - name: Exercise nonroot API image with production settings
-        run: python poc/deploy/smoke.py --image arm-dashboard-search:ci
+        run: |
+          python poc/deploy/smoke.py --image arm-dashboard-search:ci \
+            --output .poc/ci-results/container-smoke.json
+
+      - name: Attach controlled test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: conversational-search-${{ github.event.pull_request.head.sha }}
+          retention-days: 30
+          if-no-files-found: warn
+          # Only these controlled reports are uploaded, never the whole .poc directory.
+          include-hidden-files: true
+          path: |
+            .poc/ci-results/revision.json
+            .poc/ci-results/python-tests.xml
+            .poc/ci-results/javascript-tests.tap
+            .poc/ci-results/container-smoke.json

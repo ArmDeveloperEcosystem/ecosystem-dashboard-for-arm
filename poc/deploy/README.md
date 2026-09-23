@@ -27,6 +27,19 @@ hugo --config config.toml,poc/deploy/config.production.toml \
 docker build -f poc/deploy/Dockerfile -t arm-dashboard-search:REVIEWED_SHA .
 ```
 
+Exercise that image locally before staging (requires a running Docker daemon):
+
+```sh
+mkdir -p .poc/evaluation
+python poc/deploy/smoke.py --image arm-dashboard-search:REVIEWED_SHA \
+  --output .poc/evaluation/container-smoke.json
+```
+
+The smoke runner starts a temporary API container with a controlled KB outage,
+checks the API with a read-only filesystem and production settings, and removes
+the container on exit. CI runs this same check and attaches the report;
+it does not replace the staging checks below.
+
 Deploy static output through the existing reviewed static-site process. The image
 copies only runtime Python modules and the catalog, not package Markdown sources,
 credentials, local reports or the full static site. `Dockerfile.dockerignore`
