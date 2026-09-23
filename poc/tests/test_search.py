@@ -111,8 +111,8 @@ def test_malformed_response_is_safe_fallback(catalog):
     assert s.search("Prometheus")["mode"] == "catalog_fallback"
 
 
-def test_api_validation_and_local_boundary(service, tmp_path):
-    app = create_app(service=service, output_dir=tmp_path)
+def test_api_validation_and_local_boundary(service):
+    app = create_app(service=service)
     with TestClient(app, base_url="http://127.0.0.1:8765") as client:
         assert client.get("/api/health").status_code == 200
         assert client.post("/api/search", json={"query": "x" * 501}).status_code == 422
@@ -131,8 +131,6 @@ def test_api_validation_and_local_boundary(service, tmp_path):
             ).status_code
             == 403
         )
-        assert client.post("/api/discovery/run").status_code == 403
-        assert client.get("/api/discovery/download/docx").status_code == 404
         result = client.post("/api/search", json={"query": "Prometheus"})
         assert result.status_code == 200
         assert result.json()["results"][0]["title"] == "Prometheus"
@@ -167,9 +165,9 @@ def test_malformed_kb_url_is_rejected(catalog):
     assert catalog.resolve_hit({"url": "https://[malformed", "title": "Qdrant"}) == []
 
 
-def test_malformed_content_length_returns_400(service, tmp_path):
+def test_malformed_content_length_returns_400(service):
     with TestClient(
-        create_app(service=service, output_dir=tmp_path),
+        create_app(service=service),
         base_url="http://127.0.0.1:8765",
     ) as c:
         assert (

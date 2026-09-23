@@ -36,7 +36,7 @@ def main():
     import uvicorn
 
     print(
-        f"\nDashboard: http://127.0.0.1:{args.port}/linux/\nInternal report: http://127.0.0.1:{args.port}/internal/opportunities\n",
+        f"\nDashboard: http://127.0.0.1:{args.port}/linux/\nAPI docs: http://127.0.0.1:{args.port}/api/docs\n",
         flush=True,
     )
     uvicorn.run(create_app(), host="127.0.0.1", port=args.port)

@@ -1,1 +1,1 @@
-"""Local dashboard PoCs; production hosting remains unchanged."""
+"""Local conversational-search PoC; production hosting remains unchanged."""

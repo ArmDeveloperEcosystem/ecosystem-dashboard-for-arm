@@ -1,8 +1,15 @@
-# Linux ecosystem dashboard — local PoCs
+# Linux ecosystem dashboard — conversational search PoC
 
-Implements Pareena's updated two-feature proposal on a fresh checkout of `main`
-(`e1871540f0a3e42e7588ab44b09e4796de967fd8`). Development branch:
-`feature/pareena-search-and-arm64-gap-pocs`.
+Implements Pareena's agreed first-feature scope: discover packages already in
+the Linux dashboard using natural-language queries, grounded in the Arm
+knowledge base and dashboard catalog. Accurate package discovery is the primary
+review criterion; basic refinement and filter synchronization support it.
+
+From an existing repository clone, check out the review branch:
+
+```sh
+gh pr checkout 1092
+```
 
 ## Run locally
 
@@ -25,21 +32,21 @@ verified Hugo binary is at `.poc/tools/hugo-bin/hugo`; add its directory to PATH
 before building or running the upstream tests.
 
 - Dashboard: <http://127.0.0.1:8765/linux/>
-- Internal report: <http://127.0.0.1:8765/internal/opportunities>
 - API contract: <http://127.0.0.1:8765/api/docs>
 
 The launcher builds Hugo and serves the static site and APIs on the same loopback
 origin. Stop with Ctrl-C. Re-run after source changes. `--port 8766` selects a
 free port. Local configuration disables Git-derived page dates, avoiding the
 macOS Xcode licence requirement without changing Xcode settings. It does not
-change production configuration. Report state stays in `.poc/discovery-final/`;
-set `POC_DISCOVERY_OUTPUT` to use a separate investigation queue.
+change production configuration. Local build output stays under `.poc/public/`.
+The loopback address is accessible only on the machine running the application.
 
-## Feature 1: natural-language package discovery
+## What to review
 
 The search bar stays inside the existing Linux dashboard. Existing package
 rows, support information, tests, categories, license filters and resource links
-remain available. Windows retains its existing search.
+remain available. The checked catalog contains 1,177 Linux records. Windows
+retains its existing search.
 
 Try:
 
@@ -50,6 +57,11 @@ Try:
 5. `Vector databases with Apache 2.0 licenses` — explains that the specific
    licence requirement cannot be verified by this PoC.
 
+For each query, check that the returned packages are relevant and already
+represented in the dashboard, their details and resource links still work, and
+any limitations are clearly stated. Add representative team queries and expected
+packages to the PR review. Empty results are preferable to invented records.
+
 ### Retrieval and truth
 
 The existing [Arm KB search API](https://knowledge.armdevtechapi.com/docs) is
@@ -58,8 +70,9 @@ so raw top results are not automatically suitable as dashboard results. The
 local service normalizes platform/license boilerplate, resolves trusted Arm
 result URLs and article titles to catalog records, and combines KB evidence with
 catalog description matching and a small reviewed capability vocabulary. This
-is a **hybrid retrieval baseline**, not an unrestricted conversational model or
-proof that the unmodified KB endpoint meets the requirement on its own.
+is a **hybrid retrieval baseline**. No LLM or model API key is required. It does
+not establish that the unmodified KB endpoint meets the requirement on its own,
+and it does not provide unrestricted conversational reasoning.
 
 Every displayed identity comes from a Hugo-generated catalog using the same
 package source files as the UI. Stable source-file IDs distinguish commercial
@@ -89,50 +102,6 @@ Configuration: `ARM_KB_SEARCH_URL` (default documented endpoint), optional
 no KB token. Approved staging access, quotas, corpus freshness and dashboard-only
 retrieval options still require confirmation with the KB owner.
 
-## Feature 2: internal Linux Arm64 opportunity report
-
-Use **Run discovery** on the internal page, or:
-
-```sh
-.venv/bin/python -m poc.discovery \
-  --config poc/discovery/config.example.yaml \
-  --output-dir .poc/discovery-final \
-  --catalog .poc/public/poc-catalog.json
-```
-
-The initial configuration selects six repository/image scopes and discovers up
-to two additional repositories from a bounded, star-ranked GitHub query. It is
-not a scan of the entire ecosystem. The configured maximum is eight candidates,
-50 metadata requests and 180 seconds of collection, with per-request and
-pagination caps. These replace the earlier six-source 200/20/5 proposal for this
-small, two-source local demonstration; they are configurable, not promised counts.
-
-The report distinguishes **supported**, **gap** and **unknown** for exact release
-artifacts/container tags. A cataloged project can still have an artifact-specific
-gap. Unknown is never equated with unsupported. The demo intentionally checks the
-legacy `library/mysql:5.7` tag to show how a version-specific gap differs from a
-project-wide support claim. Selected upstream ownership is not independently
-certified; collected evidence is authoritative for each selected repository.
-
-SQLite retains candidates, observation history, evidence, refresh dates and run
-summaries. Repeat runs skip investigations until due (seven days for supported
-and gaps, one day for unknown, configurable). The UI retains old findings with
-original dates and a historical label; fresh counts remain separate. Word, JSON
-and CSV outputs have distinct purposes: review, complete machine-readable
-traceability, and spreadsheet filtering. Reports stay internal and never mutate
-the public catalog or contact maintainers.
-
-The optional AI evidence-interpretation adapter is implemented and tested with
-controlled responses. It is **disabled in the live demo**. To enable the provided
-adapter, configure an approved `OPENAI_API_KEY` and `OPENAI_MODEL` server-side and
-set `ai_review.enabled` in the discovery config. Do not commit secrets. AI reviews
-have bounded calls/time/output; quotations and URLs must match collected evidence.
-AI cannot override deterministic metadata verdicts. Live provider validation is
-still required when the team's model access is available.
-
-See [discovery/README.md](discovery/README.md) for evidence policies, connector
-limits, optional AI contract, source links and persistent-state behaviour.
-
 ## Tests and review
 
 Build the local catalog first (`python -m poc.dev`, then stop it), then:
@@ -157,8 +126,10 @@ The live evaluator uses public KB metadata and writes dated results. Unit tests
 use controlled inputs and do not establish live-provider quality. Keep evidence
 and results with the tested commit; [RESULTS.md](RESULTS.md) records this run.
 
+The recorded checks comprise 113 existing repository tests, 22 Python search/API
+tests, 8 JavaScript interaction tests and 20 live query scenarios.
+
 The frontend is opt-in: only `poc/config.local.toml` enables it. Default production
-builds remain on existing search. This branch provides local reviewable PoCs;
-production needs approved hosting/authentication, durable private state/storage,
-monitoring, model/API ownership, broader relevance evaluation and deployment review.
-No personal orchestrator is included; that remains a separate design task.
+builds remain on existing search. This branch provides a local PoC for review;
+staging requires broader relevance evaluation, approved hosting and access
+controls, API ownership and quotas, monitoring, and deployment review.
