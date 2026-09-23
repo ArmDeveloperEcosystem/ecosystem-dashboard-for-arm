@@ -28,9 +28,11 @@ from .relevance import (
     verifies_concepts,
     role_allowed,
     requested_catalog_roles,
-    positive_stems,
+    catalog_roles,
     transfer_request,
     transfer_role,
+    backup_request,
+    backup_role,
 )
 
 
@@ -50,7 +52,6 @@ class SearchService:
             self.title_licenses.setdefault(normal(package["title"]), set()).add(
                 package["license"]
             )
-            package["_positive_description"] = positive_stems(package["description"])
 
     def retrieve(self, query):
         with self.lock:
@@ -110,6 +111,7 @@ class SearchService:
         concepts = remaining_concepts(subject, groups, attributes)
         required_roles = requested_catalog_roles(subject)
         transfer = bool(transfer_request(subject))
+        backup = backup_request(subject)
         if not terms and not groups:
             notices.append(
                 "Describe a capability, for example “databases for storing embeddings”."
@@ -174,10 +176,16 @@ class SearchService:
                 continue
             name = normal(package["title"])
             exact = subject == name
+            if intent.exact_title and not exact:
+                continue
             text = normal(package["description"])
-            if not exact and not required_roles <= package["_positive_description"]:
+            if not exact and not required_roles <= catalog_roles(
+                package["description"]
+            ):
                 continue
             if transfer and not exact and not transfer_role(package):
+                continue
+            if backup and not exact and not backup_role(package):
                 continue
             catalog_groups = covered_groups(package, text, groups)
             overlap = terms & stems(package["_text"])
@@ -225,8 +233,9 @@ class SearchService:
             # A plain database request remains a role request, even when KB evidence
             # describes another product's database dependency.
             if (
-                "database" in terms
+                bool(stems("database") & terms)
                 and not transfer
+                and not backup
                 and not exact
                 and not database_role(package)
             ):
@@ -283,9 +292,14 @@ class SearchService:
                 "Recorded Linux Arm64 tests only. A recorded test is not a guarantee that every test passed; expand the package to review the evidence."
             )
         if not ranked and (attributes or concepts):
+            # Search stems are internal matching keys, not words a visitor can
+            # meaningfully refine (for example "writing" becomes "write").
+            concept_labels = {term for term in words(subject) if stems(term) & concepts}
             notices.append(
                 "The available evidence does not verify the requested attributes: "
-                + ", ".join(sorted(set(label for label, _ in attributes) | concepts))
+                + ", ".join(
+                    sorted(set(label for label, _ in attributes) | concept_labels)
+                )
                 + ". Try a broader capability or clarify the requirement."
             )
         if not ranked:

@@ -1,4 +1,4 @@
-# Linux ecosystem dashboard — conversational search PoC
+# Linux ecosystem dashboard — conversational package search
 
 Implements Pareena's agreed first-feature scope: discover packages already in
 the Linux dashboard using natural-language queries, grounded in the Arm
@@ -68,9 +68,11 @@ packages to the PR review. Empty results are preferable to invented records.
 The existing [Arm KB search API](https://knowledge.armdevtechapi.com/docs) is
 called first. Its unfiltered corpus includes learning paths and other material,
 so raw top results are not automatically suitable as dashboard results. The
-local service removes conversational framing while retaining software requirements,
+service removes conversational framing while retaining software requirements,
 resolves trusted Arm result URLs and article titles to catalog records, and combines
-KB evidence with catalog description matching and reviewed capability vocabulary. This
+KB evidence with catalog description matching, reviewed capability vocabulary and
+English morphology normalization. Software-role checks distinguish a compiler
+from a tool that merely invokes compilation. This
 is a **hybrid retrieval baseline**. No LLM or model API key is required. It does
 not establish that the unmodified KB endpoint meets the requirement on its own,
 and it does not provide unrestricted conversational reasoning.
@@ -98,9 +100,10 @@ rather than a guessed certification, licence, performance, date or version answe
 
 The KB client waits at most eight seconds for retrieval and admits at most four
 concurrent requests. A slow request returns control to the catalog fallback;
-its worker keeps its capacity slot until the network request finishes. This
-bounds waiting and queued work, but does not forcibly cancel a running network
-operation or guarantee an eight-second process shutdown.
+its worker keeps its capacity slot until the network request finishes. Streamed
+responses have time and size bounds. The service closes its client on shutdown;
+the deployment supervisor supplies the final process termination deadline. An
+eight-second caller limit is not a promise to forcibly cancel network I/O.
 
 This implementation has finite query vocabulary and conservative matching.
 It can miss valid paraphrases or packages whose descriptions lack the requested
@@ -109,7 +112,7 @@ concept; a partial word match cannot silently drop requirements such as live
 backups or packet capture. This prioritizes avoiding unsupported matches and can
 increase empty results for unfamiliar wording. Monitoring and container-orchestration queries also use catalog category
 boundaries to avoid incidental mentions being mistaken for a package's role.
-Evaluate more stakeholder queries before staging; no universal semantic
+Continue evaluating stakeholder queries during staging; no universal semantic
 accuracy or full conversational reasoning is claimed. The representative checks
 are executable with `python -m poc.evaluate_search` and retained under
 `poc/evaluation/`; they are scenario checks, not a statistical relevance benchmark.
@@ -159,9 +162,30 @@ and results with the tested commit; [RESULTS.md](RESULTS.md) records this run.
 The PR's conversational-search workflow builds the local dashboard and runs the
 Python search/API and JavaScript interaction tests with controlled KB inputs.
 Live-provider evaluation and browser review are separate checks. Current counts,
-independent review findings and remaining query gaps are in [RESULTS.md](RESULTS.md).
+independent review findings and release prerequisites are in [RESULTS.md](RESULTS.md).
 
-The frontend is opt-in: only `poc/config.local.toml` enables it. Default production
-builds remain on existing search. This branch provides a local PoC for review;
-staging requires broader relevance evaluation, approved hosting and access
-controls, API ownership and quotas, monitoring, and deployment review.
+## Deployment and operation
+
+The frontend is opt-in. `poc/config.local.toml` enables the local demonstration;
+`poc/deploy/config.production.toml` builds the same feature for the dashboard's
+`/ecosystem-dashboard` path. Default site builds keep their existing search.
+
+The [deployment runbook](deploy/README.md) provides an API container, same-origin
+reverse-proxy configuration, runtime settings, readiness checks, rollout steps
+and rollback. Build the static site and API catalog from the same revision so
+returned IDs and displayed records agree. The existing static-content workflows
+cannot host the Python API; the API runs behind the approved dashboard origin.
+
+The service enforces actual streamed request-size and body-time limits, bounds
+in-flight requests and per-client request rates, validates host/origin, disables
+public API documentation, and emits aggregate operational events without raw
+query text or tokens. Forwarded client addresses are trusted only from explicitly
+configured proxy IPs/CIDRs. Limits are per process; the shared ingress must enforce
+the agreed global traffic budget when replicas are added.
+
+The runtime-only lock is `poc/requirements.runtime.lock.txt`; the full test lock
+adds test tools. See [RESULTS.md](RESULTS.md) for the exact tests and remaining
+release inputs. Supplying deployment artifacts does not activate the live site.
+The deployment owner must confirm API hosting, same-origin routing, KB usage
+limits and log/alert destinations, then complete staging acceptance and the
+repository's existing review/release process.

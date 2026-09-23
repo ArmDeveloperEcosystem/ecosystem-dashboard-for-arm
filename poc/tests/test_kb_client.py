@@ -24,7 +24,9 @@ def test_deadline_returns_while_slow_worker_keeps_its_slot_then_recovers():
             returned_from_transport.set()
         return httpx.Response(200, json={"results": []})
 
-    client = KBClient(deadline=0.05, max_inflight=1, transport=httpx.MockTransport(handle))
+    client = KBClient(
+        deadline=0.05, max_inflight=1, transport=httpx.MockTransport(handle)
+    )
     try:
         started = time.monotonic()
         with pytest.raises(httpx.TimeoutException, match="deadline"):
@@ -94,7 +96,9 @@ def test_http_errors_and_invalid_json_propagate_and_release_capacity():
             httpx.Response(200, json={"results": []}),
         ]
     )
-    client = KBClient(max_inflight=1, transport=httpx.MockTransport(lambda _: next(responses)))
+    client = KBClient(
+        max_inflight=1, transport=httpx.MockTransport(lambda _: next(responses))
+    )
     try:
         for exception in (httpx.HTTPStatusError, ValueError, ValueError):
             with pytest.raises(exception):
@@ -124,7 +128,9 @@ def test_network_failure_propagates_without_losing_admission_slot():
 
 
 @pytest.mark.parametrize("claimed_length", [None, "1", "invalid", "-1"])
-def test_streamed_size_limit_is_enforced_without_trusting_content_length(claimed_length):
+def test_streamed_size_limit_is_enforced_without_trusting_content_length(
+    claimed_length,
+):
     class Body(httpx.SyncByteStream):
         consumed = 0
         closed = False
@@ -139,7 +145,9 @@ def test_streamed_size_limit_is_enforced_without_trusting_content_length(claimed
 
     body = Body()
     headers = {} if claimed_length is None else {"content-length": claimed_length}
-    transport = httpx.MockTransport(lambda _: httpx.Response(200, headers=headers, stream=body))
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(200, headers=headers, stream=body)
+    )
     client = KBClient(max_response_bytes=70_000, transport=transport)
     try:
         with pytest.raises(ValueError, match="exceeds limit"):
@@ -157,7 +165,9 @@ def test_declared_oversized_body_is_rejected_before_reading():
             yield b""
 
     transport = httpx.MockTransport(
-        lambda _: httpx.Response(200, headers={"content-length": "2000001"}, stream=UnreadBody())
+        lambda _: httpx.Response(
+            200, headers={"content-length": "2000001"}, stream=UnreadBody()
+        )
     )
     client = KBClient(transport=transport)
     try:
@@ -176,7 +186,10 @@ def test_success_preserves_query_headers_limit_and_disallows_redirects():
             assert dict(request.url.params) == {"q": "message brokers", "k": "50"}
             assert request.headers["User-Agent"] == "test-agent"
             assert request.extensions["timeout"] == {
-                "connect": 2.0, "read": 6.0, "write": 2.0, "pool": 2.0
+                "connect": 2.0,
+                "read": 6.0,
+                "write": 2.0,
+                "pool": 2.0,
             }
             return httpx.Response(200, json={"results": [{"title": "RabbitMQ"}]})
         return httpx.Response(302, headers={"location": "https://elsewhere.example/"})
@@ -188,5 +201,32 @@ def test_success_preserves_query_headers_limit_and_disallows_redirects():
         with pytest.raises(httpx.HTTPStatusError):
             client.fetch(ENDPOINT, "redirect", {})
         assert len(requests) == 2
+    finally:
+        client.close()
+
+
+def test_slow_trickle_releases_worker_without_waiting_for_a_large_chunk():
+    closed = threading.Event()
+
+    class Trickle(httpx.SyncByteStream):
+        def __iter__(self):
+            for _ in range(1000):
+                time.sleep(0.005)
+                yield b" "
+
+        def close(self):
+            closed.set()
+
+    client = KBClient(
+        deadline=0.02,
+        max_inflight=1,
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=Trickle())),
+    )
+    try:
+        with pytest.raises(httpx.TimeoutException):
+            client.fetch(ENDPOINT, "query", {})
+        assert closed.wait(0.5), (
+            "Timed-out trickle must not hold its worker until 64 KB"
+        )
     finally:
         client.close()

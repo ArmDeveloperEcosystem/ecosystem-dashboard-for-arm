@@ -27,6 +27,7 @@ class KBClient:
         max_inflight: int = 4,
         max_response_bytes: int = 2_000_000,
         transport: httpx.BaseTransport | None = None,
+        trust_env: bool = True,
     ):
         if not math.isfinite(deadline) or deadline <= 0:
             raise ValueError("KB deadline must be a positive finite duration")
@@ -35,6 +36,9 @@ class KBClient:
         self.deadline = deadline
         self.max_response_bytes = max_response_bytes
         self.transport = transport
+        self.trust_env = trust_env
+        self._closed = False
+        self._lifecycle_lock = threading.Lock()
         self._slots = threading.BoundedSemaphore(max_inflight)
         self._executor = ThreadPoolExecutor(
             max_workers=max_inflight, thread_name_prefix="arm-kb"
@@ -42,13 +46,18 @@ class KBClient:
 
     def fetch(self, endpoint: str, query: str, headers: dict[str, str]) -> dict:
         started = time.monotonic()
-        if not self._slots.acquire(blocking=False):
-            raise httpx.TimeoutException("Knowledge-base search is at capacity")
-        try:
-            future = self._executor.submit(self._request, endpoint, query, dict(headers))
-        except BaseException:
-            self._slots.release()
-            raise
+        with self._lifecycle_lock:
+            if self._closed:
+                raise httpx.ConnectError("Knowledge-base client is closed")
+            if not self._slots.acquire(blocking=False):
+                raise httpx.TimeoutException("Knowledge-base search is at capacity")
+            try:
+                future = self._executor.submit(
+                    self._request, endpoint, query, dict(headers)
+                )
+            except BaseException:
+                self._slots.release()
+                raise
         # Releasing on the caller's timeout would admit more work while its
         # previous network request is still running. Release only on completion.
         future.add_done_callback(lambda _: self._slots.release())
@@ -64,11 +73,12 @@ class KBClient:
             ) from None
 
     def _request(self, endpoint: str, query: str, headers: dict[str, str]) -> dict:
+        worker_started = time.monotonic()
         timeout = httpx.Timeout(connect=2.0, read=6.0, write=2.0, pool=2.0)
         with httpx.Client(
             timeout=timeout,
             follow_redirects=False,
-            trust_env=True,
+            trust_env=self.trust_env,
             transport=self.transport,
         ) as client:
             with client.stream(
@@ -82,7 +92,13 @@ class KBClient:
                 if content_length > self.max_response_bytes:
                     raise ValueError("KB response exceeds limit")
                 body = bytearray()
-                for chunk in response.iter_bytes(chunk_size=65_536):
+                # Do not buffer up to a fixed chunk size: a slow trickle must be
+                # checked against the worker deadline after each network chunk.
+                for chunk in response.iter_bytes():
+                    if time.monotonic() - worker_started > self.deadline:
+                        raise httpx.TimeoutException(
+                            "Knowledge-base response stream exceeded deadline"
+                        )
                     if len(body) + len(chunk) > self.max_response_bytes:
                         raise ValueError("KB response exceeds limit")
                     body.extend(chunk)
@@ -91,9 +107,11 @@ class KBClient:
             raise ValueError("Invalid KB response")
         return payload
 
-    def close(self) -> None:
+    def close(self, *, wait: bool = True) -> None:
         """Finish admitted requests and release the worker pool (used by tests)."""
-        self._executor.shutdown(wait=True, cancel_futures=True)
+        with self._lifecycle_lock:
+            self._closed = True
+            self._executor.shutdown(wait=wait, cancel_futures=True)
 
 
 _CLIENT = KBClient()

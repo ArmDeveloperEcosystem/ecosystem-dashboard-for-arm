@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from poc.catalog import Catalog
 from poc.search_service import SearchService
-from poc.relevance import has_positive, verified_attributes
+from poc.relevance import has_positive, verified_attributes, stems
 
 
 @pytest.fixture
@@ -385,3 +385,324 @@ def test_kb_generic_request_does_not_fill_a_missing_capture_fact_from_category(c
     )
     assert "Libpcap" in result
     assert "DPDK" not in result
+
+
+@pytest.mark.parametrize(
+    "queries, required, forbidden",
+    [
+        (
+            (
+                "I am trying to find a toolkit for TLS connections.",
+                "Can we get a toolkit for TLS connections?",
+                "Could you find a TLS toolkit with QUIC?",
+            ),
+            {"OpenSSL"},
+            {"curl", "Apache httpd", "MySQL"},
+        ),
+        (
+            (
+                "Please help us automate configuration management with playbooks.",
+                "Configuration management automation with playbooks",
+                "Tools for automating configuration management using playbooks",
+            ),
+            {"Ansible"},
+            {"Terraform", "Red Hat Ansible Automation Platform"},
+        ),
+        (
+            (
+                "I would like a database built around nodes and relationships.",
+                "A database for nodes and edges",
+                "Please show graph databases",
+            ),
+            {"Neo4j", "JanusGraph"},
+            {"MySQL", "Qdrant", "Sqoop"},
+        ),
+        (
+            (
+                "Is there a web server that deals with HTTPS automatically?",
+                "Is there a web server with automatic HTTPS?",
+                "Could I use a web server that automatically handles HTTPS?",
+            ),
+            {"Caddy"},
+            {"NGINX", "MySQL", "Wordpress", "Gunicorn"},
+        ),
+        (
+            (
+                "Which open-source databases are meant for time-stamped measurements?",
+                "Databases for timestamped measurements",
+                "Open-source databases designed for time-stamped data",
+            ),
+            {"TimescaleDB", "InfluxDB"},
+            {"Neo4j", "Qdrant", "Chroma"},
+        ),
+        (
+            (
+                "Could I get a tool to convert scans into text?",
+                "Tools for converting scanned documents into text",
+                "Please find a tool for converting scans to text",
+            ),
+            {"Tesseract"},
+            {"Vector", "Agent", "Benchmark"},
+        ),
+        (
+            (
+                "Read and write geospatial data formats",
+                "Libraries for reading and writing geospatial formats",
+                "A library for reading and writing geospatial data formats",
+            ),
+            {"Geospatial Data Abstraction Library (GDAL)"},
+            {"Apache Arrow", "Benchmark"},
+        ),
+        (
+            (
+                "Programs to make ZIP archives",
+                "Programs to create ZIP archives",
+                "ZIP file archivers",
+            ),
+            {"7-zip"},
+            {"RoaringBitmap", "Vector", "Gzip"},
+        ),
+    ],
+)
+def test_reported_recall_misses_and_distinct_paraphrases(
+    catalog, queries, required, forbidden
+):
+    service = SearchService(catalog, transport=lambda _: {"results": []})
+    for query in queries:
+        response = service.search(query)
+        actual = names(response)
+        assert required <= actual, (query, response)
+        assert not forbidden & actual, (query, response)
+        if "open-source" in query.lower():
+            assert all(p["license"] == "opensource" for p in response["results"])
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "TLS toolkit with lunar encryption",
+        "Graph databases with lunar replication",
+        "Archiving tools supporting unsupportedzip",
+        "Automate configuration management with lunar playbooks",
+        "Databases for time-stamped measurements with geospatial indexes",
+        "Programs to make ZIP archives with lunar encryption",
+    ],
+)
+def test_new_capability_vocabulary_preserves_unverified_requirements(catalog, query):
+    response = SearchService(catalog, transport=lambda _: {"results": []}).search(query)
+    assert not response["results"]
+    assert response["notices"]
+
+
+def test_inflections_are_consistent_under_concurrent_requests():
+    from concurrent.futures import ThreadPoolExecutor
+
+    forms = [
+        ("write", "writing"),
+        ("automate", "automation"),
+        ("archive", "archives", "archiver"),
+        ("scan", "scanned", "scanning"),
+        ("connect", "connections"),
+    ]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        batches = list(pool.map(lambda terms: [stems(t) for t in terms], forms * 40))
+    assert all(all(stem == batch[0] for stem in batch) for batch in batches)
+
+
+@pytest.mark.parametrize("query", ["compilers", "Can you find a compiler?"])
+def test_compiler_role_is_not_inferred_from_compilation_actions(catalog, query):
+    service = SearchService(catalog, transport=lambda _: {"results": []})
+    actual = names(service.search(query))
+    assert {"Clang", "GNU Toolchain (GCC)", "LLVM Flang"} <= actual
+    assert not {"Apache Ant", "Gradle", "CUDA-GDB", "OpenEmbedded (Yocto)"} & actual
+
+
+def test_library_role_plural_remains_distinct_from_toolkit(catalog):
+    service = SearchService(catalog, transport=lambda _: {"results": []})
+    for query in ("TLS library", "TLS libraries"):
+        actual = names(service.search(query))
+        assert "GnuTLS" in actual
+        assert "OpenSSL" not in actual  # Catalog identifies this as a toolkit.
+    assert names(service.search("TLS toolkit")) == {"OpenSSL"}
+
+
+@pytest.mark.parametrize(
+    "description, expected",
+    [
+        ("A multi-model database.", False),
+        ("A multi-model database with tenant metadata.", False),
+        ("Not a multi-tenant database.", False),
+        ("A multi-tenant database.", True),
+        ("A multi tenant database.", True),
+    ],
+)
+def test_compound_attributes_require_every_word_in_a_positive_phrase(
+    description, expected
+):
+    assert (
+        verified_attributes(description, [("multi-tenant", ("multi-tenant",))])
+        is expected
+    )
+
+
+def test_partial_compound_kb_evidence_does_not_establish_multi_tenancy(catalog):
+    hit = {
+        "title": "Qdrant multi-model deployment",
+        "snippet": "Qdrant is a multi-model vector database with tenant metadata.",
+        "url": "https://learn.arm.com/example/qdrant/multi-model/",
+    }
+    service = SearchService(catalog, transport=lambda _: {"results": [hit]})
+    assert "Qdrant" not in names(service.search("multi-tenant vector databases"))
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "I need a utility for live MySQL database backups.",
+        "Tools for live backups of MySQL databases",
+        "Live MySQL database backup tools",
+        "Back up MySQL databases live",
+    ],
+)
+def test_database_can_be_the_object_of_a_backup_request(catalog, query):
+    service = SearchService(catalog, transport=lambda _: {"results": []})
+    actual = names(service.search(query))
+    assert "Xtrabackup" in actual
+    assert not {"MySQL", "Percona Server for MYSQL", "Keepalived"} & actual
+
+
+def test_database_role_remains_required_when_backups_are_a_feature(catalog):
+    service = SearchService(catalog, transport=lambda _: {"results": []})
+    actual = names(service.search("databases with enhanced backups"))
+    assert "Percona Server for MYSQL" in actual
+    assert "Xtrabackup" not in actual
+
+
+def test_exact_short_package_name_does_not_admit_incidental_mentions(catalog):
+    hit = {
+        "title": "Cassandra with R",
+        "snippet": "Cassandra can be queried from the R programming language.",
+        "url": "https://learn.arm.com/example/cassandra/r/",
+    }
+    service = SearchService(catalog, transport=lambda _: {"results": [hit]})
+    assert names(service.search("R")) == {"R"}
+    assert names(service.search("Please find R")) == {"R"}
+    editions = service.search("Weaviate")["results"]
+    assert {p["id"] for p in editions} == {
+        p["id"] for p in catalog.packages if p["title"] == "Weaviate"
+    }
+
+
+def test_redis_compatible_datastore_is_not_a_relational_database(catalog):
+    service = SearchService(catalog, transport=lambda _: {"results": []})
+    assert "Dragonflydb (Dragonfly)" in names(service.search("in-memory data store"))
+    assert "Dragonflydb (Dragonfly)" not in names(service.search("SQL databases"))
+
+
+def test_open_firewall_protocol_does_not_establish_protocol_load_balancing(catalog):
+    hit = {
+        "title": "Install NGINX",
+        "snippet": "Install NGINX. Allow HTTP traffic: sudo ufw allow 80/tcp.",
+        "url": "https://learn.arm.com/example/nginx/install/",
+    }
+    service = SearchService(catalog, transport=lambda _: {"results": [hit]})
+    actual = names(
+        service.search("Find a load balancer for TCP and HTTP applications.")
+    )
+    assert "Haproxy" in actual
+    assert "NGINX" not in actual
+
+
+def test_scoped_protocol_load_balancing_evidence_is_admitted(catalog):
+    hit = {
+        "title": "NGINX TCP and HTTP load balancing",
+        "snippet": "NGINX provides TCP and HTTP load balancing for application traffic.",
+        "url": "https://learn.arm.com/example/nginx/load-balancing/",
+    }
+    service = SearchService(catalog, transport=lambda _: {"results": [hit]})
+    actual = names(
+        service.search("Find a load balancer for TCP and HTTP applications.")
+    )
+    assert {"Haproxy", "NGINX"} <= actual
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "Encryption is not supported by RabbitMQ.",
+        "Encryption support is unavailable in RabbitMQ.",
+        "Encryption and compression are not supported by RabbitMQ.",
+        "RabbitMQ doesn't support encryption.",
+    ],
+)
+def test_support_negation_on_either_side_of_a_fact_is_not_positive_evidence(
+    catalog, statement
+):
+    hit = {
+        "title": "RabbitMQ security",
+        "snippet": statement,
+        "url": "https://learn.arm.com/example/rabbitmq/security/",
+    }
+    service = SearchService(catalog, transport=lambda _: {"results": [hit]})
+    assert "RabbitMQ" not in names(service.search("encryption tools"))
+
+
+def test_positive_occurrences_survive_other_negative_occurrences():
+    assert has_positive(
+        "Encryption was unavailable in old releases. The current release supports encryption.",
+        ("encryption",),
+    )
+    assert has_positive(
+        "It supports not only encryption but also authentication.", ("encryption",)
+    )
+    assert not verified_attributes(
+        "Encrypted storage is unsupported.",
+        [("encrypted storage", ("encrypted storage",))],
+    )
+
+
+@pytest.mark.parametrize(
+    "query", ["Just web servers", "HTTP servers", "Can you find a web server?"]
+)
+def test_explicit_web_server_role_does_not_inherit_every_proxy(catalog, query):
+    service = SearchService(catalog, transport=lambda _: {"results": []})
+    actual = names(service.search(query))
+    assert {"Apache httpd", "NGINX", "Caddy"} <= actual
+    assert "Haproxy" not in actual
+    assert "Haproxy" in names(service.search("reverse proxy"))
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "What can distribute HTTP requests across several servers?",
+        "A load balancer for HTTP applications",
+        "A load balancer for TCP applications",
+    ],
+)
+def test_combined_protocol_fact_can_satisfy_one_requested_protocol(catalog, query):
+    service = SearchService(catalog, transport=lambda _: {"results": []})
+    actual = names(service.search(query))
+    assert "Haproxy" in actual
+    assert not {"MySQL", "WRK", "Gunicorn"} & actual
+
+
+def test_combined_web_server_and_reverse_proxy_query_requires_both_capabilities(
+    catalog,
+):
+    service = SearchService(catalog, transport=lambda _: {"results": []})
+    actual = names(service.search("Reverse proxy web servers"))
+    assert {"NGINX", "NGINX Plus"} <= actual
+    assert not {"Haproxy", "Gunicorn", "WRK", "MySQL", "Caddy"} & actual
+    assert "Haproxy" in names(service.search("reverse proxy"))
+    assert "Gunicorn" not in names(service.search("reverse proxy"))
+
+
+def test_web_server_can_gain_reverse_proxy_capability_from_its_own_evidence(catalog):
+    hit = {
+        "title": "Configure Caddy as a reverse proxy",
+        "snippet": "Caddy's reverse proxy handles incoming requests to upstream application services.",
+        "url": "https://learn.arm.com/example/caddy/proxy/",
+    }
+    service = SearchService(catalog, transport=lambda _: {"results": [hit]})
+    assert "Caddy" in names(service.search("Reverse proxy web servers"))

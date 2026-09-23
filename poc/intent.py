@@ -47,6 +47,7 @@ _PREFIXES = tuple(
     for pattern in (
         r"^please\s+",
         r"^(?:can|could|would|will)\s+you\s+(?:please\s+)?",
+        r"^(?:can|could|may)\s+(?:i|we)\s+(?:please\s+)?(?:get|find|use|have)\s+",
         r"^(?:help|assist)\s+(?:me|us)\s+(?:to\s+)?",
         r"^tell\s+(?:me|us)\s+(?:about\s+)?",
         r"^(?:i am|we are|i'm|we're|our team is)\s+(?:looking|searching)\s+for\s+",
@@ -56,7 +57,7 @@ _PREFIXES = tuple(
         r"^(?:i|we)\s+(?:want|need|would like|'d like)\s+(?:to\s+)?",
         r"^(?:find|discover|recommend|suggest|show|list|give)\s+(?:(?:me|us)\s+)?",
         r"^(?:what|which)\s+(?:(?:are|is)\s+)?(?:(?:some|the)\s+)?",
-        r"^are\s+there\s+(?:(?:any|some)\s+)?",
+        r"^(?:are|is)\s+there\s+(?:(?:any|some)\s+)?",
         r"^do\s+you\s+(?:have|know(?:\s+of)?)\s+(?:any\s+)?",
         r"^(?:a|an|some|any)\s+",
     )
@@ -83,6 +84,18 @@ def _framing(value: str) -> str:
             text = pattern.sub("", text).strip()
         if text == previous:
             break
+    # These phrases describe the relationship to a requested capability, not an
+    # additional capability. Preserve the object (e.g. "built for geospatial
+    # analysis" still requires geospatial analysis).
+    text = re.sub(
+        r"\b(?:built|meant|intended|designed)\s+(?:around|for|to)\b", "", text
+    )
+    text = re.sub(r"\bdeals?\s+with\b", "with", text)
+    text = re.sub(r"\bback(?:ing)?\s+up\b", "backup", text)
+    text = re.sub(
+        r"^(?:programs?|tools?|utilities|software)\s+to\s+(?:make|create)\s+", "", text
+    )
+    text = re.sub(r"\s+", " ", text).strip()
     return text
 
 

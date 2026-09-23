@@ -29,8 +29,10 @@ SCENARIOS = [
     ("Tools to serve language models locally", ["Ollama"], ["MyHDL", "Lime", "Docker"]),
     (
         "Reverse proxy web servers",
-        ["NGINX", "Haproxy"],
-        ["WRK", "Jemalloc", "MySQL", "Wordpress"],
+        # Both roles must be evidenced. A load balancer/proxy alone is not a
+        # web server, and a web server alone does not prove reverse proxying.
+        ["NGINX", "NGINX Plus"],
+        ["Haproxy", "Gunicorn", "WRK", "Jemalloc", "MySQL", "Wordpress"],
     ),
     (
         "Web servers",
