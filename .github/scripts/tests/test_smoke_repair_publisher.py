@@ -111,8 +111,9 @@ class FakeGit:
             output = ""
         elif args[:2] == ("ls-files", "--stage"):
             path = args[-1]
-            mode, blob = self.entries[path]
-            output = f"{mode} {blob} 0\t{path}\0"
+            if path in self.entries:
+                mode, blob = self.entries[path]
+                output = f"{mode} {blob} 0\t{path}\0"
         elif args[:2] == ("ls-tree", "-z"):
             commit, path = args[2], args[-1]
             entry = self.commits[commit]["entries"].get(path)
@@ -218,6 +219,8 @@ class FakeGitHub:
 
 
 class PublisherTests(unittest.TestCase):
+    """Synthetic pre-catalog publisher fixtures, not full repository PR proof."""
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -316,6 +319,123 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(self.github.calls, [])
         self.assertFalse(any(call[0] in {"push", "commit", "commit-tree", "update-index", "fetch"} for call in self.git.calls))
         self.assertEqual((self.root / WORKFLOW).read_text(), SOURCE)
+
+    def catalog(self):
+        return {"schema_version": "1.1", "corpus": {"entry_count": 1}, "records": [
+            {"slug": "example", "workflow": {
+                "path": WORKFLOW, "presence": "present", "sha256": module._digest(SOURCE),
+            }},
+        ]}
+
+    def bind_catalog(self, value):
+        raw = value if isinstance(value, str) else json.dumps(value)
+        (self.root / module.CATALOG_PATH).write_text(raw)
+        self.git.base_entries[module.CATALOG_PATH] = ("100644", module._blob_id(raw))
+        self.git.entries = copy.deepcopy(self.git.base_entries)
+
+    def reject_catalog(self, message):
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+            module, "reseal_workflow_lock", side_effect=AssertionError("must stop before reseal")
+        ) as reseal, self.assertRaisesRegex(module.PublishError, message):
+            module.build_candidate(self.context, self.proposal, repository_root=self.root,
+                                   validate_apply=self.policy)
+        reseal.assert_not_called()
+        self.assertEqual(self.github.calls, [])
+        self.assertEqual(self.github.auth_calls, 0)
+        self.assertEqual(self.git.branches, {})
+        self.assertFalse(any(call[0] in {"hash-object", "write-tree", "update-index", "fetch", "ls-remote"}
+                             for call in self.git.calls))
+
+    def test_catalog_bound_candidate_requires_manual_repair_before_reseal(self):
+        self.bind_catalog(self.catalog())
+        self.reject_catalog("manual repair required.*trusted source rebinding is not implemented")
+        self.assertEqual(self.git.entries, self.git.base_entries)
+
+    def test_catalog_rejection_precedes_remote_preparation_and_native_verification(self):
+        self.bind_catalog(self.catalog())
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+            module, "reseal_workflow_lock", side_effect=AssertionError("must stop before reseal")
+        ):
+            with self.assertRaisesRegex(module.PublishError, "manual repair required"):
+                self.stage()
+            with self.assertRaisesRegex(module.PublishError, "manual repair required"):
+                module.open_pr(self.context, self.proposal, {}, {}, repository_root=self.root,
+                               validate_apply=self.policy, policy_version="1",
+                               verify_native=self.verifier, github=self.github)
+        self.verifier.assert_not_called()
+        self.assertEqual(self.github.calls, [])
+        self.assertEqual(self.github.auth_calls, 0)
+        self.assertEqual(self.github.prs, [])
+        self.assertEqual(self.git.branches, {})
+
+    def test_malformed_or_missing_catalog_target_never_falls_back_to_legacy(self):
+        variants = [None, [], {}, {"schema_version": "2", "corpus": {}, "records": []}]
+        for records in ([], [None], [{"slug": "example"}], [self.catalog()["records"][0]] * 2):
+            variants.append({**self.catalog(), "records": records, "corpus": {"entry_count": len(records)}})
+        for field, value in (("path", ".github/workflows/test-other.yml"),
+                             ("presence", "absent"), ("sha256", "f" * 64),
+                             ("sha256", module._digest(CANDIDATE)), ("sha256", None)):
+            catalog = self.catalog()
+            catalog["records"][0]["workflow"][field] = value
+            variants.append(catalog)
+        for slug in ("other", "Example"):
+            catalog = self.catalog()
+            catalog["records"][0]["slug"] = slug
+            variants.append(catalog)
+        catalog = self.catalog()
+        catalog["corpus"]["entry_count"] = True
+        variants.append(catalog)
+        for value in variants:
+            with self.subTest(value=value):
+                self.bind_catalog(json.dumps(value))
+                self.reject_catalog("catalog")
+
+    def test_ambiguous_or_invalid_catalog_json_is_rejected(self):
+        raw = json.dumps(self.catalog())
+        for value in ("{", raw.replace('"records":', '"records": [], "records":'),
+                      raw.replace('"slug": "example"', '"slug": "other", "slug": "example"'),
+                      raw.replace('"entry_count": 1', '"entry_count": NaN')):
+            with self.subTest(value=value):
+                self.bind_catalog(value)
+                self.reject_catalog("unambiguous structured JSON")
+
+    def test_context_slug_cannot_select_another_canonical_workflow(self):
+        self.bind_catalog(self.catalog())
+        self.context["package_slug"] = "other"
+        self.reject_catalog("canonical catalog workflow path")
+
+    def test_untracked_catalog_even_when_ignored_is_not_a_legacy_base(self):
+        (self.root / module.CATALOG_PATH).write_text(json.dumps(self.catalog()))
+        # FakeGit deliberately reports no untracked paths, like an ignored file.
+        self.reject_catalog("catalog is present but absent from the reviewed base")
+
+    def test_missing_tracked_catalog_is_not_a_legacy_base(self):
+        self.bind_catalog(self.catalog())
+        (self.root / module.CATALOG_PATH).unlink()
+        self.reject_catalog("clean worktree")
+        with self.assertRaisesRegex(module.PublishError, "missing"):
+            module._require_unchanged_catalog_binding(self.root, self.git, self.context, CANDIDATE)
+
+    def test_catalog_symlink_and_symlink_parent_are_rejected(self):
+        self.bind_catalog(self.catalog())
+        target = self.root / module.CATALOG_PATH
+        target.rename(self.root.parent / "catalog.json")
+        target.symlink_to(self.root.parent / "catalog.json")
+        self.reject_catalog("symlinks")
+        target.unlink()
+        target.write_text(json.dumps(self.catalog()))
+        parent = self.root / ".github"
+        parent.rename(self.root.parent / "github")
+        parent.symlink_to(self.root.parent / "github", target_is_directory=True)
+        self.reject_catalog("symlinks")
+
+    def test_base_blob_and_regular_git_mode_are_checked_for_catalog(self):
+        self.bind_catalog(self.catalog())
+        for entry in (("100644", "f" * 40), ("120000", module._blob_id(json.dumps(self.catalog())))):
+            with self.subTest(entry=entry):
+                self.git.base_entries[module.CATALOG_PATH] = entry
+                with self.assertRaises(module.PublishError):
+                    module._require_unchanged_catalog_binding(self.root, self.git, self.context, CANDIDATE)
 
     def test_stage_has_frozen_schema_create_only_ref_and_no_pr(self):
         staged = self.stage()

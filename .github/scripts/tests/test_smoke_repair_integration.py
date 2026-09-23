@@ -1,8 +1,11 @@
-"""Offline recovery integration: real controllers/validators, fake storage and APIs.
+"""Synthetic pre-catalog recovery integration: real controllers, fake storage/APIs.
 
 The actual Zlib workflow is never executed. Actions observations are fixtures,
 not a mocked native verdict: dispatch and both publisher verification passes run
 NativeValidation. Git/catalog acquisition and transport are the only fakes.
+The catalog is absent from this synthetic base; successful draft fixtures do not
+prove current repository PR contracts. SourceBindingTests below cover real
+catalog rejection separately.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ import time
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 DIRECTORY = Path(__file__).resolve().parent
@@ -48,6 +51,9 @@ import test_smoke_repair_native as native_fixture
 import test_smoke_repair_publisher as publisher_fixture
 
 publisher = publisher_fixture.module
+catalog_validator = publisher._module(
+    "repair_binding_catalog_validator", ROOT / "build_steps/validate_package_identity_catalog.py"
+)
 REPOSITORY, BASE = recovery_fixture.REPOSITORY, recovery_fixture.SHA
 WORKFLOW = ".github/workflows/test-zlib.yml"
 BATCH = ".github/workflows/test-all-packages-batch3.yml"
@@ -692,6 +698,132 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
                                ("smoke_repair_pipeline.py", "report"), ("smoke_repair_publisher.py", "admit"),
                                ("smoke_repair_publisher.py", "stage"), ("smoke_repair_publisher.py", "open-pr"),
                                ("smoke_repair_native.py", "dispatch"), ("smoke_repair_native.py", "verify")})
+
+
+class SourceBindingTests(unittest.TestCase):
+    """Real source bytes/local Git, but a partial fixture proving rejection only."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.artifacts = Path(temporary.name).resolve()
+        self.root = self.artifacts / "checkout"
+        self.root.mkdir()
+        self.source = (ROOT / WORKFLOW).read_text()
+        self.catalog_bytes = (ROOT / publisher.CATALOG_PATH).read_bytes()
+        for relative, raw in ((WORKFLOW, self.source.encode()), (publisher.CATALOG_PATH, self.catalog_bytes)):
+            target = self.root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+        self.git_environment = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "DEVELOPER_DIR": os.environ.get("DEVELOPER_DIR", "/Library/Developer/CommandLineTools"),
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_AUTHOR_NAME": "Synthetic fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+            "GIT_COMMITTER_NAME": "Synthetic fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+        }
+        self.git("init", "-q")
+        self.git("remote", "add", "origin", "https://github.com/example/dashboard.git")
+        self.git("add", "--", WORKFLOW, publisher.CATALOG_PATH)
+        self.git("-c", "commit.gpgsign=false", "commit", "-qm", "Partial source-binding fixture")
+        base = self.git("rev-parse", "HEAD").strip()
+        self.context = {
+            "repository": "example/dashboard", "base_sha": base, "orchestration_id": "orchestration-100-1",
+            "orchestrator_run_id": 100, "orchestrator_run_attempt": 1, "package_slug": "zlib",
+            "workflow_path": WORKFLOW, "called_job": "test-zlib", "source_text": self.source,
+            "failed_steps": ["Install Zlib"], "log_excerpt": "synthetic missing prerequisite",
+            "batch": 3, "initial_run_id": 200, "confirmation_run_id": 201, "confirmation_job_id": 202,
+        }
+        old = 'bash .github/actions/apt-bootstrap/bootstrap.sh --packages "zlib1g-dev build-essential pkg-config"'
+        self.proposal = {
+            "diagnosis": "Add an approved prerequisite without modifying the tests.",
+            "edits": [{"path": WORKFLOW, "old": old, "new": old[:-1] + ' libssl-dev"'}],
+            "unresolved_reason": "",
+        }
+        self.candidate = policy.validate_proposal(self.context, self.proposal)["candidate_source"]
+        self.record = next(record for record in json.loads(self.catalog_bytes)["records"] if record["slug"] == "zlib")
+
+    def git(self, *arguments):
+        return subprocess.run(["git", "-C", str(self.root), *arguments], check=True,
+                              capture_output=True, text=True, timeout=20, env=self.git_environment).stdout
+
+    def validate_target(self):
+        with catalog_validator._open_repository_root(self.root) as root_fd:
+            return catalog_validator._validate_workflow(
+                root_fd, self.record["workflow"], slug="zlib", context="workflow",
+                expected_identities={WORKFLOW: (self.root / WORKFLOW).stat()},
+                snapshot=catalog_validator._FilesystemSnapshot(root_fd),
+            )
+
+    def test_real_policy_edit_fails_actual_unchanged_catalog_validator(self):
+        self.assertEqual(self.validate_target(), (WORKFLOW, publisher._digest(self.source)))
+        try:
+            (self.root / WORKFLOW).write_text(self.candidate)
+            with self.assertRaisesRegex(catalog_validator.CatalogValidationError, "workflow.sha256 is stale"):
+                self.validate_target()
+            self.assertEqual((self.root / publisher.CATALOG_PATH).read_bytes(), self.catalog_bytes)
+        finally:
+            (self.root / WORKFLOW).write_text(self.source)
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_admit_cli_reports_manual_rebinding_without_candidate_artifact(self):
+        context, proposal, output = (self.artifacts / name for name in ("context.json", "proposal.json", "candidate.json"))
+        context.write_text(json.dumps(self.context))
+        proposal.write_text(json.dumps(self.proposal))
+        stderr = io.StringIO()
+        with patch.dict(os.environ, self.git_environment, clear=True), patch("sys.stderr", stderr), patch.object(
+            publisher.publisher, "GhClient", side_effect=AssertionError("remote client forbidden")
+        ) as github, patch.object(publisher, "reseal_workflow_lock", side_effect=AssertionError("reseal forbidden")) as reseal:
+            result = publisher.main(["admit", "--context", str(context), "--proposal", str(proposal),
+                                     "--repository-root", str(self.root), "--output", str(output)])
+        self.assertEqual(result, 1)
+        self.assertEqual(stderr.getvalue(), publisher.CATALOG_REBINDING_DIAGNOSTIC + "\n")
+        self.assertFalse(output.exists())
+        github.assert_not_called()
+        reseal.assert_not_called()
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_real_catalog_guard_blocks_all_publisher_entries_without_remote_effects(self):
+        github, verifier = Mock(), Mock()
+        original = deepcopy((self.context, self.proposal, self.record))
+        real_git = publisher.publisher.Git(self.root)
+        calls = []
+
+        class ReadOnlyGit:
+            def run(inner, *args, **kwargs):
+                calls.append(args)
+                if args[0] not in {"rev-parse", "diff", "ls-files", "ls-tree"} and args[:2] != ("config", "--get"):
+                    raise AssertionError(f"unexpected write/remote Git operation: {args}")
+                return real_git.run(*args, **kwargs)
+
+            def text(inner, *args):
+                return inner.run(*args).stdout.strip()
+
+        kwargs = {"repository_root": self.root, "validate_apply": policy.validate_proposal,
+                  "policy_version": "1"}
+        with patch.dict(os.environ, self.git_environment, clear=True), patch.object(
+            publisher.publisher, "Git", return_value=ReadOnlyGit()
+        ), patch.object(publisher, "reseal_workflow_lock", side_effect=AssertionError("reseal forbidden")) as reseal:
+            for operation in (
+                lambda: publisher.build_candidate(self.context, self.proposal, **kwargs),
+                lambda: publisher.stage(self.context, self.proposal, self.candidate,
+                                        native_contract={}, github=github, **kwargs),
+                lambda: publisher.open_pr(self.context, self.proposal, {}, {},
+                                          verify_native=verifier, github=github, **kwargs),
+            ):
+                with self.subTest(operation=operation), self.assertRaisesRegex(
+                    publisher.PublishError, "manual repair required.*trusted source rebinding is not implemented"
+                ):
+                    operation()
+        reseal.assert_not_called()
+        self.assertEqual(github.mock_calls, [])
+        verifier.assert_not_called()
+        self.assertTrue(any(call[:2] == ("ls-tree", "-z") and call[-1] == publisher.CATALOG_PATH for call in calls))
+        self.assertEqual((self.context, self.proposal, self.record), original)
+        self.assertEqual((self.root / publisher.CATALOG_PATH).read_bytes(), self.catalog_bytes)
+        self.assertEqual((self.root / WORKFLOW).read_text(), self.source)
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.assertNotIn("automation/smoke-repair/", self.git("for-each-ref", "--format=%(refname)"))
 
 
 class RegisteredNativeLayoutTests(unittest.TestCase):

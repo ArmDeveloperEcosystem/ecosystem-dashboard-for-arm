@@ -58,6 +58,7 @@ PublishError = publisher.PublishError
 Policy = Callable[[dict[str, Any], dict[str, Any]], Mapping[str, Any]]
 NativeVerifier = Callable[[dict[str, Any], dict[str, Any]], Mapping[str, Any]]
 LOCK_PATH = ".github/scripts/package_workflow_action_lock.json"
+CATALOG_PATH = ".github/package-identity-catalog.json"
 MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
 PUBLICATION_SECONDS = 180
 CONTEXT_KEYS = {
@@ -74,6 +75,14 @@ STAGE_KEYS = {
 AUDIT_KEYS = (STAGE_KEYS - {"candidate_sha"}) | {
     "called_job", "base_source_digest", "context_digest", "native_contract_digest", "policy_version", "publisher",
 }
+CATALOG_REBINDING_DIAGNOSTIC = (
+    "manual repair required: candidate invalidates the unchanged package identity catalog; "
+    "trusted source rebinding is not implemented"
+)
+
+
+class ManualCatalogRebindingRequired(PublishError):
+    """The two-file repair contract cannot update reviewed catalog evidence."""
 
 
 def _json(value: object) -> str:
@@ -287,6 +296,52 @@ def _read_base(root, git, base, path):
     return text
 
 
+def _require_unchanged_catalog_binding(root, git, context, source):
+    """Reject stale bindings, not authorize or manufacture catalog provenance."""
+    publisher._verify_regular_path_boundary(root, CATALOG_PATH, require_file=False)
+    entry = git.run("ls-tree", "-z", context["base_sha"], "--", CATALOG_PATH).stdout
+    if not entry:
+        # Only genuinely pre-catalog bases may use the legacy two-file contract.
+        if (root / CATALOG_PATH).exists() or publisher._index_entries(git, CATALOG_PATH):
+            raise PublishError("catalog is present but absent from the reviewed base")
+        return
+    raw = _read_base(root, git, context["base_sha"], CATALOG_PATH)
+    try:
+        catalog = decode_json(raw)
+    except ValueError as exc:
+        raise PublishError("catalog is not unambiguous structured JSON") from exc
+    if (not isinstance(catalog, dict) or set(catalog) != {"schema_version", "corpus", "records"}
+            or catalog["schema_version"] != "1.1" or not isinstance(catalog["records"], list)):
+        raise PublishError("catalog has an unsupported binding schema")
+    corpus, records = catalog["corpus"], catalog["records"]
+    if (not isinstance(corpus, dict) or type(corpus.get("entry_count")) is not int
+            or corpus["entry_count"] != len(records)):
+        raise PublishError("catalog binding inventory is incomplete")
+    slug, path = context["package_slug"], context["workflow_path"]
+    if path != f".github/workflows/test-{slug}.yml":
+        raise PublishError("repair target does not have its canonical catalog workflow path")
+    seen, targets = set(), []
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("slug"), str):
+            raise PublishError("catalog contains a malformed package binding")
+        identity = record["slug"]
+        workflow = record.get("workflow")
+        if (identity.casefold() in seen or not isinstance(workflow, dict)
+                or set(workflow) != {"path", "presence", "sha256"}
+                or workflow["path"] != f".github/workflows/test-{identity}.yml"):
+            raise PublishError("catalog workflow bindings are malformed or duplicated")
+        seen.add(identity.casefold())
+        if identity == slug:
+            targets.append(workflow)
+    if len(targets) != 1:
+        raise PublishError("repair target has no unique catalog binding")
+    target = targets[0]
+    if target["presence"] != "present" or target["sha256"] != _digest(context["source_text"]):
+        raise PublishError("catalog target does not bind the reviewed base workflow")
+    if target["sha256"] != _digest(source):
+        raise ManualCatalogRebindingRequired(CATALOG_REBINDING_DIAGNOSTIC)
+
+
 def _action_locations(value, prefix=()):
     result = []
     if isinstance(value, dict):
@@ -363,13 +418,12 @@ def _prepare(context, proposal, root, policy, policy_version, github):
     _match(policy_version, r"[A-Za-z0-9][A-Za-z0-9._/-]{0,99}", "policy version")
     root = Path(root).resolve(strict=True)
     git = publisher.Git(root)
+    artifact = build_candidate(context, proposal, repository_root=root,
+                               validate_apply=policy, policy_version=policy_version)
     config, runtime = _runtime(context)
     _clean_base(root, git, config)
     _runtime_guard(github, config, runtime)
     github.setup_git_auth()
-    _guard(root, git, github, config, runtime)
-    artifact = build_candidate(context, proposal, repository_root=root,
-                               validate_apply=policy, policy_version=policy_version)
     _guard(root, git, github, config, runtime)
     return context, proposal, root, git, config, runtime, artifact["candidate_source"], artifact["candidate_lock"], artifact["policy_result"]
 
@@ -381,6 +435,8 @@ def build_candidate(context: Mapping[str, Any], proposal: Mapping[str, Any], *,
 
     The returned JSON artifact is data for the caller's actionlint/bash -n
     preflight. This function parses YAML but never executes proposed commands.
+    All current catalog-bound workflow repairs remain manual: this two-file
+    contract cannot rebind catalog evidence or establish its source provenance.
     """
     context = _context(context)
     proposal = _proposal(proposal, context["workflow_path"])
@@ -405,6 +461,7 @@ def build_candidate(context: Mapping[str, Any], proposal: Mapping[str, Any], *,
         or admitted.get("semantic_equivalence_proven") is not False
     ):
         raise PublishError("policy result has inconsistent source digests or review requirements")
+    _require_unchanged_catalog_binding(root, git, context, source)
     lock = reseal_workflow_lock(root, base_sha=config.expected_base_sha,
                                workflow_path=context["workflow_path"], source=source, repair_id=repair_id)
     _clean_base(root, git, config)
@@ -794,6 +851,9 @@ def main(argv=None) -> int:
         if args.command == "open-pr":
             _write_publication_outputs(result, context["repository"])
         return 0
+    except ManualCatalogRebindingRequired:
+        print(CATALOG_REBINDING_DIAGNOSTIC, file=sys.stderr)
+        return 1
     except Exception:
         # Dependency errors can include remote responses, proposal text, or secrets.
         print("smoke repair publication failed closed; no successful repair is claimed.", file=sys.stderr)
