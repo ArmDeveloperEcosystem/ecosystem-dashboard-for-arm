@@ -7,7 +7,11 @@ Implements Pareena's updated two-feature proposal on a fresh checkout of `main`
 ## Run locally
 
 Prerequisites: Python 3.11+ and Hugo extended 0.130.0 (the upstream CI version,
-used for the final build and regression suite). From the repository root:
+used for the final build and regression suite). Download the extended binary for
+your platform from the [Hugo 0.130.0 release](https://github.com/gohugoio/hugo/releases/tag/v0.130.0)
+and put it on PATH. JavaScript tests also require Node.js with `node:test`
+(validated locally with Node.js 23.11.0); Node is not needed to launch the demo.
+From the repository root:
 
 ```sh
 python3 -m venv .venv
