@@ -148,8 +148,9 @@ class FakeGit:
 
 
 class FakeGitHub:
-    def __init__(self, git):
+    def __init__(self, git, *, commit_date="2026-09-23T09:00:00Z"):
         self.git = git
+        self.commit_date = commit_date
         self.calls = []
         self.prs = []
         self.trees = {}
@@ -192,7 +193,7 @@ class FakeGitHub:
         if method == "POST" and endpoint.endswith("/git/commits"):
             sha = hashlib.sha1(json.dumps(payload, sort_keys=True).encode()).hexdigest()
             self.git.commits[sha] = {**copy.deepcopy(payload), "entries": self.trees[payload["tree"]],
-                                     "committer": {"date": "2026-09-23T09:00:00Z"}}
+                                     "committer": {"date": self.commit_date}}
             return {"sha": sha, "tree": {"sha": payload["tree"]}, "message": payload["message"],
                     "committer": copy.deepcopy(self.git.commits[sha]["committer"]),
                     "parents": [{"sha": parent} for parent in payload["parents"]]}

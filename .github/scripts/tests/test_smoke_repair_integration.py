@@ -73,8 +73,8 @@ def utc(seconds):
 class IntegrationAPI(publisher_fixture.FakeGitHub):
     """One fake service binds publisher Git objects to native API observations."""
 
-    def __init__(self, git, failures, flow, *, workflow_path=WORKFLOW):
-        super().__init__(git)
+    def __init__(self, git, failures, flow, *, workflow_path=WORKFLOW, commit_date=None):
+        super().__init__(git, **({"commit_date": commit_date} if commit_date is not None else {}))
         self.failures, self.flow = failures, flow
         self.workflow_path = workflow_path
         self.reads, self.dispatches, self.events = [], [], []
@@ -235,7 +235,14 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
             self.failures.responses[prefix + "/attempts/1/jobs?per_page=100"] = [{"total_count": 2, "jobs": [
                 job, recovery_fixture.job_payload(record, summary=True)]}]
         self.failures.audit["dispatches"][0].update(batch=3, run_id=CONFIRMATION_ID)
-        self.api = IntegrationAPI(self.git, self.failures, self.flow)
+        catalog = json.loads(self.files[publisher.CATALOG_PATH])
+        target = next(record for record in catalog["records"] if record["slug"] == "zlib")
+        dates = [datetime.fromisoformat(item["verified_at"].replace("Z", "+00:00"))
+                 for dimension in target["registries"].values() for item in dimension["evidence"]
+                 if item["source_kind"] == "generated_workflow"]
+        commit_date = (max(dates).astimezone(timezone.utc) + timedelta(seconds=1)).replace(microsecond=0)
+        self.api = IntegrationAPI(self.git, self.failures, self.flow,
+                                  commit_date=commit_date.isoformat().replace("+00:00", "Z"))
         self.clock = native_fixture.Clock()
         install = next(step for step in self.flow["jobs"][called_job]["steps"] if step.get("id") == "install")
         old = "          " + install["run"].splitlines()[0]
@@ -707,6 +714,38 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
                                ("smoke_repair_pipeline.py", "report"), ("smoke_repair_publisher.py", "admit"),
                                ("smoke_repair_publisher.py", "stage"), ("smoke_repair_publisher.py", "open-pr"),
                                ("smoke_repair_native.py", "dispatch"), ("smoke_repair_native.py", "verify")})
+
+
+class RefreshedIntegrationFixtureTests(unittest.TestCase):
+    def test_already_repaired_catalog_can_complete_the_controller_flow(self):
+        from test_smoke_repair_bindings import admitted_zlib_fixture, fixture_provenance
+
+        original = (ROOT / WORKFLOW).read_bytes()
+        raw = (ROOT / publisher.CATALOG_PATH).read_bytes()
+        _, _, candidate = admitted_zlib_fixture(original)
+        target = next(record for record in json.loads(raw)["records"] if record["slug"] == "zlib")
+        provenance = fixture_provenance(target)
+        latest = max(datetime.fromisoformat(provenance["verified_at"].replace("Z", "+00:00")),
+                     datetime(2030, 2, 3, 4, 5, 6, tzinfo=timezone.utc))
+        provenance["verified_at"] = latest.isoformat().replace("+00:00", "Z")
+        rebound = publisher.bindings.rebind_catalog(
+            raw, package_slug="zlib", workflow_path=WORKFLOW, original_source=original,
+            candidate_source=candidate, **provenance,
+        )
+        actual_read = Path.read_text
+        replacements = {ROOT / WORKFLOW: candidate.decode(), ROOT / publisher.CATALOG_PATH: rebound}
+
+        def read(path, *args, **kwargs):
+            return replacements[path] if path in replacements else actual_read(path, *args, **kwargs)
+
+        case = SmokeRepairIntegrationTests("test_actual_evidence_model_policy_publisher_native_and_draft_clis")
+        result = unittest.TestResult()
+        with patch.object(Path, "read_text", read):
+            case.run(result)
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.failures, [])
+        self.assertEqual(case.api.commit_date, (latest + timedelta(seconds=1)).isoformat().replace("+00:00", "Z"))
 
 
 class SourceBindingTests(unittest.TestCase):
