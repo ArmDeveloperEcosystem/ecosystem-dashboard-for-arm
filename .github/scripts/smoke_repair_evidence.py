@@ -316,7 +316,8 @@ def contexts_from_audit(audit, *, api, repository, sha, run_id, attempt, root, t
                 raise ContractError("repair batch is not a failed run from this repository")
             pages = api.api(f"repos/{repository}/actions/runs/{record['run_id']}/attempts/1/jobs?per_page=100", pages=True)
             failed_in_each_run.append(validate_recovery_jobs(
-                pages, definition=definitions[batch - 1], run=run, repository=repository))
+                pages, definition=definitions[batch - 1], run=run, repository=repository,
+                allow_failed_collector=record == original))
         original_failed_jobs = {job["name"]: job for job in failed_in_each_run[0]}
         for job in failed_in_each_run[1]:
             if job["name"] not in original_failed_jobs:

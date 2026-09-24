@@ -166,6 +166,19 @@ class PersistentFailureTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.f.contexts()
 
+    def test_original_collector_failure_does_not_erase_confirmed_package_failure(self):
+        endpoint = f"repos/{fixture.REPOSITORY}/actions/runs/{self.f.original['run_id']}/attempts/1/jobs?per_page=100"
+        self.f.responses[endpoint][0]["jobs"][1]["conclusion"] = "failure"
+        contexts = self.f.contexts()
+        self.assertEqual([item["package_slug"] for item in contexts], ["package-1"])
+
+    def test_collector_only_original_failure_cannot_invent_persistent_package_context(self):
+        endpoint = f"repos/{fixture.REPOSITORY}/actions/runs/{self.f.original['run_id']}/attempts/1/jobs?per_page=100"
+        jobs = self.f.responses[endpoint][0]["jobs"]
+        jobs[0]["conclusion"] = "success"
+        jobs[1]["conclusion"] = "failure"
+        self.assertEqual(self.f.contexts(), [])
+
     def test_main_advance_after_reading_evidence_stops_repair(self):
         self.f.responses[f"repos/{fixture.REPOSITORY}/git/ref/heads/main"] = fixture.branch_ref(fixture.OTHER_SHA)
         with self.assertRaises(ValueError):

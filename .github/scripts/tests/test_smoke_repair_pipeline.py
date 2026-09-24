@@ -405,6 +405,35 @@ class ReportTests(PipelineTestCase):
                 self.assertIn("Human investigation remains necessary", body)
                 self.assertNotIn("The repair publisher completed", body)
 
+    def test_authenticated_failed_candidate_reports_next_iteration_without_claiming_green(self):
+        outcomes = dict(RESULTS, native="failure", publish="skipped")
+        self.report(outcomes, automatic_retry_pending=True)
+        body = self.api.posts[0]["body"]
+        self.assertIn("next bounded repair iteration", body)
+        self.assertIn("no successful repair or green main is claimed", body)
+        self.assertIn("recheck eligibility and its remaining budget", body)
+        self.assertNotIn("Human investigation remains necessary", body)
+        self.assertNotIn("The repair publisher completed", body)
+
+    def test_retry_notification_rejects_inconsistent_stages_before_calling_api(self):
+        pending = dict(RESULTS, native="failure", publish="skipped")
+        for stage in ("propose", "stage", "native", "publish"):
+            for result in ("success", "failure", "cancelled", "skipped", None):
+                if pending[stage] == result:
+                    continue
+                outcomes = dict(pending)
+                if result is None:
+                    del outcomes[stage]
+                else:
+                    outcomes[stage] = result
+                with self.subTest(stage=stage, result=result), self.assertRaises(ContractError):
+                    self.report(outcomes, automatic_retry_pending=True)
+                self.assertEqual([], self.api.calls)
+        for malformed in (None, 0, 1, "true"):
+            with self.subTest(value=malformed), self.assertRaises(ContractError):
+                self.report(pending, automatic_retry_pending=malformed)
+            self.assertEqual([], self.api.calls)
+
     def test_publish_success_cannot_override_failed_skipped_or_missing_native_prerequisites(self):
         for stage in ("prepare", "propose", "stage", "native"):
             values = ("failure", "cancelled", "skipped") if stage == "prepare" else ("failure", "cancelled", "skipped", None)

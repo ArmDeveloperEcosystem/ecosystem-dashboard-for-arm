@@ -117,6 +117,37 @@ class CompilationTests(unittest.TestCase):
         self.assertEqual(edit["old"], edit["new"].replace("          sudo apt-get install -y libfuse3-dev\n", "", 1))
         self.assertEqual(proposal["unresolved_reason"], "")
 
+    def test_verified_upstream_operation_passes_independent_structural_admission(self):
+        import smoke_repair_upstream as research
+        import test_smoke_repair_upstream as upstream
+        import smoke_repair_policy as policy
+        source = SOURCE.replace("https://example.org/widget-1.2.3.tar.gz", upstream.OLD_URL)
+        trusted = context(source)
+        client = upstream.FakeClient()
+        with mock.patch.object(research, "GitHubReleases", return_value=client):
+            choice = research.research_downloads(trusted)["candidates"][0]
+            operation = {"kind": "github_release_download", **{key: choice[key] for key in ("step", "line", "research_id")}}
+            proposal = bridge.compile_proposal(trusted, [operation])
+            admitted = policy.validate_proposal(trusted, proposal)
+        self.assertIn(upstream.NEW_URL, admitted["candidate_source"])
+        self.assertIn(upstream.SHA, admitted["candidate_source"])
+        self.assertEqual(admitted["contract"], policy.derive_contract(source))
+        tampered = deepcopy(proposal)
+        tampered["edits"][0]["new"] += "          true # suppress failure\n"
+        with mock.patch.object(research, "GitHubReleases", return_value=client), self.assertRaises(ValueError):
+            policy.validate_proposal(trusted, tampered)
+        with self.assertRaises(ValueError):
+            bridge.compile_proposal(trusted, [operation, {"kind": "prepend_apt", "step": 2, "packages": ["libfuse3-dev"]}])
+
+    def test_download_selection_cannot_supply_url_or_bypass_upstream_reverification(self):
+        op = {"kind": "github_release_download", "step": 2, "line": 2, "research_id": "a" * 64}
+        for change in ({"url": "https://private.invalid/"}, {"research_id": "not-a-hash"}, {"line": True}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                bridge.validate_operations([{**op, **change}])
+        with mock.patch("smoke_repair_upstream.resolve_download_operation", side_effect=ValueError("not verified")), \
+                self.assertRaises(ValueError):
+            bridge.compile_proposal(context(), [op])
+
     def test_pip_parallelism_and_retry_pass_existing_independent_policy(self):
         operations = [
             {"kind": "prepend_pip", "step": 8, "packages": ["wheel"]},

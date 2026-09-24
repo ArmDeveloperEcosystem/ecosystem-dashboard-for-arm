@@ -631,8 +631,26 @@ def validate_proposal(context: Mapping, proposal: Mapping) -> dict:
         if "run" in old_step and old_step["run"] != new_step.get("run"):
             if old_step.get("name") == contract["final_gate_step_name"]:
                 raise RepairPolicyError("the trusted final gate is immutable regardless of its step ID")
-            _validate_run(old_step["run"], new_step.get("run", ""), _step_kind(old_step),
-                          workflow=before, job=old_job, step_index=index)
+            kind = _step_kind(old_step)
+            try:
+                _validate_run(old_step["run"], new_step.get("run", ""), kind,
+                              workflow=before, job=old_job, step_index=index)
+            except RepairPolicyError:
+                if kind != "setup":
+                    raise
+                from smoke_repair_upstream import ResearchError, verify_download_edit
+                matches = []
+                for edit in edits:
+                    try:
+                        verified = verify_download_edit(dict(context), edit, step=index)
+                    except ResearchError:
+                        verified = False
+                    if verified:
+                        single_candidate = source.replace(edit["old"], edit["new"], 1)
+                        single_steps = next(iter(_workflow(single_candidate)["jobs"].values()))["steps"]
+                        matches.append(single_steps[index]["run"] == new_step.get("run"))
+                if matches != [True]:
+                    raise
             changed.append(old_step.get("id") or f"step-{index + 1}")
             new_step["run"] = old_step["run"]
     if not changed or _json_fingerprint(before) != _json_fingerprint(after):

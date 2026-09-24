@@ -245,7 +245,7 @@ def classify_retryable_failure(raw: bytes, job: dict, *, command=None) -> str:
     return "unknown_failure"
 
 
-def validate_recovery_jobs(pages, *, definition, run, repository):
+def validate_recovery_jobs(pages, *, definition, run, repository, allow_failed_collector=False):
     from exact_run_aggregation import select_exact_jobs
 
     normalized = select_exact_jobs(
@@ -277,7 +277,7 @@ def validate_recovery_jobs(pages, *, definition, run, repository):
             raise ContractError("batch job has an unaccepted conclusion")
         if not timestamp(run["created_at"]) <= timestamp(job.get("started_at")) <= timestamp(job.get("completed_at")) <= timestamp(run["updated_at"]):
             raise ContractError("batch job lies outside its run window")
-    if summaries[0]["conclusion"] != "success":
+    if summaries[0]["conclusion"] != "success" and not allow_failed_collector:
         raise ContractError("batch collector failed; retry is not authorized")
     failed = [job for job in jobs if job["conclusion"] == "failure"]
     if bool(failed) != (run["conclusion"] == "failure"):
@@ -439,6 +439,7 @@ class Recovery:
         pages = self.github.api(f"repos/{self.repository}/actions/runs/{record['run_id']}/attempts/1/jobs?per_page=100", pages=True)
         failed_jobs = validate_recovery_jobs(
             pages, definition=self.definitions[record["batch"] - 1], run=run, repository=self.repository,
+            allow_failed_collector=retry == 0,
         )
         entry = {"batch": record["batch"], "run_id": run["id"], "retry": retry,
                  "run": run, "jobs": pages,
@@ -447,7 +448,12 @@ class Recovery:
         self.save()
         for job in failed_jobs:
             self.remaining()
-            entry["failures"].append(self.diagnose(record, job))
+            if job["name"] == "summary":
+                entry["failures"].append({"job_id": job["id"], "name": job["name"],
+                    "classification": "collector_failure", "log_sha256": None,
+                    "log_status": "not_collected_collector_retry"})
+            else:
+                entry["failures"].append(self.diagnose(record, job))
             self.save()
             self.remaining()
         self.save()

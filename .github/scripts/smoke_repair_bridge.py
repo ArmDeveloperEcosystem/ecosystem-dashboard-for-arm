@@ -88,6 +88,9 @@ def validate_operations(operations):
             integer(op["delay"], 1, 10)
             if type(op["seconds"]) is not int or op["seconds"] not in {30, 60, 90, 120}:
                 raise ContractError("retry operation exceeds the time budget")
+        elif kind == "github_release_download":
+            from smoke_repair_upstream import validate_download_operation
+            validate_download_operation(op)
         else:
             raise ContractError("unsupported repair operation")
     if len({json.dumps(op, sort_keys=True, separators=(",", ":")) for op in operations}) != len(operations):
@@ -122,6 +125,13 @@ def compile_proposal(context, operations):
         grouped.setdefault(operation["step"], []).append(operation)
     edits = []
     for index, items in sorted(grouped.items()):
+        downloads = [op for op in items if op["kind"] == "github_release_download"]
+        if downloads:
+            if len(items) != 1:
+                raise ContractError("a verified upstream edit cannot be combined with other edits in its step")
+            from smoke_repair_upstream import resolve_download_operation
+            edits.append(resolve_download_operation(context, downloads[0])["edit"])
+            continue
         if index >= len(steps.value):
             raise ContractError("repair step is outside the source")
         scalar = field(steps.value[index], "run")
@@ -171,13 +181,14 @@ def compile_proposal(context, operations):
     return proposal
 
 
-def validate_event(event, environment):
-    if not isinstance(event, dict) or event.get("action") != EVENT:
+def validate_sender(event, environment, *, workflow=WORKFLOW, event_type=EVENT):
+    """Authenticate a configured App on a specifically trusted main workflow."""
+    if not isinstance(event, dict) or event.get("action") != event_type:
         raise ContractError("unexpected repair callback event")
     expected = {
         "GITHUB_EVENT_NAME": "repository_dispatch", "GITHUB_REPOSITORY": REPOSITORY,
         "GITHUB_REF": "refs/heads/main", "GITHUB_SERVER_URL": "https://github.com",
-        "GITHUB_WORKFLOW_REF": f"{REPOSITORY}/{WORKFLOW}@refs/heads/main",
+        "GITHUB_WORKFLOW_REF": f"{REPOSITORY}/{workflow}@refs/heads/main",
         "SMOKE_REPAIR_ENABLED": "true",
     }
     if any(environment.get(key) != value for key, value in expected.items()):
@@ -201,6 +212,11 @@ def validate_event(event, environment):
             or repo.get("private") is not False or repo.get("default_branch") != "main"
             or str(positive(repo.get("id"), "repository ID")) != environment.get("GITHUB_REPOSITORY_ID")):
         raise ContractError("repair callback repository is invalid")
+    return sha
+
+
+def validate_event(event, environment):
+    sha = validate_sender(event, environment)
     payload = event.get("client_payload")
     if type(payload) is not dict or set(payload) != PAYLOAD_KEYS:
         raise ContractError("repair callback fields are invalid")
@@ -315,9 +331,10 @@ def assert_current_failure(read, context, *, now=None):
     raise ContractError("repair supersession inventory exceeds the read budget")
 
 
-def authenticate_context(payload, api, root, *, now):
+def authenticate_contexts(payload, api, root, *, now):
+    """Reconstruct the complete public context bundle once per repair cycle."""
     run_id, attempt = payload["orchestrator_run_id"], payload["orchestrator_attempt"]
-    sha, slug = payload["base_sha"], payload["package_slug"]
+    sha = payload["base_sha"]
     parent_job = authenticate_parent(api, REPOSITORY, sha, run_id, attempt)
     run = api.api(f"repos/{REPOSITORY}/actions/runs/{run_id}")
     if (run.get("run_attempt") != attempt or run.get("status") != "completed"
@@ -346,20 +363,39 @@ def authenticate_context(payload, api, root, *, now):
     raw = api.api(f"repos/{REPOSITORY}/actions/artifacts/{metadata['id']}/zip", raw=True)
     if len(raw) != size or metadata.get("digest") != "sha256:" + hashlib.sha256(raw).hexdigest():
         raise ContractError("repair context artifact digest differs")
-    context = select_context(context_archive(raw), slug, REPOSITORY, sha, root)
-    if context_digest(context) != payload["context_sha256"]:
-        raise ContractError("repair proposal is bound to another context")
-    assert_current_failure(api.api, context, now=now)
+    bundle = context_archive(raw)
+    if (type(bundle) is not dict or set(bundle) != {"schema_version", "contexts"}
+            or type(bundle.get("schema_version")) is not int or bundle["schema_version"] != 1
+            or type(bundle.get("contexts")) is not list or not 1 <= len(bundle["contexts"]) <= 10):
+        raise ContractError("repair context bundle is invalid")
+    contexts = [select_context(bundle, item.get("package_slug"), REPOSITORY, sha, root)
+                for item in bundle["contexts"] if type(item) is dict]
+    if (len(contexts) != len(bundle["contexts"])
+            or len({item["package_slug"] for item in contexts}) != len(contexts)):
+        raise ContractError("repair context inventory is malformed or duplicated")
+    assert_current_failure(api.api, contexts[0], now=now)
     audit_matches = [item for item in items if item.get("name") == f"smoke-orchestration-evidence-{run_id}-{attempt}"]
     if len(audit_matches) != 1:
         raise ContractError("repair original evidence artifact is ambiguous")
     audit = download_audit(api, REPOSITORY, sha, run_id, attempt, audit_matches[0]["id"], parent_job)
     verified = contexts_from_audit(audit, api=api, repository=REPOSITORY, sha=sha, run_id=run_id, attempt=attempt, root=root)
-    matching = [item for item in verified if item["package_slug"] == slug]
-    if len(matching) != 1 or {k: v for k, v in matching[0].items() if k != "log_excerpt"} != {
-        k: v for k, v in context.items() if k != "log_excerpt"
-    }:
+    public_metadata = [{k: v for k, v in item.items() if k != "log_excerpt"} for item in contexts]
+    verified_metadata = [{k: v for k, v in item.items() if k != "log_excerpt"} for item in verified]
+    if sorted(public_metadata, key=lambda item: item["package_slug"]) != sorted(
+            verified_metadata, key=lambda item: item["package_slug"]):
         raise ContractError("repair context no longer matches verified persistent failures")
+    validate_current_ref(api.api(f"repos/{REPOSITORY}/git/ref/heads/main"), expected_sha=sha, branch="main")
+    return contexts
+
+
+def authenticate_context(payload, api, root, *, now):
+    contexts = authenticate_contexts(payload, api, root, now=now)
+    matching = [item for item in contexts if item["package_slug"] == payload["package_slug"]]
+    if len(matching) != 1 or context_digest(matching[0]) != payload["context_sha256"]:
+        raise ContractError("repair proposal is bound to another context")
+    context = matching[0]
+    run_id, attempt = payload["orchestrator_run_id"], payload["orchestrator_attempt"]
+    sha, slug = payload["base_sha"], payload["package_slug"]
     branch = f"automation/smoke-repair/{run_id}-{attempt}-{slug}"
     refs = api.api(f"repos/{REPOSITORY}/git/matching-refs/heads/{branch}")
     pulls = api.api(f"repos/{REPOSITORY}/pulls?state=all&head=ArmDeveloperEcosystem:{branch}&per_page=100")

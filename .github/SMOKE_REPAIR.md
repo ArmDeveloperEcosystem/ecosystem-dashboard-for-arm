@@ -34,18 +34,40 @@ One authenticated failed batch may receive one fresh same-SHA confirmation
 dispatch with a unique nonce/run ID. Passing batches are not retried, original
 failures remain recorded, and assertion failures are not relabelled transient.
 Only the same registered package failing both runs is eligible for repair.
-Failed collectors, missing evidence, timeouts, or unsupported layouts require
+A failed original collector may also receive that single confirmation. A second
+collector failure, missing evidence, timeouts, or unsupported layouts require
 investigation rather than an invented package-failure context.
 
 ## Recovery Flow
 
 ```text
 Full main run -> one confirmation of failures -> authenticated public request
-  -> separate model service -> fixed-vocabulary proposal callback
-  -> independent public policy checks -> immutable candidate
-  -> actual hosted Arm package tests -> verified draft PR
+  -> separate model service -> cumulative typed proposal callback
+  -> independent public policy checks -> one immutable multi-package candidate
+  -> all registered batches on hosted Arm -> candidate Global Summary
+  -> failed candidate feedback -> revise and retest (at most three candidates)
+  -> verified complete candidate success -> draft PR
   -> human review and merge -> fresh complete main run
 ```
+
+The cycle controller is `smoke-repair-cycle.yml`, receiving only
+`smoke-repair-cycle-proposal`. It groups the complete authenticated incident into
+one candidate branch per iteration. Every iteration starts from the same reviewed
+main commit and retains earlier fixes. The full-fleet verifier checks all registered
+batches and packages, not just the repaired workflows, and confirms failed batches
+once. Newly failing packages may enter the next proposal only after independently
+verified persistent-failure evidence. Complete fleet success, exact artifacts and
+required Arm probes must all agree before the draft publisher runs.
+
+Candidate Global Summary is explicitly non-publishing. It cannot update dashboard
+results or declare main recovered. Feedback is bound to the exact public controller
+run, candidate SHA, artifact digest, cycle and preceding iteration. Incomplete
+evidence is a blocker, not permission for another speculative model attempt. The
+three-iteration limit is an escalation boundary, not a promise that all upstream
+or infrastructure failures can be fixed automatically.
+
+The following single-package protocol remains as a legacy compatibility path;
+routine cycle automation uses the version 2 protocol below.
 
 1. The preparation workflow authenticates current main, the original and
    confirmation runs, package registration, failed steps, and the evidence
@@ -84,7 +106,20 @@ are bounded; a canceled or undelivered callback is not a successful repair.
 
 ## Public Callback
 
-`client_payload` has exactly nine fields:
+Cycle `client_payload` has exactly one field, `repair`, containing the document
+below. This wrapper respects GitHub's ten-top-level-field dispatch limit; no
+additional transport fields are permitted. The repair document has exactly
+eleven fields: `schema_version` (integer 2),
+`repository`, `base_sha`, `orchestrator_run_id`, `orchestrator_attempt`,
+`context_artifact_id`, `cycle_id`, `iteration`, `previous_feedback_run_id`,
+`previous_feedback_artifact_id`, and `proposals`. The cycle is the original run ID
+and attempt separated by `-`. Iteration is 1 through 3. Both previous-evidence
+pointers are null initially and required positive IDs thereafter. Proposals are
+a unique sorted complete incident inventory, at most ten packages. Each contains
+exactly `package_slug`, `context_sha256`, and `operations`; no raw source or private
+metadata is accepted. An unchanged repeat proposal is rejected.
+
+Legacy single-package `client_payload` has exactly nine fields:
 
 | Field | Meaning |
 | --- | --- |
@@ -111,6 +146,12 @@ Operations use zero-based original step/line indexes:
   no ambiguous overrides.
 - `curl_retry`: bounded integer retry parameters appended to an eligible
   existing setup download. The original URL and failure behavior stay intact.
+- `github_release_download`: original step/line indexes and a source-bound
+  research digest, never a model-provided URL. Independently fetched public
+  release evidence must verify an Arm asset from the existing upstream repository,
+  its downloaded bytes and SHA-256. Only recognized setup forms, same-minor stable
+  patch upgrades and install-local version/checksum changes are supported. Global
+  pins, unrelated sources, arbitrary hosts and test changes remain prohibited.
 
 No free-form diagnosis, replacement source, shell command, private run URL or
 reason may be sent. Unsupported proposals stay with the service for manual
@@ -121,9 +162,10 @@ limits, execute commands, change tests or bypass human review.
 ## Immutable Tests
 
 Tests, assertions, final gates, step identities/order, permissions, runners,
-action references, baselines, outputs and reporting remain frozen. Only narrowly
-approved prerequisite or parallelism prefixes before an entire original script
-are permitted. Skipped required tests, removed packages, fabricated JSON,
+action references, global baselines, outputs and reporting remain frozen. Setup
+changes are limited to approved prerequisite/parallelism prefixes, bounded download
+retries, and independently verified upstream release-download replacements.
+Skipped required tests, removed packages, fabricated JSON,
 source-only substitutes for runtime proof and suppressed failures cannot make
 the system green.
 
@@ -137,13 +179,13 @@ No package workflow is rewritten merely to make it eligible.
 
 Catalog-bound repair uses two immutable commits: a workflow-only source anchor,
 then its child containing mechanical action-lock and catalog bindings. Only the
-selected workflow, lock and catalog can differ from the reviewed base. The
+selected workflows, lock and catalog can differ from the reviewed base. The
 compiler preserves identities/decisions and updates recognized advisory evidence
 using the actual commit time and App attribution, not an earlier reviewer.
 The full immutable base catalog is validated with checksum-pinned Hugo before
 a delivery token is minted.
 
-Stage schema 2 binds both commits. Only the final candidate can supply native
+The bundle receipt binds both commits and every admitted package. Only the final candidate can supply native
 success; subsequent edits invalidate it. Use a **merge commit**, not squash or
 rebase, so the source anchor remains reachable in main. This prerequisite is
 documented in the draft, not enforced by a per-PR GitHub setting; reviewers must
@@ -184,10 +226,11 @@ Human PR review/merge and production approval remain mandatory in either mode.
 ## Acceptance and Follow-up
 
 Before routine activation, prove a real eligible failure through authenticated
-request, private model call, exact callback, policy admission, native package
-success, draft creation, human merge and a fresh complete main run. Exercise
+request, private model call, exact callback, policy admission, complete candidate
+fleet success, draft creation, human merge and a fresh complete main run. Exercise
 wrong sender/SHA/context, replay, missing artifacts, malformed model output,
-stale main, failed native probes and exhausted budgets. None may yield a fake
+stale main, a new failure outside the original repair set, a second failed candidate,
+failed native probes and exhausted budgets. None may yield a fake
 pass or successful repair. Audit public logs/artifacts/PRs for private information.
 
 Original failed runs stay failed. Each successful run verifies its own commit.
@@ -208,5 +251,7 @@ repair. See [generated site data review](GENERATED_SITE_DATA_REVIEW.md).
 
 Implementation: [request preparation](workflows/smoke-repair.yml),
 [callback](workflows/smoke-repair-receive.yml), [compiler](scripts/smoke_repair_bridge.py),
-[candidate jobs](workflows/smoke-repair-package.yml),
+[cycle controller](workflows/smoke-repair-cycle.yml),
+[candidate fleet](scripts/smoke_repair_fleet.py),
+[combined publisher](scripts/smoke_repair_bundle.py),
 [policy](scripts/smoke_repair_policy.py), [native verifier](scripts/smoke_repair_native.py).

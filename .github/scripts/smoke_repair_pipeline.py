@@ -83,7 +83,8 @@ def admit(context, proposal):
     return source, contract
 
 
-def report(repository, run_id, attempt, slug, recipient, results, api, *, pull_request_url=""):
+def report(repository, run_id, attempt, slug, recipient, results, api, *, pull_request_url="",
+           automatic_retry_pending=False):
     validate_repository(repository)
     positive(run_id, "report run ID")
     positive(attempt, "report attempt")
@@ -95,6 +96,11 @@ def report(repository, run_id, attempt, slug, recipient, results, api, *, pull_r
         raise ContractError("repair job results are invalid")
     if not results or any(value not in {"success", "failure", "cancelled", "skipped"} for value in results.values()):
         raise ContractError("repair job result is not terminal")
+    if type(automatic_retry_pending) is not bool or (automatic_retry_pending and (
+        results.get("propose") != "success" or results.get("stage") != "success"
+        or results.get("native") != "failure" or results.get("publish") != "skipped"
+    )):
+        raise ContractError("automatic retry notification contradicts repair stage results")
     if results.get("publish") == "success" and (
         any(results.get(key) != "success" for key in ("propose", "stage", "native"))
         or results.get("prepare", "success") != "success"
@@ -113,6 +119,9 @@ def report(repository, run_id, attempt, slug, recipient, results, api, *, pull_r
             "This does not make the original main run green. A human must review and merge the fix; the new main must pass its own full orchestrator cycle."]
         if pull_request_url:
             lines += ["", f"[Verified repair draft]({pull_request_url})"]
+    elif automatic_retry_pending:
+        lines += ["", "This complete candidate failed its native fleet checks. Authenticated feedback is available for the next bounded repair iteration; no successful repair or green main is claimed.",
+            "The controller will recheck eligibility and its remaining budget. Unsupported changes, stale main, or exhausted limits will be reported as blockers."]
     else:
         lines += ["", "No successfully published repair is claimed. Check the failed or skipped stage for unsupported changes, unavailable configuration, stale main, or validation failure. Human investigation remains necessary."]
     lines += ["", "No automatic approval, merge, production write, or weakening of a failed result is authorized."]

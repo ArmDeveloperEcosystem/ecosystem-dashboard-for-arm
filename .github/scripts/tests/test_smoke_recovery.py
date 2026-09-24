@@ -833,7 +833,7 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(len(self.fixture.posts), 1)
 
     def test_cli_invalid_inventory_fails_closed_before_any_confirmation(self):
-        for variant in ("missing", "extra", "malformed", "duplicate", "collector", "cancelled", "timed_out", "identity", "sha", "attempt", "contradiction", "pagination"):
+        for variant in ("missing", "extra", "malformed", "duplicate", "cancelled", "timed_out", "identity", "sha", "attempt", "contradiction", "pagination"):
             with self.subTest(variant=variant):
                 self.fixture = RecoveryFixture()
                 self.fixture.fail(1, "assertion")
@@ -848,8 +848,6 @@ class RecoveryControllerTests(unittest.TestCase):
                     jobs.append(None)
                 elif variant == "duplicate":
                     jobs.append(deepcopy(jobs[0]))
-                elif variant == "collector":
-                    jobs[-1]["conclusion"] = "failure"
                 elif variant in {"cancelled", "timed_out"}:
                     jobs[0]["conclusion"] = variant
                 elif variant == "identity":
@@ -1452,6 +1450,31 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(len(self.fixture.posts), 1)
         self.assertEqual(self.audit()["history"][0]["failures"][0]["classification"], "unknown_failure")
 
+    def test_failed_original_collector_gets_one_fresh_complete_confirmation(self):
+        self.fixture.runs[10006]["conclusion"] = "failure"
+        self.fixture.pages[10006][0]["jobs"][-1]["conclusion"] = "failure"
+        result = self.controller().recover()
+        self.assert_final(result, changed={6})
+        self.assertEqual(len(self.fixture.posts), 1)
+        history = [item for item in self.audit()["history"] if item["batch"] == 6]
+        self.assertEqual([item["classification"] for item in history], ["failed", "success"])
+        self.assertEqual(history[0]["failures"][0]["classification"], "collector_failure")
+        self.assertEqual(history[0]["run"]["conclusion"], "failure")
+
+    def test_second_collector_failure_never_authorizes_summary_or_another_retry(self):
+        self.fixture.runs[10006]["conclusion"] = "failure"
+        self.fixture.pages[10006][0]["jobs"][-1]["conclusion"] = "failure"
+        def fail_collector(api, record):
+            api.runs[record["run_id"]]["conclusion"] = "failure"
+            api.pages[record["run_id"]][0]["jobs"][-1]["conclusion"] = "failure"
+        self.fixture.dispatch_hook = fail_collector
+        status, stdout, _, _ = self.cli()
+        self.assertEqual(status, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(len(self.fixture.posts), 1)
+        self.assertEqual(self.audit()["status"], "failed")
+        self.assertEqual(json.loads((self.root / "manifest.json").read_text()), self.fixture.manifest)
+
 
 class WorkflowScopeTests(unittest.TestCase):
     def test_serialized_workflows_preserve_pending_jobs(self):
@@ -1506,7 +1529,8 @@ class WorkflowScopeTests(unittest.TestCase):
         self.assertEqual(exempt, ["$binary", "-shellcheck=", "-ignore",
             '^unexpected key "queue" for "concurrency" section\\. expected one of "cancel-in-progress", "group"$',
             ".github/workflows/main.yml", ".github/workflows/test-all-packages-orchestrator.yml",
-            ".github/workflows/smoke-repair-receive.yml", ".github/workflows/smoke-recovery-monitor.yml"])
+            ".github/workflows/smoke-repair-receive.yml", ".github/workflows/smoke-repair-cycle.yml",
+            ".github/workflows/smoke-recovery-monitor.yml"])
 
     def test_notification_retains_producing_attempt_on_partial_rerun(self):
         workflow = yaml.safe_load((SCRIPT_ROOT.parent / "workflows" / "test-all-packages-orchestrator.yml").read_text())
