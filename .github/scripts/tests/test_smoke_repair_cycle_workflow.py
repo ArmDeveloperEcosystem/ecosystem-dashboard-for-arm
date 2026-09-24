@@ -174,8 +174,10 @@ class CycleWorkflowTests(unittest.TestCase):
             self.assertNotIn(key, job.get("env", {}))
             for step in job["steps"]:
                 requires_research = {(Path(command[3]).name, command[4]) for command in cli_commands(step)} & commands
-                inline_readmission = (job_name, step["name"]) == (
-                    "publish", "Readmit bundle and check receipt identity before delivery credentials")
+                inline_readmission = (job_name, step["name"]) in {
+                    ("stage", "Reauthenticate and independently readmit before write credentials"),
+                    ("publish", "Readmit bundle and check receipt identity before delivery credentials"),
+                }
                 token = step.get("env", {}).get(key)
                 self.assertEqual(bool(requires_research) or inline_readmission, token is not None, (job_name, step["name"]))
                 if token is None:
@@ -401,6 +403,67 @@ class CycleWorkflowTests(unittest.TestCase):
                 Path, "cwd", return_value=root
             ), patch.object(sys, "path", sys.path.copy()):
                 exec(compile(bodies[0], "trusted-cycle-publication-preflight", "exec"), {"__name__": "__main__"})
+
+    def test_actual_inline_stage_admits_ten_repairs_with_read_only_metadata_session(self):
+        import smoke_repair_bridge as bridge
+        import smoke_repair_native as native
+        import smoke_repair_policy as policy
+        import smoke_repair_upstream as research
+        import test_smoke_repair_upstream as upstream
+        from test_smoke_repair_pipeline import SOURCE, context
+
+        token = "ghs_" + "r" * 36
+        repairs, clients = [], []
+        for index in range(10):
+            slug = f"widget{index}"
+            source = SOURCE.replace("https://example.org/widget-1.2.3.tar.gz", upstream.OLD_URL)
+            source = source.replace("test-widget:", f"test-{slug}:").replace(
+                "package_slug=widget", f"package_slug={slug}")
+            trusted = context(source)
+            trusted.update(package_slug=slug, workflow_path=f".github/workflows/test-{slug}.yml",
+                           called_job=f"test-{slug}")
+            with research.research_session(client=upstream.FakeClient()):
+                choice = research.research_downloads(trusted)["candidates"][0]
+                operation = {"kind": "github_release_download",
+                             **{key: choice[key] for key in ("step", "line", "research_id")}}
+                proposal = bridge.compile_proposal(trusted, [operation])
+            repairs.append({"context": trusted, "proposal": proposal})
+
+        class BudgetClient(upstream.FakeClient):
+            def __init__(self, *, metadata_token=None):
+                super().__init__()
+                self.authenticated = metadata_token == token
+                clients.append(self)
+
+            def get_json(self, path):
+                research._REQUEST_BUDGET.take(self.authenticated)
+                return super().get_json(path)
+
+            def asset_sha256(self, path, size):
+                research._REQUEST_BUDGET.take(False)
+                return super().asset_sha256(path, size)
+
+        source = self.step("stage", "Reauthenticate and independently readmit before write credentials")["run"]
+        bodies = re.findall(r"<<'PY'\n(.*?)\nPY(?:\n|$)", source, re.DOTALL)
+        self.assertEqual(1, len(bodies))
+        with tempfile.TemporaryDirectory() as directory:
+            document = Path(directory) / "admission.json"
+            document.write_text(json.dumps({"repairs": repairs}), encoding="utf-8")
+            budget = research._RequestBudget()
+            with patch.dict(os.environ, {"SMOKE_REPAIR_UPSTREAM_READ_TOKEN": token}), \
+                    patch.object(sys, "argv", ["-", str(document)]), \
+                    patch.object(sys, "path", sys.path.copy()), \
+                    patch.object(research, "_REQUEST_BUDGET", budget), \
+                    patch.object(research, "_DEFAULT_SESSION", research.ResearchSession()), \
+                    patch.object(research, "GitHubReleases", side_effect=BudgetClient), \
+                    patch.object(policy, "validate_proposal", wraps=policy.validate_proposal) as validate, \
+                    patch.object(native, "derive_native_contract", wraps=native.derive_native_contract) as derive:
+                exec(compile(bodies[0], "trusted-cycle-stage-preflight", "exec"), {"__name__": "__main__"})
+        self.assertEqual(10, validate.call_count)
+        self.assertEqual(10, derive.call_count)
+        self.assertTrue(clients and all(client.authenticated for client in clients))
+        self.assertGreater(budget.counts[True], research.UNAUTHENTICATED_REQUESTS)
+        self.assertEqual(10, budget.counts[False])
 
     def preflight_fixture(self):
         import smoke_repair_bundle as bundle
