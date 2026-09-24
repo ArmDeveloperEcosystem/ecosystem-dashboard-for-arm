@@ -55,6 +55,10 @@ Try:
    Then try `Only web servers` to start a new software search.
 5. `Vector databases with Apache 2.0 licenses` — explains that the specific
    licence requirement cannot be verified by this PoC.
+6. `Tools to run unit tests` — finds testing software; a package's own build-test
+   instructions do not establish that role.
+7. `A time-series database for metrics` — accepts explicit workload evidence
+   across catalog categories while retaining the requested database role.
 
 For each query, check that the returned packages are relevant and already
 represented in the dashboard, their details and resource links still work, and
@@ -88,6 +92,14 @@ new request such as `Only web servers` changes it. Unsupported alternatives,
 exclusions and metadata constraints receive a clarification. Query evidence must
 describe the requested software role and attributes: an article about a tool
 that configures a database does not make that tool a database.
+
+Testing requests retain the testing role after recorded-test filters are parsed.
+Unit-testing specialization requires affirmative framework/runner evidence;
+comparisons, dependencies and instructions to test a package's own build do not
+establish it. Database/broker requests can express a metrics or telemetry workload
+without belonging to the Monitoring category. The workload remains required,
+including when a separate monitoring feature is requested. Evidence clauses must
+attribute the capability to the returned package, with negation respected.
 
 The UI keeps alphabetical catalog ordering. The backend scores candidates but
 does not reorder the existing table. At most 50 matches are returned, with a

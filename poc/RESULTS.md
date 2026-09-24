@@ -3,9 +3,9 @@
 Date: 23 September 2026. Review: [PR #1092](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/pull/1092).
 Base: upstream `main`, `e1871540f0a3e42e7588ab44b09e4796de967fd8`.
 
-The search implementation has passed the checks below, including a Linux Arm64
-API image behind a certificate-verified local HTTPS proxy. It is ready for team
-review and staging acceptance; the live dashboard has not been changed.
+The corrected search implementation is a candidate for team acceptance and
+staging. Current checks and historical deployment evidence are separated below;
+neither constitutes approval for public rollout. The live dashboard is unchanged.
 
 ## What was validated
 
@@ -32,13 +32,53 @@ an explicit opt-in. Windows search remains unchanged. See the [implementation
 guide](README.md) for behavior and limitations and the [deployment
 runbook](deploy/README.md) for runtime limits, routing, rollout and rollback.
 
-## Recorded implementation validation
+## Final relevance corrections
+
+A fresh technical review identified two primary-relevance defects after the
+earlier checks: unit-testing requests admitted Benchmark and Vectorscan from
+comparisons or build instructions, and a metrics-database request excluded
+VictoriaMetrics because of its category. Both are corrected without package-name
+exceptions. Testing roles require affirmative package-owned evidence. Metrics and
+telemetry workloads remain required alongside any additional monitoring role;
+negation and clauses about a different product cannot supply those capabilities.
+
+Current deterministic validation: **264 Python tests pass**, including **55 new
+[role/evidence regressions](tests/test_role_evidence.py)**; **113 existing repository tests** and **8 JavaScript
+interaction tests** pass. The new regression file demonstrably fails on the
+previous implementation for the defects it covers. Existing test expectations
+were retained.
+
+The independent reviewer froze 13 query/filter cases and eight controlled-evidence
+cases before inspecting the implementation. Final review completed 43 diagnostic
+executions, including unchanged provider captures and counterexamples found during
+correction, with no failed specified assertions. All 31 returned rows across 13
+identities were inspected. Twelve executions were observations without a complete
+expected-result oracle; this total is not a relevance-accuracy score. The reviewer
+found no remaining merge blocker within that scope.
+
+Browser checks confirmed the two corrected searches, open-source follow-up and
+clearing the query while preserving the selected filter. The query fixtures and
+new deterministic regressions are committed; generated review evidence stays in
+the review workspace. CI publishes the final revision's controlled test reports.
+
+The final runtime also passed **118/118 real HTTP scenarios** against a freshly
+started API with the live KB configured: 37 main, 38 earlier independent, eight
+earlier recall regressions and 35 held-out cases. Source hashes stayed fixed during
+execution; these are disclosed regression queries, not unseen accuracy estimates.
+The production-overlay build passed. Its Linux Arm64 image passed **18/18 smoke
+checks**, and both corrected queries were exercised inside that image with
+controlled KB inputs. Container runtime hashes match the independently reviewed
+code. Actual Arm staging, release-image scanning and capacity validation remain
+the release prerequisites below.
+
+## Historical implementation validation
 
 These results belong to the implementation preserved at
 [`69b7eed6c`](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/commit/69b7eed6c4447ac9371b64b6946f0b21196cf998).
-The subsequent PR cleanup changes documentation, evaluation runner layout/output
-handling and CI report retention. Application, UI, dependency, deployment-runtime
-and test bytes are unchanged; all query fixtures and assertions are retained.
+The cleanup at `f8735a22c` changed documentation, evaluation runner layout/output
+handling and CI report retention while retaining application/test bytes. The final
+relevance correction above changes search logic and adds tests; the historical
+results below must not be interpreted as a fresh validation of that correction.
 
 | Check | Result |
 |---|---|
@@ -81,7 +121,7 @@ weakened. The 35 independent query wordings were fixed before the first candidat
 reviewed; additional negative assertions were added when manual review found
 unrelated results. Every returned row in the independent 35-query sample was reviewed, not only required names.
 
-## Checks after PR cleanup
+## Historical cleanup checks at `f8735a22c`
 
 The 209 Python and 8 JavaScript checks pass on the unchanged application/test
 bytes. The relocated runners preserve the 38, 8 and 35 case files byte-for-byte,

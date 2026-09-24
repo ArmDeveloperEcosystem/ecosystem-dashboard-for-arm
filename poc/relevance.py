@@ -38,6 +38,36 @@ CAPABILITIES = {
         ("monitor", "monitoring", "metrics", "observability", "alerting", "telemetry"),
         ("monitoring", "monitor", "metrics", "observability", "alerting", "telemetry"),
     ),
+    "software testing": (
+        (
+            "unit test",
+            "unit tests",
+            "unit testing",
+            "unit-testing",
+            "testing framework",
+            "testing frameworks",
+            "test framework",
+            "test frameworks",
+            "test automation framework",
+            "testing tools",
+            "test tools",
+            "test runner",
+            "test runners",
+            "run tests",
+            "running tests",
+            "execute tests",
+            "executing tests",
+        ),
+        (
+            "testing framework",
+            "test framework",
+            "test automation framework",
+            "test runner",
+            "testing tool",
+            "test tool",
+            "test execution",
+        ),
+    ),
     "model serving": (
         (
             "llm",
@@ -256,6 +286,14 @@ def capability_groups(query):
             for t in triggers
         )
     ]
+    # A database/broker *for metrics* need not itself be a monitoring tool.
+    # The workload remains an independently checked attribute below.
+    if (
+        monitoring_workload(text)
+        and "monitoring" in groups
+        and not re.search(r"\b(?:monitor(?:ing)?|observability|alerting)\b", text)
+    ):
+        groups.remove("monitoring")
     if "database" in groups and any(
         g in groups
         for g in (
@@ -359,6 +397,174 @@ def database_role(package):
     return False
 
 
+_ASSERTION_VERBS = (
+    r"is|are|provides|implements|offers|delivers|supports|stores?|ingests?|"
+    r"processes|routes?|collects?|handles?|publishes|streams?|transports?|transmits?"
+)
+_NEW_SUBJECT_CLAUSE = re.compile(
+    r"\b(?:and|while|whereas|although|but)\s+"
+    r"(?!(?:" + _ASSERTION_VERBS + r"|also|it|they)\b)"
+    r"(?:[\w'-]+\s+){1,5}(?:" + _ASSERTION_VERBS + r")\b"
+)
+
+
+def package_assertions(package, text):
+    """Affirmative clauses whose subject is this package, not a dependency.
+
+    Catalog identity and article attribution alone cannot turn instructions to
+    run a package's tests into a claim that it supplies a testing framework.
+    Keep the grammatical owner for the bounded role/workload checks below.
+    """
+    name = re.escape(normal(package["title"]))
+    assertion = re.compile(
+        r"(?<!\w)(?:the\s+)?"
+        + name
+        + r"(?:\s+(?:enterprise|community|professional)(?:\s+edition)?)?"
+        r"\s+(?:" + _ASSERTION_VERBS + r")\b[^.;\n]*"
+    )
+    for match in assertion.finditer(normal(text)):
+        # "Package is X and Other is Y" establishes X only for this package.
+        # Coordinated noun roles ("a database and a monitoring solution") and
+        # predicates with the same subject ("and stores metrics") stay intact.
+        yield _NEW_SUBJECT_CLAUSE.split(match.group(), maxsplit=1)[0]
+
+
+_INCIDENTAL_ROLE = re.compile(
+    r"\b(?:uses?|used(?! for\b)|using|depends?|dependencies|requires?|requiring|similar|"
+    r"like|via|integrates?|integration|adapter|connector|client for|"
+    r"while|whereas|although|but(?! also\b)|"
+    r"not(?! only\b)|no|without)\b"
+)
+_TESTING_ROLE = (
+    r"\b(?:(?:unit[- ]|build and )?test(?:ing)?(?: automation)? "
+    r"(?:framework|runner|tool|library)|framework for (?:unit[- ])?testing)\b"
+)
+_MONITORING_ROLE = (
+    r"\b(?:monitoring|observability) "
+    r"(?:solution|platform|tool|agent|system|suite|framework)\b"
+)
+
+
+def asserted_role(package, text, pattern):
+    for assertion in package_assertions(package, text):
+        for role in re.finditer(pattern, assertion):
+            if _INCIDENTAL_ROLE.search(assertion[: role.start()]):
+                continue
+            if has_positive(assertion, (role.group(),)):
+                return True
+    return False
+
+
+def testing_role(package, text):
+    return asserted_role(package, text, _TESTING_ROLE) or unit_testing_evidence(
+        package, text
+    )
+
+
+def unit_testing_evidence(package, text):
+    """Unit testing must be provided, rather than performed on the package."""
+    for assertion in package_assertions(package, text):
+        if re.search(
+            r"\b(?:own|internal|its)\s+(?:unit[- ]tests?|test suite)\b", assertion
+        ):
+            continue
+        patterns = (
+            r"\bunit[- ]test(?:ing)? (?:framework|runner|tool|library)\b",
+            r"\b(?:for|supports?|enables?|provides|used for)\b[^.;]{0,70}"
+            r"\b(?:writing|running|executing|write|run|execute)\b[^.;]{0,30}\bunit[- ]tests?\b",
+            r"\b(?:supports?|provides|implements|offers|enables?) "
+            r"(?:unit[- ]testing|unit[- ]test (?:execution|automation))\b",
+        )
+        if any(
+            not _INCIDENTAL_ROLE.search(assertion[: match.start()])
+            and not _INCIDENTAL_ROLE.search(match.group())
+            and has_positive(assertion, (match.group(),))
+            for pattern in patterns
+            for match in re.finditer(pattern, assertion)
+        ):
+            return True
+    return False
+
+
+def monitoring_role(package, text):
+    return asserted_role(package, text, _MONITORING_ROLE) or asserted_role(
+        package,
+        text,
+        r"\b(?:provides|offers|implements|delivers) (?:built-in |integrated )?"
+        r"(?:monitoring|observability)\b",
+    )
+
+
+def monitoring_workload(subject):
+    """Recognize a bounded primary-role + metrics/telemetry workload clause."""
+    text = normal(subject)
+    match = re.search(
+        r"\b(?:for|(?:to )?(?:store|storing|process|processing|route|routing|"
+        r"collect|collecting|ingest|ingesting))\s+"
+        r"(?:(?:application|infrastructure|sensor)\s+)?(metrics|telemetry)\b",
+        text,
+    )
+    if not match:
+        return None
+    head = text[: match.start()]
+    # Extraction is independent of role composition. Adding "with monitoring"
+    # must retain this workload obligation as well as the monitoring role.
+    if any(
+        re.search(r"(?<!\w)" + re.escape(normal(trigger)) + r"(?!\w)", head)
+        for group in ("database", "message streaming", "time-series data")
+        for trigger in CAPABILITIES[group][0]
+    ):
+        return match.group(1)
+    return None
+
+
+def workload_evidence(package, text, workload):
+    if re.search(
+        r"\b" + re.escape(workload) + r"\b", normal(text)
+    ) and not has_positive(text, (workload,)):
+        return False
+    # Only the package's own catalog role facts establish this inference. A KB
+    # article about monitoring a different database cannot supply either role.
+    catalog_facts = ". ".join(package_assertions(package, package["description"]))
+    if (
+        workload == "metrics"
+        and monitoring_role(package, catalog_facts)
+        and has_positive(catalog_facts, CAPABILITIES["time-series data"][1])
+    ):
+        return True
+    pattern = (
+        r"\b(?:stores?|storing|ingests?|ingesting|process(?:es|ing)?|routes?|routing|"
+        r"collects?|collecting|handles?|handling|publishes|publishing|streams?|"
+        r"streaming|transports?|transporting|transmits?|transmitting|supports?|supporting)\b"
+        r"[^.;]{0,70}\b" + re.escape(workload) + r"\b"
+    )
+    for assertion in package_assertions(package, text):
+        for match in re.finditer(pattern, assertion):
+            prefix = assertion[: match.start()].strip()
+            # The predicate must belong to this package, or continue its own
+            # relative/coordinated clause. A later named subject such as
+            # "while another product stores telemetry" cannot supply evidence.
+            owner = r"(?:the\s+)?" + re.escape(normal(package["title"]))
+            owner += r"(?:\s+(?:enterprise|community|professional)(?:\s+edition)?)?"
+            owned = bool(re.fullmatch(owner, prefix)) or bool(
+                re.search(
+                    r"\b(?:that|which|and|for|by)\s+(?:(?:also|directly|can)\s+)?$",
+                    prefix + " ",
+                )
+            )
+            if not owned or _INCIDENTAL_ROLE.search(prefix):
+                continue
+            if _INCIDENTAL_ROLE.search(match.group()):
+                continue
+            if re.search(r"\b(?:own|internal|its)\b", match.group()):
+                continue
+            if has_positive(assertion, (workload,)) and has_positive(
+                assertion, (match.group(),)
+            ):
+                return True
+    return False
+
+
 def role_allowed(package, group):
     text = normal(package["description"])
     opening = text[:180]
@@ -384,7 +590,12 @@ def role_allowed(package, group):
             "Platform / Infrastructure",
         )
     if group == "monitoring":
-        return package["category"] in ("Observability", "Monitoring/Observability")
+        return package["category"] in (
+            "Observability",
+            "Monitoring/Observability",
+        ) or monitoring_role(package, text)
+    if group == "software testing":
+        return testing_role(package, text)
     if group in ("web serving", "load balancing", "reverse proxy"):
         roles = CAPABILITIES[group][1]
         if group == "reverse proxy":
@@ -421,7 +632,12 @@ def covered_groups(package, text, groups):
     return [
         g
         for g in groups
-        if role_allowed(package, g) and has_positive(text, CAPABILITIES[g][1])
+        if role_allowed(package, g)
+        and (
+            testing_role(package, text)
+            if g == "software testing"
+            else has_positive(text, CAPABILITIES[g][1])
+        )
     ]
 
 
@@ -432,6 +648,13 @@ def requested_attributes(subject, groups):
     yields no match and a clarification. Conversational wrappers are not facts.
     """
     attributes = []
+    if "software testing" in groups and re.search(r"\bunit[- ]test", subject):
+        attributes.append(
+            ("unit testing role", ("unit test", "unit tests", "unit testing"))
+        )
+    workload = monitoring_workload(subject)
+    if workload:
+        attributes.append((workload + " workload", (workload,)))
     if "load balancing" in groups:
         protocols = [
             p for p in ("tcp", "http") if re.search(r"\b" + p + r"\b", subject)
@@ -573,12 +796,19 @@ def requested_attributes(subject, groups):
     return attributes
 
 
-def verified_attributes(text, attributes):
-    return all(
-        has_positive(text, phrases)
-        or (len(phrases) == 1 and positive_inflected_phrase(text, phrases[0]))
-        for _, phrases in attributes
-    )
+def verified_attributes(text, attributes, package=None):
+    for label, phrases in attributes:
+        if label == "unit testing role":
+            matched = bool(package) and unit_testing_evidence(package, text)
+        elif label in ("metrics workload", "telemetry workload"):
+            matched = bool(package) and workload_evidence(package, text, phrases[0])
+        else:
+            matched = has_positive(text, phrases) or (
+                len(phrases) == 1 and positive_inflected_phrase(text, phrases[0])
+            )
+        if not matched:
+            return False
+    return True
 
 
 def positive_inflected_phrase(text, phrase):
@@ -650,13 +880,9 @@ def verifies_concepts(text, concepts, *, require_all=False):
 
 
 def query_terms(subject):
-    return stems(
-        " ".join(
-            words(subject)
-            - STOP
-            - words("recorded verified tests tested test evidence")
-        )
-    )
+    # parse_intent already consumes explicit recorded-test filters. Remaining
+    # test words describe requested software, and must retain their meaning.
+    return stems(" ".join(words(subject) - STOP))
 
 
 ROLE_NOUNS = {

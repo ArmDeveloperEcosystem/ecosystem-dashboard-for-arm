@@ -193,10 +193,8 @@ class SearchService:
             # question/filler words do not become mandatory catalog claims.
             # Without a recognized role, dropping a remaining concept can change
             # the request (packet processing is not packet capture).
-            catalog_match = verified_attributes(text, attributes) and (
-                len(catalog_groups) == len(groups)
-                and verified_attributes(text, attributes)
-                and verifies_concepts(text, concepts)
+            catalog_match = verified_attributes(text, attributes, package) and (
+                len(catalog_groups) == len(groups) and verifies_concepts(text, concepts)
                 if groups
                 else bool(terms) and verifies_concepts(text, concepts, require_all=True)
             )
@@ -216,9 +214,10 @@ class SearchService:
                     continue
                 evidence = text + " " + passage
                 matched = covered_groups(package, evidence, groups)
-                evidence_match = verified_attributes(evidence, attributes) and (
+                evidence_match = verified_attributes(
+                    evidence, attributes, package
+                ) and (
                     len(matched) == len(groups)
-                    and verified_attributes(evidence, attributes)
                     and verifies_concepts(evidence, concepts)
                     if groups
                     else bool(terms)
