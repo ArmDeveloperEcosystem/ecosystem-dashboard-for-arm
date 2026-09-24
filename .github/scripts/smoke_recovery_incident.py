@@ -604,14 +604,15 @@ def watch(*, repository, repository_root, bot="github-actions[bot]", repair_bot=
             raise ContractError("watchdog run is outside the bounded main window")
         jobs = _jobs(api, repository, run_id, attempt)
         parents = [j for j in jobs if j.get("name") == ORCHESTRATOR_JOB]
-        if len(parents) > 1:
-            raise ContractError("watchdog parent job is ambiguous")
+        scopes = [j for j in jobs if j.get("name") == "Check smoke change scope"]
+        if len(parents) > 1 or len(scopes) > 1:
+            raise ContractError("watchdog required job is ambiguous")
         if run.get("status") == "completed":
-            if parents and parents[0].get("conclusion") == "skipped" and run.get("conclusion") == "success":
+            if scopes and parents and parents[0].get("conclusion") == "skipped" and run.get("conclusion") == "success":
                 continue  # A website-only push is deliberately not a smoke cycle.
             if timestamp(run["created_at"]) < due and (now - due).total_seconds() >= SCHEDULE_GRACE_SECONDS:
                 break
-            if not parents or parents[0].get("conclusion") == "skipped":
+            if not parents or not scopes or parents[0].get("conclusion") == "skipped":
                 problem, candidate = "required_evidence_missing", run
                 break
             return sync(repository=repository, run_id=run_id, run_attempt=attempt, expected_sha=sha,

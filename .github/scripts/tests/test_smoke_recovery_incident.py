@@ -720,6 +720,27 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(result["reason"], "required_evidence_missing")
         self.assertEqual(result["status"], "needs_investigation")
 
+    def test_legacy_run_without_scope_is_reported_without_green_or_verification(self):
+        for conclusion in ("success", "failure"):
+            with self.subTest(conclusion=conclusion):
+                self.setUp()
+                self.fake.parent.update(conclusion=conclusion)
+                self.fake.parent_job.update(conclusion=conclusion)
+                self.fake.jobs[RUN] = [self.fake.parent_job]
+                with mock.patch.object(incident, "verify_full_main") as verify:
+                    result = self.watch(write=True)
+                verify.assert_not_called()
+                self.assertEqual(result["reason"], "required_evidence_missing")
+                self.assertEqual(result["status"], "needs_investigation")
+                self.assertEqual(self.fake.issue["state"], "OPEN")
+                self.assertFalse(self.watch(write=True)["written"])
+
+    def test_duplicate_scope_jobs_fail_closed_without_incident_write(self):
+        self.fake.jobs[RUN].append({**self.fake.scope_job, "id": 999})
+        with self.assertRaisesRegex(contract.ContractError, "ambiguous"):
+            self.watch(write=True)
+        self.assertFalse(self.fake.writes)
+
     def test_untrusted_clock_and_run_window_rejected(self):
         self.now = self.now.replace(tzinfo=None)
         with self.assertRaises(contract.ContractError):
