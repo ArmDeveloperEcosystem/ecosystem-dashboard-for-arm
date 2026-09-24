@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-import subprocess
 import sys
-import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -24,6 +22,7 @@ class RepairWorkflowTests(unittest.TestCase):
         self.parent = workflow("test-all-packages-orchestrator.yml")
         self.repair = workflow("smoke-repair.yml")
         self.package = workflow("smoke-repair-package.yml")
+        self.receiver = workflow("smoke-repair-receive.yml")
 
     def test_new_workflows_are_internal_only_and_disabled_by_default(self):
         for document in (self.repair, self.package):
@@ -51,23 +50,53 @@ class RepairWorkflowTests(unittest.TestCase):
         upload = next(step for step in job["steps"] if step.get("id") == "evidence")
         self.assertEqual(upload["if"], "always()")
 
-    def test_matrix_limits_and_job_dependencies(self):
-        matrix = self.repair["jobs"]["repair"]
-        self.assertEqual(matrix["strategy"]["max-parallel"], 2)
-        self.assertIs(matrix["strategy"]["fail-fast"], False)
-        self.assertEqual(matrix["strategy"]["matrix"], "${{ fromJSON(needs.prepare.outputs.matrix) }}")
+    def test_request_callback_serialization_and_job_dependencies(self):
+        self.assertNotIn("repair", self.repair["jobs"])
+        self.assertEqual(self.receiver["on"], {"repository_dispatch": {"types": ["smoke-repair-proposal"]}})
+        self.assertEqual(self.receiver["concurrency"], {
+            "group": "smoke-repair-publication", "cancel-in-progress": False, "queue": "max"})
+        caller = self.receiver["jobs"]["repair"]
+        self.assertEqual(caller["needs"], "receive")
+        self.assertEqual(caller["uses"], "./.github/workflows/smoke-repair-package.yml")
+        self.assertEqual(caller["with"], {
+            "base_sha": "${{ needs.receive.outputs.base_sha }}",
+            "package_slug": "${{ needs.receive.outputs.package_slug }}",
+            "proposal_artifact_id": "${{ needs.receive.outputs.artifact_id }}",
+        })
         jobs = self.package["jobs"]
         self.assertEqual(jobs["stage"]["needs"], "propose")
         self.assertEqual(jobs["native"]["needs"], "stage")
         self.assertEqual(jobs["publish"]["needs"], ["propose", "stage", "native"])
         self.assertEqual(jobs["report"]["needs"], ["propose", "stage", "native", "publish"])
         self.assertEqual(jobs["report"]["if"], "always()")
-        for document in (self.repair, self.package):
+        for document in (self.repair, self.package, self.receiver):
             for job in document["jobs"].values():
                 self.assertIs(job.get("continue-on-error", False), False)
 
+    def test_monitor_is_serialized_gated_and_uses_only_trusted_main(self):
+        flow = workflow("smoke-recovery-monitor.yml")
+        self.assertEqual(set(flow["on"]), {"workflow_run", "schedule", "workflow_dispatch"})
+        self.assertEqual(flow["on"]["workflow_run"], {
+            "workflows": ["Test All Packages (Orchestrator) on Arm64"], "types": ["completed"], "branches": ["main"]})
+        self.assertEqual(flow["concurrency"], {
+            "group": "smoke-recovery-incident", "cancel-in-progress": False, "queue": "max"})
+        job = flow["jobs"]["monitor"]
+        self.assertIn("vars.SMOKE_RECOVERY_MONITOR_ENABLED == 'true'", job["if"])
+        self.assertEqual(job["runs-on"], "ubuntu-24.04-arm")
+        self.assertEqual(job["permissions"], {"contents": "read", "actions": "read", "pull-requests": "read", "issues": "write"})
+        checkout = job["steps"][0]["with"]
+        self.assertEqual(checkout["ref"], "${{ github.sha }}")
+        self.assertEqual(checkout["fetch-depth"], 0)
+        self.assertIs(checkout["persist-credentials"], False)
+        self.assertNotIn("github.event.workflow_run.head_sha", str(job))
+        self.assertNotIn("secrets.", str(job))
+        self.assertNotIn("download-artifact", str(job))
+        self.assertIn("smoke_recovery_incident.py watch", job["steps"][-1]["run"])
+        self.assertEqual(job["steps"][-1]["env"]["SMOKE_NOTIFICATION_LOGIN"],
+                         "${{ vars.SMOKE_NOTIFICATION_LOGIN }}")
+
     def test_only_free_arm_and_reviewed_checkout_with_no_persisted_token(self):
-        for document in (self.repair, self.package):
+        for document in (self.repair, self.package, self.receiver):
             for job in document["jobs"].values():
                 if "steps" not in job:
                     continue
@@ -83,7 +112,7 @@ class RepairWorkflowTests(unittest.TestCase):
 
     def test_credentials_are_separated_from_model_and_native_executor(self):
         jobs = self.package["jobs"]
-        self.assertEqual(jobs["propose"]["environment"], "smoke-repair-analysis")
+        self.assertNotIn("environment", jobs["propose"])
         self.assertEqual(jobs["propose"]["permissions"], {"contents": "read", "actions": "read"})
         self.assertEqual(jobs["native"]["permissions"], {"contents": "read", "actions": "write"})
         self.assertNotIn("environment", jobs["native"])
@@ -98,6 +127,7 @@ class RepairWorkflowTests(unittest.TestCase):
             minted = next(index for index, step in enumerate(steps) if step.get("id") == "repair_token")
             before = "\n".join(step.get("run", "") for step in steps[:minted])
             self.assertIn("smoke_repair_pipeline.py admit", before)
+            self.assertIn("smoke_repair_pipeline.py current", before)
             if name == "publish":
                 self.assertIn("smoke_repair_native.py --mode verify", before)
             else:
@@ -107,39 +137,36 @@ class RepairWorkflowTests(unittest.TestCase):
                               "permission-workflows": "write", "permission-actions": "read"})
             self.assertNotIn("DASHBOARD_DELIVERY_APP_PRIVATE_KEY", str(job))
 
-    def test_unavailable_arm_authentication_fails_closed_without_static_key_fallback(self):
+    def test_public_receiver_has_no_model_access_and_rechecks_admission(self):
         job = self.package["jobs"]["propose"]
         steps = job["steps"]
-        guard = next(step for step in steps if step.get("name") == "Require approved Arm model authentication")
-        self.assertEqual(set(guard), {"name", "shell", "run"})
-        self.assertEqual(guard["shell"], "bash")
-        self.assertEqual(guard["run"].splitlines(), [
-            "printf '%s\\n' 'Arm model authentication is not connected. The public dashboard cannot consume the internal token action. Owner authorization is required for a supported public action or separate service.' >&2",
-            "exit 1",
-        ])
+        guard = next(step for step in steps if step.get("name") == "Recheck proposal against the exact reviewed source")
+        self.assertIn("smoke_repair_pipeline.py receive", guard["run"])
+        self.assertIn('[[ "$BASE_SHA" == "$GITHUB_SHA" ]]', guard["run"])
+        for argument in ("context", "proposal", "slug", "repository", "base-sha", "source-output", "contract-output"):
+            self.assertIn("--" + argument, guard["run"])
         self.assertNotIn("secrets.", str(job))
         self.assertNotIn("SMOKE_REPAIR_OPENAI_API_KEY", str(job))
-        self.assertNotIn("Arm-Debug/devops-actions", str(job))
+        self.assertNotIn("openai", str(job).lower())
         self.assertNotIn("smoke_repair_model.py", str(job))
         upload = next(step for step in steps if step.get("id") == "upload")
         self.assertLess(steps.index(guard), steps.index(upload))
         self.assertNotIn("if", upload)
         self.assertNotIn("if", self.package["jobs"]["stage"])
-
-        with tempfile.TemporaryDirectory() as directory:
-            result = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e", "-c", guard["run"]],
-                                    cwd=directory, env={"SMOKE_REPAIR_ENABLED": "true",
-                                    "SMOKE_REPAIR_OPENAI_API_KEY": "synthetic-do-not-send",
-                                    "SMOKE_REPAIR_MODEL": "synthetic-model"},
-                                    capture_output=True, text=True, timeout=5, check=False)
-            self.assertEqual(result.returncode, 1)
-            self.assertEqual(result.stdout, "")
-            self.assertIn("Arm model authentication is not connected.", result.stderr)
-            self.assertNotIn("synthetic", result.stderr)
-            self.assertEqual(list(Path(directory).iterdir()), [])
+        receiver = self.receiver["jobs"]["receive"]
+        self.assertEqual(receiver["permissions"], {"contents": "read", "actions": "read"})
+        self.assertNotIn("environment", receiver)
+        self.assertNotIn("secrets.", str(receiver))
+        self.assertIn("vars.SMOKE_REPAIR_ENABLED == 'true'", receiver["if"])
+        self.assertIn("github.actor == vars.SMOKE_REPAIR_BRIDGE_BOT_LOGIN", receiver["if"])
+        admission = next(step for step in receiver["steps"] if step.get("id") == "admit")
+        self.assertIn('smoke_repair_bridge.py', admission["run"])
+        self.assertIn('--event "$GITHUB_EVENT_PATH"', admission["run"])
+        self.assertNotIn("github.event.client_payload", str(receiver))
+        self.assertEqual(admission["env"]["SMOKE_REPAIR_BRIDGE_BOT_ID"], "${{ vars.SMOKE_REPAIR_BRIDGE_BOT_ID }}")
 
     def test_all_downloads_use_exact_artifact_ids_and_uploads_are_required(self):
-        for document in (self.repair, self.package):
+        for document in (self.repair, self.package, self.receiver):
             for job in document["jobs"].values():
                 for step in job.get("steps", []):
                     if step.get("uses", "").startswith("actions/download-artifact@"):

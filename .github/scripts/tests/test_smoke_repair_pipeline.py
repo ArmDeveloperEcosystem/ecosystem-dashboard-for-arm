@@ -106,6 +106,34 @@ class PipelineTestCase(unittest.TestCase):
 
 
 class SelectContextTests(PipelineTestCase):
+    def test_receive_cli_rebinds_source_and_policy_before_writing_outputs(self):
+        document = context()
+        source_output, contract_output = self.root / "candidate.yml", self.root / "contract.json"
+        args = ["receive", "--context", str(self.write_json("context.json", document)),
+                "--proposal", str(self.write_json("proposal.json", proposal())),
+                "--source-output", str(source_output), "--contract-output", str(contract_output),
+                "--slug", "widget", "--repository", REPOSITORY, "--base-sha", SHA]
+        with mock.patch.object(pipeline, "validate_checkout_binding") as checkout, \
+                mock.patch.object(pipeline, "read_source", return_value=SOURCE):
+            code, out, errors = self.invoke(args)
+        self.assertEqual((code, out, errors), (0, "", ""))
+        checkout.assert_called_once_with(Path.cwd(), SHA)
+        self.assertIn("libfuse3-dev", source_output.read_text())
+        self.assertTrue(contract_output.is_file())
+
+    def test_receive_cli_rejects_mismatched_source_before_outputs(self):
+        args = ["receive", "--context", str(self.write_json("context.json", context())),
+                "--proposal", str(self.write_json("proposal.json", proposal())),
+                "--source-output", str(self.root / "candidate.yml"),
+                "--contract-output", str(self.root / "contract.json"),
+                "--slug", "widget", "--repository", REPOSITORY, "--base-sha", SHA]
+        with mock.patch.object(pipeline, "validate_checkout_binding"), \
+                mock.patch.object(pipeline, "read_source", return_value=SOURCE + "# moved\n"):
+            code, _, _ = self.invoke(args)
+        self.assertEqual(code, 1)
+        self.assertFalse((self.root / "candidate.yml").exists())
+        self.assertFalse((self.root / "contract.json").exists())
+
     def select(self, document=None, source=SOURCE):
         document = bundle() if document is None else document
         with mock.patch.object(pipeline, "validate_checkout_binding", return_value=SHA) as checkout, \

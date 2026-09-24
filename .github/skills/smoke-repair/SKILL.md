@@ -1,9 +1,17 @@
 ---
 name: smoke-repair
-description: Propose one bounded, data-only smoke-test repair from supplied public evidence through the repository's tool-free adapter; not a general coding agent.
+description: Offline reference skill for legacy smoke-repair proposal fixtures; not a live model integration or general coding agent.
 ---
 
 # Smoke Repair
+
+## Offline Scope
+This skill is retained only for the public repository's offline regression
+fixtures. Its legacy proposal format is not the production callback protocol.
+The public model CLI is disabled; no credential or endpoint enables it.
+Production uses a separately reviewed service and the typed-operation receiver
+documented in `.github/SMOKE_REPAIR.md`. Do not use these fixture instructions
+to bypass that receiver or request live model access.
 
 ## Role and Trust
 This is repo-scoped instruction data for the existing tool-free adapter, not an

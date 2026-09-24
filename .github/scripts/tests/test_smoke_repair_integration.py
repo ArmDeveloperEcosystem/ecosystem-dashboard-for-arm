@@ -40,6 +40,7 @@ import exact_run_aggregation as exact
 import orchestration_contract as orchestration
 import smoke_recovery as recovery
 import smoke_repair_evidence as evidence
+import smoke_repair_bridge as bridge
 import smoke_repair_model as model
 import smoke_repair_native as native
 import smoke_repair_pipeline as pipeline
@@ -259,7 +260,6 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
             "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": BASE, "GITHUB_WORKFLOW_SHA": BASE,
             "GITHUB_RUN_ID": str(PARENT_ID), "GITHUB_RUN_ATTEMPT": "1",
             "GITHUB_WORKFLOW_REF": f"{REPOSITORY}/{evidence.ORCHESTRATOR_PATH}@refs/heads/main",
-            "SMOKE_REPAIR_OPENAI_API_KEY": model_fixture.KEY, "SMOKE_REPAIR_MODEL": model_fixture.MODEL,
             "PYTHONDONTWRITEBYTECODE": "1",
         }
         self.start(patch.dict(os.environ, environment, clear=True))
@@ -343,11 +343,10 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
         return self.read("context.json")
 
     def propose(self):
-        # Only transport is replaced: build_request/propose/parse_response remain real.
-        real_propose = model.propose
-        with patch.object(model, "propose", side_effect=lambda context, **kwargs:
-                          real_propose(context, transport=self.transport, **kwargs)):
-            self.invoke(model, ["--context", self.path("model-context.json"), "--output", self.path("proposal.json")])
+        # Legacy proposal shapes remain offline fixtures, never production calls.
+        proposal = model.propose(self.read("model-context.json"), model=model_fixture.MODEL,
+                                 api_key=model_fixture.KEY, transport=self.transport)
+        self.write("proposal.json", proposal)
         return self.read("proposal.json")
 
     def admit(self):
@@ -383,52 +382,50 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
         self.admit()
         return self.stage()
 
-    def test_arm_proxy_cli_to_verified_draft_with_synthetic_token_and_api_evidence(self):
-        self.collect()
-        token = "synthetic-arm-workload-token." + "x" * 4096
-        response = model_fixture.FakeResponse(model_fixture.wire(model_fixture.envelope(self.proposal)))
-        with patch.object(model.http.client, "HTTPSConnection") as connection, \
-                patch.dict(os.environ, {"SMOKE_REPAIR_OPENAI_API_KEY": token}):
-            connection.return_value.getresponse.return_value = response
-            self.invoke(model, ["--context", self.path("model-context.json"),
-                                "--output", self.path("proposal.json")])
-        self.assertEqual(connection.call_args.args, ("openai-api-proxy.geo.arm.com",))
-        connection.assert_called_once()
-        request = connection.return_value.request
-        request.assert_called_once()
-        self.assertEqual(request.call_args.args, ("POST", "/api/providers/openai/v1/responses"))
-        self.assertEqual(request.call_args.kwargs["headers"]["Authorization"], "Bearer " + token)
-        self.assertNotIn(token.encode(), request.call_args.kwargs["body"])
-        self.assertEqual(self.read("proposal.json"), self.proposal)
+    def test_typed_callback_compilation_to_native_verified_draft(self):
+        context = self.collect()
+        steps = next(iter(self.flow["jobs"].values()))["steps"]
+        install = next(index for index, step in enumerate(steps) if step.get("id") == "install")
+        proposal = bridge.compile_proposal(context, [
+            {"kind": "prepend_apt", "step": install, "packages": ["libfuse3-dev"]}])
+        self.write("proposal.json", proposal)
         self.admit()
-        stage = self.stage()
-        receipt = self.dispatch()
+        staged = self.stage()
+        verified = self.dispatch()
         result = self.publish()
         self.assertEqual(result["status"], "created")
-        self.assertEqual(receipt["status"], "passed")
-        self.assertEqual(self.api.prs[0]["head"]["sha"], stage["candidate_sha"])
+        self.assertEqual(verified["status"], "passed")
+        self.assertEqual(self.api.prs[0]["head"]["sha"], staged["candidate_sha"])
         self.assertIs(self.api.prs[0]["draft"], True)
-        for path in self.artifacts.iterdir():
-            self.assertNotIn(token.encode(), path.read_bytes())
-        self.assertNotIn(token, json.dumps(self.api.prs))
+        self.assertEqual(self.transport.calls, [])
 
-    def test_rejected_proxy_token_stops_cli_before_proposal_or_publication(self):
+    def test_typed_callback_cannot_publish_after_failed_native_probe(self):
+        context = self.collect()
+        steps = next(iter(self.flow["jobs"].values()))["steps"]
+        install = next(index for index, step in enumerate(steps) if step.get("id") == "install")
+        self.write("proposal.json", bridge.compile_proposal(context, [
+            {"kind": "prepend_apt", "step": install, "packages": ["libfuse3-dev"]}]))
+        self.admit()
+        self.stage()
+        self.api.mutate_native = lambda run, job: job.update(conclusion="failure")
+        self.invoke(native, ["--mode", "dispatch", "--stage", self.path("stage.json"),
+            "--contract", self.path("contract.json"), "--output", self.path("native.json")], expected=1)
+        self.assertEqual(self.read("native.json"), {"schema_version": 1, "status": "not_passed"})
+        self.publish(expected=1)
+        self.assertEqual(self.api.prs, [])
+
+    def test_public_model_cli_is_disabled_before_any_proposal_or_publication(self):
         self.collect()
-        for status in (401, 403, 429, 500, 503):
-            with self.subTest(status=status), patch.object(model.http.client, "HTTPSConnection") as connection:
-                response = model_fixture.FakeResponse(b"do-not-report-upstream-error", status=status)
-                connection.return_value.getresponse.return_value = response
-                error = self.invoke(model, ["--context", self.path("model-context.json"),
-                                           "--output", self.path("proposal.json")], expected=1)
-            self.assertEqual(error, "smoke repair proposal failed\n")
-            connection.return_value.request.assert_called_once()
-            self.assertEqual(response.reads, [])
-            self.assertFalse(self.path("proposal.json").exists())
-            self.assertEqual(self.api.prs, [])
-            self.assertEqual(self.api.dispatches, [])
-            self.assertEqual(self.api.calls, [])
+        error = self.invoke(model, ["--context", self.path("model-context.json"),
+                                   "--output", self.path("proposal.json")], expected=1)
+        self.assertEqual(error, model.DISABLED_MESSAGE + "\n")
+        self.assertFalse(self.path("proposal.json").exists())
+        self.assertEqual(self.transport.calls, [])
+        self.assertEqual(self.api.prs, [])
+        self.assertEqual(self.api.dispatches, [])
+        self.assertEqual(self.api.calls, [])
 
-    def test_actual_evidence_model_policy_publisher_native_and_draft_clis(self):
+    def test_actual_controllers_with_offline_proposal_and_synthetic_native_evidence(self):
         context = self.collect()
         self.assertEqual(context["source_text"], self.source)
         self.assertEqual(context["package_slug"], "zlib")
@@ -656,7 +653,7 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
         self.assertFalse(self.path("result.json").exists())
 
     def test_every_controller_imports_in_the_workflows_isolated_python_mode(self):
-        for filename in ("smoke_repair_evidence.py", "smoke_repair_model.py", "smoke_repair_pipeline.py",
+        for filename in ("smoke_repair_evidence.py", "smoke_repair_bridge.py", "smoke_repair_pipeline.py",
                          "smoke_repair_publisher.py", "smoke_repair_native.py"):
             with self.subTest(controller=filename):
                 result = subprocess.run([sys.executable, "-I", "-B", str(DIRECTORY.parent / filename), "--help"],
@@ -672,14 +669,17 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
         def parse_only(parser, args=None, namespace=None):
             raise Parsed(original_parse(parser, args, namespace))
         modules = {"smoke_repair_evidence.py": evidence, "smoke_repair_pipeline.py": pipeline,
-                   "smoke_repair_model.py": model, "smoke_repair_publisher.py": publisher,
+                   "smoke_repair_publisher.py": publisher,
                    "smoke_repair_native.py": native}
+        import smoke_repair_bridge as bridge
+        modules["smoke_repair_bridge.py"] = bridge
         variables = {"REPOSITORY": REPOSITORY, "BASE_SHA": BASE, "PARENT_RUN_ID": str(PARENT_ID),
                      "PARENT_ATTEMPT": "1", "EVIDENCE_ARTIFACT_ID": str(ARTIFACT_ID),
                      "GITHUB_RUN_ID": str(PARENT_ID), "GITHUB_RUN_ATTEMPT": "1", "PACKAGE_SLUG": "zlib",
-                     "RUNNER_TEMP": str(self.artifacts), "RECIPIENT": "fixture-owner"}
+                     "RUNNER_TEMP": str(self.artifacts), "RECIPIENT": "fixture-owner",
+                     "GITHUB_EVENT_PATH": str(self.path("event.json"))}
         seen = set()
-        for workflow_name in ("smoke-repair.yml", "smoke-repair-package.yml"):
+        for workflow_name in ("smoke-repair.yml", "smoke-repair-package.yml", "smoke-repair-receive.yml"):
             flow = exact._yaml_mapping((ROOT / ".github/workflows" / workflow_name).read_bytes(), "repair controller workflow")
             for job in flow["jobs"].values():
                 for step in job.get("steps", []):
@@ -708,9 +708,11 @@ class SmokeRepairIntegrationTests(unittest.TestCase):
                         if filename == "smoke_repair_publisher.py" and action == "open-pr":
                             self.assertIsNotNone(namespace.stage)
                             self.assertIsNotNone(namespace.native_contract)
-        # Model CLI coverage is separate while production authentication is blocked.
+        # Model execution belongs to the private service, not this workflow.
         self.assertEqual(seen, {("smoke_repair_evidence.py", "default"),
-                               ("smoke_repair_pipeline.py", "select"), ("smoke_repair_pipeline.py", "admit"),
+                               ("smoke_repair_bridge.py", "default"),
+                               ("smoke_repair_pipeline.py", "receive"), ("smoke_repair_pipeline.py", "admit"),
+                               ("smoke_repair_pipeline.py", "current"),
                                ("smoke_repair_pipeline.py", "report"), ("smoke_repair_publisher.py", "admit"),
                                ("smoke_repair_publisher.py", "stage"), ("smoke_repair_publisher.py", "open-pr"),
                                ("smoke_repair_native.py", "dispatch"), ("smoke_repair_native.py", "verify")})
@@ -738,7 +740,7 @@ class RefreshedIntegrationFixtureTests(unittest.TestCase):
         def read(path, *args, **kwargs):
             return replacements[path] if path in replacements else actual_read(path, *args, **kwargs)
 
-        case = SmokeRepairIntegrationTests("test_actual_evidence_model_policy_publisher_native_and_draft_clis")
+        case = SmokeRepairIntegrationTests("test_actual_controllers_with_offline_proposal_and_synthetic_native_evidence")
         result = unittest.TestResult()
         with patch.object(Path, "read_text", read):
             case.run(result)

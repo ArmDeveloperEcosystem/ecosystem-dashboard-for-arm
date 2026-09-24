@@ -39,6 +39,7 @@ RELEVANT_PATHS = (
     ".github/scripts/package_observation_migration_audit.py",
     ".github/scripts/promote_package_results.py",
     ".github/scripts/smoke_recovery.py",
+    ".github/scripts/smoke_recovery_incident.py",
     ".github/scripts/smoke_repair_*.py",
     ".github/scripts/tests/test_package_workflow_supply_chain.py",
     ".github/scripts/tests/test_verify_action_lock_online.py",
@@ -47,6 +48,7 @@ RELEVANT_PATHS = (
     ".github/scripts/tests/test_package_observation_migration_audit.py",
     ".github/scripts/tests/test_promote_package_results.py",
     ".github/scripts/tests/test_smoke_recovery.py",
+    ".github/scripts/tests/test_smoke_recovery_incident.py",
     ".github/scripts/tests/test_smoke_repair_*.py",
     ".github/scripts/README-exact-run-aggregation.md",
     ".github/scripts/README-package-observation.md",
@@ -57,6 +59,7 @@ RELEVANT_PATHS = (
     FOUNDATION_WORKFLOW,
     ".github/workflows/main.yml",
     ".github/workflows/smoke-repair*.yml",
+    ".github/workflows/smoke-recovery-monitor.yml",
     ".github/workflows/test-*.yml",
 )
 

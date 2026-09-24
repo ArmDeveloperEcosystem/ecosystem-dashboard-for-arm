@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Bounded DATA-ONLY repair proposals. Never apply edits or run model output.
+"""Offline compatibility fixtures for bounded DATA-ONLY repair proposals.
 
-The caller supplies public, sanitized evidence and owns authorization, source
-anchor checks, semantic repair policy, and validation. Run this trusted script
-with Python -I; do not import it from a model-modified checkout. The production
-transport uses the Arm model proxy with a short-lived workload token and requires
-a POSIX main thread with no existing real-time alarm.
+This module is not a production model adapter. It has no network transport,
+endpoint configuration, credential lookup, or active CLI. Production repairs
+enter through the independently authenticated typed-operation receiver.
 
-Transport contract: transport(request_bytes, *, api_key) -> (HTTP status, bytes).
-Injected transports are trusted code and must enforce their own I/O deadlines.
-No credential lookup occurs outside main(). No retries or model fallback occur.
+Pure request/response helpers and local file helpers remain for regression tests.
+propose() requires an explicitly injected, trusted offline test transport:
+transport(request_bytes, *, api_key) -> (HTTP status, bytes). The legacy api_key
+argument is only a synthetic fixture label; never supply real credentials.
+These helpers neither authorize repairs nor apply edits or execute model output.
+No retries or fallback occur. Do not import from a model-modified checkout.
 Context keys are exactly the eight _CONTEXT_KEYS plus optional validation_feedback
 (a string, list, or object). failed_steps is a nonempty list of strings or objects.
 The selected model must support strict text.format schemas and their bounds.
@@ -19,19 +20,14 @@ dependency names. It cannot expand the fixed developer-instruction repair classe
 
 from __future__ import annotations
 
-import argparse
-from contextlib import ExitStack, contextmanager
-import http.client
+from contextlib import ExitStack
 import math
 import os
 from pathlib import Path
 import re
-import signal
-import ssl
 import stat
 import sys
 import tempfile
-import threading
 
 # Only the trusted sibling directory is added, including under python -I.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -60,12 +56,9 @@ MAX_OUTPUT_ITEMS = 8
 MAX_JSON_DEPTH = 16
 MAX_JSON_NODES = 4096
 MAX_OUTPUT_TOKENS = 8192
-SOCKET_TIMEOUT_SECONDS = 15
-REQUEST_TIMEOUT_SECONDS = 60
 MAX_TOKEN_BYTES = 8192
 MAX_SKILL_BYTES = 16 * 1024
-MODEL_PROXY_HOST = "openai-api-proxy.geo.arm.com"
-MODEL_PROXY_PATH = "/api/providers/openai/v1/responses"
+DISABLED_MESSAGE = "Public model invocation is disabled; offline test fixtures only."
 _SKILL_ROOT = Path(__file__).resolve().parents[1]
 
 _CONTEXT_KEYS = {
@@ -371,82 +364,12 @@ def parse_response(data, *, status_code=200):
     return _validate_proposal(_decode(texts[0].encode("utf-8"), MAX_PROPOSAL_BYTES))
 
 
-@contextmanager
-def _deadline():
-    # An inactivity timeout alone cannot bound DNS, headers, or trickled bodies.
-    if (not hasattr(signal, "setitimer")
-            or threading.current_thread() is not threading.main_thread()
-            or any(signal.getitimer(signal.ITIMER_REAL))
-            or (hasattr(signal, "pthread_sigmask") and signal.SIGALRM in
-                signal.pthread_sigmask(signal.SIG_BLOCK, []))):
-        raise ProposalError("bounded transport unavailable")
-
-    def expired(signum, frame):
-        raise ProposalError("request deadline exceeded")
-
-    previous = signal.signal(signal.SIGALRM, expired)
-    try:
-        signal.setitimer(signal.ITIMER_REAL, REQUEST_TIMEOUT_SECONDS)
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
-
-
-def https_transport(request_bytes, *, api_key):
-    """One Arm-proxy HTTPS POST; no destination override, redirects, or retries."""
-    if type(request_bytes) is not bytes or not 0 < len(request_bytes) <= MAX_REQUEST_BYTES:
-        raise ProposalError("invalid request size")
+def propose(context, *, model, api_key, transport=None):
+    """Exercise offline fixtures with an explicit trusted test transport only."""
+    if not callable(transport):
+        raise ProposalError(DISABLED_MESSAGE)
     if type(api_key) is not str or not _API_KEY.fullmatch(api_key):
-        raise ProposalError("invalid credential configuration")
-    try:
-        with _deadline():
-            # Do not use create_default_context: it honors SSLKEYLOGFILE.
-            tls = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            tls.load_default_certs()
-            connection = http.client.HTTPSConnection(
-                MODEL_PROXY_HOST, port=443, timeout=SOCKET_TIMEOUT_SECONDS, context=tls,
-            )
-            try:
-                connection.request("POST", MODEL_PROXY_PATH, body=request_bytes, headers={
-                    "Authorization": "Bearer " + api_key,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "Accept-Encoding": "identity",
-                    "Connection": "close",
-                })
-                with connection.getresponse() as response:
-                    if response.status != 200:
-                        return response.status, b""
-                    content_type = response.getheader("Content-Type", "")
-                    if content_type.split(";", 1)[0].strip().lower() != "application/json":
-                        raise ProposalError("invalid response media type")
-                    if response.getheader("Content-Encoding", "identity").lower() != "identity":
-                        raise ProposalError("encoded response rejected")
-                    transfer = response.getheader("Transfer-Encoding")
-                    if transfer is not None and transfer.lower() != "chunked":
-                        raise ProposalError("invalid response transfer encoding")
-                    lengths = response.headers.get_all("Content-Length", [])
-                    if lengths:
-                        if (len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,10}", lengths[0])
-                                or int(lengths[0]) > MAX_RESPONSE_BYTES
-                                or transfer is not None):
-                            raise ProposalError("invalid response length")
-                    data = response.read(MAX_RESPONSE_BYTES + 1)
-                    if (len(data) > MAX_RESPONSE_BYTES
-                            or (lengths and len(data) != int(lengths[0]))):
-                        raise ProposalError("invalid response size")
-                    return response.status, data
-            finally:
-                connection.close()
-    except Exception:
-        raise ProposalError("proposal request failed") from None
-
-
-def propose(context, *, model, api_key, transport=https_transport):
-    """Return validated proposal data; this does not authorize or apply a repair."""
-    if type(api_key) is not str or not _API_KEY.fullmatch(api_key):
-        raise ProposalError("invalid credential configuration")
+        raise ProposalError("invalid fixture configuration")
     request = _encode(build_request(context, model=model, skill_text=load_skill()), MAX_REQUEST_BYTES)
     try:
         status_code, data = transport(request, api_key=api_key)
@@ -482,30 +405,10 @@ def _write_proposal(path, proposal):
             os.unlink(temporary)
 
 
-class _ArgumentParser(argparse.ArgumentParser):
-    def error(self, message):
-        raise ProposalError("invalid arguments")
-
-
 def main(argv=None):
-    try:
-        parser = _ArgumentParser(prog="smoke_repair_model.py", description=__doc__, allow_abbrev=False)
-        parser.add_argument("--context", required=True, type=Path)
-        parser.add_argument("--output", required=True, type=Path)
-        args = parser.parse_args(argv)
-        # No fallback credentials, dotenv, model defaults, or endpoint settings.
-        api_key = os.environ.get("SMOKE_REPAIR_OPENAI_API_KEY")
-        model = os.environ.get("SMOKE_REPAIR_MODEL")
-        if not api_key or not model:
-            raise ProposalError("missing explicit configuration")
-        if args.context.resolve() == args.output.resolve():
-            raise ProposalError("context and output must differ")
-        proposal = propose(_read_context(args.context), model=model, api_key=api_key)
-        _write_proposal(args.output, proposal)
-    except (Exception, KeyboardInterrupt):
-        print("smoke repair proposal failed", file=sys.stderr)
-        return 1
-    return 0
+    """Fail closed for every invocation, regardless of arguments or environment."""
+    print(DISABLED_MESSAGE, file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

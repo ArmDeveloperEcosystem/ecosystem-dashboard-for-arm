@@ -168,7 +168,7 @@ class SkillLoaderTests(OfflineTest):
         self.assertEqual(str(caught.exception), "repair skill unavailable")
         self.assertTrue(caught.exception.__suppress_context__)
 
-    def test_cli_missing_skill_preserves_existing_output(self):
+    def test_disabled_cli_does_not_load_missing_skill_or_change_output(self):
         self.skill.unlink()
         source = self.root / "context.json"
         output = self.root / "proposal.json"
@@ -177,18 +177,20 @@ class SkillLoaderTests(OfflineTest):
         errors = io.StringIO()
         with mock.patch.dict(os.environ, {"SMOKE_REPAIR_OPENAI_API_KEY": KEY,
                                          "SMOKE_REPAIR_MODEL": MODEL}, clear=True), \
-                mock.patch("sys.stderr", errors), mock.patch.object(model.http.client, "HTTPSConnection") as connection:
+                mock.patch("sys.stderr", errors), mock.patch.object(model, "load_skill") as load, \
+                mock.patch.object(model, "propose") as propose:
             self.assertEqual(model.main(["--context", str(source), "--output", str(output)]), 1)
-        self.assertEqual(errors.getvalue(), "smoke repair proposal failed\n")
-        connection.assert_not_called()
+        self.assertEqual(errors.getvalue(), model.DISABLED_MESSAGE + "\n")
+        load.assert_not_called()
+        propose.assert_not_called()
         self.assertEqual(output.read_text(), "previous proposal")
 
-    def test_help_does_not_load_skill(self):
+    def test_help_cannot_enable_cli_or_load_skill(self):
         self.skill.unlink()
         with mock.patch.object(model, "load_skill", side_effect=AssertionError("unexpected read")) as load, \
-                mock.patch("sys.stdout", io.StringIO()), self.assertRaises(SystemExit) as result:
-            model.main(["--help"])
-        self.assertEqual(result.exception.code, 0)
+                mock.patch("sys.stderr", io.StringIO()) as errors:
+            self.assertEqual(model.main(["--help"]), 1)
+        self.assertEqual(errors.getvalue(), model.DISABLED_MESSAGE + "\n")
         load.assert_not_called()
 
 
@@ -203,6 +205,8 @@ class SkillContractTests(OfflineTest):
         self.assertIsInstance(metadata["description"], str)
         self.assertTrue(metadata["description"].strip())
         self.assertLessEqual(len(metadata["description"]), 1024)
+        self.assertIn("Offline reference", metadata["description"])
+        self.assertIn("The public model CLI is disabled", body)
         self.assertTrue(body.strip())
         self.assertLessEqual(len(SKILL.encode()), model.MAX_SKILL_BYTES)
 

@@ -146,6 +146,13 @@ def main(argv=None):
     preflight = commands.add_parser("admit")
     for flag in ("context", "proposal", "source-output", "contract-output"):
         preflight.add_argument(f"--{flag}", required=True, type=Path)
+    receive = commands.add_parser("receive")
+    for flag in ("context", "proposal", "source-output", "contract-output"):
+        receive.add_argument(f"--{flag}", required=True, type=Path)
+    for flag in ("slug", "repository", "base-sha"):
+        receive.add_argument(f"--{flag}", required=True)
+    current = commands.add_parser("current")
+    current.add_argument("--context", required=True, type=Path)
     notify = commands.add_parser("report")
     for flag in ("repository", "slug", "recipient"):
         notify.add_argument(f"--{flag}", required=True)
@@ -157,12 +164,21 @@ def main(argv=None):
             context = select_context(read_json(args.bundle), args.slug, args.repository, args.base_sha, Path.cwd())
             write_json(args.output, context)
             write_json(args.model_output, model_context(context))
-        elif args.command == "admit":
-            source, contract = admit(read_json(args.context), read_json(args.proposal))
+        elif args.command in {"admit", "receive"}:
+            context = read_json(args.context)
+            if args.command == "receive":
+                context = select_context({"schema_version": 1, "contexts": [context]},
+                    args.slug, args.repository, args.base_sha, Path.cwd())
+            source, contract = admit(context, read_json(args.proposal))
             descriptor = os.open(args.source_output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 stream.write(source)
             write_json(args.contract_output, contract)
+        elif args.command == "current":
+            from smoke_repair_bridge import assert_current_failure
+            context = read_json(args.context)
+            validate_checkout_binding(Path.cwd(), context["base_sha"])
+            assert_current_failure(GitHub(time.monotonic() + 120).api, context)
         else:
             from orchestration_contract import decode_json
             report(args.repository, args.run_id, args.attempt, args.slug, args.recipient,

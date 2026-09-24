@@ -259,6 +259,13 @@ def _clean_base(root: Path, git, config: RepairConfig) -> None:
 
 
 def _guard(root, git, github, config, runtime):
+    if runtime["workflow_ref"] == f"{config.repository}/.github/workflows/smoke-repair-receive.yml@refs/heads/main":
+        from smoke_repair_bridge import assert_current_failure
+        run_id, attempt, _ = config.repair_id.split("-", 2)
+        assert_current_failure(lambda endpoint: github._api("GET", endpoint), {
+            "repository": config.repository, "base_sha": config.expected_base_sha,
+            "orchestrator_run_id": int(run_id), "orchestrator_run_attempt": int(attempt),
+        })
     _clean_base(root, git, config)
     _runtime_guard(github, config, runtime)
     publisher._assert_remote_base_unchanged(git, config)

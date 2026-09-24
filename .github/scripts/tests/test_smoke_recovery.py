@@ -1505,7 +1505,8 @@ class WorkflowScopeTests(unittest.TestCase):
         exempt = shlex.split(command[command.rindex('"$binary"'):].replace("\\\n", ""))
         self.assertEqual(exempt, ["$binary", "-shellcheck=", "-ignore",
             '^unexpected key "queue" for "concurrency" section\\. expected one of "cancel-in-progress", "group"$',
-            ".github/workflows/main.yml", ".github/workflows/test-all-packages-orchestrator.yml"])
+            ".github/workflows/main.yml", ".github/workflows/test-all-packages-orchestrator.yml",
+            ".github/workflows/smoke-repair-receive.yml", ".github/workflows/smoke-recovery-monitor.yml"])
 
     def test_notification_retains_producing_attempt_on_partial_rerun(self):
         workflow = yaml.safe_load((SCRIPT_ROOT.parent / "workflows" / "test-all-packages-orchestrator.yml").read_text())

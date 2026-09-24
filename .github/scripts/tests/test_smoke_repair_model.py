@@ -1,18 +1,15 @@
 from __future__ import annotations
 
+import ast
 from copy import deepcopy
 from email.message import Message
 import io
 import os
 from pathlib import Path
-import signal
-import socket
 import stat
 import subprocess
 import sys
 import tempfile
-import threading
-import time
 import unittest
 from unittest import mock
 
@@ -26,7 +23,6 @@ from orchestration_contract import canonical_json, decode_json  # noqa: E402
 MODEL = "explicit-test-model"
 KEY = "synthetic-test-credential"
 PATH = ".github/workflows/test-example.yml"
-REAL_CREATE_CONNECTION = socket.create_connection
 SKILL = (SCRIPT_ROOT.parent / "skills/smoke-repair/SKILL.md").read_text(encoding="utf-8")
 
 
@@ -441,7 +437,7 @@ class ParseResponseTests(OfflineTest):
 
 
 class ProposeTests(OfflineTest):
-    def test_stub_transport_receives_only_bounded_wire_and_explicit_auth(self):
+    def test_stub_transport_receives_only_bounded_wire_and_explicit_fixture_label(self):
         transport = StubTransport()
         evidence = context()
         original = deepcopy(evidence)
@@ -466,7 +462,7 @@ class ProposeTests(OfflineTest):
             adapter.propose(context(), model="", api_key=KEY, transport=transport)
         self.assertEqual(transport.calls, [])
 
-    def test_short_lived_token_bounds_and_header_injection(self):
+    def test_fixture_label_bounds_and_control_character_rejection(self):
         self.assertEqual(adapter.MAX_TOKEN_BYTES, 8192)
         for size in (1, 512, 513, 4096, adapter.MAX_TOKEN_BYTES):
             token = "a" * size
@@ -537,212 +533,66 @@ class FakeResponse:
         self.closed = True
 
 
-class HttpsTransportTests(OfflineTest):
-    def call(self, response, *, request_error=None):
-        connection = mock.MagicMock()
-        connection.getresponse.return_value = response
-        connection.request.side_effect = request_error
-        patcher = mock.patch.object(adapter.http.client, "HTTPSConnection", return_value=connection)
-        factory = patcher.start()
-        self.addCleanup(patcher.stop)
-        return connection, factory
+class DisabledTransportTests(OfflineTest):
+    def test_missing_transport_fails_before_context_skill_or_configuration(self):
+        with mock.patch.object(adapter, "load_skill") as skill, \
+                mock.patch.object(adapter, "build_request") as build, \
+                mock.patch("socket.socket") as socket_factory, \
+                mock.patch("socket.getaddrinfo") as resolve:
+            with self.assertRaisesRegex(adapter.ProposalError, "^" + adapter.DISABLED_MESSAGE + "$"):
+                adapter.propose(object(), model=object(), api_key=object())
+        skill.assert_not_called()
+        build.assert_not_called()
+        socket_factory.assert_not_called()
+        resolve.assert_not_called()
 
-    def test_fixed_host_tls_path_headers_and_no_proxy_or_keylog(self):
-        response = FakeResponse()
-        connection, factory = self.call(response)
-        with tempfile.TemporaryDirectory() as directory:
-            keylog = Path(directory) / "must-not-exist"
-            environment = {"HTTPS_PROXY": "https://untrusted-proxy", "ALL_PROXY": "http://proxy",
-                           "OPENAI_BASE_URL": "https://api.openai.com/v1",
-                           "SMOKE_REPAIR_BASE_URL": "https://untrusted-host",
-                           "SSLKEYLOGFILE": str(keylog)}
-            with mock.patch.object(adapter.os, "environ", environment):
-                self.assertEqual(adapter.https_transport(b"{}", api_key=KEY), (200, response.body))
-            self.assertFalse(keylog.exists())
-        self.assertEqual(factory.call_args.args, ("openai-api-proxy.geo.arm.com",))
-        self.assertEqual(factory.call_args.kwargs["port"], 443)
-        self.assertEqual(factory.call_args.kwargs["timeout"], adapter.SOCKET_TIMEOUT_SECONDS)
-        tls = factory.call_args.kwargs["context"]
-        self.assertTrue(tls.check_hostname)
-        self.assertEqual(tls.verify_mode, adapter.ssl.CERT_REQUIRED)
-        self.assertIsNone(tls.keylog_filename)
-        self.assertEqual(connection.request.call_args.args,
-                         ("POST", "/api/providers/openai/v1/responses"))
-        self.assertEqual(connection.request.call_args.kwargs["headers"]["Authorization"], "Bearer " + KEY)
-        self.assertEqual(connection.request.call_args.kwargs["headers"]["Accept-Encoding"], "identity")
-        self.assertEqual(response.reads, [adapter.MAX_RESPONSE_BYTES + 1])
-        self.assertTrue(response.closed)
-        connection.close.assert_called_once()
-        connection.set_tunnel.assert_not_called()
+    def test_noncallable_transport_has_no_fallback(self):
+        for transport in (None, False, 1, "", {}, [], object()):
+            with self.subTest(transport=type(transport).__name__), \
+                    mock.patch.object(adapter, "load_skill") as skill, \
+                    self.assertRaises(adapter.ProposalError) as caught:
+                adapter.propose(context(), model=MODEL, api_key=KEY, transport=transport)
+            self.assertEqual(str(caught.exception), adapter.DISABLED_MESSAGE)
+            skill.assert_not_called()
 
-    def test_redirect_and_http_errors_never_read_body_or_retry(self):
-        for status in (301, 302, 303, 307, 308, 400, 401, 403, 429, 500, 502, 503, 504):
-            response = FakeResponse(b"sensitive error body", status=status,
-                                    headers=[("Location", "https://untrusted-host")])
-            connection, factory = self.call(response)
-            self.assertEqual(adapter.https_transport(b"{}", api_key=KEY), (status, b""))
-            self.assertEqual(response.reads, [])
-            factory.assert_called_once()
-            connection.request.assert_called_once()
-            connection.close.assert_called_once()
-
-    def test_proxy_token_is_header_only_and_tls_uses_runner_trust_store(self):
-        token = "synthetic-workload-token." + "x" * 4096
-        connection, factory = self.call(FakeResponse())
-        with mock.patch.object(adapter.ssl.SSLContext, "load_default_certs") as load_certs:
-            result = adapter.propose(context(), model=MODEL, api_key=token)
-        self.assertEqual(result, proposal())
-        load_certs.assert_called_once_with()
-        factory.assert_called_once()
-        request = connection.request.call_args
-        self.assertEqual(request.kwargs["headers"]["Authorization"], "Bearer " + token)
-        self.assertNotIn(token.encode(), request.kwargs["body"])
-        self.assertEqual(connection.request.call_count, 1)
-
-    def test_missing_enterprise_ca_fails_before_connection_without_fallback(self):
-        _, factory = self.call(FakeResponse())
-        with mock.patch.object(adapter.ssl.SSLContext, "load_default_certs",
-                               side_effect=adapter.ssl.SSLError(KEY)), \
+    def test_static_credentials_and_endpoint_settings_cannot_enable_default(self):
+        environment = {
+            "SMOKE_REPAIR_OPENAI_API_KEY": KEY, "SMOKE_REPAIR_MODEL": MODEL,
+            "OPENAI_API_KEY": KEY, "OPENAI_MODEL": MODEL,
+            "OPENAI_BASE_URL": "https://unused.invalid",
+            "SMOKE_REPAIR_BASE_URL": "https://unused.invalid",
+            "HTTPS_PROXY": "https://unused.invalid",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True), \
+                mock.patch("socket.socket") as socket_factory, \
                 self.assertRaises(adapter.ProposalError) as caught:
-            adapter.https_transport(b"{}", api_key=KEY)
-        self.assertEqual(str(caught.exception), "proposal request failed")
-        factory.assert_not_called()
+            adapter.propose(context(), model=MODEL, api_key=KEY)
+        self.assertEqual(str(caught.exception), adapter.DISABLED_MESSAGE)
+        socket_factory.assert_not_called()
 
-    def test_bad_headers_fail_closed_before_reading(self):
-        base = [("Content-Type", "application/json")]
-        for headers in ([], [("Content-Type", "text/html")],
-                        base + [("Content-Encoding", "gzip")],
-                        base + [("Transfer-Encoding", "gzip")],
-                        base + [("Transfer-Encoding", "chunked"), ("Transfer-Encoding", "chunked")],
-                        base + [("Content-Length", str(adapter.MAX_RESPONSE_BYTES + 1))],
-                        base + [("Content-Length", "-1")], base + [("Content-Length", "nonsense")],
-                        base + [("Content-Length", "1"), ("Content-Length", "1")],
-                        base + [("Content-Length", "1"), ("Transfer-Encoding", "chunked")]):
-            response = FakeResponse(headers=headers)
-            connection, _ = self.call(response)
-            with self.subTest(headers=headers), self.assertRaises(adapter.ProposalError):
-                adapter.https_transport(b"{}", api_key=KEY)
-            self.assertEqual(response.reads, [])
-            connection.close.assert_called_once()
-
-    def test_bounded_read_catches_oversize_and_truncated_bodies(self):
-        for body, headers in ((b"x" * (adapter.MAX_RESPONSE_BYTES + 1), []),
-                              (b"{}", [("Content-Length", "3")])):
-            response = FakeResponse(body, headers=[("Content-Type", "application/json"), *headers])
-            connection, _ = self.call(response)
-            with self.assertRaises(adapter.ProposalError):
-                adapter.https_transport(b"{}", api_key=KEY)
-            self.assertEqual(response.reads, [adapter.MAX_RESPONSE_BYTES + 1])
-            connection.close.assert_called_once()
-
-    def test_successful_content_length_and_chunked_response(self):
-        body = wire(envelope())
-        for headers in ([("Content-Length", str(len(body)))], [("Transfer-Encoding", "chunked")]):
-            response = FakeResponse(body, headers=[("Content-Type", "application/json; charset=utf-8"),
-                                                    *headers])
-            self.call(response)
-            self.assertEqual(adapter.https_transport(b"{}", api_key=KEY), (200, body))
-
-    def test_timeout_and_tls_failures_close_and_hide_details(self):
-        for error in (TimeoutError(KEY), adapter.ssl.SSLError("sensitive TLS failure")):
-            connection, _ = self.call(FakeResponse(), request_error=error)
-            with self.assertRaises(adapter.ProposalError) as caught:
-                adapter.https_transport(b"{}", api_key=KEY)
-            self.assertEqual(str(caught.exception), "proposal request failed")
-            connection.close.assert_called_once()
-
-    def test_transport_request_caps_precede_connection(self):
-        _, factory = self.call(FakeResponse())
-        for body in (b"", "{}", b"x" * (adapter.MAX_REQUEST_BYTES + 1)):
-            with self.assertRaises(adapter.ProposalError):
-                adapter.https_transport(body, api_key=KEY)
-        with self.assertRaises(adapter.ProposalError):
-            adapter.https_transport(b"{}", api_key="bad\nkey")
-        factory.assert_not_called()
-
-    def test_wall_clock_deadline_covers_request_headers_and_body_and_restores_signal(self):
-        for phase in ("request", "headers", "body"):
-            response = FakeResponse()
-            connection, _ = self.call(response)
-            if phase == "body":
-                response.read = mock.Mock(side_effect=lambda count: time.sleep(2))
-            elif phase == "headers":
-                connection.getresponse.side_effect = lambda: time.sleep(2)
-            else:
-                connection.request.side_effect = lambda *args, **kwargs: time.sleep(2)
-            previous = signal.getsignal(signal.SIGALRM)
-            started = time.monotonic()
-            with mock.patch.object(adapter, "REQUEST_TIMEOUT_SECONDS", 0.03):
-                with self.subTest(phase=phase), self.assertRaises(adapter.ProposalError):
-                    adapter.https_transport(b"{}", api_key=KEY)
-            self.assertLess(time.monotonic() - started, 1)
-            self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
-            self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0, 0))
-            connection.close.assert_called_once()
-
-    def test_wall_clock_deadline_bounds_actual_dns_and_connect_paths(self):
-        for phase in ("dns", "connect"):
-            with mock.patch("socket.create_connection", side_effect=REAL_CREATE_CONNECTION), \
-                    mock.patch("socket.getaddrinfo") as resolve, \
-                    mock.patch("socket.socket") as socket_factory, \
-                    mock.patch.object(adapter, "REQUEST_TIMEOUT_SECONDS", 0.05):
-                connect = socket_factory.return_value.connect
-                if phase == "dns":
-                    resolve.side_effect = lambda *args, **kwargs: time.sleep(2)
-                else:
-                    resolve.return_value = [(socket.AF_INET, socket.SOCK_STREAM, 6, "",
-                                             ("127.0.0.1", 443))]
-                    connect.side_effect = lambda *args, **kwargs: time.sleep(2)
-                previous = signal.getsignal(signal.SIGALRM)
-                started = time.monotonic()
-                with self.subTest(phase=phase), self.assertRaises(adapter.ProposalError):
-                    adapter.https_transport(b"{}", api_key=KEY)
-                self.assertLess(time.monotonic() - started, 1)
-                self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
-                self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0, 0))
-                resolve.assert_called_once()
-                if phase == "dns":
-                    connect.assert_not_called()
-                else:
-                    connect.assert_called_once()
-
-    def test_no_existing_alarm_is_overwritten(self):
-        _, factory = self.call(FakeResponse())
-        with mock.patch.object(adapter.signal, "getitimer", return_value=(10, 0)), \
-                mock.patch.object(adapter.signal, "setitimer") as timer:
-            with self.assertRaises(adapter.ProposalError):
-                adapter.https_transport(b"{}", api_key=KEY)
-        timer.assert_not_called()
-        factory.assert_not_called()
-
-    def test_worker_thread_fails_before_connecting(self):
-        _, factory = self.call(FakeResponse())
-        failures = []
-
-        def run():
-            try:
-                adapter.https_transport(b"{}", api_key=KEY)
-            except adapter.ProposalError:
-                failures.append(True)
-
-        worker = threading.Thread(target=run)
-        worker.start()
-        worker.join(timeout=1)
-        self.assertFalse(worker.is_alive())
-        self.assertEqual(failures, [True])
-        factory.assert_not_called()
-
-    def test_blocked_alarm_fails_before_connecting(self):
-        _, factory = self.call(FakeResponse())
-        with mock.patch.object(adapter.signal, "pthread_sigmask", return_value={signal.SIGALRM}), \
-                mock.patch.object(adapter.signal, "setitimer") as timer:
-            with self.assertRaises(adapter.ProposalError):
-                adapter.https_transport(b"{}", api_key=KEY)
-        timer.assert_not_called()
-        factory.assert_not_called()
+    def test_module_has_no_network_transport_or_endpoint_configuration(self):
+        source = Path(adapter.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported.add(node.module.split(".")[0])
+        self.assertEqual(imported, {
+            "__future__", "contextlib", "math", "os", "pathlib", "re",
+            "stat", "sys", "tempfile", "orchestration_contract",
+        })
+        for name in ("https_transport", "_deadline", "MODEL_PROXY_HOST", "MODEL_PROXY_PATH"):
+            self.assertFalse(hasattr(adapter, name), name)
+        self.assertFalse(any(isinstance(node, ast.Attribute) and node.attr in {"environ", "getenv"}
+                             for node in ast.walk(tree)))
+        self.assertFalse(any(isinstance(node, ast.Constant) and type(node.value) is str
+                             and node.value.startswith(("https://", "http://"))
+                             for node in ast.walk(tree)))
 
 
-class CliTests(OfflineTest):
+class FileFixtureTests(OfflineTest):
     def setUp(self):
         super().setUp()
         temporary = tempfile.TemporaryDirectory()
@@ -752,104 +602,37 @@ class CliTests(OfflineTest):
         self.output = self.directory / "proposal.json"
         self.input.write_bytes(wire(context()))
 
-    def invoke(self, *, environment=None, arguments=None, error=None):
-        if environment is None:
-            environment = {"SMOKE_REPAIR_OPENAI_API_KEY": KEY, "SMOKE_REPAIR_MODEL": MODEL}
-        if arguments is None:
-            arguments = ["--context", str(self.input), "--output", str(self.output)]
-        stdout, stderr = io.StringIO(), io.StringIO()
-        with mock.patch.object(adapter.os, "environ", environment), \
-                mock.patch.object(adapter, "propose", return_value=proposal(),
-                                  side_effect=error) as propose, \
-                mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
-            result = adapter.main(arguments)
-        return result, stdout.getvalue(), stderr.getvalue(), propose
-
-    def test_cli_reads_only_named_config_and_writes_mode_0600(self):
-        class Environment(dict):
-            def __init__(self):
-                super().__init__(SMOKE_REPAIR_OPENAI_API_KEY=KEY, SMOKE_REPAIR_MODEL=MODEL)
-                self.names = []
-
-            def get(self, name, default=None):
-                self.names.append(name)
-                return super().get(name, default)
-
-            def __getitem__(self, name):
-                self.names.append(name)
-                return super().__getitem__(name)
-
-        environment = Environment()
+    def test_offline_context_and_proposal_file_roundtrip(self):
         original = self.input.read_bytes()
-        result, stdout, stderr, propose = self.invoke(environment=environment)
-        self.assertEqual((result, stdout, stderr), (0, "", ""))
-        # argparse consults non-credential locale and terminal-width settings.
-        standard_library = {"LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG", "COLUMNS", "LINES"}
-        self.assertEqual([name for name in environment.names if name not in standard_library],
-                         ["SMOKE_REPAIR_OPENAI_API_KEY", "SMOKE_REPAIR_MODEL"])
-        propose.assert_called_once_with(context(), model=MODEL, api_key=KEY)
+        self.assertEqual(adapter._read_context(self.input), context())
+        adapter._write_proposal(self.output, proposal())
         self.assertEqual(self.output.read_bytes(), wire(proposal()) + b"\n")
         self.assertEqual(stat.S_IMODE(self.output.stat().st_mode), 0o600)
         self.assertEqual(self.input.read_bytes(), original)
 
-    def test_cli_no_fallback_model_or_credentials(self):
-        for environment in ({}, {"OPENAI_API_KEY": KEY, "OPENAI_MODEL": MODEL},
-                            {"SMOKE_REPAIR_OPENAI_API_KEY": KEY}, {"SMOKE_REPAIR_MODEL": MODEL}):
-            result, stdout, stderr, propose = self.invoke(environment=environment)
-            self.assertEqual((result, stdout, stderr), (1, "", "smoke repair proposal failed\n"))
-            propose.assert_not_called()
-            self.assertFalse(self.output.exists())
-
-    def test_end_to_end_cli_with_stub_transport(self):
-        real_propose = adapter.propose
+    def test_explicit_stub_transport_can_produce_unresolved_offline_fixture(self):
         transport = StubTransport(wire(envelope(unresolved())))
-
-        def stubbed_propose(evidence, **kwargs):
-            return real_propose(evidence, **kwargs, transport=transport)
-
-        with mock.patch.object(adapter.os, "environ", {
-                "SMOKE_REPAIR_OPENAI_API_KEY": KEY, "SMOKE_REPAIR_MODEL": MODEL}), \
-                mock.patch.object(adapter, "propose", side_effect=stubbed_propose):
-            self.assertEqual(adapter.main(["--context", str(self.input), "--output", str(self.output)]), 0)
+        result = adapter.propose(adapter._read_context(self.input), model=MODEL,
+                                 api_key=KEY, transport=transport)
+        adapter._write_proposal(self.output, result)
         self.assertEqual(decode_json(self.output.read_bytes()), unresolved())
         self.assertEqual(len(transport.calls), 1)
-        self.assertEqual(stat.S_IMODE(self.output.stat().st_mode), 0o600)
 
-    def test_cli_argument_errors_do_not_echo_paths_or_values(self):
-        for arguments in ([], ["--context"], ["--secret", "sensitive-argument"],
-                          ["--con", "sensitive-path", "--output", str(self.output)]):
-            result, stdout, stderr, propose = self.invoke(arguments=arguments)
-            self.assertEqual((result, stdout, stderr), (1, "", "smoke repair proposal failed\n"))
-            propose.assert_not_called()
-
-    def test_invalid_context_fails_before_model_and_preserves_output(self):
-        self.output.write_text("previous proposal")
+    def test_invalid_context_is_rejected(self):
         for body in (b'{"sensitive":1,"sensitive":2}', b'{"value":NaN}', b"\xff",
                      b"x" * (adapter.MAX_CONTEXT_BYTES + 1)):
             self.input.write_bytes(body)
-            result, stdout, stderr, propose = self.invoke()
-            self.assertEqual((result, stdout, stderr), (1, "", "smoke repair proposal failed\n"))
-            propose.assert_not_called()
-            self.assertEqual(self.output.read_text(), "previous proposal")
+            with self.assertRaises(adapter.ProposalError):
+                adapter._read_context(self.input)
 
-    def test_context_symlink_fifo_and_same_output_are_rejected(self):
+    def test_context_symlink_fifo_and_directory_are_rejected(self):
         symlink = self.directory / "linked.json"
         symlink.symlink_to(self.input)
         fifo = self.directory / "fifo"
         os.mkfifo(fifo)
-        for source, target in ((symlink, self.output), (fifo, self.output),
-                               (self.input, self.input), (self.directory, self.output)):
-            result, _, stderr, propose = self.invoke(
-                arguments=["--context", str(source), "--output", str(target)])
-            self.assertEqual(result, 1)
-            self.assertEqual(stderr, "smoke repair proposal failed\n")
-            propose.assert_not_called()
-
-    def test_raw_exceptions_are_never_reported_and_failure_preserves_output(self):
-        self.output.write_text("previous proposal")
-        result, stdout, stderr, _ = self.invoke(error=RuntimeError(KEY + MODEL + " private upstream error"))
-        self.assertEqual((result, stdout, stderr), (1, "", "smoke repair proposal failed\n"))
-        self.assertEqual(self.output.read_text(), "previous proposal")
+        for source in (symlink, fifo, self.directory):
+            with self.subTest(source=source.name), self.assertRaises((OSError, adapter.ProposalError)):
+                adapter._read_context(source)
 
     def test_atomic_replacement_has_final_data_and_permissions_before_publish(self):
         self.output.write_text("previous proposal")
@@ -864,8 +647,7 @@ class CliTests(OfflineTest):
             original_replace(source, target)
 
         with mock.patch.object(adapter.os, "replace", side_effect=replace) as publish:
-            result, _, _, _ = self.invoke()
-        self.assertEqual(result, 0)
+            adapter._write_proposal(self.output, proposal())
         publish.assert_called_once()
         self.assertEqual(stat.S_IMODE(self.output.stat().st_mode), 0o600)
         self.assertEqual(list(self.directory.glob(".smoke-repair-*")), [])
@@ -873,35 +655,117 @@ class CliTests(OfflineTest):
     def test_write_failures_cleanup_temporary_and_preserve_output(self):
         self.output.write_text("previous proposal")
         for operation in ("fsync", "replace"):
-            with mock.patch.object(adapter.os, operation, side_effect=OSError("sensitive filesystem error")):
-                result, stdout, stderr, _ = self.invoke()
-            self.assertEqual((result, stdout, stderr), (1, "", "smoke repair proposal failed\n"))
+            with mock.patch.object(adapter.os, operation, side_effect=OSError("synthetic I/O failure")), \
+                    self.assertRaises(OSError):
+                adapter._write_proposal(self.output, proposal())
             self.assertEqual(self.output.read_text(), "previous proposal")
             self.assertEqual(list(self.directory.glob(".smoke-repair-*")), [])
+
+    def test_invalid_proposal_cannot_replace_output(self):
+        self.output.write_text("previous proposal")
+        with self.assertRaises(adapter.ProposalError):
+            adapter._write_proposal(self.output, {"unexpected": "untrusted content"})
+        self.assertEqual(self.output.read_text(), "previous proposal")
+        self.assertEqual(list(self.directory.glob(".smoke-repair-*")), [])
 
     def test_output_symlink_is_replaced_without_writing_target(self):
         target = self.directory / "unrelated.txt"
         target.write_text("unchanged")
         self.output.symlink_to(target)
-        result, _, _, _ = self.invoke()
-        self.assertEqual(result, 0)
+        adapter._write_proposal(self.output, proposal())
         self.assertFalse(self.output.is_symlink())
         self.assertEqual(target.read_text(), "unchanged")
 
-    def test_isolated_cli_uses_trusted_sibling_not_cwd_or_pythonpath(self):
+
+class CliTests(OfflineTest):
+    def setUp(self):
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.input = self.directory / "context.json"
+        self.output = self.directory / "proposal.json"
+        self.input.write_bytes(wire(context()))
+        self.output.write_text("previous proposal")
+
+    def invoke(self, *, environment=None, arguments=None):
+        if environment is None:
+            environment = {"SMOKE_REPAIR_OPENAI_API_KEY": KEY, "SMOKE_REPAIR_MODEL": MODEL}
+        if arguments is None:
+            arguments = ["--context", str(self.input), "--output", str(self.output)]
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(adapter.os, "environ", environment), \
+                mock.patch.object(adapter, "propose") as propose, \
+                mock.patch.object(adapter, "_read_context") as read, \
+                mock.patch.object(adapter, "_write_proposal") as write, \
+                mock.patch.object(adapter, "load_skill") as skill, \
+                mock.patch("socket.socket") as socket_factory, \
+                mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            result = adapter.main(arguments)
+        self.assertEqual((result, stdout.getvalue(), stderr.getvalue()),
+                         (1, "", adapter.DISABLED_MESSAGE + "\n"))
+        for operation in (propose, read, write, skill, socket_factory):
+            operation.assert_not_called()
+        self.assertEqual(self.input.read_bytes(), wire(context()))
+        self.assertEqual(self.output.read_text(), "previous proposal")
+
+    def test_cli_never_reads_environment_even_when_static_credentials_exist(self):
+        environment = mock.MagicMock()
+        self.invoke(environment=environment)
+        self.assertEqual(environment.mock_calls, [])
+
+    def test_no_credentials_model_or_endpoint_combination_enables_cli(self):
+        for environment in (
+            {}, {"OPENAI_API_KEY": KEY, "OPENAI_MODEL": MODEL},
+            {"SMOKE_REPAIR_OPENAI_API_KEY": KEY}, {"SMOKE_REPAIR_MODEL": MODEL},
+            {"SMOKE_REPAIR_OPENAI_API_KEY": KEY, "SMOKE_REPAIR_MODEL": MODEL,
+             "OPENAI_BASE_URL": "https://unused.invalid"},
+        ):
+            with self.subTest(keys=sorted(environment)):
+                self.invoke(environment=environment)
+
+    def test_cli_arguments_are_ignored_and_never_echoed(self):
+        for arguments in (
+            [], ["--help"], ["--context"], ["--secret", KEY],
+            ["--con", "sensitive-path", "--output", str(self.output)],
+            ["--context", str(self.input), "--output", str(self.input)],
+            ["--enable-live-transport"],
+        ):
+            self.invoke(arguments=arguments)
+
+    def test_cli_with_valid_arguments_cannot_create_output(self):
+        self.output.unlink()
+        errors = io.StringIO()
+        with mock.patch.dict(os.environ, {
+                "SMOKE_REPAIR_OPENAI_API_KEY": KEY, "SMOKE_REPAIR_MODEL": MODEL}, clear=True), \
+                mock.patch.object(adapter, "propose") as propose, \
+                mock.patch("sys.stderr", errors):
+            self.assertEqual(adapter.main([
+                "--context", str(self.input), "--output", str(self.output)]), 1)
+        self.assertEqual(errors.getvalue(), adapter.DISABLED_MESSAGE + "\n")
+        propose.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_isolated_cli_remains_disabled_despite_config_or_untrusted_imports(self):
         for name in ("orchestration_contract.py", "smoke_repair_model.py"):
             (self.directory / name).write_text("raise RuntimeError('untrusted import')\n")
-        result = subprocess.run(
-            [sys.executable, "-I", "-B", str(SCRIPT_ROOT / "smoke_repair_model.py"), "--help"],
-            cwd=self.directory, env={"PYTHONPATH": str(self.directory)},
-            capture_output=True, text=True, timeout=5, check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("--context", result.stdout)
-        self.assertIn("--output", result.stdout)
-        self.assertNotIn("untrusted import", result.stdout + result.stderr)
-        self.assertEqual(result.stderr, "")
-
+        environment = {
+            "PYTHONPATH": str(self.directory),
+            "SMOKE_REPAIR_OPENAI_API_KEY": KEY, "SMOKE_REPAIR_MODEL": MODEL,
+        }
+        for arguments in (
+            ["--help"],
+            ["--context", str(self.input), "--output", str(self.output)],
+            ["--secret", KEY],
+        ):
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", str(SCRIPT_ROOT / "smoke_repair_model.py"), *arguments],
+                cwd=self.directory, env=environment,
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+            self.assertEqual((result.returncode, result.stdout, result.stderr),
+                             (1, "", adapter.DISABLED_MESSAGE + "\n"))
+            self.assertEqual(self.output.read_text(), "previous proposal")
 
 if __name__ == "__main__":
     unittest.main()
