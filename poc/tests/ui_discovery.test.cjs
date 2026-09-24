@@ -18,7 +18,7 @@ function setup() {
     return elements.get(id);
   }};
   const context = vm.createContext({document, URL, setInterval: () => {}, fetch: async () => ({ok:true,json:async()=>({running:false,summary:null})})});
-  vm.runInContext(fs.readFileSync(path.join(__dirname,'../discovery/web/app.js'),'utf8') + '\n globalThis.testApi = {safeLink,renderFindings,activityText};',context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../discovery/web/app.js'),'utf8') + '\n globalThis.testApi = {safeLink,renderFindings,renderRetired,render,activityText};',context);
   return {api:context.testApi,elements,document};
 }
 function flatten(e) { return [e,...e.children.flatMap(flatten)]; }
@@ -105,4 +105,25 @@ test('run activity distinguishes stalled and degraded results from healthy compl
   assert.match(api.activityText({scheduling:{status:'no_progress'}}),/due investigations could not start/);
   assert.match(api.activityText({outcome:'degraded',scheduling:{status:'progress'}}),/finished with issues/);
   assert.equal(api.activityText({outcome:'completed',scheduling:{status:'no_work'}}),'Run complete. Findings await human review.');
+});
+
+
+test('retired MySQL gap stays outside opportunity filters and preserves dated archive',()=>{
+  const {api,elements,document}=setup();
+  const current=finding({name:'library/mysql',source:'dockerhub',scope:'library/mysql:latest digest sha256:current'});
+  const old=finding({name:'library/mysql',source:'dockerhub',status:'gap',scope:'library/mysql:5.7 only',checked_at:'2026-09-01T12:00:00Z',evidence:[{kind:'oci_manifest',url:'https://registry-1.docker.io/v2/library/mysql/manifests/5.7'}]});
+  const summary={findings:[current],retired_candidates:[{candidate_id:'dockerhub:library/mysql:5.7',reason:'Legacy demo scope',retired_at:'2026-09-24T12:00:00Z',finding:old},{candidate_id:'github:other/tool',reason:'Outside current scope',retired_at:'2026-09-24T12:00:00Z',finding:null}],counts:{investigated:1,supported:1,gap:0,unknown:0,saved_observations:2},limits:{},ai_review:{disclosure:'Metadata only'}};
+  api.render(summary);
+  assert.equal(elements.get('gap').textContent,0);
+  const archived=flatten(elements.get('retired'));
+  assert.ok(archived.some(n=>n.textContent.includes('library/mysql:5.7 only')));
+  assert.ok(archived.some(n=>n.textContent.includes('originally checked')));
+  assert.ok(archived.some(n=>n.tagName==='a' && n.href===old.evidence[0].url));
+  assert.ok(archived.some(n=>n.textContent==='Exclusion rule only: no saved finding or completed check.'));
+  assert.match(elements.get('memory').textContent,/2 retirement rules; 1 with archived findings/);
+  document.getElementById('filter').value='gap'; api.renderFindings(summary);
+  assert.match(elements.get('findings').children[0].textContent,/No findings in this view/);
+  document.getElementById('filter').value='supported'; api.renderFindings(summary);
+  assert.ok(flatten(elements.get('findings')).some(n=>n.textContent===current.scope));
+  assert.equal(summary.counts.gap,0);
 });

@@ -418,10 +418,10 @@ def test_source_collection_finishes_before_ai_and_saved_reviews_match_report(tmp
 
 
 @pytest.mark.parametrize(
-    "releases", [[], [{"id": 123, "tag_name": "v1-preview", "prerelease": True}]]
+    "release", [CollectionError("HTTP 404 latest release unavailable", status_code=404), {"id": 123, "tag_name": "v1-preview", "prerelease": True}]
 )
-def test_no_stable_release_still_collects_repository_readme_without_promoting_support(
-    releases,
+def test_no_valid_latest_release_still_collects_repository_readme_without_promoting_support(
+    release,
 ):
     import base64
     from poc.discovery.sources import github_collect
@@ -441,8 +441,10 @@ def test_no_stable_release_still_collects_repository_readme_without_promoting_su
                     "private": False,
                     "default_branch": "main",
                 }, {}
-            if url == base + "/releases":
-                return releases, {}
+            if url == base + "/releases/latest":
+                if isinstance(release, Exception):
+                    raise release
+                return release, {}
             if url == base + "/readme":
                 return {
                     "encoding": "base64",
@@ -484,8 +486,8 @@ def test_missing_repository_readme_remains_unknown_with_visible_collection_failu
                     "private": False,
                     "default_branch": "main",
                 }, {}
-            if url == base + "/releases":
-                return [], {}
+            if url == base + "/releases/latest":
+                raise CollectionError("HTTP 404 latest release unavailable", status_code=404)
             raise CollectionError("HTTP 404 repository README unavailable")
 
     finding = github_collect(
@@ -508,8 +510,8 @@ def test_custom_configuration_scope_cannot_reach_public_evidence_reviewer(tmp_pa
             self.requests_used += 1
             if url == base:
                 return {"full_name": "org/tool", "private": False}, {}
-            if url == base + "/releases":
-                return [{"tag_name": "v1", "id": "invalid-release-id"}], {}
+            if url == base + "/releases/latest":
+                return {"tag_name": "v1", "id": "invalid-release-id"}, {}
             raise CollectionError("Optional README unavailable")
 
     def reviewer(value):
@@ -565,8 +567,8 @@ def test_unchanged_readme_refreshed_date_does_not_claim_changed_evidence(
                     "private": False,
                     "default_branch": "main",
                 }, {}
-            if url == base + "/releases":
-                return [], {}
+            if url == base + "/releases/latest":
+                raise CollectionError("HTTP 404 latest release unavailable", status_code=404)
             if url == base + "/readme":
                 return {
                     "encoding": "base64",

@@ -31,20 +31,22 @@ No runtime certification or universal correctness is claimed.
 
 ## Automated and independent validation
 
-- Local Python suite: **265 tests passed**.
-- Native Linux Arm64 suite: **265 tests passed**, with hash-locked dependencies,
+- Local Python suite: **310 tests passed**.
+- Native Linux Arm64 suite: **310 tests passed**, with hash-locked dependencies,
   a nonroot user, read-only root filesystem and no network. Test-only temporary
   storage permits executable fixtures; the production image uses `noexec`.
 - Existing root repository regression suite: **113 tests passed**, with the
   required Hugo 0.130.0 and Command Line Tools Git. No system Xcode license or
   system settings were changed.
-- JavaScript renderer/link/filter/coverage/health checks: **10 passed**.
+- JavaScript renderer/link/filter/coverage/health checks: **11 passed**.
 - Runtime image: two offline default-command executions passed with persistent
   SQLite/report state, private output permissions, UID 10001, read-only root,
   dropped capabilities and no-new-privileges. The runtime excludes the web
-  server, test dependencies, pip and ensurepip. The two new identity/text modules
+  server, test dependencies, pip and ensurepip. The identity, text and lifecycle modules
   are explicitly included in the production build context and image.
-- Ruff checks, JavaScript syntax and Git whitespace checks passed.
+- Ruff error checks across the PoC, full lint on selected changed modules and new tests,
+  JavaScript syntax and Git whitespace checks passed. The broader default lint
+  configuration has pre-existing style findings outside this correction.
 - Three independent reviewers verified requirements/report parity, scheduling
   and identity upgrades, and source/model text boundaries. The legacy invalid
   identity upgrade case found during verification was corrected and retested.
@@ -52,18 +54,26 @@ No runtime certification or universal correctness is claimed.
 
 ## Public-source sample and report validation
 
-An isolated fresh run checked **eight selected repository/image scopes: six
-supported, one scoped gap and one unknown**, using 29 metadata requests with no
-collection failures. Two identities matched catalog URLs. GitHub discovery
-fetched and examined 14 records and selected two repositories. Four findings had
-separate coverage-review questions; these are not four additional support gaps.
-AI was disabled: zero completed advisory reviews across eight eligible findings.
+A public-metadata recheck of an isolated SQLite backup checked **eight current
+repository/image scopes: seven supported, zero gaps and one unknown**, using
+27 requests with no collection failures. This included one new current MySQL
+scope and seven refreshes. GitHub discovery fetched/examined 14 records and
+queued two additional candidates for later. Four findings retained separate
+coverage questions. AI was disabled: zero advisory reviews across eight findings.
 
-Six configured seeds plus two discoveries demonstrate the workflow, rather than
-a globally representative top-software ranking. The deliberately selected legacy
-`library/mysql:5.7` gap is tag-specific and is not evidence that current MySQL is
-unsupported. Current representative business opportunities still need stakeholder
-acceptance; no minimum number of gaps is promised.
+MySQL now uses its current official `latest` image, which advertised Linux Arm64.
+The former `mysql:5.7` finding is explicitly retired outside active opportunity
+views; its original verdict, date and evidence remain in a separate archive.
+All eight original observations were compared and preserved unchanged. The
+retirement persists across runs, while a regression confirms that a genuine gap
+in a current MySQL image would remain visible. GitHub now checks its designated
+latest full release, with no fallback to an older release to produce a gap.
+
+This is a bounded sample, not a globally representative top-software ranking.
+Zero gaps is a valid result; versions and tags document the inspected evidence.
+Current representative business opportunities still need stakeholder acceptance.
+Two agents independently cross-reviewed selection/lifecycle and report/UI
+changes; no blocking findings remain from that review.
 
 Independent three-run synthetic validation checked current findings, retained
 history, coverage parity and healthy no-work behavior. Word/CSV/JSON and the
@@ -106,7 +116,9 @@ PR #1092 remains separate and unchanged.
 
 ## Evidence retained locally
 
-Current correction evidence is under `.poc/review-fixes/`: reviewer notes,
+Current-selection correction evidence is under `.poc/current-focus/`: local/native
+logs, state migration assertions, current live report, renders and image checks.
+Earlier correction evidence is under `.poc/review-fixes/`: reviewer notes,
 regressions, final local/native logs, locked image builds/smoke, source hashes,
 private public-source reports and rendered pages. Earlier baseline evidence is
 under `.poc/production-review/` and `.poc/validation/`. Findings and private paths

@@ -37,6 +37,13 @@ Keep the exact image ID/digest, repository revision, reviewed configuration and
 validation results with the release record. The packaged catalog is taken from
 the same checkout as the code; rebuild deliberately to update that snapshot.
 
+Before replacing the pilot configuration, back up SQLite using its backup API
+and retain the previous reports. The example retires only the legacy MySQL 5.7
+demo and selects the current image. Retirement preserves observations and
+persists in saved state; removing its configuration entry does not reactivate
+it. Use a reviewed, reasoned `reactivated_candidates` entry to resume a scope.
+See [scope retirement](../README.md#retiring-obsolete-scopes-without-losing-memory).
+
 ## Build an immutable runtime image
 
 Run from the repository root with Docker BuildKit enabled:

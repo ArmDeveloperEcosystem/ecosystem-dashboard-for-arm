@@ -174,26 +174,19 @@ def test_ai_quote_validation_rejects_invented_url_or_quote():
             )
 
 
-def test_collector_follows_release_and_asset_pages_instead_of_embedded_assets():
+def test_collector_uses_latest_release_and_pages_assets_instead_of_embedded_assets():
     base = "https://api.github.com/repos/org/tool"
-    releases2 = base + "/releases?page=2"
     assets = base + "/releases/2/assets"
     assets2 = assets + "?page=2"
     http = Pages(
         {
             base: ({"description": "test", "stargazers_count": 10}, {}),
-            base + "/releases": (
-                [{"id": 1, "tag_name": "preview", "prerelease": True}],
-                {"Link": f'<{releases2}>; rel="next"'},
-            ),
-            releases2: (
-                [
-                    {
-                        "id": 2,
-                        "tag_name": "v1",
-                        "assets": [{"name": "tool-linux-amd64.tar.gz"}],
-                    }
-                ],
+            base + "/releases/latest": (
+                {
+                    "id": 2,
+                    "tag_name": "v1",
+                    "assets": [{"name": "tool-linux-amd64.tar.gz"}],
+                },
                 {},
             ),
             assets: (

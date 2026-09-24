@@ -35,8 +35,8 @@ class Metadata:
             if "/tags/" in url:
                 return {"images": [{"os": "linux", "architecture": "arm64"}]}, {}
             return {"is_private": False}, {}
-        if url.endswith("/releases"):
-            return [], {}
+        if url.endswith("/releases/latest"):
+            raise CollectionError("HTTP 404 latest release unavailable", status_code=404)
         if url.endswith("/readme"):
             return {
                 "encoding": "base64",

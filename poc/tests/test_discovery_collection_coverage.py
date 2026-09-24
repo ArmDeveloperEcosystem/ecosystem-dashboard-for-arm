@@ -229,7 +229,7 @@ def collect(assets, headers=None, release=None, max_asset_pages=1):
     http = Pages(
         {
             BASE: ({"full_name": "org/tool", "stargazers_count": 50}, {}),
-            BASE + "/releases": ([release or {"id": 1, "tag_name": "v1"}], {}),
+            BASE + "/releases/latest": (release or {"id": 1, "tag_name": "v1"}, {}),
             ASSETS: (assets, headers or {}),
         }
     )
@@ -329,27 +329,27 @@ def test_surrogate_release_tag_retains_original_and_uses_release_id_citation():
 
 
 @pytest.mark.parametrize(
-    "rows,headers,review",
+    "response",
     [
-        ([], {}, False),
-        ([None], {}, True),
-        ([], {"Link": f'<{BASE}/releases?page=2>; rel="next"'}, True),
+        CollectionError("HTTP 404 latest release unavailable", status_code=404),
+        ([None], {}),
+        ({"id": 1, "tag_name": "preview", "prerelease": True}, {}),
     ],
 )
-def test_no_stable_release_distinguishes_scan_coverage_from_runtime_caveats(
-    rows, headers, review
-):
+def test_missing_latest_release_requires_review_without_inventing_artifact_coverage(response):
     http = Pages(
-        {BASE: ({"full_name": "org/tool"}, {}), BASE + "/releases": (rows, headers)}
+        {BASE: ({"full_name": "org/tool"}, {}), BASE + "/releases/latest": response, BASE + "/readme": ({"encoding": "base64", "content": ""}, {})}
     )
     result = github_collect(
         http, CANDIDATE, {"max_release_pages": 1, "max_asset_pages": 1}
     )
     coverage = result["assessment_coverage"]
     assert result["status"] == "unknown"
-    assert coverage["kind"] == "github_stable_release_scan"
-    assert coverage["review_required"] is review
+    assert coverage["kind"] == "github_latest_release"
+    assert coverage["review_required"] and not coverage["inventory_complete"]
     assert coverage["remaining_inventory"] == []
+    assert coverage["evidence_urls"] == [BASE + "/releases/latest"]
+    assert bool(result["failures"]) is not (isinstance(response, CollectionError) and response.status_code == 404)
 
 
 def test_selected_release_without_id_has_evidence_backed_review_reason():
@@ -357,4 +357,4 @@ def test_selected_release_without_id_has_evidence_backed_review_reason():
     assert result["status"] == "unknown"
     coverage = result["assessment_coverage"]
     assert coverage["review_required"] and not coverage["inventory_complete"]
-    assert coverage["evidence_urls"] == [BASE + "/releases"]
+    assert coverage["evidence_urls"] == [BASE + "/releases/latest"]

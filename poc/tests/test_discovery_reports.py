@@ -386,3 +386,38 @@ def test_run_health_and_collection_counters_are_visible(report_summary):
     text = report_text(report_summary["report_paths"]["docx"])
     assert "Queue progress: no progress; 0 attempted; 1 due scopes deferred." in text
     assert "100 collected; 80 examined; 2 candidates selected" in text
+
+
+def test_retired_evidence_is_separate_from_opportunities_and_marker_is_not_a_finding(
+    report_summary,
+):
+    old = report_summary["retained_findings"].pop()
+    report_summary["retired_candidates"] = [
+        {
+            "candidate_id": old["candidate_id"],
+            "retired_at": "2026-09-24T12:00:00Z",
+            "reason": "Legacy demonstration scope",
+            "finding": old,
+        },
+        {
+            "candidate_id": "dockerhub:library/mysql:5.7",
+            "retired_at": "2026-09-24T12:00:00Z",
+            "reason": "Excluded legacy seed",
+            "finding": None,
+        },
+    ]
+    write_reports(report_summary)
+    with open(report_summary["report_paths"]["csv"], newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    retired = [r for r in rows if r["record_type"] == "retired_not_rechecked"]
+    assert len(retired) == 1
+    assert retired[0]["status"] == old["status"]
+    assert retired[0]["checked_at"] == old["checked_at"]
+    assert retired[0]["evidence_urls"] == old["evidence"][0]["url"]
+    assert retired[0]["retirement_reason"] == "Legacy demonstration scope"
+    text = report_text(report_summary["report_paths"]["docx"])
+    assert "Retired investigations: excluded from current opportunities" in text
+    assert "Original check: " + old["checked_at"] in text
+    assert "Exclusion rule only: no saved finding or completed check." in text
+    assert report_summary["counts"]["investigated"] == 3
+    assert len(rows) == 4

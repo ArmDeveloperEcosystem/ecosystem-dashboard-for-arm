@@ -209,58 +209,70 @@ def github_collect(http, candidate, limits):
         if isinstance(repository_id, int) and not isinstance(repository_id, bool)
         else None
     )
-    releases, complete, errors = github_pages(
-        http,
-        base + "/releases",
-        limits["max_release_pages"],
-        stop_when=lambda values: any(
-            isinstance(r, dict) and not r.get("draft") and not r.get("prerelease")
-            for r in values
-        ),
-        alternate_paths=[canonical_prefix + "/releases"] if canonical_prefix else [],
+    latest_url = base + "/releases/latest"
+    result["metadata"]["release_selection"] = "github_latest_release"
+    result["metadata"]["release_selection_url"] = latest_url
+    result["metadata"]["release_selection_limitations"] = (
+        "GitHub's latest published full release does not establish maintenance "
+        "status, greatest semantic version or coverage of every supported release line."
     )
-    result["failures"].extend(errors)
-    stable = [
-        r
-        for r in releases
-        if isinstance(r, dict) and not r.get("draft") and not r.get("prerelease")
-    ]
-    if not stable:
-        result["scope"] = (
-            f"{repo}: stable releases visible in the bounded GitHub API scan"
-        )
+    try:
+        release, _ = http.get(latest_url)
+        if not isinstance(release, dict):
+            raise CollectionError("Unexpected GitHub latest-release metadata shape")
+        if any(
+            key in release and not isinstance(release[key], bool)
+            for key in ("draft", "prerelease")
+        ):
+            raise CollectionError(
+                "GitHub latest-release publication flags are malformed"
+            )
+        if release.get("draft") or release.get("prerelease"):
+            raise CollectionError(
+                "GitHub latest-release metadata is not a published full release"
+            )
+        if (
+            not isinstance(release.get("tag_name"), str)
+            or not release["tag_name"].strip()
+        ):
+            raise CollectionError(
+                "GitHub latest-release metadata has no valid tag name"
+            )
+    except CollectionError as exc:
+        if exc.status_code == 404:
+            result["metadata"]["latest_release_response_status"] = 404
+        else:
+            result["failures"].append(f"Latest published release unavailable: {exc}")
+        result["scope"] = f"{repo}: GitHub latest published full release"
         result["reason"] = (
-            "No stable release was returned in the bounded scan; source/build support remains unassessed."
+            "A valid latest published full release could not be established; "
+            "older releases were not substituted. Source/build support remains unassessed."
         )
         result["evidence"].append(
             evidence(
-                base + "/releases",
-                "release_inventory",
-                f"Stable releases observed: 0; all scanned pages complete={complete}",
+                latest_url,
+                "release_selection",
+                "No valid latest published full release was established; no historical-release fallback was used.",
             )
         )
-        review_reasons = []
-        if not complete:
-            review_reasons.append("The bounded stable-release scan is incomplete.")
-        if any(not isinstance(item, dict) for item in releases):
-            review_reasons.append("The release scan contains malformed metadata.")
         result["assessment_coverage"] = {
-            "kind": "github_stable_release_scan",
-            "inventory_complete": complete,
-            "inventory_count": len(releases),
+            "kind": "github_latest_release",
+            "inventory_complete": False,
+            "inventory_count": 0,
             "supported_artifacts": [],
             "remaining_inventory": [],
-            "review_required": bool(review_reasons),
-            "review_reasons": review_reasons,
-            "evidence_urls": [base + "/releases"],
+            "review_required": True,
+            "review_reasons": [
+                "The latest published full release could not be established; its artifact inventory remains unassessed."
+            ],
+            "evidence_urls": [latest_url],
             "limitations": [
-                "No stable release was selected; downloadable artifacts, source builds and runtime compatibility remain unassessed."
+                "No release was selected; downloadable artifacts, source builds and runtime compatibility remain unassessed.",
+                result["metadata"]["release_selection_limitations"],
             ],
         }
         _collect_readme(http, repo, result, meta.get("default_branch"))
         return result
-    # GitHub API order is documented as creation order, not semantic version order.
-    release = stable[0]
     if not isinstance(release.get("id"), int) or isinstance(release.get("id"), bool):
         result["reason"] = (
             "The selected release has no valid release ID; its asset inventory cannot be verified."
@@ -276,7 +288,7 @@ def github_collect(http, candidate, limits):
             "review_reasons": [
                 "The selected release lacks a valid release ID; its artifact inventory cannot be read."
             ],
-            "evidence_urls": [base + "/releases"],
+            "evidence_urls": [latest_url],
             "limitations": [
                 "Source builds and runtime compatibility remain unassessed."
             ],
@@ -297,7 +309,7 @@ def github_collect(http, candidate, limits):
         release_fallback,
     )
     result["scope"] = (
-        f"{repo} release {tag}: published downloadable Linux binaries (first stable release in GitHub API order)"
+        f"{repo} release {tag}: published downloadable Linux binaries (GitHub latest published full release)"
     )
     result["metadata"].update(
         {

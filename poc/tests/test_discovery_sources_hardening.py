@@ -402,7 +402,7 @@ def test_missing_release_id_keeps_unknown_and_repository_popularity():
     client = Metadata(
         {
             base: ({"stargazers_count": 200}, {}),
-            base + "/releases": ([{"tag_name": "v1"}], {}),
+            base + "/releases/latest": ({"tag_name": "v1"}, {}),
         }
     )
     result = github_collect(

@@ -29,7 +29,7 @@ COPY poc/__init__.py /app/poc/__init__.py
 COPY poc/discovery/__init__.py poc/discovery/__main__.py \
      poc/discovery/ai_review.py poc/discovery/evidence.py \
      poc/discovery/http.py poc/discovery/identity.py poc/discovery/text.py \
-     poc/discovery/pipeline.py \
+     poc/discovery/pipeline.py poc/discovery/lifecycle.py \
      poc/discovery/report.py poc/discovery/sources.py /app/poc/discovery/
 COPY poc/discovery/deploy/__init__.py poc/discovery/deploy/run.py /app/poc/discovery/deploy/
 COPY content/linux/ /app/content/linux/

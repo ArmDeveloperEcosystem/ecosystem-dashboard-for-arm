@@ -45,7 +45,7 @@ recheck existing observations, set `force_refresh: true` in a copied configurati
    different evidence conditions. A GitHub query selects up to two additional
    previously unseen repositories, ordered by stars. Selection reasons, dated
    stars, cumulative image pulls and maintenance context stay visible.
-2. **Collect authoritative metadata.** GitHub repository metadata, stable releases,
+2. **Collect authoritative metadata.** GitHub repository metadata, the designated latest full release,
    paginated release assets and release-tag README excerpts (or default-branch
    README context when no stable release is available, retaining blob identity); Docker Hub tag
    platforms and repository statistics; OCI manifests/config metadata when Hub
@@ -102,11 +102,20 @@ a gap or trigger a review flag. Component-family inference and runtime validatio
 remain outside this PoC. Older saved findings without structured coverage are
 explicitly labeled; they are not assumed complete.
 
-Release selection is the first non-draft, non-prerelease in GitHub API order,
-within pagination caps. It is not a promise of the greatest semantic version.
-The selected legacy `library/mysql:5.7` seed illustrates a tag-specific gap,
-**not a claim about current MySQL or all MySQL versions**. The Redis repository
-and Redis container are deliberately separate evidence scopes.
+Release selection uses GitHub's `/releases/latest` designation; it does not scan
+older releases to manufacture a gap. This designation does not prove active
+maintenance or the greatest semantic version. Missing or invalid latest-release
+metadata remains unknown; default-branch README text provides context only.
+The current default MySQL image is `library/mysql:latest`, with the exact digest
+and platform evidence retained. The old `library/mysql:5.7` demonstration is
+explicitly retired from active opportunities; it remains a regression fixture.
+The Redis repository and Redis container are separate evidence scopes.
+
+The business objective is current project/distribution opportunities. Versions,
+tags, release IDs and observation dates make findings verifiable; they do not
+turn every historical unsupported version into a new opportunity. Explicitly
+configured tags may target a supported product line; review those choices with
+the team. Zero identified gaps is a valid result.
 
 ### Selection, popularity and limits
 
@@ -201,6 +210,7 @@ atomically replaces `OUTPUT/latest.json` after the report set succeeds.
   evidence links, dates, recommended actions, historical findings and coverage.
 - **CSV:** spreadsheet filtering. `record_type=checked_this_run` and
   `historical_not_rechecked` prevent old results being counted as new.
+  `retired_not_rechecked` rows preserve archived findings outside active opportunities.
 - **JSON:** full evidence and run metadata, queue, skipped/excluded records,
   source failures, refresh dates, original observations and report paths.
 
@@ -218,6 +228,30 @@ views alongside the three support-status filters. Word, CSV and JSON preserve th
 same coverage reasons and evidence references, with current and historical
 observations distinguished. The coverage view may include a supported artifact
 whose wider collected inventory remains incomplete.
+
+### Retiring obsolete scopes without losing memory
+
+`retired_candidates` explicitly excludes an investigation from scheduling,
+rediscovery, active history and opportunity filters. Each entry contains
+`source`, `name`, an explicit Docker `tag` when applicable, and a `reason`.
+The example configuration retires only `library/mysql:5.7`; it does not retire
+other investigations simply because their seed was removed. Retirement persists
+in SQLite even if the configuration entry is later omitted. Force-refresh does
+not override it. Existing observations are never deleted or reclassified.
+
+To resume a scope, remove its retirement directive and add a reasoned entry to
+`reactivated_candidates`. The same scope cannot appear in both lists. Existing
+work resumes at its saved refresh date; use force-refresh only for a deliberate
+immediate check. Reactivating an exclusion rule with no candidate merely allows
+future seed/discovery admission; it does not fabricate an investigation.
+Each list is limited to 100 entries; duplicate normalized identities are rejected.
+
+Word and the local page separate retired scopes from current opportunities.
+CSV includes retired rows only when an actual saved finding exists, retaining
+its original status/date and adding retirement reason/date. JSON also records
+marker-only exclusions, complete archived findings and the latest 100 lifecycle
+transitions. All transition events remain in SQLite. Retirement counts are
+policy counts, never completed checks or new gaps.
 
 Raw JSON preserves original source/model text with lossless character escapes.
 Word, CSV and diagnostic text visibly escape XML-invalid characters; invalid

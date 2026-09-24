@@ -18,6 +18,7 @@ import yaml
 
 from .http import BoundedHTTP, CollectionError
 from .identity import normalize_github_name
+from .lifecycle import apply_lifecycle, lifecycle_directives, retirement_snapshot
 from .sources import discover_github, dockerhub_collect, github_collect, unknown
 from .text import display_text, json_dumps
 
@@ -105,6 +106,14 @@ def open_state(path):
         CREATE INDEX IF NOT EXISTS due_candidates ON candidates(next_check_at);
         CREATE TABLE IF NOT EXISTS candidate_aliases (
           alias_id TEXT PRIMARY KEY, canonical_id TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS candidate_retirements (
+          candidate_id TEXT PRIMARY KEY, payload TEXT NOT NULL,
+          retired_at TEXT NOT NULL, reactivated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS candidate_retirement_events (
+          id INTEGER PRIMARY KEY, candidate_id TEXT NOT NULL, action TEXT NOT NULL,
+          changed_at TEXT NOT NULL, reason TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS pipeline_lock (id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT NOT NULL, expires_at TEXT NOT NULL);
     """)
@@ -298,6 +307,8 @@ def validate_config(config):
         "ai_review",
         "catalog_path",
         "state_path",
+        "retired_candidates",
+        "reactivated_candidates",
     }
     if set(config) - allowed:
         raise ValueError(
@@ -310,6 +321,7 @@ def validate_config(config):
         raise ValueError("seeds must be a list")
     if not isinstance(config.get("force_refresh", False), bool):
         raise ValueError("force_refresh must be true or false")
+    lifecycle_directives(config, normalize_candidate)
     extra_limits = set(config.get("limits", {})) - set(DEFAULT_LIMITS)
     if extra_limits:
         raise ValueError("Unknown limit keys: " + ", ".join(sorted(extra_limits)))
@@ -567,6 +579,10 @@ def _run(
         failures.append({"source": "catalog", "reason": str(exc)})
     quarantined = reconcile_candidate_aliases(db)
     quarantined_ids = {item["candidate_id"] for item in quarantined}
+    retired_ids = apply_lifecycle(
+        db, lifecycle_directives(config, normalize_candidate), at
+    )
+    inactive_ids = quarantined_ids | retired_ids
     failures.extend(
         {key: item[key] for key in ("candidate_id", "source", "reason")}
         for item in quarantined
@@ -585,6 +601,14 @@ def _run(
         except (ValueError, AttributeError) as exc:
             skipped.append({"candidate": str(raw), "reason": str(exc)})
             continue
+        if candidate["id"] in retired_ids:
+            skipped.append(
+                {
+                    "candidate_id": candidate["id"],
+                    "reason": "Explicitly retired investigation; evidence retained outside active opportunities",
+                }
+            )
+            continue
         db.execute(
             "INSERT INTO candidates(id,payload,first_seen,last_seen,next_check_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,last_seen=excluded.last_seen",
             (candidate["id"], json_dumps(candidate), at, at, at),
@@ -596,7 +620,7 @@ def _run(
         for row in db.execute(
             "SELECT * FROM candidates ORDER BY next_check_at,first_seen,id"
         ).fetchall()
-        if row["id"] not in quarantined_ids
+        if row["id"] not in inactive_ids
     ]
     due = [row for row in all_candidates if force or row["next_check_at"] <= at]
     # Older queued work first; within a batch use explicit seed order, then
@@ -763,9 +787,9 @@ def _run(
     # when a continuing backlog fills the investigation allowance.
     if initial_due:
         investigate(initial_due[0])
-    known_ids = {
-        row[0] for row in db.execute("SELECT id FROM candidates")
-    } - quarantined_ids
+    known_ids = (
+        {row[0] for row in db.execute("SELECT id FROM candidates")} - quarantined_ids
+    ) | retired_ids
     discovery_deferred = (
         bool(config.get("discovery", {}).get("github_queries"))
         and not resources_available()
@@ -815,7 +839,7 @@ def _run(
         for row in db.execute(
             "SELECT * FROM candidates ORDER BY next_check_at,first_seen,id"
         ).fetchall()
-        if row["id"] not in quarantined_ids
+        if row["id"] not in inactive_ids
     ]
     new_due = sorted(
         (row for row in all_candidates if row["id"] in discovered_ids),
@@ -890,7 +914,10 @@ def _run(
     saved = db.execute(
         "SELECT id,last_result,next_check_at,investigation_count FROM candidates WHERE last_result IS NOT NULL ORDER BY id"
     ).fetchall()
-    saved_results = [json.loads(row["last_result"]) for row in saved]
+    saved_results = [
+        json.loads(row["last_result"]) for row in saved if row["id"] not in retired_ids
+    ]
+    retired_candidates, retirement_events = retirement_snapshot(db)
     identity_aliases = [
         dict(row)
         for row in db.execute(
@@ -945,7 +972,7 @@ def _run(
         for row in db.execute(
             "SELECT * FROM candidates WHERE last_result IS NULL ORDER BY first_seen,id"
         )
-        if row["id"] not in quarantined_ids
+        if row["id"] not in inactive_ids
     ]
     previous_run_failures = [
         {
@@ -975,8 +1002,18 @@ def _run(
         refreshed=sum(f["investigated_before"] for f in findings),
         catalog_tracked=sum(f["catalog_tracked"] is True for f in findings),
         queued_total=len(all_candidates),
-        stored_candidates=len(all_candidates) + len(quarantined),
+        stored_candidates=db.execute("SELECT COUNT(*) FROM candidates").fetchone()[0],
         quarantined_candidates=len(quarantined),
+        retired_candidates=len(retired_candidates),
+        retired_observations=db.execute(
+            """SELECT COUNT(*) FROM observations o WHERE EXISTS (
+                SELECT 1 FROM candidate_retirements r
+                WHERE r.reactivated_at IS NULL AND (r.candidate_id=o.candidate_id OR EXISTS (
+                    SELECT 1 FROM candidate_aliases a
+                    WHERE a.alias_id=o.candidate_id AND a.canonical_id=r.candidate_id
+                ))
+            )"""
+        ).fetchone()[0],
         pending_investigation=len(queue),
         due_at_start=len(initial_due),
         due_total=len(due),
@@ -1015,6 +1052,8 @@ def _run(
         "saved_history": history,
         "identity_aliases": identity_aliases,
         "quarantined_candidates": quarantined,
+        "retired_candidates": retired_candidates,
+        "retirement_events": retirement_events,
         "queue": queue,
         "previous_run_failures": previous_run_failures,
         "catalog_comparison": {"status": catalog_state, "identity_count": len(tracked)},
@@ -1056,9 +1095,9 @@ def _run(
             "Discovery candidates selected", len(discovered_ids)
         ),
         "priority_policy": "Attempt the oldest due scope, then bounded discovery, remaining saved due scopes, and newly discovered repositories by stars. One shared request/time/investigation allowance applies; a first investigation that exhausts it can defer discovery. Pulls and stars are not combined.",
-        "repository_release_selection": "First non-draft, non-prerelease in GitHub API order, within configured pagination limits",
+        "repository_release_selection": "Repository-designated latest stable release; exact version and artifacts retained as evidence. This designation alone does not prove active maintenance.",
         "registry_selection": "Configured exact Docker Hub image/tag seeds",
-        "retained_queue_policy": "Previously queued candidates remain eligible until investigated or not due; changing seeds does not delete history",
+        "retained_queue_policy": "Previously queued candidates remain eligible until investigated or not due. Changing seeds does not delete history. Explicit retirements persist outside active opportunities until explicitly reactivated; observations remain unchanged.",
     }
     summary["retained_findings"] = retained_findings
     from .report import write_reports

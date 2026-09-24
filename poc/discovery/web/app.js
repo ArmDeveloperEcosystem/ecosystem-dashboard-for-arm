@@ -59,6 +59,22 @@ function renderCoverage(card, finding) {
   }
   card.append(details);
 }
+function renderRetired(summary) {
+  const parent = byId('retired'); parent.replaceChildren();
+  for (const item of summary.retired_candidates || []) {
+    const li = node('li');
+    li.append(node('p', `${item.candidate_id} · retired ${date(item.retired_at)}. ${item.reason}`));
+    const f = item.finding;
+    if (f) {
+      li.append(node('p', `Archived verdict: ${labels[f.status] || 'Unknown'} · originally checked ${date(f.checked_at)} · ${f.scope}`, 'selection'));
+      for (const e of f.evidence || []) {
+        if (safeLink(e.url)) { const a = node('a', 'Archived ' + e.kind.replaceAll('_',' ')); a.href = e.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; li.append(a, node('span', ' ')); }
+      }
+    } else li.append(node('p', 'Exclusion rule only: no saved finding or completed check.', 'selection'));
+    parent.append(li);
+  }
+  if (!parent.children.length) parent.append(node('li', 'No retired investigations.'));
+}
 function activityText(summary) {
   if (summary?.scheduling?.status === 'no_progress') return 'Run needs attention: due investigations could not start within the resource budget. Saved work is retained.';
   if (summary?.outcome === 'degraded') return 'Run finished with issues. Review incomplete evidence and run diagnostics.';
@@ -74,7 +90,7 @@ function render(summary) {
   byId('source-counts').textContent = selection.source_records_fetched == null ? 'Detailed collection counts were not recorded for this saved run.' : `Discovery: ${selection.source_records_fetched} source records collected; ${selection.source_records_examined ?? 0} examined; ${selection.source_candidates_selected ?? 0} candidates selected.`;
   const scheduling = summary.scheduling;
   byId('scheduling').textContent = scheduling ? `Queue progress: ${scheduling.attempted} attempted; ${scheduling.deferred_due} due scopes deferred. ${scheduling.reason || ''}` : 'Queue progress details were not recorded for this saved run.';
-  byId('memory').textContent = `${(summary.retained_findings || []).length} historical findings retained; ${(summary.queue || []).length} candidates waiting for first investigation. ${summary.counts.saved_observations} observations saved across runs. ${(summary.quarantined_candidates || []).length} saved identities require manual review.`;
+  byId('memory').textContent = `${(summary.retained_findings || []).length} active historical findings retained; ${(summary.queue || []).length} candidates waiting for first investigation. ${summary.counts.saved_observations} observations saved across runs. ${(summary.retired_candidates || []).length} retirement rules; ${(summary.retired_candidates || []).filter(item => item.finding).length} with archived findings, excluded from opportunities. ${(summary.quarantined_candidates || []).length} saved identities require manual review.`;
   for (const id of ['word','csv','json']) byId(id).hidden = false;
   list('queue', summary.queue || [], q => `${q.name} · saved for a later run`);
   list('quarantined', summary.quarantined_candidates || [], q => `${q.candidate_id}: ${q.reason}`);
@@ -82,6 +98,7 @@ function render(summary) {
   list('failures', summary.failures || [], f => `${f.candidate_id || f.source}: ${f.reason}`);
   if (!(summary.failures || []).length) byId('failures').append(node('li', 'No collection issues recorded in this run.'));
   renderFindings(summary);
+  renderRetired(summary);
 }
 async function refresh() {
   try {

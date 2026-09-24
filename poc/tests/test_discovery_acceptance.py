@@ -13,6 +13,7 @@ import pytest
 import yaml
 
 from poc.discovery import report
+from poc.discovery.http import CollectionError
 from poc.discovery.pipeline import run_pipeline
 
 
@@ -66,8 +67,8 @@ class RepositoryMetadata:
         self.urls.append(url)
         if url == REPOSITORY:
             return {"stargazers_count": 25, **self.visibility}, {}
-        if url == REPOSITORY + "/releases":
-            return [{"id": 17, "tag_name": "v1", "draft": False, "prerelease": False}], {}
+        if url == REPOSITORY + "/releases/latest":
+            return {"id": 17, "tag_name": "v1", "draft": False, "prerelease": False}, {}
         if url == ASSETS:
             return [{"name": "tool-linux-amd64.tar.gz", "state": "uploaded"}], {
                 "Link": self.link
@@ -257,8 +258,8 @@ class DiscoveryMetadata:
         self.requests_used += 1
         if url == "https://api.github.com/search/repositories":
             return {"items": self.rows, "incomplete_results": False}, {}
-        if url.endswith("/releases"):
-            return [], {}
+        if url.endswith("/releases/latest"):
+            raise CollectionError("HTTP 404 latest release unavailable", status_code=404)
         assert url.startswith("https://api.github.com/repos/example/")
         return {"private": False, "visibility": "public", "stargazers_count": 5}, {}
 

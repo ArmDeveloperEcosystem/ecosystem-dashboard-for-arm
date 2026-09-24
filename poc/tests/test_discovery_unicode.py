@@ -30,10 +30,8 @@ class PublicGithub:
         self.requests_used += 1
         if url.endswith("/readme"):
             payload = {"encoding": "base64", "content": "", "sha": "a" * 40}
-        elif url.endswith("/releases"):
-            payload = [
-                {"id": 1, "tag_name": self.tag, "body": "Linux artifacts are listed."}
-            ]
+        elif url.endswith("/releases/latest"):
+            payload = {"id": 1, "tag_name": self.tag, "body": "Linux artifacts are listed."}
         elif url.endswith("/assets"):
             payload = [{"name": self.asset, "size": 10, "state": "uploaded"}]
         else:

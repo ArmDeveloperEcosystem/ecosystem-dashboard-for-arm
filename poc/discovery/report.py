@@ -248,6 +248,8 @@ def write_csv(path, summary):
         "coverage_inventory_complete",
         "coverage_evidence_urls",
         "assessment_coverage",
+        "retired_at",
+        "retirement_reason",
     ]
     with open(path, "w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
@@ -255,6 +257,18 @@ def write_csv(path, summary):
         for record_type, records in (
             ("checked_this_run", summary["findings"]),
             ("historical_not_rechecked", summary.get("retained_findings", [])),
+            (
+                "retired_not_rechecked",
+                [
+                    {
+                        **item["finding"],
+                        "retired_at": item["retired_at"],
+                        "retirement_reason": item["reason"],
+                    }
+                    for item in summary.get("retired_candidates", [])
+                    if item.get("finding")
+                ],
+            ),
         ):
             for finding in records:
                 values = {key: finding.get(key, "") for key in fields}
@@ -554,6 +568,53 @@ def add_history(doc, summary):
         add_coverage(doc, f)
 
 
+def add_retired(doc, summary):
+    items = summary.get("retired_candidates", [])
+    if not items:
+        return
+    doc.add_heading(
+        "Retired investigations: excluded from current opportunities", level=1
+    )
+    doc.add_paragraph(
+        "These scopes are excluded from active checks and opportunity views. "
+        "Retirement preserves earlier evidence; it does not change an earlier verdict. "
+        "An explicit reactivation is required to resume investigation."
+    )
+    for item in items[:25]:
+        doc.add_heading(clean(item["candidate_id"]), level=2)
+        doc.add_paragraph(
+            clean("Retired: " + item["retired_at"] + ". " + item["reason"]), "Metadata"
+        )
+        finding = item.get("finding")
+        if not finding:
+            doc.add_paragraph(
+                "Exclusion rule only: no saved finding or completed check.", "Evidence"
+            )
+            continue
+        doc.add_paragraph(
+            clean(
+                "Original check: "
+                + finding["checked_at"]
+                + " | Original scoped verdict: "
+                + STATUS[finding["status"]]
+                + " | "
+                + finding["scope"]
+            ),
+            "Metadata",
+        )
+        doc.add_paragraph(clean(finding["reason"]), "Evidence")
+        for evidence in finding.get("evidence", []):
+            p = doc.add_paragraph(style="Evidence")
+            hyperlink(
+                p, "Archived " + evidence["kind"].replace("_", " "), evidence["url"]
+            )
+    if len(items) > 25:
+        doc.add_paragraph(
+            f"Showing 25 of {len(items)} retirement rules. The full archive is in JSON.",
+            "Evidence",
+        )
+
+
 def add_work_list(doc, title, items):
     doc.add_heading(title, level=2)
     if not items:
@@ -594,7 +655,7 @@ def write_reports(summary):
     document_style(doc)
     doc.add_paragraph("Linux Arm64\nsupport opportunities", "Title")
     doc.add_paragraph(
-        "Internal evidence review | Selected releases and container tags", "Subtitle"
+        "Internal evidence review | Current project distributions", "Subtitle"
     )
     doc.add_paragraph(
         clean(
@@ -603,6 +664,11 @@ def write_reports(summary):
         "Metadata",
     )
     doc.add_heading("Decision summary", level=1)
+    doc.add_paragraph(
+        "The default sample examines GitHub-designated latest full releases and current configured container tags. "
+        "Versions and artifact identities document the evidence; a gap in one artifact does not establish "
+        "that the whole project lacks Arm64 support. Zero identified gaps is a valid result."
+    )
     c = summary["counts"]
     doc.add_paragraph(
         f"This run checked {c['investigated']} release or container-tag scopes: "
@@ -790,12 +856,13 @@ def write_reports(summary):
         doc, "Skipped, excluded or deferred work: recorded reasons", other_skips
     )
     add_work_list(doc, "Collection and review issues", summary.get("failures", []))
+    add_retired(doc, summary)
     boundaries_start = len(doc.paragraphs)
     doc.add_heading("Boundaries and traceability", level=1)
     for limitation in summary["limitations"]:
         doc.add_paragraph(clean(limitation), "Metadata")
     doc.add_paragraph(
-        "The Word report supports review and decisions. The CSV contains current and retained historical findings, "
+        "The Word report supports review and decisions. The CSV contains current, retained historical and retired findings, "
         "explicitly labeled by record type for filtering. JSON preserves every collected evidence record, "
         "selection detail, limit, queued/skipped item and collection issue. Historical rows keep their original dates. "
         "Saved state allows subsequent runs to continue work without reopening duplicate investigations.",
