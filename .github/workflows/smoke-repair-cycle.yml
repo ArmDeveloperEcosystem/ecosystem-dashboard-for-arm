@@ -1,0 +1,465 @@
+name: Validate complete smoke repair cycle
+
+on:
+  repository_dispatch:
+    types: [smoke-repair-cycle-proposal]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-repair-publication
+  cancel-in-progress: false
+  queue: max
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  SMOKE_REPAIR_ENABLED: ${{ vars.SMOKE_REPAIR_ENABLED }}
+  SMOKE_REPAIR_BRIDGE_BOT_LOGIN: ${{ vars.SMOKE_REPAIR_BRIDGE_BOT_LOGIN }}
+  SMOKE_REPAIR_BRIDGE_BOT_ID: ${{ vars.SMOKE_REPAIR_BRIDGE_BOT_ID }}
+  SMOKE_REPAIR_APP_BOT_LOGIN: ${{ vars.SMOKE_REPAIR_APP_BOT_LOGIN }}
+  DASHBOARD_DELIVERY_APP_BOT_LOGIN: ${{ vars.DASHBOARD_DELIVERY_APP_BOT_LOGIN }}
+
+jobs:
+  admit:
+    name: Authenticate complete repair cycle
+    if: >-
+      github.ref == 'refs/heads/main' && github.run_attempt == 1 &&
+      vars.SMOKE_REPAIR_ENABLED == 'true' &&
+      vars.SMOKE_REPAIR_BRIDGE_BOT_LOGIN != '' &&
+      github.actor == vars.SMOKE_REPAIR_BRIDGE_BOT_LOGIN
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      cycle_id: ${{ steps.admit.outputs.cycle_id }}
+      iteration: ${{ steps.admit.outputs.iteration }}
+    steps:
+      - name: Check out trusted cycle admission implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned workflow parser
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes -r .github/scripts/requirements-exact-run.txt
+      - name: Authenticate sender original failures and iteration evidence
+        id: admit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SMOKE_REPAIR_UPSTREAM_READ_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -I -B .github/scripts/smoke_repair_cycle_bridge.py admit \
+            --event "$GITHUB_EVENT_PATH" --repository-root "$GITHUB_WORKSPACE" \
+            --output-dir "$RUNNER_TEMP/repair-cycle-admission"
+          python3 -I -B - "$RUNNER_TEMP/repair-cycle-admission/admission.json" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, str(Path.cwd() / ".github/scripts"))
+          from smoke_repair_cycle_bridge import validate_payload
+          document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          request = validate_payload(document["request"], os.environ["GITHUB_SHA"])
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"cycle_id={request['cycle_id']}\niteration={request['iteration']}\n")
+          PY
+      - name: Preserve authenticated cumulative repair proposals
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: smoke-repair-cycle-admission-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/repair-cycle-admission/admission.json
+          if-no-files-found: error
+          retention-days: 30
+
+  stage:
+    name: Stage immutable multi-package candidate
+    needs: admit
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 125
+    environment: smoke-repair-delivery
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Check out trusted bundle publisher
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned workflow parser
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes -r .github/scripts/requirements-exact-run.txt
+      - name: Download exact authenticated cycle admission
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.admit.outputs.artifact_id }}
+          path: ${{ runner.temp }}/repair-cycle-admission
+          merge-multiple: true
+      - name: Reauthenticate and independently readmit before write credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SMOKE_REPAIR_UPSTREAM_READ_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -I -B .github/scripts/smoke_repair_cycle_bridge.py admit \
+            --event "$GITHUB_EVENT_PATH" --repository-root "$GITHUB_WORKSPACE" \
+            --output-dir "$RUNNER_TEMP/repair-cycle-preflight"
+          cmp "$RUNNER_TEMP/repair-cycle-admission/admission.json" "$RUNNER_TEMP/repair-cycle-preflight/admission.json"
+          python3 -I -B .github/scripts/smoke_repair_bundle.py readmit \
+            --admission "$RUNNER_TEMP/repair-cycle-preflight/admission.json" \
+            --repository-root "$GITHUB_WORKSPACE" --output-dir "$RUNNER_TEMP/repair-cycle-readmitted"
+          python3 -I -B - "$RUNNER_TEMP/repair-cycle-preflight/admission.json" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, str(Path.cwd() / ".github/scripts"))
+          from smoke_repair_pipeline import admit
+          from smoke_repair_upstream import research_session
+          document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          with research_session(metadata_token=os.environ.get("SMOKE_REPAIR_UPSTREAM_READ_TOKEN") or None):
+              for repair in document["repairs"]:
+                  admit(repair["context"], repair["proposal"])
+          PY
+      - name: Validate exact reviewed catalog before delivery credentials
+        env:
+          REVIEWED_BASE_SHA: ${{ github.sha }}
+          HUGO_VERSION: '0.130.0'
+          HUGO_ARM64_ARCHIVE_SHA256: 025785b56d6217d2528ad8782680332851acae0d78cc9f86a27f8e03ec1afa3c
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$REVIEWED_BASE_SHA"
+          test "$(uname -m)" = aarch64
+          archive="hugo_extended_${HUGO_VERSION}_linux-arm64.tar.gz"
+          archive_path="$RUNNER_TEMP/$archive"
+          install_dir="$RUNNER_TEMP/repair-cycle-hugo"
+          curl --proto '=https' --tlsv1.2 --fail --location --retry 3 \
+            --output "$archive_path" \
+            "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/${archive}"
+          printf '%s  %s\n' "$HUGO_ARM64_ARCHIVE_SHA256" "$archive_path" | sha256sum --check --strict
+          mkdir -p "$install_dir"
+          tar -xzf "$archive_path" -C "$install_dir" hugo
+          chmod 0755 "$install_dir/hugo"
+          "$install_dir/hugo" version | grep -Fq "v${HUGO_VERSION}"
+          python3 -I -B build_steps/validate_package_identity_catalog.py \
+            --revision "$REVIEWED_BASE_SHA" --hugo-binary "$install_dir/hugo"
+      - name: Mint dedicated repair App token
+        id: repair_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          app-id: ${{ secrets.SMOKE_REPAIR_APP_ID }}
+          private-key: ${{ secrets.SMOKE_REPAIR_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+          permission-actions: read
+      - name: Stage one immutable source anchor and combined bindings
+        timeout-minutes: 35
+        env:
+          GH_TOKEN: ${{ steps.repair_token.outputs.token }}
+          SMOKE_REPAIR_UPSTREAM_READ_TOKEN: ${{ github.token }}
+          SMOKE_REPAIR_APP_SLUG: ${{ steps.repair_token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          python3 -I -B .github/scripts/smoke_repair_bundle.py stage \
+            --admission "$RUNNER_TEMP/repair-cycle-preflight/admission.json" \
+            --admitted "$RUNNER_TEMP/repair-cycle-readmitted/admitted.json" \
+            --repository-root "$GITHUB_WORKSPACE" --output-dir "$RUNNER_TEMP/repair-cycle-stage"
+      - name: Preserve exact immutable bundle identity
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: smoke-repair-cycle-stage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/repair-cycle-stage/descriptor.json
+            ${{ runner.temp }}/repair-cycle-stage/bundle-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+
+  native:
+    name: Validate complete repair candidate on hosted Arm
+    needs: [admit, stage]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 355
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      artifact_id: ${{ steps.receipt.outputs.artifact-id }}
+      feedback_artifact_id: ${{ steps.feedback.outputs.artifact-id }}
+    steps:
+      - name: Check out trusted full-fleet controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned workflow parser
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes -r .github/scripts/requirements-exact-run.txt
+      - name: Download exact immutable bundle identity
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.stage.outputs.artifact_id }}
+          path: ${{ runner.temp }}/repair-cycle-stage
+          merge-multiple: true
+      - name: Run complete candidate fleet and build candidate summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SMOKE_REPAIR_UPSTREAM_READ_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -I -B .github/scripts/smoke_repair_fleet.py run \
+            --descriptor "$RUNNER_TEMP/repair-cycle-stage/descriptor.json" \
+            --bundle-receipt "$RUNNER_TEMP/repair-cycle-stage/bundle-receipt.json" \
+            --repository-root "$GITHUB_WORKSPACE" --output-dir "$RUNNER_TEMP/repair-cycle-fleet"
+      - name: Build sanitized authenticated cycle feedback
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SMOKE_REPAIR_UPSTREAM_READ_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -I -B .github/scripts/smoke_repair_cycle_bridge.py feedback \
+            --bundle-receipt "$RUNNER_TEMP/repair-cycle-stage/bundle-receipt.json" \
+            --fleet-receipt "$RUNNER_TEMP/repair-cycle-fleet/receipt.json" \
+            --repository-root "$GITHUB_WORKSPACE" --output-dir "$RUNNER_TEMP/repair-cycle-feedback"
+      - name: Preserve complete candidate fleet receipt
+        id: receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: smoke-repair-cycle-fleet-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/repair-cycle-fleet/receipt.json
+            ${{ runner.temp }}/repair-cycle-fleet/summary.json
+            ${{ runner.temp }}/repair-cycle-fleet/manifest.json
+            ${{ runner.temp }}/repair-cycle-fleet/attestation.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve authenticated cycle feedback
+        id: feedback
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: smoke-repair-cycle-feedback-${{ needs.admit.outputs.cycle_id }}-${{ needs.admit.outputs.iteration }}
+          path: ${{ runner.temp }}/repair-cycle-feedback/feedback.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Enforce complete candidate fleet success
+        run: |
+          set -euo pipefail
+          python3 -I -B .github/scripts/smoke_repair_cycle_bridge.py enforce \
+            --bundle-receipt "$RUNNER_TEMP/repair-cycle-stage/bundle-receipt.json" \
+            --fleet-receipt "$RUNNER_TEMP/repair-cycle-fleet/receipt.json" \
+            --repository-root "$GITHUB_WORKSPACE"
+
+  publish:
+    name: Publish fully verified repair cycle for human review
+    needs: [stage, native]
+    if: needs.native.result == 'success'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 70
+    environment: smoke-repair-delivery
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      pull_request_url: ${{ steps.publish.outputs.pull_request_url }}
+    steps:
+      - name: Check out trusted full-fleet draft publisher
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned workflow parser
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes -r .github/scripts/requirements-exact-run.txt
+      - name: Download exact immutable bundle identity
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.stage.outputs.artifact_id }}
+          path: ${{ runner.temp }}/repair-cycle-stage
+          merge-multiple: true
+      - name: Download exact complete fleet evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.native.outputs.artifact_id }}
+          path: ${{ runner.temp }}/repair-cycle-fleet
+          merge-multiple: true
+      - name: Readmit bundle and check receipt identity before delivery credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SMOKE_REPAIR_UPSTREAM_READ_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # This is structural admission, not a new fleet verdict. open-draft
+          # independently verifies the live fleet using the dedicated App quota.
+          python3 -I -B - <<'PY'
+          import os
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, str(Path.cwd() / ".github/scripts"))
+          from smoke_repair_bundle import (
+              ATTESTATION_KEYS, _attestation, _controller_runtime, _envelope,
+              _json, _load, from_admission, readmit, single,
+          )
+          from smoke_repair_fleet import RECEIPT_KEYS
+          from smoke_repair_policy import POLICY_VERSION, validate_proposal
+          from smoke_repair_upstream import research_session
+          try:
+              temporary = Path(os.environ["RUNNER_TEMP"])
+              envelope = _envelope(_load(temporary / "repair-cycle-stage/bundle-receipt.json"))
+              staged = envelope["staged"]
+              descriptor = staged["candidate"]
+              _controller_runtime(descriptor)
+              receipt = _load(temporary / "repair-cycle-fleet/receipt.json")
+              if (not isinstance(receipt, dict) or set(receipt) != RECEIPT_KEYS
+                      or type(receipt["schema_version"]) is not int or receipt["schema_version"] != 1
+                      or receipt["descriptor"] != descriptor or receipt["status"] != "success"
+                      or receipt["kind"] != "smoke-repair-candidate-fleet" or receipt["publishing"] is not False):
+                  raise ValueError("receipt does not identify the successful candidate job")
+              request = from_admission(envelope["admission"])
+              with research_session(metadata_token=os.environ.get("SMOKE_REPAIR_UPSTREAM_READ_TOKEN") or None):
+                  admitted = readmit(request, repository_root=Path.cwd(), validate_apply=validate_proposal,
+                                     policy_version=str(POLICY_VERSION))
+              audit = staged["attestation"]
+              if not isinstance(audit, dict) or set(audit) != ATTESTATION_KEYS:
+                  raise ValueError("publisher attestation schema is invalid")
+              single.validate_sha(audit["tree_sha"])
+              single._validate_anchor(audit["source_anchor"], base_sha=descriptor["base_sha"],
+                                      candidate_sha=descriptor["candidate_sha"])
+              if audit["source_anchor"] is None:
+                  raise ValueError("candidate has no source anchor")
+              producer = {
+                  "run_id": int(os.environ["GITHUB_RUN_ID"]), "run_attempt": 1,
+                  "workflow_sha": descriptor["base_sha"], "workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
+                  "app_bot_login": os.environ["SMOKE_REPAIR_APP_BOT_LOGIN"],
+              }
+              expected = _attestation(admitted, producer, audit["tree_sha"], audit["source_anchor"])
+              if _json(audit) != _json(expected):
+                  raise ValueError("candidate differs from independent policy readmission")
+          except Exception:
+              print("candidate preflight failed closed; no new fleet verdict is claimed", file=sys.stderr)
+              raise SystemExit(1)
+          PY
+      - name: Mint dedicated repair App token
+        id: repair_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          app-id: ${{ secrets.SMOKE_REPAIR_APP_ID }}
+          private-key: ${{ secrets.SMOKE_REPAIR_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+          permission-actions: read
+      - name: Recheck exact candidate and open only a draft PR
+        id: publish
+        env:
+          GH_TOKEN: ${{ steps.repair_token.outputs.token }}
+          SMOKE_REPAIR_UPSTREAM_READ_TOKEN: ${{ github.token }}
+          SMOKE_REPAIR_APP_SLUG: ${{ steps.repair_token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          python3 -I -B .github/scripts/smoke_repair_bundle.py open-draft \
+            --bundle-receipt "$RUNNER_TEMP/repair-cycle-stage/bundle-receipt.json" \
+            --fleet-receipt "$RUNNER_TEMP/repair-cycle-fleet/receipt.json" \
+            --repository-root "$GITHUB_WORKSPACE" --output-dir "$RUNNER_TEMP/repair-cycle-publication"
+      - name: Preserve final human-review draft identity
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: smoke-repair-cycle-pr-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/repair-cycle-publication/publication.json
+          if-no-files-found: error
+          retention-days: 30
+
+  report:
+    name: Notify repair cycle owner
+    needs: [admit, stage, native, publish]
+    if: >-
+      always() && github.event_name == 'repository_dispatch' &&
+      github.ref == 'refs/heads/main' && github.run_attempt == 1 &&
+      vars.SMOKE_REPAIR_ENABLED == 'true' &&
+      vars.SMOKE_REPAIR_BRIDGE_BOT_LOGIN != '' &&
+      vars.SMOKE_REPAIR_BRIDGE_BOT_ID != '' &&
+      github.actor == vars.SMOKE_REPAIR_BRIDGE_BOT_LOGIN &&
+      github.actor_id == vars.SMOKE_REPAIR_BRIDGE_BOT_ID
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out trusted cycle reporting implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned workflow parser
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes -r .github/scripts/requirements-exact-run.txt
+      - name: Notify owner of truthful candidate outcome
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RECIPIENT: ${{ vars.SMOKE_NOTIFICATION_LOGIN }}
+          CYCLE_ID: ${{ needs.admit.outputs.cycle_id }}
+          ITERATION: ${{ needs.admit.outputs.iteration }}
+          FEEDBACK_ARTIFACT_ID: ${{ needs.native.outputs.feedback_artifact_id }}
+          SMOKE_REPAIR_CYCLE_NEEDS: ${{ toJSON(needs) }}
+          SMOKE_REPAIR_PR_URL: ${{ needs.publish.result == 'success' && needs.publish.outputs.pull_request_url || '' }}
+        run: |
+          set -euo pipefail
+          python3 -I -B - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import sys
+          import time
+          sys.path.insert(0, str(Path.cwd() / ".github/scripts"))
+          from orchestration_contract import ContractError, decode_json
+          from smoke_recovery import GitHub
+          from smoke_repair_pipeline import report
+          needs = decode_json(os.environ["SMOKE_REPAIR_CYCLE_NEEDS"])
+          jobs = {"admit", "stage", "native", "publish"}
+          if not isinstance(needs, dict) or set(needs) != jobs or any(
+              not isinstance(needs[name], dict) or "result" not in needs[name] for name in jobs
+          ):
+              raise ContractError("repair cycle notification has invalid job results")
+          results = {"propose": needs["admit"]["result"], **{
+              name: needs[name]["result"] for name in ("stage", "native", "publish")
+          }}
+          cycle_id, iteration = os.environ.get("CYCLE_ID", ""), os.environ.get("ITERATION", "")
+          run_id, attempt = int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"])
+          if cycle_id or iteration:
+              if not re.fullmatch(r"[1-9][0-9]{0,18}-[1-9][0-9]{0,8}", cycle_id) or not re.fullmatch(r"[1-3]", iteration):
+                  raise ContractError("repair cycle notification identity is invalid")
+              slug = f"cycle-{cycle_id}-iteration-{iteration}"
+          else:
+              slug = f"controller-{run_id}"
+          url = os.environ.get("SMOKE_REPAIR_PR_URL", "") if results["publish"] == "success" else ""
+          if results["publish"] == "success" and not url:
+              raise ContractError("successful repair publication has no authenticated draft URL")
+          automatic_retry_pending = bool(
+              results["propose"] == results["stage"] == "success"
+              and results["native"] == "failure" and results["publish"] == "skipped"
+              and iteration in {"1", "2"}
+              and re.fullmatch(r"[1-9][0-9]{0,18}", os.environ.get("FEEDBACK_ARTIFACT_ID", ""))
+          )
+          report(os.environ["REPOSITORY"], run_id, attempt, slug, os.environ["RECIPIENT"], results,
+                 GitHub(time.monotonic() + 120), pull_request_url=url,
+                 automatic_retry_pending=automatic_retry_pending)
+          PY

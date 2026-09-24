@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -8,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github/workflows/generated-site-data-review.yml"
 CI_WORKFLOW = ROOT / ".github/workflows/generated-data-publisher-foundation-ci.yml"
 MAIN_WORKFLOW = ROOT / ".github/workflows/main.yml"
+DASHBOARD_CI = ROOT / ".github/workflows/dashboard-ci.yml"
 OPERATIONS = ROOT / ".github/GENERATED_SITE_DATA_REVIEW.md"
 
 
@@ -176,20 +181,40 @@ class GeneratedSiteDataReviewContractTests(unittest.TestCase):
         self.assertIn("--require-hashes", main)
         self.assertIn("generated-site-data-requirements.txt", main)
 
-    def test_main_deploy_is_manual_only_fail_closed_and_protected(self) -> None:
+    def test_main_push_is_scoped_and_manual_activation_remains_protected(self) -> None:
         main = MAIN_WORKFLOW.read_text(encoding="utf-8")
         trigger = main.split("permissions:", maxsplit=1)[0]
 
         self.assertIn("  workflow_dispatch:\n", trigger)
         self.assertNotIn("pull_request", trigger)
-        self.assertNotIn("push:", trigger)
+        self.assertIn("  push:\n    branches: [main]\n", trigger)
+        self.assertNotIn("paths:", trigger)
+        self.assertNotIn("paths-ignore:", trigger)
         self.assertIn("PRODUCTION_DEPLOYMENT_ENABLED", main)
         self.assertIn('== "true"', main)
         self.assertIn("vars.PRODUCTION_DEPLOYMENT_ENABLED == 'true'", main)
-        self.assertIn("Production deployment is disabled", main)
+        self.assertIn("Manual production deployment is disabled", main)
+        self.assertIn("BEFORE_SHA: ${{ github.event.before }}", main)
+        self.assertIn("AFTER_SHA: ${{ github.event.after }}", main)
+        self.assertIn('[[ "$AFTER_SHA" == "$GITHUB_SHA" ]]', main)
+        self.assertIn('--base "$BEFORE_SHA" --head "$GITHUB_SHA"', main)
+        self.assertIn("--deployed-baseline", main)
+        self.assertEqual(main.count("actions: read"), 1)
+        activation, deployment = main.split("  build_and_deploy_s3:", 1)
+        self.assertIn("actions: read", activation)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", activation)
+        self.assertNotIn("actions: read", deployment)
+        self.assertNotIn("GH_TOKEN:", deployment)
+        self.assertIn("needs.activation.outputs.dashboard == 'true'", main)
+        self.assertIn("github.event_name == 'push' ||", main)
         self.assertIn("environment: production", main)
         self.assertIn("group: production-deployment", main)
         self.assertIn("cancel-in-progress: false", main)
+        self.assertNotRegex(main, r"(?m)^concurrency:")
+        self.assertIn(
+            "    concurrency:\n      group: production-deployment\n"
+            "      cancel-in-progress: false\n      queue: max\n", main
+        )
         self.assertIn("needs: activation", main)
         self.assertIn("fetch-depth: 0", main)
         self.assertIn("ref: ${{ needs.activation.outputs.base_sha }}", main)
@@ -212,11 +237,113 @@ class GeneratedSiteDataReviewContractTests(unittest.TestCase):
             if reference.startswith("./"):
                 continue
             external.append(reference)
-        self.assertEqual(len(external), 3)
+        self.assertEqual(len(external), 4)
         for reference in external:
             _name, separator, revision = reference.rpartition("@")
             self.assertEqual(separator, "@")
             self.assertRegex(revision, r"^[0-9a-f]{40}$")
+
+    def test_dashboard_pr_check_always_completes_and_has_no_deployment_access(self) -> None:
+        ci = DASHBOARD_CI.read_text(encoding="utf-8")
+        trigger = ci.split("permissions:", maxsplit=1)[0]
+        self.assertIn("  pull_request:\n", trigger)
+        for forbidden in ("paths:", "paths-ignore:", "pull_request_target", "branches:"):
+            self.assertNotIn(forbidden, trigger)
+        self.assertIn("name: Dashboard build", ci)
+        self.assertIn("permissions:\n  contents: read", ci)
+        for forbidden in ("secrets.", "environment:", "hugo deploy", "contents: write",
+                          "actions: write", "workflow_dispatch", "workflow_run"):
+            self.assertNotIn(forbidden, ci)
+        self.assertNotRegex(ci, r"(?m)^    if:")
+        self.assertIn("runs-on: ubuntu-24.04-arm", ci)
+        self.assertIn("persist-credentials: false", ci)
+        self.assertIn("fetch-depth: 0", ci)
+        self.assertIn('[[ "$(git rev-parse HEAD^1)" == "$BASE_SHA" ]]', ci)
+        self.assertIn('[[ "$(git rev-parse HEAD^2)" == "$HEAD_SHA" ]]', ci)
+        self.assertIn('--base "$BASE_SHA" --head "$GITHUB_SHA"', ci)
+        self.assertIn("test_ci_change_scope.py", ci)
+        self.assertIn("test_generated_site_data_review_contract.py", ci)
+        self.assertIn("if: steps.scope.outputs.dashboard == 'false'", ci)
+        self.assertIn("--require-hashes", ci)
+        for line in ci.splitlines():
+            if "uses:" in line:
+                reference = line.split("uses:", 1)[1].split("#", 1)[0].strip()
+                self.assertRegex(reference, r"@[0-9a-f]{40}$")
+
+    def test_pr_build_matches_deployment_preprocessing_and_drift_gate(self) -> None:
+        ci = DASHBOARD_CI.read_text(encoding="utf-8")
+        main = MAIN_WORKFLOW.read_text(encoding="utf-8")
+        for command in (
+            "python3 ./build_steps/update_category_mappings.py",
+            "python3 ./build_steps/update_recently_added_json.py",
+            "python3 ./build_steps/validate_package_catagories.py",
+            "hugo --minify --config config.toml,config.cloudfront.toml",
+        ):
+            self.assertEqual(ci.count(command), 1)
+            self.assertEqual(main.count(command), 1)
+        for text in (
+            "data/category_data.yml", "data/category_data_windows.yml",
+            "data/recently_added_packages.yaml", "python-version: \"3.11\"",
+            "hugo-version: '0.130.0'", "generated-site-data-requirements.txt",
+            'git diff --quiet HEAD -- "${generated_paths[@]}"',
+            "git diff --quiet HEAD --", "git ls-files --others --exclude-standard",
+        ):
+            self.assertIn(text, ci)
+            self.assertIn(text, main)
+        self.assertLess(ci.index("git diff --quiet HEAD --"), ci.index("hugo --minify"))
+        self.assertNotIn("continue-on-error", ci)
+
+    def test_actual_generated_data_gates_reject_tracked_untracked_and_other_drift(self) -> None:
+        for path in (MAIN_WORKFLOW, DASHBOARD_CI):
+            workflow = path.read_text(encoding="utf-8")
+            step = workflow.split("      - name: Require reviewed generated site data\n", 1)[1]
+            step = step.split("\n      - name:", 1)[0]
+            block = step.split("        run: |\n", 1)[1]
+            # Extract the literal run block, excluding comments preceding the next step.
+            lines = []
+            for line in block.splitlines():
+                if line.strip() and not line.startswith("          "):
+                    break
+                lines.append(line)
+            script = textwrap.dedent("\n".join(lines))
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                environment = {
+                    **os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_AUTHOR_NAME": "Drift Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                    "GIT_COMMITTER_NAME": "Drift Test", "GIT_COMMITTER_EMAIL": "test@example.invalid",
+                }
+
+                def git(*args: str) -> None:
+                    subprocess.run(["git", *args], cwd=root, env=environment,
+                                   capture_output=True, check=True)
+
+                git("init", "--initial-branch=main")
+                (root / "data").mkdir()
+                generated = root / "data/category_data.yml"
+                generated.write_text("reviewed: true\n")
+                git("add", ".")
+                git("commit", "-m", "reviewed fixture")
+
+                def run_gate() -> subprocess.CompletedProcess[str]:
+                    return subprocess.run(["bash", "-c", script], cwd=root, env=environment,
+                                          capture_output=True, text=True)
+
+                with self.subTest(workflow=path.name, case="reviewed"):
+                    result = run_gate()
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                generated.write_text("unreviewed: true\n")
+                with self.subTest(workflow=path.name, case="tracked drift"):
+                    self.assertNotEqual(run_gate().returncode, 0)
+                generated.write_text("reviewed: true\n")
+                untracked = root / "data/category_data_windows.yml"
+                untracked.write_text("unreviewed: true\n")
+                with self.subTest(workflow=path.name, case="untracked generated data"):
+                    self.assertNotEqual(run_gate().returncode, 0)
+                untracked.unlink()
+                (root / "unexpected.txt").write_text("unreviewed\n")
+                with self.subTest(workflow=path.name, case="unexpected preprocessing output"):
+                    self.assertNotEqual(run_gate().returncode, 0)
 
     def test_ci_is_read_only_arm64_and_covers_all_new_files(self) -> None:
         ci = CI_WORKFLOW.read_text(encoding="utf-8")
@@ -248,7 +375,9 @@ class GeneratedSiteDataReviewContractTests(unittest.TestCase):
         self.assertIn("Do not substitute a PAT", operations)
         self.assertIn("PRODUCTION_DEPLOYMENT_ENABLED=false", operations)
         self.assertIn("environment `production`", operations)
-        self.assertIn("manual-only, fail-closed", operations)
+        self.assertIn("authenticated full Git diff", operations)
+        self.assertIn("Smoke results", operations)
+        self.assertIn("Dashboard build", operations)
         self.assertIn("prevent self-review", operations)
         self.assertIn("disable administrator\nbypass", operations)
         self.assertIn(

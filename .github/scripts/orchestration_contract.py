@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import secrets
@@ -67,6 +68,20 @@ _ALLOWED_CONCLUSIONS = {"success", "failure"}
 
 class ContractError(ValueError):
     """Untrusted orchestration data does not match the exact-run contract."""
+
+
+class MainAdvanced(ContractError):
+    """A valid branch reference no longer points to the tested commit."""
+
+    def __init__(self, *, expected_sha: str, current_sha: str, branch: str):
+        self.expected_sha = expected_sha
+        self.current_sha = current_sha
+        self.branch = branch
+        super().__init__(
+            f"Orchestration superseded: {branch} changed from tested commit "
+            f"{expected_sha} to {current_sha}. Start a fresh workflow_dispatch on "
+            f"{branch} after merges settle; rerunning this old run keeps its old commit."
+        )
 
 
 def expected_workflow(batch: int) -> str:
@@ -150,6 +165,25 @@ def validate_repository(value: object) -> str:
     if not isinstance(value, str) or not _REPOSITORY_RE.fullmatch(value):
         raise ContractError("repository is not canonical")
     return value
+
+
+def validate_current_ref(
+    payload: object, *, expected_sha: str, branch: str
+) -> str:
+    expected_sha = validate_sha(expected_sha)
+    branch = validate_branch(branch)
+    payload = _require_mapping(payload, "branch reference")
+    if payload.get("ref") != f"refs/heads/{branch}":
+        raise ContractError("branch reference does not match the requested branch")
+    target = _require_mapping(payload.get("object"), "branch reference object")
+    if target.get("type") != "commit":
+        raise ContractError("branch reference does not point to a commit")
+    current_sha = validate_sha(target.get("sha"), label="current branch SHA")
+    if current_sha != expected_sha:
+        raise MainAdvanced(
+            expected_sha=expected_sha, current_sha=current_sha, branch=branch
+        )
+    return current_sha
 
 
 def validate_manifest(
@@ -237,6 +271,36 @@ def canonical_json(payload: object) -> str:
     return json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
 
+def decode_json(data: str | bytes | bytearray) -> object:
+    """Reject ambiguous keys and non-finite numbers before validating evidence."""
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ContractError(f"duplicate JSON key: {key!r}")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise ContractError(f"non-finite JSON number: {value}")
+
+    def finite_float(value: str) -> float:
+        number = float(value)
+        if not math.isfinite(number):
+            raise ContractError("non-finite JSON number")
+        return number
+
+    try:
+        return json.loads(
+            data, object_pairs_hook=unique_object,
+            parse_constant=reject_constant, parse_float=finite_float,
+        )
+    except ContractError:
+        raise
+    except (ValueError, UnicodeError, TypeError, RecursionError) as exc:
+        raise ContractError("input is not valid JSON") from exc
+
+
 def validate_manifest_text(
     raw: object,
     *,
@@ -254,8 +318,8 @@ def validate_manifest_text(
     if raw_size > MAX_MANIFEST_BYTES:
         raise ContractError("manifest input exceeds the maximum canonical size")
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
+        payload = decode_json(raw)
+    except ContractError as exc:
         raise ContractError("manifest input is not valid JSON") from exc
     manifest = validate_manifest(
         payload,
@@ -690,8 +754,8 @@ def _require_exact_keys(
 
 def _load_json(path: Path) -> object:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        return decode_json(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ContractError) as exc:
         raise ContractError(f"could not read canonical JSON from {path}") from exc
 
 
@@ -823,6 +887,11 @@ def _build_parser() -> argparse.ArgumentParser:
     base.add_argument("--workflow-sha", required=True)
     base.add_argument("--checkout-sha", required=True)
     base.add_argument("--remote-sha", required=True)
+
+    current_ref = subparsers.add_parser("validate-current-ref")
+    current_ref.add_argument("--payload", type=Path, required=True)
+    current_ref.add_argument("--expected-sha", required=True)
+    current_ref.add_argument("--branch", required=True)
 
     run_name = subparsers.add_parser("run-name")
     run_name.add_argument("--batch", type=int, required=True)
@@ -978,6 +1047,10 @@ def _main(arguments: Sequence[str]) -> int:
             workflow_sha=args.workflow_sha,
             checkout_sha=args.checkout_sha,
             remote_sha=args.remote_sha,
+        )
+    elif args.command == "validate-current-ref":
+        validate_current_ref(
+            _load_json(args.payload), expected_sha=args.expected_sha, branch=args.branch
         )
     elif args.command == "run-name":
         print(

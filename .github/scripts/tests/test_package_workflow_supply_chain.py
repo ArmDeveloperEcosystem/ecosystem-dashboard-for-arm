@@ -27,26 +27,39 @@ import promote_package_results as promoter  # noqa: E402
 FOUNDATION_WORKFLOW = ".github/workflows/exact-run-aggregation-foundation-ci.yml"
 SCOPE_GUARD = "if: steps.scope.outputs.relevant == 'true'"
 RELEVANT_PATHS = (
+    ".github/skills/smoke-repair/SKILL.md",
     ".github/scripts/download-with-fallback.sh",
     ".github/scripts/package_workflow_action_lock.json",
     ".github/scripts/verify_action_lock_online.py",
     ".github/scripts/package_workflow_supply_chain.py",
     ".github/scripts/exact_run_aggregation.py",
+    ".github/scripts/orchestration_contract.py",
     ".github/scripts/package_result_policy.py",
     ".github/scripts/package_observation.py",
     ".github/scripts/package_observation_migration_audit.py",
     ".github/scripts/promote_package_results.py",
+    ".github/scripts/smoke_recovery.py",
+    ".github/scripts/smoke_recovery_incident.py",
+    ".github/scripts/smoke_repair_*.py",
     ".github/scripts/tests/test_package_workflow_supply_chain.py",
     ".github/scripts/tests/test_verify_action_lock_online.py",
     ".github/scripts/tests/test_exact_run_aggregation.py",
     ".github/scripts/tests/test_package_observation.py",
     ".github/scripts/tests/test_package_observation_migration_audit.py",
     ".github/scripts/tests/test_promote_package_results.py",
+    ".github/scripts/tests/test_smoke_recovery.py",
+    ".github/scripts/tests/test_smoke_recovery_incident.py",
+    ".github/scripts/tests/test_smoke_repair_*.py",
     ".github/scripts/README-exact-run-aggregation.md",
     ".github/scripts/README-package-observation.md",
     ".github/scripts/requirements-exact-run.txt",
+    "build_steps/validate_package_identity_catalog.py",
+    "tests/test_package_identity_catalog.py",
     ".github/actions/**",
     FOUNDATION_WORKFLOW,
+    ".github/workflows/main.yml",
+    ".github/workflows/smoke-repair*.yml",
+    ".github/workflows/smoke-recovery-monitor.yml",
     ".github/workflows/test-*.yml",
 )
 
@@ -57,9 +70,275 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         cls.root = Path(__file__).resolve().parents[3]
         cls.workflows = supply_chain.registered_workflows(cls.root)
         cls.batches = supply_chain.batch_paths(cls.root)
+        cls.head_commit = subprocess.run(
+            ["git", "-C", str(cls.root), "rev-parse", "--verify", "HEAD^{commit}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+
+    def authenticated_base_commit(self) -> str:
+        # Local root-regression runs must explicitly set AUTHENTICATED_BASE_COMMIT.
+        base = os.environ.get("AUTHENTICATED_BASE_COMMIT", "")
+        self.assertRegex(
+            base, r"\A[0-9a-f]{40}\Z",
+            "AUTHENTICATED_BASE_COMMIT must explicitly identify the reviewed PR base",
+        )
+        self.assertNotEqual("0" * 40, base)
+        return base
+
+    def committed_workflow_sha256(self, commit: str) -> str:
+        snapshot = supply_chain.source_snapshot(
+            self.root, [*self.workflows, *self.batches], commit
+        )
+        return supply_chain.workflow_snapshot_sha256(snapshot)
+
+    def assert_committed_transition(
+        self, lock: dict, *, base_commit: str, head_commit: str
+    ) -> None:
+        self.assertRegex(base_commit, r"\A[0-9a-f]{40}\Z")
+        self.assertNotEqual("0" * 40, base_commit)
+        self.assertRegex(head_commit, r"\A[0-9a-f]{40}\Z")
+        base_digest = self.committed_workflow_sha256(base_commit)
+        head_digest = self.committed_workflow_sha256(head_commit)
+        base_lock_source = subprocess.run(
+            [
+                "git", "-C", str(self.root), "show",
+                f"{base_commit}:.github/scripts/{supply_chain.LOCK_NAME}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+        base_lock = json.loads(base_lock_source)
+        self.assertIsInstance(base_lock, dict)
+        self.assertEqual(
+            base_digest, base_lock.get("hardened_workflow_sha256"),
+            "authenticated base lock does not match its committed workflow snapshot",
+        )
+        self.assertEqual(
+            head_digest, lock.get("hardened_workflow_sha256"),
+            "candidate lock does not match the committed HEAD workflow snapshot",
+        )
+        supply_chain.validate_hardened_workflow_transition(base_lock)
+        transition = supply_chain.validate_hardened_workflow_transition(lock)
+        if base_digest == head_digest:
+            self.assertEqual(
+                base_lock.get("hardened_workflow_transition"), transition,
+                "unchanged workflows must inherit the authenticated base transition",
+            )
+        else:
+            self.assertIsNotNone(transition, "changed workflows require a transition")
+            assert transition is not None
+            self.assertEqual(
+                base_digest, transition["from_sha256"],
+                "transition source must match the authenticated base snapshot",
+            )
+            self.assertEqual(head_digest, transition["to_sha256"])
 
     def foundation_workflow(self) -> str:
         return (self.root / FOUNDATION_WORKFLOW).read_text(encoding="utf-8")
+
+    def assert_script_tests_use_authenticated_base(
+        self, workflow: str, step_name: str
+    ) -> None:
+        document = yaml.safe_load(workflow)
+        steps = [
+            step
+            for job in document["jobs"].values()
+            for step in job["steps"]
+            if step.get("name") == step_name
+        ]
+        self.assertEqual(1, len(steps))
+        self.assertEqual(
+            "${{ github.event.pull_request.base.sha }}",
+            steps[0].get("env", {}).get("AUTHENTICATED_BASE_COMMIT"),
+        )
+
+    def transition_fixtures(self) -> tuple[dict, dict]:
+        snapshots = {
+            "1" * 40: {"workflow.yml": b"reviewed base\n"},
+            "2" * 40: {"workflow.yml": b"reviewed candidate\n"},
+            "3" * 40: {"workflow.yml": b"stale reviewed base\n"},
+        }
+        locks = {}
+        for commit, snapshot in snapshots.items():
+            digest = supply_chain.workflow_snapshot_sha256(snapshot)
+            locks[commit] = {
+                "hardened_workflow_sha256": digest,
+                "hardened_workflow_transition": {
+                    "from_sha256": "a" * 64,
+                    "to_sha256": digest,
+                    "reason": "Explicit reviewed fixture transition.",
+                },
+            }
+        locks["2" * 40]["hardened_workflow_transition"]["from_sha256"] = (
+            locks["1" * 40]["hardened_workflow_sha256"]
+        )
+        return snapshots, locks
+
+    def assert_fixture_transition(
+        self, snapshots: dict, locks: dict, *, base_commit: str, head_commit: str
+    ) -> None:
+        def read_base_lock(command, **kwargs):
+            self.assertEqual(
+                [
+                    "git", "-C", str(self.root), "show",
+                    f"{base_commit}:.github/scripts/{supply_chain.LOCK_NAME}",
+                ],
+                command,
+            )
+            return subprocess.CompletedProcess(
+                command, 0, stdout=json.dumps(locks[base_commit])
+            )
+
+        with mock.patch.object(
+            supply_chain, "source_snapshot",
+            side_effect=lambda root, paths, commit: snapshots[commit],
+        ) as source, mock.patch.object(
+            subprocess, "run", side_effect=read_base_lock
+        ):
+            self.assert_committed_transition(
+                locks[head_commit], base_commit=base_commit, head_commit=head_commit
+            )
+        paths = [*self.workflows, *self.batches]
+        self.assertEqual(
+            [
+                mock.call(self.root, paths, base_commit),
+                mock.call(self.root, paths, head_commit),
+            ],
+            source.call_args_list,
+        )
+
+    def test_authenticated_base_requires_explicit_canonical_commit(self) -> None:
+        for base in (None, "", "HEAD", "HEAD^", "0" * 40, "1" * 40 + "\n"):
+            with self.subTest(base=base), mock.patch.dict(os.environ, {}, clear=True):
+                if base is not None:
+                    os.environ["AUTHENTICATED_BASE_COMMIT"] = base
+                with self.assertRaises(AssertionError):
+                    self.authenticated_base_commit()
+        with mock.patch.dict(os.environ, {"AUTHENTICATED_BASE_COMMIT": "1" * 40}):
+            self.assertEqual("1" * 40, self.authenticated_base_commit())
+
+    def test_workflow_snapshot_hash_has_stable_sorted_length_framing(self) -> None:
+        snapshot = {"b": b"y", "a": b"\x00x"}
+        # SHA-256 of 4-byte path length/path + 8-byte content length/content, a then b.
+        expected = "d573aa41b7a2e054f6fc3c8c343854c9b5c7c4c4bb85cca098e4eff679c3c381"
+        self.assertEqual(expected, supply_chain.workflow_snapshot_sha256(snapshot))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative, content in snapshot.items():
+                (root / relative).write_bytes(content)
+            self.assertEqual(
+                expected,
+                supply_chain.workflow_set_sha256(root, [root / "b", root / "a"]),
+            )
+        self.assertNotEqual(
+            supply_chain.workflow_snapshot_sha256({"a": b"bc"}),
+            supply_chain.workflow_snapshot_sha256({"ab": b"c"}),
+        )
+
+    def test_committed_transition_accepts_changed_and_inherited_snapshots(self) -> None:
+        for changed in (True, False):
+            with self.subTest(changed=changed):
+                snapshots, locks = self.transition_fixtures()
+                if not changed:
+                    snapshots["2" * 40] = copy.deepcopy(snapshots["1" * 40])
+                    locks["2" * 40] = copy.deepcopy(locks["1" * 40])
+                # This assertion must not prohibit independently reviewed action upgrades.
+                locks["1" * 40]["actions"] = [{"resolved_commit": "4" * 40}]
+                locks["2" * 40]["actions"] = [{"resolved_commit": "5" * 40}]
+                self.assert_fixture_transition(
+                    snapshots, locks, base_commit="1" * 40, head_commit="2" * 40
+                )
+
+    def test_committed_transition_rejects_wrong_or_stale_base(self) -> None:
+        for wrong_source in (True, False):
+            with self.subTest(wrong_source=wrong_source):
+                snapshots, locks = self.transition_fixtures()
+                if wrong_source:
+                    transition = locks["2" * 40]["hardened_workflow_transition"]
+                    transition["from_sha256"] = "f" * 64
+                with self.assertRaisesRegex(AssertionError, "transition source must match"):
+                    self.assert_fixture_transition(
+                        snapshots, locks,
+                        base_commit=("1" if wrong_source else "3") * 40,
+                        head_commit="2" * 40,
+                    )
+
+    def test_committed_transition_rejects_transition_only_tampering(self) -> None:
+        for mutation in ("from_sha256", "reason", "removed"):
+            with self.subTest(mutation=mutation):
+                snapshots, locks = self.transition_fixtures()
+                snapshots["2" * 40] = copy.deepcopy(snapshots["1" * 40])
+                locks["2" * 40] = copy.deepcopy(locks["1" * 40])
+                if mutation == "removed":
+                    del locks["2" * 40]["hardened_workflow_transition"]
+                else:
+                    transition = locks["2" * 40]["hardened_workflow_transition"]
+                    transition[mutation] = "f" * 64
+                with self.assertRaisesRegex(AssertionError, "must inherit"):
+                    self.assert_fixture_transition(
+                        snapshots, locks, base_commit="1" * 40, head_commit="2" * 40
+                    )
+
+    def test_committed_transition_rejects_base_lock_source_mismatch(self) -> None:
+        snapshots, locks = self.transition_fixtures()
+        locks["1" * 40]["hardened_workflow_sha256"] = "f" * 64
+        with self.assertRaisesRegex(AssertionError, "base lock does not match"):
+            self.assert_fixture_transition(
+                snapshots, locks, base_commit="1" * 40, head_commit="2" * 40
+            )
+
+    def test_committed_transition_rejects_uncommitted_candidate_reseal(self) -> None:
+        snapshots, locks = self.transition_fixtures()
+        locks["2" * 40]["hardened_workflow_sha256"] = "f" * 64
+        locks["2" * 40]["hardened_workflow_transition"]["to_sha256"] = "f" * 64
+        with self.assertRaisesRegex(AssertionError, "committed HEAD workflow snapshot"):
+            self.assert_fixture_transition(
+                snapshots, locks, base_commit="1" * 40, head_commit="2" * 40
+            )
+
+    def test_committed_transition_rejects_unreadable_base(self) -> None:
+        _, locks = self.transition_fixtures()
+        with mock.patch.object(
+            supply_chain, "source_snapshot",
+            side_effect=supply_chain.ContractError("missing base fixture"),
+        ) as source:
+            with self.assertRaisesRegex(supply_chain.ContractError, "missing base fixture"):
+                self.assert_committed_transition(
+                    locks["2" * 40], base_commit="1" * 40, head_commit="2" * 40
+                )
+        source.assert_called_once_with(
+            self.root, [*self.workflows, *self.batches], "1" * 40
+        )
+
+    def test_script_test_steps_reject_missing_or_fallback_base(self) -> None:
+        for path, step_name in (
+            (FOUNDATION_WORKFLOW, "Run adversarial contract tests"),
+            (
+                ".github/workflows/generated-data-publisher-foundation-ci.yml",
+                "Run generated data artifact tests",
+            ),
+        ):
+            workflow = (self.root / path).read_text(encoding="utf-8")
+            self.assert_script_tests_use_authenticated_base(workflow, step_name)
+            for base in (None, "${{ github.event.pull_request.base.sha || github.sha }}"):
+                with self.subTest(path=path, base=base):
+                    document = yaml.safe_load(workflow)
+                    for job in document["jobs"].values():
+                        for step in job["steps"]:
+                            if step.get("name") == step_name:
+                                step["env"] = (
+                                    {} if base is None
+                                    else {"AUTHENTICATED_BASE_COMMIT": base}
+                                )
+                    with self.assertRaises(AssertionError):
+                        self.assert_script_tests_use_authenticated_base(
+                            yaml.safe_dump(document), step_name
+                        )
 
     def test_xebium_uses_networked_warmup_then_offline_rebuild(self) -> None:
         workflow = (
@@ -857,7 +1136,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         base_assignments = re.findall(
             r"(?m)^\s+AUTHENTICATED_BASE_COMMIT: (.+)$", workflow
         )
-        self.assertEqual(3, len(base_assignments))
+        self.assertEqual(4, len(base_assignments))
         self.assertTrue(
             all(
                 value == "${{ github.event.pull_request.base.sha }}"
@@ -912,6 +1191,9 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         self.assertEqual(RELEVANT_PATHS, diff_paths)
 
         step_map = dict(steps)
+        self.assert_script_tests_use_authenticated_base(
+            workflow, "Run adversarial contract tests"
+        )
         source_fetch = step_map.get("Fetch reviewed package workflow source")
         self.assertIsNotNone(source_fetch)
         assert source_fetch is not None
@@ -968,10 +1250,12 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             r"^[0-9a-f]{64}$",
         )
         transition = lock["hardened_workflow_transition"]
-        self.assertEqual(
-            "8233da56a25a0e681256560aab101c0202356981be05d2fd05dfa5cfc8e8ec9d",
-            transition["from_sha256"],
+        self.assert_committed_transition(
+            lock,
+            base_commit=self.authenticated_base_commit(),
+            head_commit=self.head_commit,
         )
+        self.assertNotEqual(transition["from_sha256"], transition["to_sha256"])
         self.assertEqual(
             lock["hardened_workflow_sha256"],
             transition["to_sha256"],
@@ -1022,19 +1306,14 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             )
 
     def test_legitimate_advanced_hardened_base_is_accepted(self) -> None:
-        head = subprocess.run(
-            ["git", "-C", str(self.root), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        ).stdout.strip()
+        head = self.head_commit
         self.assertNotEqual(supply_chain.SOURCE_COMMIT, head)
+        expected_digest = self.committed_workflow_sha256(head)
         result = supply_chain.validate_hardening(
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "9a2edbba9005a2a4e5b9564c901d6624892f8efad435cd99b3ec93b031e721a1",
+            expected_digest,
             result["workflow_sha256"],
         )
 
@@ -1156,6 +1435,23 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     self.assert_foundation_workflow_contract(adversarial_workflow)
 
+    def test_shared_catalog_dependencies_trigger_both_foundations(self) -> None:
+        self.assert_foundation_workflow_contract(self.foundation_workflow())
+        publisher_workflow = (
+            self.root
+            / ".github/workflows/generated-data-publisher-foundation-ci.yml"
+        ).read_text(encoding="utf-8")
+        publisher_paths = yaml.load(publisher_workflow, Loader=yaml.BaseLoader)[
+            "on"
+        ]["pull_request"]["paths"]
+        for path in (
+            "build_steps/validate_package_identity_catalog.py",
+            "tests/test_package_identity_catalog.py",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(1, RELEVANT_PATHS.count(path))
+                self.assertEqual(1, publisher_paths.count(path))
+
     def test_publisher_ci_fetches_reviewed_source_before_full_suite(self) -> None:
         workflow = (
             self.root
@@ -1179,6 +1475,28 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         self.assertIn("          fetch-depth: 2\n", workflow)
         self.assertIn("          persist-credentials: false\n", workflow)
         self.assertNotIn("          fetch-depth: 0\n", workflow)
+        self.assert_script_tests_use_authenticated_base(
+            workflow, "Run generated data artifact tests"
+        )
+        steps = dict(re.findall(
+            r"(?ms)^      - name: ([^\n]+)\n(.*?)(?=^      - name: |\Z)",
+            workflow,
+        ))
+        source_fetch = steps["Fetch reviewed package workflow source"]
+        self.assertIn(
+            "AUTHENTICATED_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}",
+            source_fetch,
+        )
+        self.assertIn(
+            '[[ "$AUTHENTICATED_BASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]', source_fetch
+        )
+        self.assertIn(
+            'git fetch --no-tags --depth=1 origin "$AUTHENTICATED_BASE_COMMIT"',
+            source_fetch,
+        )
+        self.assertIn(
+            'git cat-file -e "${AUTHENTICATED_BASE_COMMIT}^{commit}"', source_fetch
+        )
 
 
     def test_every_external_use_is_immutable(self) -> None:
@@ -1271,6 +1589,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.assertIn(f"# original: {entry['original_ref']}", text)
 
     def test_complete_offline_contract(self) -> None:
+        expected_digest = self.committed_workflow_sha256(self.head_commit)
         self.assertEqual(
             {
                 "registered_workflows": 960,
@@ -1281,17 +1600,11 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "checkout_uses": 982,
                 "permission_exceptions": 4,
                 "topology_sha256": "fcad3454434e624282c6868f6485289f9751bd5d2dbbd59ece09f0964340d197",
-                "workflow_sha256": "9a2edbba9005a2a4e5b9564c901d6624892f8efad435cd99b3ec93b031e721a1",
+                "workflow_sha256": expected_digest,
             },
             supply_chain.validate_hardening(
                 self.root,
-                expected_base_commit=subprocess.run(
-                    ["git", "-C", str(self.root), "rev-parse", "HEAD"],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                ).stdout.strip(),
+                expected_base_commit=self.head_commit,
             ),
         )
 
