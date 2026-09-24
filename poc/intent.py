@@ -126,6 +126,27 @@ _FILTER_REMAINDER = re.compile(
 )
 
 
+def _named_filter_subject(subject: str, titles: set[str]) -> tuple[str | None, str]:
+    """Separate a catalog title only when all other wording is supported filters.
+
+    Match the longest title first so an edition or a title containing words like
+    ``Commercial`` keeps its full identity. Its own words are never filters.
+    """
+    for title in sorted(titles, key=lambda value: (-len(value), value)):
+        if not title or title not in subject:
+            continue
+        match = re.search(r"(?<![\w-])" + re.escape(title) + r"(?![\w-])", subject)
+        if not match:
+            continue
+        outside = subject[: match.start()] + " " + subject[match.end() :]
+        if not (_LICENSE.search(outside) or _RECORDED_TESTS.search(outside)):
+            continue
+        remainder = _LICENSE.sub("", _RECORDED_TESTS.sub("", outside))
+        if not _FILTER_REMAINDER.sub("", remainder).strip(" ,:;.!?"):
+            return title, outside.strip()
+    return None, subject
+
+
 def parse_intent(
     query: str,
     previous_query: str | None = None,
@@ -157,7 +178,16 @@ def parse_intent(
     if not q:
         return QueryIntent("", original)
 
-    if _UNSUPPORTED.search(q):
+    # These wrappers introduce a new subject, including exact catalog names.
+    # Check before interpreting words inside a genuine title as constraints.
+    subject = re.sub(r"^(?:and\s+)?(?:only|just)\s+", "", subject)
+    subject = re.sub(r"^filter\s+(?:to|by)\s+", "", subject)
+    subject = re.sub(r"^(?:ones|those|these)\s+(?:with|having)\s+", "", subject)
+    if subject in titles:
+        return QueryIntent(subject, original, exact_title=True)
+    named_subject, subject = _named_filter_subject(subject, titles)
+
+    if _UNSUPPORTED.search(subject if named_subject else q):
         return QueryIntent(
             subject,
             original,
@@ -204,6 +234,8 @@ def parse_intent(
     if filter_only_tests:
         subject = re.sub(r"\btests\b", "", subject)
     subject = re.sub(r"\s+", " ", subject).strip()
+    if named_subject:
+        return QueryIntent(named_subject, constraints, exact_title=True)
     remainder = _FILTER_REMAINDER.sub("", subject).strip(" ,:;.!?")
     if has_filter and not remainder:
         if not previous_query:
@@ -224,7 +256,12 @@ def parse_intent(
                 original,
                 "Start with the kind of software you need, then refine the results.",
             )
-        return QueryIntent(previous.subject, constraints, refinement=True)
+        return QueryIntent(
+            previous.subject,
+            constraints,
+            refinement=True,
+            exact_title=previous.exact_title,
+        )
 
     # A leading "only" is not sufficient to inherit old intent. This also makes
     # "Only web servers" after vector databases a new web-server search.
@@ -233,7 +270,7 @@ def parse_intent(
     subject = re.sub(r"^(?:ones|those|these)\s+(?:with|having)\s+", "", subject)
     subject = subject.strip(" ,:;!?")
     subject = re.sub(r"(?:\s+(?:with|and|having))+$", "", subject)
-    if re.fullmatch(
+    if subject == "something fast" or re.fullmatch(
         r"(?:only|just|those|these|ones|results|packages|software)?", subject
     ):
         return QueryIntent(
@@ -242,4 +279,4 @@ def parse_intent(
             "Describe the kind of software you need, or refine an existing "
             "search by open-source/commercial or recorded tests.",
         )
-    return QueryIntent(subject, constraints)
+    return QueryIntent(subject, constraints, exact_title=subject in titles)

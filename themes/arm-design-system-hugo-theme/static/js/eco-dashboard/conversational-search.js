@@ -76,10 +76,26 @@
         }
 
         function safeEvidenceURL(value) {
-            if (typeof value !== 'string' || !value.trim()) return null;
+            if (typeof value !== 'string' || !value || /[\u0000-\u0020\u007f-\u009f\\]/.test(value)) return null;
+            // Require explicit HTTP(S) authority or a local catalog reference;
+            // browsers otherwise repair malformed schemes and backslashes.
+            const absolute = /^https?:\/\/([^/?#]+)/i.exec(value);
+            if (!absolute && !/^(\/(?!\/)|\?)/.test(value)) return null;
             try {
-                const url = new URL(value, window.location.href);
-                return ['https:', 'http:'].includes(url.protocol) ? url.href : null;
+                const page = new URL(window.location.href);
+                const url = new URL(value, page);
+                if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return null;
+                if (absolute) {
+                    const authority = absolute[1].toLowerCase();
+                    const defaultPort = url.protocol === 'https:' ? ':443' : ':80';
+                    if (authority !== url.host && !(url.port === '' && authority === url.host + defaultPort)) return null;
+                    // Keep this allowlist aligned with poc.catalog.ARM_HOSTS.
+                    const armHosts = ['arm.com', 'www.arm.com', 'developer.arm.com', 'learn.arm.com'];
+                    if (url.protocol === 'https:' && !url.port && armHosts.includes(url.hostname)) return url.href;
+                }
+                const catalogPath = page.pathname.replace(/\/$/, '');
+                return url.origin === page.origin && url.pathname.replace(/\/$/, '') === catalogPath && url.searchParams.get('package')
+                    ? url.href : null;
             } catch (_) {
                 return null;
             }

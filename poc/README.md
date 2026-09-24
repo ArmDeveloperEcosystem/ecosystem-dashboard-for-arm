@@ -16,8 +16,9 @@ gh pr checkout 1092
 Prerequisites: Python 3.12 and Hugo extended 0.130.0 (the upstream CI version,
 used for the final build and regression suite). Download the extended binary for
 your platform from the [Hugo 0.130.0 release](https://github.com/gohugoio/hugo/releases/tag/v0.130.0)
-and put it on PATH. JavaScript tests also require Node.js with `node:test`
-(validated locally with Node.js 23.11.0); Node is not needed to launch the demo.
+and put it on PATH. Tests also require Node.js with `node:test`, including the
+Python/browser evidence-URL compatibility test (validated locally with Node.js
+23.11.0); Node is not needed to launch the demo.
 From the repository root:
 
 ```sh
@@ -59,6 +60,11 @@ Try:
    instructions do not establish that role.
 7. `A time-series database for metrics` — accepts explicit workload evidence
    across catalog categories while retaining the requested database role.
+8. `Redis`, then **With recorded tests** — keeps the exact Redis identity;
+   compatible products and client libraries do not become extra matches.
+9. `I need an in-memory key value cache for a web application` or
+   `A reverse proxy to route incoming web traffic to backend services` —
+   ordinary role descriptions can match without identical evidence wording.
 
 For each query, check that the returned packages are relevant and already
 represented in the dashboard, their details and resource links still work, and
@@ -83,12 +89,17 @@ Every displayed identity comes from a Hugo-generated catalog using the same
 package source files as the UI. Stable source-file IDs distinguish commercial
 and open-source editions with identical names. Explanations expose either the KB
 source or the existing catalog record; catalog-only matches are not labelled as
-KB results. Recorded tests require Linux + Arm64 runner metadata, a run link and
+KB results. Evidence admission rejects credentials, ambiguous authority syntax,
+backslashes and unapproved hosts. Browser links independently allow approved Arm
+HTTPS destinations or the current dashboard's package links. Recorded tests
+require Linux + Arm64 runner metadata, a run link and
 test details; recorded does not mean all passed.
 
 The query interpreter handles conversational framing separately from software
 requirements. A filter-only follow-up reuses the previous software subject; a
-new request such as `Only web servers` changes it. Unsupported alternatives,
+named-package subject stays exact through supported filters and wrappers such as
+`Only Redis`. A new request such as `Only web servers` changes it. Unsupported
+alternatives,
 exclusions and metadata constraints receive a clarification. Query evidence must
 describe the requested software role and attributes: an article about a tool
 that configures a database does not make that tool a database.
@@ -100,6 +111,13 @@ establish it. Database/broker requests can express a metrics or telemetry worklo
 without belonging to the Monitoring category. The workload remains required,
 including when a separate monitoring feature is requested. Evidence clauses must
 attribute the capability to the returned package, with negation respected.
+
+Matching recognizes bounded restatements of a role, such as a reverse proxy
+forwarding incoming requests to backend services, and generic application context
+for cache/proxy requests. KB retrieval retains the full interpreted request.
+Explicit HTTP, TLS, encryption, packet capture and other additional requirements
+still need evidence. A monitoring/time-series label alone does not prove the
+separate ability to collect and query metrics.
 
 The UI keeps alphabetical catalog ordering. The backend scores candidates but
 does not reorder the existing table. At most 50 matches are returned, with a
@@ -126,6 +144,12 @@ Continue evaluating stakeholder queries during staging; no universal semantic
 accuracy or full conversational reasoning is claimed. The representative checks
 are executable with `python -m poc.evaluate_search` and retained under
 `poc/evaluation/`; they are scenario checks, not a statistical relevance benchmark.
+
+Exact names mean dashboard display names. Aliases are not automatically equivalent:
+the catalog's `Postgres` name selects that entry, while `PostgreSQL` can match
+descriptions of related software. Follow-up inheritance covers the documented
+license and recorded-test filters; arbitrary language/attribute follow-ups are
+not implemented. The team should include these limits in acceptance decisions.
 
 Configuration: `ARM_KB_SEARCH_URL` (default documented endpoint), optional
 `ARM_KB_API_TOKEN` (server-side environment only). The local run currently needs

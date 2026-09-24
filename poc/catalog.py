@@ -56,12 +56,24 @@ class Catalog:
 
     def resolve_hit(self, hit: dict) -> list[dict]:
         """Only trusted Arm evidence URLs; identities must exist in this catalog."""
+        value = hit.get("url")
+        # urllib strips some controls and treats backslashes differently from a
+        # browser. Reject them before parsing so both agree on the destination.
+        if not isinstance(value, str) or re.search(r"[\x00-\x20\x7f-\x9f\\]", value):
+            return []
         try:
-            url = urlparse(str(hit.get("url") or ""))
+            url = urlparse(value)
             hostname = url.hostname
         except ValueError:
             return []
-        if url.scheme != "https" or hostname not in ARM_HOSTS:
+        # Permit only literal approved hostnames and the standard HTTPS port.
+        # Comparing the raw authority also rejects userinfo, encoded hostnames,
+        # trailing dots, empty/noncanonical ports and Unicode host aliases.
+        if (
+            url.scheme != "https"
+            or hostname not in ARM_HOSTS
+            or url.netloc.lower() not in (hostname, hostname + ":443")
+        ):
             return []
         package = parse_qs(url.query).get("package", [""])[0]
         if package:

@@ -33,6 +33,7 @@ from .relevance import (
     transfer_role,
     backup_request,
     backup_role,
+    role_description_subject,
 )
 
 
@@ -107,8 +108,9 @@ class SearchService:
             return base
         groups = capability_groups(subject)
         terms = query_terms(subject)
-        attributes = requested_attributes(subject, groups)
-        concepts = remaining_concepts(subject, groups, attributes)
+        matching_subject = role_description_subject(subject, groups)
+        attributes = requested_attributes(matching_subject, groups)
+        concepts = remaining_concepts(matching_subject, groups, attributes)
         required_roles = requested_catalog_roles(subject)
         transfer = bool(transfer_request(subject))
         backup = backup_request(subject)

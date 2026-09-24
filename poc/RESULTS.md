@@ -1,6 +1,6 @@
 # Conversational package search — validation and release status
 
-Date: 23 September 2026. Review: [PR #1092](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/pull/1092).
+Date: 24 September 2026. Review: [PR #1092](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/pull/1092).
 Base: upstream `main`, `e1871540f0a3e42e7588ab44b09e4796de967fd8`.
 
 The corrected search implementation is a candidate for team acceptance and
@@ -32,7 +32,62 @@ an explicit opt-in. Windows search remains unchanged. See the [implementation
 guide](README.md) for behavior and limitations and the [deployment
 runbook](deploy/README.md) for runtime limits, routing, rollout and rollback.
 
-## Final relevance corrections
+## 24 September correction validation
+
+A further independent acceptance review found two defects that the earlier suites
+did not cover. Supported filters/wrappers broadened an exact package-name request;
+a Python/browser URL-parsing disagreement admitted an external evidence link as
+trusted Arm content. Both have regression tests that failed before correction.
+Exact identity is now preserved through supported filters and wrappers. Backend
+and browser checks reject ambiguous authorities, credentials, controls and
+unapproved destinations while retaining valid Arm HTTPS and local catalog links.
+
+Longer cache and reverse-proxy descriptions now match through bounded role/context
+normalization. This does not discard added requirements: HTTP, encryption, TLS
+and packet capture still need evidence. No package-specific exceptions or LLM
+were introduced. The original longer metrics collection/query request remains
+empty with its recorded provider response because the requested operations lack
+scoped evidence; it is not counted as a recovered positive.
+
+Current deterministic validation: **368 Python tests**, **113 existing repository
+tests**, and **10 JavaScript tests** pass. The additional Python cases comprise
+41 identity/refinement, 42 URL-trust and 21 descriptive-query checks. The URL suite
+includes a 40-URL matrix executed through both Python admission and the production
+JavaScript controller under local and production page locations. Python tests now
+also require Node for that cross-layer check.
+
+The independent verifier froze 22 acceptance cases before inspecting the candidate
+changes: the preceding commit passed 10/22; the correction passed **22/22** without
+changing expectations. Another two protocol/evidence-preservation checks and 12
+production-function browser URL checks passed. The verifier found no blocker in
+that bounded correction scope. These are controlled cases and unchanged capture
+replays, not new live-provider measurements or a universal relevance benchmark.
+Local and production-overlay Hugo builds pass. Generated review evidence is
+retained in the review workspace; the committed tests reproduce the corrected
+contracts and CI publishes controlled reports for the candidate revision.
+
+The candidate passed **118/118 HTTP regression scenarios** against a fresh local
+API with the live KB configured (37 main, 38 earlier independent, 8 recall and 35
+held-out cases). Four runners executed concurrently: 40 responses used explicitly
+labelled catalog fallback, 77 used hybrid mode and one was catalog-only. These
+results verify behavior under the observed provider/fallback mix, not uninterrupted
+provider availability or a production latency target. Source hashes remained fixed.
+
+Browser interaction checks confirmed that `Redis` followed by **With recorded
+tests** retains only Redis and synchronizes the checkbox. The longer cache request
+returns Memcached; the reverse-proxy description returns Haproxy, NGINX and NGINX
+Plus. Arm KB evidence links and same-page catalog links remain visible and point
+to their approved destinations. Browser automation used bounded DOM reads after
+full-page snapshots timed out; it does not establish cross-browser coverage.
+
+Known limits remain: exact display names have no automatic alias equivalence
+(for example PostgreSQL versus the catalog's Postgres title); arbitrary
+language/attribute follow-ups are not implemented. The inherited OpenVVC record
+has an incorrect OpenCart description and requires a separate catalog correction.
+Stakeholder acceptance must assess representative queries and these data/coverage
+limits rather than infer broad semantic quality from test counts.
+
+## Earlier relevance validation at `682534a8e`
 
 A fresh technical review identified two primary-relevance defects after the
 earlier checks: unit-testing requests admitted Benchmark and Vectorscan from
@@ -42,7 +97,7 @@ exceptions. Testing roles require affirmative package-owned evidence. Metrics an
 telemetry workloads remain required alongside any additional monitoring role;
 negation and clauses about a different product cannot supply those capabilities.
 
-Current deterministic validation: **264 Python tests pass**, including **55 new
+At that revision, **264 Python tests passed**, including **55 new
 [role/evidence regressions](tests/test_role_evidence.py)**; **113 existing repository tests** and **8 JavaScript
 interaction tests** pass. The new regression file demonstrably fails on the
 previous implementation for the defects it covers. Existing test expectations
@@ -61,7 +116,7 @@ clearing the query while preserving the selected filter. The query fixtures and
 new deterministic regressions are committed; generated review evidence stays in
 the review workspace. CI publishes the final revision's controlled test reports.
 
-The final runtime also passed **118/118 real HTTP scenarios** against a freshly
+That runtime also passed **118/118 real HTTP scenarios** against a freshly
 started API with the live KB configured: 37 main, 38 earlier independent, eight
 earlier recall regressions and 35 held-out cases. Source hashes stayed fixed during
 execution; these are disclosed regression queries, not unseen accuracy estimates.
@@ -77,8 +132,8 @@ These results belong to the implementation preserved at
 [`69b7eed6c`](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/commit/69b7eed6c4447ac9371b64b6946f0b21196cf998).
 The cleanup at `f8735a22c` changed documentation, evaluation runner layout/output
 handling and CI report retention while retaining application/test bytes. The final
-relevance correction above changes search logic and adds tests; the historical
-results below must not be interpreted as a fresh validation of that correction.
+relevance corrections change search logic and add tests; the historical
+results below must not be interpreted as a fresh validation of the current code.
 
 | Check | Result |
 |---|---|

@@ -224,7 +224,7 @@ CAPABILITIES = {
     ),
 }
 STOP = words(
-    "a an the i me we us my our want need looking find show discover suggest recommend software packages package tools tool solutions solution for to of on in with that which and or are is can do please linux arm arm64 aarch64 server servers open source opensource commercial only ones those works work supports support use used using help could would you as provide provides designed run running available about it all"
+    "a an the i me we us my our want need looking find show discover suggest recommend software packages package tools tool solutions solution for from to of on in with that which and or are is can do please linux arm arm64 aarch64 server servers open source opensource commercial only ones those works work supports support use used using help could would you as provide provides designed run running available about it all"
 )
 
 
@@ -652,6 +652,10 @@ def requested_attributes(subject, groups):
         attributes.append(
             ("unit testing role", ("unit test", "unit tests", "unit testing"))
         )
+    if "reverse proxy" in groups and re.search(r"\bhttp\b", subject):
+        # A TCP-only proxy cannot satisfy an explicit HTTP request. Web serving
+        # establishes HTTP handling even when that acronym is absent.
+        attributes.append(("HTTP proxying", ("http", "web serving", "web server")))
     workload = monitoring_workload(subject)
     if workload:
         attributes.append((workload + " workload", (workload,)))
@@ -847,6 +851,38 @@ def positive_stems(text):
         if has_positive(text, (term,))
         for stem in stems(term)
     )
+
+
+_APPLICATION_CONTEXT = re.compile(
+    r"\bfor\s+(?:a|an|my|our|the)\s+(?:web\s+)?(?:application|app)s?\b"
+)
+_PROXY_DESCRIPTION = re.compile(
+    r"\b(?:to\s+(?:route|forward|direct|send)|"
+    r"for\s+(?:routing|forwarding|directing|sending))\s+"
+    r"(?:(?:incoming|inbound|client|web|http)\s+)*(?:traffic|requests?)\s+"
+    r"to\s+(?:(?:my|our|the|a|an)\s+)?(?:backend|upstream)\s+"
+    r"(?:services?|servers?|applications?)\b"
+)
+
+
+def role_description_subject(subject, groups):
+    """Remove bounded role restatements, retaining all additional requirements.
+
+    A reverse proxy forwards requests to backend services; that explanation is
+    not a separate feature requiring the same words in the evidence. A cache
+    intended for a generic application similarly does not imply a web interface.
+    Match complete clauses, never discard these words globally: encrypted/HTTPS
+    traffic, custom protocols and other added qualifiers must remain verifiable.
+    The KB still receives the original subject, preserving retrieval context.
+    """
+    if set(groups) & {"cache", "reverse proxy", "load balancing"}:
+        subject = _APPLICATION_CONTEXT.sub(" ", subject)
+    if "reverse proxy" in groups:
+        subject = _PROXY_DESCRIPTION.sub(
+            lambda match: " http " if re.search(r"\bhttp\b", match.group()) else " ",
+            subject,
+        )
+    return re.sub(r"\s+", " ", subject).strip()
 
 
 def remaining_concepts(subject, groups, attributes):

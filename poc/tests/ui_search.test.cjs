@@ -37,7 +37,7 @@ class Element {
     closest() { return this.parent || this; }
 }
 
-function fixture(fetcher) {
+function fixture(fetcher, location = 'http://localhost:8765/linux/') {
     const ids = ['nl-search-input', 'nl-search-form', 'nl-search-tested', 'nl-search-clear',
         'nl-search-feedback', 'nl-search-status', 'nl-search-interpretation', 'nl-search-constraints',
         'nl-search-notice', 'nl-search-refinements', 'currently-shown-number', 'if-none-contribute-div',
@@ -79,7 +79,7 @@ function fixture(fetcher) {
             return radios[selector.includes('license') ? 'license' : 'category'];
         }
     };
-    const window = { location: { href: 'http://localhost:8765/linux/' }, setTimeout, clearTimeout };
+    const window = { location: { href: location }, setTimeout, clearTimeout };
     const calls = [];
     const context = vm.createContext({
         window, document, URL, AbortController, console,
@@ -100,6 +100,34 @@ function response(results, extra = {}) {
         results: results.map(item => ({ ...item, id: item.id.includes('/') ? item.id : 'linux/opensource_packages/' + item.id + '.md' })), notices: [], ...extra }) };
 }
 
+async function renderedEvidence(value, location) {
+    const f = fixture(async () => response([
+        { id: 'postgresql', reason: 'Database', evidence_url: value }
+    ]), location);
+    await f.app.search('databases');
+    const links = f.rows[0].title.children[0].children;
+    return links.length ? links[0].href : null;
+}
+
+// Python supplies its malformed/valid matrix to this controller fixture, so
+// both trust boundaries are checked using identical URLs without network I/O.
+if (process.argv.includes('--evidence-url-matrix')) {
+    (async () => {
+        const urls = JSON.parse(readFileSync(0, 'utf8'));
+        const results = [];
+        for (const url of urls) {
+            const checks = [];
+            for (const location of ['http://localhost:8765/linux/', 'https://developer.arm.com/ecosystem-dashboard/linux/']) {
+                const href = await renderedEvidence(url, location);
+                const parsed = href && new URL(href);
+                checks.push({ accepted: !!href, hostname: parsed && parsed.hostname, protocol: parsed && parsed.protocol });
+            }
+            results.push(checks);
+        }
+        process.stdout.write(JSON.stringify(results));
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+} else {
+
 test('Only catalog IDs render; reasons are text and unsafe evidence URLs are rejected', async () => {
     const f = fixture(async () => response([
         { id: 'postgresql', reason: '<img src=x onerror=alert(1)>', evidence_url: 'javascript:alert(1)' },
@@ -111,6 +139,58 @@ test('Only catalog IDs render; reasons are text and unsafe evidence URLs are rej
     assert.equal(f.rows[0].title.children[0].children.length, 0);
     assert.match(f.nodes['nl-search-notice'].textContent, /outside the current catalog/);
     assert.equal(f.nodes['currently-shown-number'].textContent, '1');
+});
+
+test('Evidence links reject external origins, credentials, and ambiguous authority syntax', async () => {
+    for (const url of [
+        'https://evil.example\\@developer.arm.com/ecosystem-dashboard/linux/?package=redis',
+        'https://evil.example/?package=redis',
+        'http://developer.arm.com/articles/redis',
+        'https://user:password@developer.arm.com/articles/redis',
+        'https://@developer.arm.com/articles/redis',
+        'https://developer.arm.com:8443/articles/redis',
+        'https://%64eveloper.arm.com/articles/redis',
+        'https://developer.arm.com\t/articles/redis',
+        '//developer.arm.com/articles/redis',
+        'https:developer.arm.com/articles/redis',
+        'http://user@localhost:8765/linux/?package=postgresql',
+        'http://localhost:8765/other/?package=postgresql',
+        'http://localhost:8766/linux/?package=postgresql',
+        '/linux/',
+        '/linux/?package=',
+        '/redirect?to=https://evil.example',
+        'javascript:alert(1)'
+    ]) {
+        assert.equal(await renderedEvidence(url), null, JSON.stringify(url));
+    }
+});
+
+test('Evidence links retain approved Arm HTTPS articles and same-origin catalog links', async () => {
+    for (const [location, values] of [
+        ['http://localhost:8765/linux/', [
+            '/linux/?package=postgresql', '?package=postgresql',
+            'http://localhost:8765/linux/?package=postgresql'
+        ]],
+        ['https://dashboard.example/ecosystem-dashboard/linux/', [
+            '/ecosystem-dashboard/linux/?package=postgresql', '?package=postgresql',
+            'https://dashboard.example/ecosystem-dashboard/linux/?package=postgresql'
+        ]],
+        ['https://developer.arm.com/ecosystem-dashboard/linux/', [
+            '/ecosystem-dashboard/linux/?package=postgresql'
+        ]]
+    ]) {
+        for (const value of values) {
+            assert.equal(await renderedEvidence(value, location), new URL(value, location).href);
+        }
+    }
+    for (const value of [
+        'https://arm.com/products/redis', 'https://www.arm.com/products/redis',
+        'https://developer.arm.com/articles/redis', 'https://learn.arm.com/learning-paths/redis/',
+        'HTTPS://DEVELOPER.ARM.COM:443/articles/redis',
+        'https://learn.arm.com/learning-paths/redis%20guide/#overview'
+    ]) {
+        assert.equal(await renderedEvidence(value), new URL(value).href);
+    }
 });
 
 test('Refinements carry previous subject and synchronize visible license and test constraints', async () => {
@@ -184,3 +264,4 @@ test('Sidebar changes explicitly override constraints from earlier query wording
     await new Promise(resolve => setTimeout(resolve, 5));
     assert.equal(f.calls[1].filters_override, true);
 });
+}
