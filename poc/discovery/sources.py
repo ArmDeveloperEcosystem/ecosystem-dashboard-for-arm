@@ -5,11 +5,18 @@ from __future__ import annotations
 import base64
 import posixpath
 import re
+import time
 from datetime import datetime, timezone
 from urllib.parse import quote, unquote, urlparse
 
-from .evidence import classify_assets, classify_platforms, manifest_platforms
+from .evidence import (
+    assess_asset,
+    classify_assets,
+    classify_platforms,
+    manifest_platforms,
+)
 from .http import CollectionError, github_pages
+from .identity import normalize_github_name
 
 
 def evidence(url, kind, excerpt, **extra):
@@ -110,6 +117,53 @@ def _collect_readme(http, repo, result, ref=None, *, release=False):
         result["failures"].append(f"Optional {context} README unavailable: {exc}")
 
 
+def _github_coverage(assets, complete, asset_url, repo):
+    """Retain bounded inventory context separately from the three verdicts."""
+    supported, remaining, reasons = [], [], []
+    if not complete:
+        reasons.append("The selected release's asset inventory is incomplete.")
+    for asset in assets:
+        assessment, reason = assess_asset(asset)
+        if assessment == "supported":
+            supported.append(asset["name"])
+            continue
+        item = {
+            key: asset.get(key) if isinstance(asset, dict) else None
+            for key in ("name", "size", "state", "content_type")
+        }
+        item.update(
+            asset_id=asset.get("id") if isinstance(asset, dict) else None,
+            url=_github_link(asset.get("browser_download_url"), repo, asset_url)
+            if isinstance(asset, dict)
+            else asset_url,
+            assessment=assessment,
+            reason=reason,
+        )
+        if assessment == "malformed":
+            item["raw_metadata"] = asset
+        remaining.append(item)
+    for assessment in ("malformed", "ambiguous"):
+        count = sum(item["assessment"] == assessment for item in remaining)
+        if count:
+            reasons.append(
+                f"{count} remaining asset record(s) have {assessment} distribution metadata; see the inventory and evidence."
+            )
+    return {
+        "kind": "github_release_assets",
+        "inventory_complete": complete,
+        "inventory_count": len(assets),
+        "supported_artifacts": supported,
+        "remaining_inventory": remaining,
+        "review_required": bool(reasons),
+        "review_reasons": reasons,
+        "evidence_urls": [asset_url],
+        "limitations": [
+            "Advertised distribution metadata does not verify runtime compatibility or source builds.",
+            "Component-family completeness is not inferred from artifact names; other distributions remain unassessed.",
+        ],
+    }
+
+
 def github_collect(http, candidate, limits):
     repo = candidate["name"]
     base = f"https://api.github.com/repos/{repo}"
@@ -185,6 +239,24 @@ def github_collect(http, candidate, limits):
                 f"Stable releases observed: 0; all scanned pages complete={complete}",
             )
         )
+        review_reasons = []
+        if not complete:
+            review_reasons.append("The bounded stable-release scan is incomplete.")
+        if any(not isinstance(item, dict) for item in releases):
+            review_reasons.append("The release scan contains malformed metadata.")
+        result["assessment_coverage"] = {
+            "kind": "github_stable_release_scan",
+            "inventory_complete": complete,
+            "inventory_count": len(releases),
+            "supported_artifacts": [],
+            "remaining_inventory": [],
+            "review_required": bool(review_reasons),
+            "review_reasons": review_reasons,
+            "evidence_urls": [base + "/releases"],
+            "limitations": [
+                "No stable release was selected; downloadable artifacts, source builds and runtime compatibility remain unassessed."
+            ],
+        }
         _collect_readme(http, repo, result, meta.get("default_branch"))
         return result
     # GitHub API order is documented as creation order, not semantic version order.
@@ -194,12 +266,35 @@ def github_collect(http, candidate, limits):
             "The selected release has no valid release ID; its asset inventory cannot be verified."
         )
         result["failures"].append("Malformed release metadata")
+        result["assessment_coverage"] = {
+            "kind": "github_release_assets",
+            "inventory_complete": False,
+            "inventory_count": 0,
+            "supported_artifacts": [],
+            "remaining_inventory": [],
+            "review_required": True,
+            "review_reasons": [
+                "The selected release lacks a valid release ID; its artifact inventory cannot be read."
+            ],
+            "evidence_urls": [base + "/releases"],
+            "limitations": [
+                "Source builds and runtime compatibility remain unassessed."
+            ],
+        }
         return result
     tag = str(release.get("tag_name", "untagged"))
+    try:
+        release_fallback = (
+            f"https://github.com/{repo}/releases/tag/{quote(tag, safe='')}"
+        )
+    except UnicodeEncodeError:
+        # Preserve the original tag. An invalid Unicode tag cannot safely form
+        # a web URL, so cite the already selected release by its numeric ID.
+        release_fallback = base + f"/releases/{release['id']}"
     release_url = _github_link(
         release.get("html_url"),
         repo,
-        f"https://github.com/{repo}/releases/tag/{quote(tag, safe='')}",
+        release_fallback,
     )
     result["scope"] = (
         f"{repo} release {tag}: published downloadable Linux binaries (first stable release in GitHub API order)"
@@ -230,11 +325,10 @@ def github_collect(http, candidate, limits):
     )
     result["failures"].extend(asset_errors)
     result["status"], result["reason"] = classify_assets(assets, assets_complete)
-    supported_artifacts = [
-        a.get("name", "")
-        for a in assets
-        if isinstance(a, dict) and classify_assets([a], True)[0] == "supported"
-    ]
+    result["assessment_coverage"] = _github_coverage(
+        assets, assets_complete, asset_url, repo
+    )
+    supported_artifacts = result["assessment_coverage"]["supported_artifacts"]
     result["metadata"]["supported_artifacts"] = supported_artifacts
     if result["status"] == "supported":
         result["scope"] = (
@@ -507,10 +601,30 @@ def dockerhub_collect(http, candidate, limits):
 def discover_github(http, config, limits, known_ids=None):
     """A bounded repository search; search omission never implies absence."""
     found, failures, skips = [], [], []
-    known = set(known_ids or ())
-    seen, examined, excluded = set(), 0, 0
+    known = set()
+    for identity in known_ids or ():
+        if isinstance(identity, str) and identity.startswith("github:"):
+            try:
+                known.add("github:" + normalize_github_name(identity[7:]))
+            except ValueError:
+                pass
+    seen, fetched, examined, excluded, deferred = set(), 0, 0, 0, 0
     source_limit = limits.get("max_source_records", 40)
     for query in config.get("github_queries", [])[: limits["max_queries"]]:
+        if getattr(http, "requests_used", 0) >= limits.get(
+            "max_requests", float("inf")
+        ) or (
+            hasattr(http, "started")
+            and time.monotonic() - http.started
+            >= limits.get("max_seconds", float("inf"))
+        ):
+            skips.append(
+                {
+                    "source": "github_search",
+                    "reason": "Source request/time allowance exhausted; additional discovery deferred",
+                }
+            )
+            break
         remaining = limits["max_discovered"] - len(found)
         if remaining <= 0:
             skips.append(
@@ -520,7 +634,7 @@ def discover_github(http, config, limits, known_ids=None):
                 }
             )
             break
-        source_remaining = source_limit - examined
+        source_remaining = source_limit - fetched
         if source_remaining <= 0:
             skips.append(
                 {
@@ -542,6 +656,7 @@ def discover_github(http, config, limits, known_ids=None):
             },
             items_key="items",
             stop_after=source_remaining,
+            max_records=source_remaining,
         )
         failures.extend(
             {"source": "github_search", "query": q, "reason": err} for err in errs
@@ -554,13 +669,18 @@ def discover_github(http, config, limits, known_ids=None):
                     "reason": "Search limited to configured pages/candidate budget; not an exhaustive ecosystem census",
                 }
             )
+        fetched += len(rows)
         selected_rows = rows[:source_remaining]
         examined += len(selected_rows)
         for rank, row in enumerate(selected_rows, 1):
             if not isinstance(row, dict) or not isinstance(row.get("full_name"), str):
                 excluded += 1
                 continue
-            name = row["full_name"].lower()
+            try:
+                name = normalize_github_name(row["full_name"])
+            except ValueError:
+                excluded += 1
+                continue
             identity = "github:" + name
             if (
                 identity in known
@@ -584,21 +704,40 @@ def discover_github(http, config, limits, known_ids=None):
                     }
                 )
             else:
-                skips.append(
-                    {
-                        "source": "github_search",
-                        "reason": "Additional unseen search results deferred by discovery candidate limit",
-                        "count": len(selected_rows) - rank + 1,
-                    }
-                )
-                break
+                deferred += 1
+    if deferred:
+        skips.append(
+            {
+                "source": "github_search",
+                "reason": "Additional unseen search results deferred by discovery candidate limit",
+                "count": deferred,
+            }
+        )
     skips.append(
         {
             "source": "github_search",
             "reason": "Source records examined",
+            "metric": "source_records_examined",
             "count": examined,
             "informational": True,
         }
+    )
+    skips.extend(
+        {
+            "source": "github_search",
+            "reason": reason,
+            "metric": metric,
+            "count": count,
+            "informational": True,
+        }
+        for reason, metric, count in (
+            ("Source records fetched", "source_records_fetched", fetched),
+            (
+                "Discovery candidates selected",
+                "discovery_candidates_selected",
+                len(found),
+            ),
+        )
     )
     if excluded:
         skips.append(

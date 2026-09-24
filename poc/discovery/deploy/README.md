@@ -135,7 +135,10 @@ sudo docker run --rm --pull=never --init \
 
 The image defaults to `--fail-on-errors`. A failed current collection/AI operation
 returns nonzero, retaining any completed report; a legitimate evidence-unknown
-finding alone is not an infrastructure failure. Historical failure diagnostics
+finding alone is not an infrastructure failure. Due work that cannot start because
+the source allowance is exhausted is an explicit scheduler error; ordinary
+partially completed bounded batches and healthy no-work runs remain valid.
+Historical failure diagnostics
 are retained without making every later healthy run fail. Inspect the run's
 outcome and current errors, not just the number of discovered gaps.
 

@@ -1,130 +1,114 @@
 # PoC2 validation — 24 September 2026
 
-Status: the bounded internal batch implementation has passed local and native
-Linux Arm64 validation and independent code review. Production packaging and an
-operational runbook are included. This is ready for code review; approved live AI,
-actual staging-host acceptance and stakeholder review remain deployment gates.
-No package runtime certification or universal correctness is claimed.
+The bounded internal implementation has passed local and native Linux Arm64
+validation and independent verification of the review corrections. It is ready
+for technical review. Approved live AI, actual staging-host acceptance, browser
+acceptance, stakeholder review and security disposition remain release gates.
+No runtime certification or universal correctness is claimed.
 
-## Scope and live findings
+## Verified behavior
 
-Base: `origin/main` at `e1871540f0a3e42e7588ab44b09e4796de967fd8`.
-Branch: `feature/arm64-opportunity-report`.
-The final live validation used public GitHub and Docker Hub metadata, the
-read-only Linux catalog, and AI review disabled. It checked **eight selected
-repository/image scopes: six supported, one scoped gap and one unknown**, using
-29 metadata requests with zero collection failures. Two source identities
-matched catalog URLs. All live candidate-level findings, dated popularity values,
-available digests and report files remain in the internal local output directory.
+- Saved due investigations receive the first opportunity before discovery can
+  consume the shared source allowance. Subsequent discovery and investigations
+  remain bounded; deferred work persists. Explicit no-progress health reaches
+  the production CLI, while ordinary partial batches and healthy no-work runs
+  remain valid.
+- GitHub source-record limits account for fetched rows across queries without
+  changing page offsets. Reports distinguish fetched, examined and selected
+  records; known and duplicate tail records do not inflate unseen deferrals.
+- GitHub aliases share one active queue identity without deleting historical
+  observations. Invalid identities previously admitted by older code are
+  retained for manual review and excluded from active work. They cannot prevent
+  valid investigations and report publication.
+- Raw source/model text round-trips through escaped JSON. Word/CSV, SQLite scope
+  display and diagnostics handle XML-invalid characters and lone surrogates.
+  Existing affected history can be reported without deletion or refetching;
+  invalid hyperlink destinations are displayed as plain text, never rewritten.
+- Assessment coverage exposes verified artifacts, the remaining bounded
+  inventory and specific unresolved evidence questions. Mixed architecture or
+  component names alone do not imply a gap. Coverage flags remain separate from
+  the three support statuses and their current/historical counts.
 
-The six explicit seeds and two star-ranked discoveries are a bounded sample,
-not a globally exhaustive top-software list. A project can contribute both a
-repository-release scope and a container-tag scope. Mutable tags remain dated.
+## Automated and independent validation
 
-## Repeat-run memory
+- Local Python suite: **265 tests passed**.
+- Native Linux Arm64 suite: **265 tests passed**, with hash-locked dependencies,
+  a nonroot user, read-only root filesystem and no network. Test-only temporary
+  storage permits executable fixtures; the production image uses `noexec`.
+- Existing root repository regression suite: **113 tests passed**, with the
+  required Hugo 0.130.0 and Command Line Tools Git. No system Xcode license or
+  system settings were changed.
+- JavaScript renderer/link/filter/coverage/health checks: **10 passed**.
+- Runtime image: two offline default-command executions passed with persistent
+  SQLite/report state, private output permissions, UID 10001, read-only root,
+  dropped capabilities and no-new-privileges. The runtime excludes the web
+  server, test dependencies, pip and ensurepip. The two new identity/text modules
+  are explicitly included in the production build context and image.
+- Ruff checks, JavaScript syntax and Git whitespace checks passed.
+- Three independent reviewers verified requirements/report parity, scheduling
+  and identity upgrades, and source/model text boundaries. The legacy invalid
+  identity upgrade case found during verification was corrected and retested.
+  Their assigned code findings are resolved; release acceptance remains separate.
 
-A SQLite backup of the first run was used to verify repeat behavior independently
-of the demonstration's initial report:
+## Public-source sample and report validation
 
-- Same configuration: selected two additional previously unseen scopes; both
-  had unclear distribution evidence. Original eight findings were retained
-  without rechecking. Nine metadata requests, zero collection failures.
-- New discovery disabled: zero investigations and zero metadata requests; all
-  ten historical findings retained with their original dates.
-- Fresh status counts exclude historical observations. A gap stays in memory
-  even when no public dashboard update occurs.
+An isolated fresh run checked **eight selected repository/image scopes: six
+supported, one scoped gap and one unknown**, using 29 metadata requests with no
+collection failures. Two identities matched catalog URLs. GitHub discovery
+fetched and examined 14 records and selected two repositories. Four findings had
+separate coverage-review questions; these are not four additional support gaps.
+AI was disabled: zero completed advisory reviews across eight eligible findings.
 
-## Automated and independent checks
+Six configured seeds plus two discoveries demonstrate the workflow, rather than
+a globally representative top-software ranking. The deliberately selected legacy
+`library/mysql:5.7` gap is tag-specific and is not evidence that current MySQL is
+unsupported. Current representative business opportunities still need stakeholder
+acceptance; no minimum number of gaps is promised.
 
-- Final local Python 3.12 run: **210 tests passed**.
-- Existing repository regression suite: **113 tests passed**, using the local
-  Command Line Tools Git executable because the system Xcode license is pending.
-  No system license/settings were changed.
-- JavaScript renderer/link/filter checks: **5 tests passed**.
-- Native Linux Arm64: **210 tests passed**, with locked dependencies, a nonroot
-  user, read-only root filesystem and no network during tests. Test-only `/tmp`
-  permits synthetic executable fixtures; the production image smoke uses
-  `noexec` temporary storage.
-- Production image: **two offline default-command runs passed**, including
-  durable SQLite state, private report permissions, UID 10001, read-only root,
-  dropped capabilities, no-new-privileges, and exclusion of test/UI dependencies.
-  The final Trixie-based runtime contains neither pip nor ensurepip. All nine
-  installed runtime versions match the lock and the final test image.
-- Actual cleanup script: removed its active container, handled an already-removed
-  container and preserved an unrelated canary. This does not validate a real
-  host's systemd integration.
-- Ruff undefined/import checks, JavaScript syntax and Git whitespace checks pass.
-- All eight local page/API/download routes return HTTP 200. Invalid-origin run
-  requests, outside-directory downloads and private state access are tested.
+Independent three-run synthetic validation checked current findings, retained
+history, coverage parity and healthy no-work behavior. Word/CSV/JSON and the
+actual UI renderer preserve statuses, dates and coverage questions consistently.
+Reports do not assume older saved records have complete assessment coverage.
 
-Production image validated locally:
-`sha256:40a71b70f8610bb2f32f002172d8ef93f7eddc6c2d10668e6cc4881c069da5b8`.
-All 11 packaged Python files match the frozen validation manifest. The image is
-local; it has not been published to a registry or installed on a staging host.
+The final live-evidence Word render has **13 pages**, including the complete
+bounded remaining inventories. Every page was visually inspected. The small
+workload table and closing section remain together; no clipping, overlap or
+unreadable inventory rows were found. Independent synthetic current/history
+reports of eight and seven pages also passed full visual inspection.
 
-Builder, tester and an independent fresh-context reviewer shared findings and
-retested corrections. The tester's initial 28 cases reproduced 19 failures;
-all now pass, alongside two further privacy/fingerprint regressions. Fixes cover
-invalid artifact sizes, explicit source privacy/identity rejection, repository
-README context, independent AI budgets, bounded model input, implicit credential
-isolation, crash recovery and preservation of failed AI status in later reports.
-The reviewer found no remaining important code blocker in the bounded batch scope.
+Real Chrome interaction remains blocked locally by `ERR_BLOCKED_BY_CLIENT`.
+HTTP and controlled DOM checks are useful validation, but do not constitute
+interactive browser acceptance.
 
-Runtime dependency audit: pip-audit 2.10.1 checked all **nine** pinned runtime
-packages against PyPI's advisory service on 24 September 2026: **zero known
-vulnerabilities, zero skipped packages**. This is not proof of absence of
-vulnerabilities and does not cover Debian packages or native libraries in wheels.
+## Security and release gates
 
-The final image was separately scanned using verified Trivy 0.74.0 and its dated
-public advisory database. Moving to Debian Trixie removed all five baseline
-critical findings, and removing pip/ensurepip eliminated installer findings.
-The final image has **zero critical and zero Python findings**, but retains
-**44 high occurrences across eight unique OS CVEs**, with no Trixie fixes listed
-at scan time. This is not a clean security approval: see
-[deploy/SECURITY.md](deploy/SECURITY.md) for scope and open acceptance.
+The runtime dependency lock and pinned Debian Trixie base remain unchanged.
+The dated baseline audit found no known advisories in the nine Python runtime
+packages. Its image scan found no critical or Python findings, with 44 high
+package occurrences across eight distinct OS advisories. See
+[deploy/SECURITY.md](deploy/SECURITY.md) for scope and residual risk; this is not a
+security waiver. Keep the exact rebuilt image ID, commit label and final scan
+with the release evidence.
 
-## Report and browser checks
+Before rollout, complete:
 
-The Word generator provides dated, scoped findings and distinguishes fresh
-results, retained history, waiting candidates and collection issues. CSV labels
-fresh/historical rows and escapes formula-like source text. JSON preserves the
-full evidence and run history. The final live Word report was rendered with the
-canonical DOCX renderer; all seven pages were visually inspected. A five-page
-synthetic report also passed visual review of failed/pending AI and historical
-findings. Historical AI disclosures stay with their scope; no clipping or table
-layout defects remain in these samples. Reports and renders are retained locally.
+1. Approved dedicated model/provider access, entitlement and data policy, followed
+   by representative live AI-quality validation with adequate coverage.
+2. Real browser acceptance and stakeholder review of evidence usefulness and
+   false-positive/negative behavior on current scopes.
+3. Private staging-host storage, scheduling, monitoring, backup/restore, retention
+   and operational ownership acceptance.
+4. Security-owner disposition of residual image advisories.
 
-Real Chrome interaction is currently blocked by `ERR_BLOCKED_BY_CLIENT` at the
-local preview URL. HTTP and JavaScript tests passed, but they are not a substitute
-for browser interaction/visual acceptance. The user has been asked to allow the
-local preview. This limitation must remain in the handoff until browser testing
-is completed.
+The local UI remains loopback-only. No crawler schedule, deployment, catalog
+update, external report publication or maintainer contact was performed. PoC1
+PR #1092 remains separate and unchanged.
 
-## Remaining gates
+## Evidence retained locally
 
-1. Approved AI endpoint, model entitlement and data policy. The optional adapter
-   is tested with controlled provider responses; no live model call was made.
-2. Browser interaction check after the local Chrome block is resolved.
-3. Stakeholder acceptance of evidence usefulness and false-positive/negative
-   behavior on additional representative scopes.
-4. Internal batch staging host, private report access, durable state, retention,
-   source quotas, alerts, backup/restore and operational ownership before weekly
-   deployment. The local UI is not the production service and remains loopback-only.
-5. Security-owner review of the residual base-image advisories documented in
-   [deploy/SECURITY.md](deploy/SECURITY.md). Scanning and reducing advisories does
-   not constitute release approval or an exception.
-
-PoC1 PR 1092 is unchanged. PoC2 is isolated on its own branch and CI workflow.
-There was no external report publication, public catalog write, enabled crawler
-schedule, production deployment or maintainer contact.
-
-## Local evidence
-
-Ignored validation evidence is under `.poc/production-review/`: final local and
-native test logs, JUnit, input hashes, container build/default-command smoke,
-actual cleanup checks, final HTTP results and live run output. Runtime advisory
-results are under `.poc/validation/production-runtime-pip-audit.*`.
-Final live reports are under `.poc/production-live/`; original repeat-memory
-evidence remains under `.poc/repeat-check/` and `.poc/validation/`.
-Generated findings and private local paths are not committed as report artifacts.
-The PR's GitHub checks provide remote validation of the submitted commit.
+Current correction evidence is under `.poc/review-fixes/`: reviewer notes,
+regressions, final local/native logs, locked image builds/smoke, source hashes,
+private public-source reports and rendered pages. Earlier baseline evidence is
+under `.poc/production-review/` and `.poc/validation/`. Findings and private paths
+are not committed as report artifacts. GitHub CI validates the submitted PR head;
+the PR records that run and final image provenance.

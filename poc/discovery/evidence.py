@@ -17,57 +17,68 @@ ANCILLARY = re.compile(
 )
 
 
+def assess_asset(asset: object) -> tuple[str, str]:
+    """Describe one inventory entry without inferring component-family gaps."""
+    if not isinstance(asset, dict):
+        return "malformed", "Asset metadata is not an object."
+    if not isinstance(asset.get("name"), str) or not asset["name"]:
+        return "malformed", "Asset name is missing or is not a nonempty string."
+    name = asset["name"].lower()
+    if ANCILLARY.search(name) or asset.get("content_type") in (
+        "text/plain",
+        "text/html",
+        "application/json",
+        "application/pdf",
+    ):
+        return "excluded", "Ancillary, source, or documentation asset."
+    if OTHER_OS.search(name) and not LINUX.search(name):
+        return "excluded", "Asset explicitly names a non-Linux operating system."
+    if OTHER_OS.search(name) or (ARM64.search(name) and OTHER_ARCH.search(name)):
+        return "ambiguous", "Asset names contradictory platform or architecture labels."
+    if asset.get("state", "uploaded") != "uploaded":
+        return "ambiguous", "Asset upload is not complete."
+    if "size" in asset and (
+        not isinstance(asset["size"], int)
+        or isinstance(asset["size"], bool)
+        or asset["size"] <= 0
+    ):
+        return (
+            "malformed",
+            "Asset size does not establish a nonempty uploaded artifact.",
+        )
+    if LINUX.search(name) and ARM64.search(name):
+        return (
+            "supported",
+            "Uploaded artifact explicitly names Linux and Arm64/aarch64.",
+        )
+    if LINUX.search(name) and OTHER_ARCH.search(name):
+        return (
+            "other_linux_binary",
+            "Asset explicitly names Linux and another architecture.",
+        )
+    return (
+        "ambiguous",
+        "Operating system and architecture could not be established by the configured filename rules.",
+    )
+
+
 def classify_assets(assets: list[dict], complete: bool) -> tuple[str, str]:
     """An absence finding requires an exhaustive, unambiguous binary inventory."""
     if not isinstance(assets, list):
         return "unknown", "The release asset inventory has an unexpected shape."
-    linux_other, ambiguous = [], []
-    for asset in assets:
-        if not isinstance(asset, dict):
-            ambiguous.append("Malformed asset metadata")
-            continue
-        name = str(asset.get("name", "")).lower()
-        if ANCILLARY.search(name) or asset.get("content_type") in (
-            "text/plain",
-            "text/html",
-            "application/json",
-            "application/pdf",
-        ):
-            continue
-        if OTHER_OS.search(name) and not LINUX.search(name):
-            continue
-        if OTHER_OS.search(name) or (ARM64.search(name) and OTHER_ARCH.search(name)):
-            ambiguous.append(name)
-            continue
-        if asset.get("state", "uploaded") != "uploaded":
-            ambiguous.append(name)
-            continue
-        if "size" in asset and (
-            not isinstance(asset["size"], int)
-            or isinstance(asset["size"], bool)
-            or asset["size"] <= 0
-        ):
-            ambiguous.append(name)
-            continue
-        if (
-            LINUX.search(name)
-            and ARM64.search(name)
-            and asset.get("state", "uploaded") == "uploaded"
-        ):
-            return (
-                "supported",
-                "At least one uploaded artifact published by the selected repository explicitly names Linux and Arm64/aarch64. This verifies that advertised artifact, not every component or runtime compatibility.",
-            )
-        if LINUX.search(name) and OTHER_ARCH.search(name):
-            linux_other.append(name)
-        else:
-            ambiguous.append(name)
+    assessments = [assess_asset(asset)[0] for asset in assets]
+    if "supported" in assessments:
+        return (
+            "supported",
+            "At least one uploaded artifact published by the selected repository explicitly names Linux and Arm64/aarch64. This verifies that advertised artifact, not every component or runtime compatibility.",
+        )
+    ambiguous = any(value in {"ambiguous", "malformed"} for value in assessments)
     if not complete:
         return (
             "unknown",
             "The release asset inventory is incomplete; absence of a Linux Arm64 artifact cannot be established.",
         )
-    if linux_other and not ambiguous:
+    if "other_linux_binary" in assessments and not ambiguous:
         return (
             "gap",
             "The complete published asset inventory contains Linux binaries for other architectures but no explicitly named Linux Arm64 binary. Scope is this release's downloadable artifacts only.",

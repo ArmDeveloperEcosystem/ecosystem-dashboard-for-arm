@@ -2,12 +2,13 @@
 
 import argparse
 import json
-import sys
 import sqlite3
+import sys
 
 import yaml
 
 from .pipeline import run_pipeline
+from .text import display_text
 
 
 def main():
@@ -19,7 +20,7 @@ def main():
     parser.add_argument(
         "--fail-on-errors",
         action="store_true",
-        help="Exit 2 after publishing reports if this run had collection or AI errors",
+        help="Exit 2 after publishing reports if this run had collection/AI errors or due investigations made no progress",
     )
     parser.add_argument(
         "--require-ai",
@@ -37,7 +38,7 @@ def main():
             args.config, args.output_dir, args.catalog, require_ai=args.require_ai
         )
     except (OSError, ValueError, RuntimeError, yaml.YAMLError, sqlite3.Error) as exc:
-        print(f"Discovery run failed: {exc}", file=sys.stderr)
+        print(display_text(f"Discovery run failed: {exc}"), file=sys.stderr)
         return 1
     print(
         json.dumps(
@@ -53,7 +54,8 @@ def main():
                     "report_paths",
                     "state_path",
                 )
-            },
+            }
+            | {"scheduling": summary.get("scheduling", {})},
             indent=2,
         )
     )

@@ -92,6 +92,16 @@ verdict. A default-branch README is labeled as repository context, not release d
 Positive artifact evidence can establish a scoped supported finding despite an
 unrelated incomplete inventory; its collection issue remains visible.
 
+Each inspected GitHub release also records assessment coverage: verified Arm64
+artifacts, the remaining bounded inventory, completeness, and specific evidence
+questions requiring human review. Coverage questions do not change the three
+support statuses or their counts. Incomplete pagination, malformed metadata or
+ambiguous relevant assets can require review even when one artifact is supported.
+Ordinary amd64/Arm64 companions and mixed component names alone do not establish
+a gap or trigger a review flag. Component-family inference and runtime validation
+remain outside this PoC. Older saved findings without structured coverage are
+explicitly labeled; they are not assumed complete.
+
 Release selection is the first non-draft, non-prerelease in GitHub API order,
 within pagination caps. It is not a promise of the greatest semantic version.
 The selected legacy `library/mysql:5.7` seed illustrates a tag-specific gap,
@@ -116,13 +126,27 @@ with configured Docker Hub image/tag seeds; it does not crawl all registries.
 | 15 seconds / 2 MB | Per-request timeout and maximum response size |
 | 1 search / 2 release / 4 asset pages | Pagination caps; incomplete evidence remains unknown where absence must be proved |
 
+Search uses a fixed page size for each query. It stops before another full page
+would exceed the remaining global source-record allowance, even if that leaves
+unused capacity (for example 100 fetched under a 150-record ceiling). Page sizes
+are not changed midway through offset pagination. Reports distinguish records
+fetched, records examined for eligibility and candidates selected. Known,
+duplicate and excluded records do not inflate the unseen deferred count.
+
 These are maximum workloads, not promised findings. Six seeds plus two selected
 search results can yield eight checks. If only one new relevant result exists,
 only that one is added. A failure is recorded; no retry loop searches indefinitely
 for a desired number of gaps.
 
-Saved due work runs first. Within the same batch, seeds keep their configured
-order and discovered repositories keep star-based priority. Stars and pulls use
+The oldest due investigation gets the first attempt before fresh search can
+consume its source budget. Bounded discovery then gets a checkpoint if resources
+remain; remaining saved due work is investigated before newly discovered work.
+One total request/time/investigation allowance and attempted-identity set applies
+across these phases. Selected discoveries remain queued when no investigation
+slots remain. If one investigation exhausts the source allowance, discovery waits
+for a later run; maximum workloads do not guarantee both activities every run.
+Within the same due batch, seeds keep their configured order and discovered
+repositories keep star-based priority. Stars and pulls use
 different units and are never added into one score. Docker pulls are cumulative
 registry activity, not unique deployments; a publisher badge is provenance
 context, not Arm certification. Unavailable statistics are `null`, not zero.
@@ -141,7 +165,14 @@ day, configurable. Earlier findings retain their original dates and evidence.
 The same source identity/tag does not become a new investigation just because
 it is absent from the dashboard. A moving tag's next refresh records available
 digests and preserves the previous observation. Whole-project matching across
-unrelated repositories/images is not guessed.
+unrelated repositories/images is not guessed. GitHub case and `.git` suffix
+aliases share one active queue identity. Compatibility handling preserves
+historical observations and alias provenance, including existing databases.
+Previously accepted identities that cannot be normalized are retained separately
+for manual identity review and excluded from active scheduling. Valid work and
+reports continue; the identity diagnostic remains a current error until the
+saved identity is resolved through reviewed state maintenance. Original rows and
+observations are not deleted or marked checked.
 
 A process-level lock prevents simultaneous runs against the same local SQLite
 state. It is released on a crash. Each completed observation is saved before
@@ -177,7 +208,23 @@ atomically replaces `OUTPUT/latest.json` after the report set succeeds.
 historical observations not rechecked. `queue` contains selected candidates still
 awaiting first investigation. Skipped records include not-due, excluded and
 budget-deferred work with reasons. A run with zero fresh findings still produces
-a report and retains historical findings.
+a report and retains historical findings. A normal no-work run is valid. Due work
+with zero possible attempts because the source budget was exhausted is reported
+as no progress and fails `--fail-on-errors`; a partially completed bounded batch
+is not an error merely because some work was deferred.
+
+The local page offers **All findings & inventories** and **Coverage review needed**
+views alongside the three support-status filters. Word, CSV and JSON preserve the
+same coverage reasons and evidence references, with current and historical
+observations distinguished. The coverage view may include a supported artifact
+whose wider collected inventory remains incomplete.
+
+Raw JSON preserves original source/model text with lossless character escapes.
+Word, CSV and diagnostic text visibly escape XML-invalid characters; invalid
+hyperlink destinations are shown as plain text rather than rewritten links.
+SQLite's scalar scope representation uses the same display convention while the
+raw result preserves the exact scope. These output policies do not normalize
+candidate identities or change the evidence verdict.
 
 The browser UI renders source text as text, filters by finding status, expands
 evidence, and downloads only reports beneath the configured output directory.

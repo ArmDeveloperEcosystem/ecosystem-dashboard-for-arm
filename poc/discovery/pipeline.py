@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
 import math
-from pathlib import Path
 import re
 import sqlite3
 import time
 import uuid
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import yaml
 
 from .http import BoundedHTTP, CollectionError
+from .identity import normalize_github_name
 from .sources import discover_github, dockerhub_collect, github_collect, unknown
+from .text import display_text, json_dumps
 
 DEFAULT_LIMITS = {
     "max_candidates": 8,
@@ -64,7 +66,7 @@ def normalize_candidate(value):
         raise ValueError(
             "Candidates require source github/dockerhub and an owner/name identifier"
         )
-    name = name.removesuffix(".git").lower() if source == "github" else name.lower()
+    name = normalize_github_name(name) if source == "github" else name.lower()
     tag = str(value.get("tag", "latest"))
     if source == "dockerhub" and not re.fullmatch(
         r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", tag
@@ -101,9 +103,120 @@ def open_state(path):
           UNIQUE(run_id, candidate_id)
         );
         CREATE INDEX IF NOT EXISTS due_candidates ON candidates(next_check_at);
+        CREATE TABLE IF NOT EXISTS candidate_aliases (
+          alias_id TEXT PRIMARY KEY, canonical_id TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS pipeline_lock (id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT NOT NULL, expires_at TEXT NOT NULL);
     """)
     return db
+
+
+def reconcile_candidate_aliases(db):
+    """Collapse legacy GitHub aliases without changing immutable observations.
+
+    Only active queue rows are merged. Historical observation IDs/results and
+    dated exports remain exact; candidate_aliases records the provenance path.
+    """
+    groups, quarantined = {}, []
+    for row in db.execute("SELECT * FROM candidates ORDER BY id").fetchall():
+        try:
+            candidate = normalize_candidate(json.loads(row["payload"]))
+        except (ValueError, TypeError, AttributeError) as exc:
+            # Earlier normalization admitted malformed suffix-only repositories.
+            # Keep their saved state/evidence exact, but never repeatedly collect
+            # an invalid identity or let it prevent unrelated work/publication.
+            quarantined.append(
+                {
+                    "candidate_id": row["id"],
+                    "source": "identity_review",
+                    "reason": f"Saved identity quarantined from active work; manual identity review required: {exc}",
+                    "first_seen": row["first_seen"],
+                    "checked_at": row["checked_at"],
+                    "next_check_at": row["next_check_at"],
+                    "investigation_count": row["investigation_count"],
+                    "last_status": row["last_status"],
+                }
+            )
+            continue
+        groups.setdefault(candidate["id"], []).append((row, candidate))
+    for canonical_id, members in groups.items():
+        aliases = [row["id"] for row, _ in members if row["id"] != canonical_id]
+        if not aliases:
+            continue
+        # Earliest due work stays due. Latest actual observation supplies the
+        # current evidence; verdict type never decides which history wins.
+        latest_row, latest_payload = max(
+            members,
+            key=lambda item: (
+                item[0]["checked_at"] or "",
+                item[0]["last_seen"],
+                item[0]["id"],
+            ),
+        )
+        evidence_rows = [row for row, _ in members if row["last_result"] is not None]
+        latest_evidence = max(
+            evidence_rows,
+            key=lambda row: (row["checked_at"] or "", row["id"]),
+            default=None,
+        )
+        first_seen = min(row["first_seen"] for row, _ in members)
+        last_seen = max(row["last_seen"] for row, _ in members)
+        next_check = min(row["next_check_at"] for row, _ in members)
+        investigations = sum(row["investigation_count"] for row, _ in members)
+        for alias in aliases:
+            db.execute(
+                "INSERT INTO candidate_aliases(alias_id,canonical_id) VALUES (?,?) ON CONFLICT(alias_id) DO UPDATE SET canonical_id=excluded.canonical_id",
+                (alias, canonical_id),
+            )
+            db.execute(
+                "UPDATE candidate_aliases SET canonical_id=? WHERE canonical_id=?",
+                (canonical_id, alias),
+            )
+        result = None
+        if latest_evidence:
+            result = json.loads(latest_evidence["last_result"])
+            result.update(
+                candidate_id=canonical_id,
+                name=latest_payload["name"],
+                first_seen=first_seen,
+                next_check_at=next_check,
+                investigation_count=investigations,
+                historical_candidate_ids=[
+                    row[0]
+                    for row in db.execute(
+                        "SELECT alias_id FROM candidate_aliases WHERE canonical_id=? ORDER BY alias_id",
+                        (canonical_id,),
+                    )
+                ],
+            )
+        db.execute(
+            """INSERT INTO candidates(id,payload,first_seen,last_seen,next_check_at,checked_at,
+                   investigation_count,last_status,last_result,last_fingerprint)
+               VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                   payload=excluded.payload,first_seen=excluded.first_seen,last_seen=excluded.last_seen,
+                   next_check_at=excluded.next_check_at,checked_at=excluded.checked_at,
+                   investigation_count=excluded.investigation_count,last_status=excluded.last_status,
+                   last_result=excluded.last_result,last_fingerprint=excluded.last_fingerprint""",
+            (
+                canonical_id,
+                json_dumps(latest_payload),
+                first_seen,
+                last_seen,
+                next_check,
+                latest_evidence["checked_at"]
+                if latest_evidence
+                else latest_row["checked_at"],
+                investigations,
+                latest_evidence["last_status"] if latest_evidence else None,
+                json_dumps(result) if result is not None else None,
+                latest_evidence["last_fingerprint"] if latest_evidence else None,
+            ),
+        )
+        db.executemany(
+            "DELETE FROM candidates WHERE id=?", [(alias,) for alias in aliases]
+        )
+    db.commit()
+    return quarantined
 
 
 def catalog_identities(path):
@@ -369,7 +482,7 @@ def run_pipeline(
             "UPDATE runs SET finished_at=?,summary=? WHERE finished_at IS NULL",
             (
                 at,
-                json.dumps(
+                json_dumps(
                     {
                         "status": "interrupted",
                         "error": "Previous process ended before publishing a complete report; saved observations are retained.",
@@ -401,7 +514,7 @@ def run_pipeline(
                 "UPDATE runs SET finished_at=?,summary=? WHERE id=?",
                 (
                     timestamp(utcnow()),
-                    json.dumps(
+                    json_dumps(
                         {
                             "status": "failed",
                             "error": f"{type(exc).__name__}: {str(exc)[:400]}",
@@ -452,22 +565,12 @@ def _run(
     except (OSError, ValueError, yaml.YAMLError) as exc:
         tracked, catalog_state = set(), "unavailable"
         failures.append({"source": "catalog", "reason": str(exc)})
-    known_ids = {row[0] for row in db.execute("SELECT id FROM candidates")}
-    # Current seeds already have a reserved place in this run's queue, even on
-    # the first invocation. Do not spend a discovery slot on them again.
-    for seed in config.get("seeds", [])[: limits["max_seed_candidates"]]:
-        try:
-            known_ids.add(normalize_candidate(seed)["id"])
-        except (ValueError, AttributeError):
-            pass
-    discovered, search_failures, search_skips = discover_github(
-        http, config.get("discovery", {}), limits, known_ids=known_ids
+    quarantined = reconcile_candidate_aliases(db)
+    quarantined_ids = {item["candidate_id"] for item in quarantined}
+    failures.extend(
+        {key: item[key] for key in ("candidate_id", "source", "reason")}
+        for item in quarantined
     )
-    failures.extend(search_failures)
-    source_records_examined = sum(
-        s.get("count", 0) for s in search_skips if s.get("informational")
-    )
-    skipped.extend(s for s in search_skips if not s.get("informational"))
     seeds = config.get("seeds", [])
     if len(seeds) > limits["max_seed_candidates"]:
         skipped.append(
@@ -476,7 +579,7 @@ def _run(
                 "count": len(seeds) - limits["max_seed_candidates"],
             }
         )
-    for raw in seeds[: limits["max_seed_candidates"]] + discovered:
+    for raw in seeds[: limits["max_seed_candidates"]]:
         try:
             candidate = normalize_candidate(raw)
         except (ValueError, AttributeError) as exc:
@@ -484,13 +587,17 @@ def _run(
             continue
         db.execute(
             "INSERT INTO candidates(id,payload,first_seen,last_seen,next_check_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,last_seen=excluded.last_seen",
-            (candidate["id"], json.dumps(candidate), at, at, at),
+            (candidate["id"], json_dumps(candidate), at, at, at),
         )
     db.commit()
     force = bool(config.get("force_refresh", False))
-    all_candidates = db.execute(
-        "SELECT * FROM candidates ORDER BY next_check_at,first_seen,id"
-    ).fetchall()
+    all_candidates = [
+        row
+        for row in db.execute(
+            "SELECT * FROM candidates ORDER BY next_check_at,first_seen,id"
+        ).fetchall()
+        if row["id"] not in quarantined_ids
+    ]
     due = [row for row in all_candidates if force or row["next_check_at"] <= at]
     # Older queued work first; within a batch use explicit seed order, then
     # GitHub star order. Never add incompatible pull/star units together.
@@ -504,6 +611,7 @@ def _run(
         key=lambda row: (
             row["next_check_at"],
             row["first_seen"],
+            row["checked_at"] or "",
             0 if row["id"] in seed_priority else 1,
             seed_priority.get(row["id"], 0),
             -valid_stars(json.loads(row["payload"]).get("discovery_stars")),
@@ -520,19 +628,22 @@ def _run(
                     "last_status": row["last_status"],
                 }
             )
-    findings = []
-    for row in due[: limits["max_candidates"]]:
-        if (
-            time.monotonic() - started >= limits["max_seconds"]
-            or http.requests_used >= limits["max_requests"]
-        ):
-            skipped.append(
-                {
-                    "candidate_id": row["id"],
-                    "reason": "Run time or request limit reached; queued for next run",
-                }
-            )
-            continue
+    initial_due = list(due)
+    findings, attempted_ids = [], set()
+
+    def resources_available():
+        collection_started = min(started, getattr(http, "started", started))
+        return (
+            time.monotonic() - collection_started < limits["max_seconds"]
+            and http.requests_used < limits["max_requests"]
+        )
+
+    def investigate(row):
+        if row["id"] in attempted_ids:
+            return
+        if len(attempted_ids) >= limits["max_candidates"] or not resources_available():
+            return
+        attempted_ids.add(row["id"])
         candidate = json.loads(row["payload"])
         try:
             collector = (
@@ -593,7 +704,7 @@ def _run(
         next_check = timestamp(now + timedelta(hours=refresh[result["status"]]))
         result["next_check_at"] = next_check
         fingerprint = hashlib.sha256(
-            json.dumps(
+            json_dumps(
                 {
                     "status": result["status"],
                     "scope": result["scope"],
@@ -612,7 +723,7 @@ def _run(
             ).encode()
         ).hexdigest()
         result["evidence_changed"] = fingerprint != row["last_fingerprint"]
-        serialized = json.dumps(result, ensure_ascii=False)
+        serialized = json_dumps(result)
         db.execute(
             "INSERT INTO observations(run_id,candidate_id,checked_at,status,scope,fingerprint,result) VALUES (?,?,?,?,?,?,?)",
             (
@@ -620,7 +731,7 @@ def _run(
                 candidate["id"],
                 at,
                 result["status"],
-                result["scope"],
+                display_text(result["scope"]),
                 fingerprint,
                 serialized,
             ),
@@ -646,13 +757,107 @@ def _run(
             }
             for error in result["failures"]
         )
-    for row in due[limits["max_candidates"] :]:
+
+    # A saved investigation gets the first opportunity before new searches can
+    # consume the shared allowance. Discovery then gets one bounded phase even
+    # when a continuing backlog fills the investigation allowance.
+    if initial_due:
+        investigate(initial_due[0])
+    known_ids = {
+        row[0] for row in db.execute("SELECT id FROM candidates")
+    } - quarantined_ids
+    discovery_deferred = (
+        bool(config.get("discovery", {}).get("github_queries"))
+        and not resources_available()
+    )
+    if discovery_deferred:
+        discovered, search_failures, search_skips = (
+            [],
+            [],
+            [
+                {
+                    "source": "github_search",
+                    "reason": "Discovery deferred: shared collection time or request allowance exhausted",
+                }
+            ],
+        )
+    else:
+        discovered, search_failures, search_skips = discover_github(
+            http, config.get("discovery", {}), limits, known_ids=known_ids
+        )
+    failures.extend(search_failures)
+    search_counts = {
+        item["reason"]: item.get("count", 0)
+        for item in search_skips
+        if item.get("informational")
+    }
+    skipped.extend(item for item in search_skips if not item.get("informational"))
+    discovered_ids = set()
+    for raw in discovered:
+        try:
+            candidate = normalize_candidate(raw)
+        except (ValueError, AttributeError) as exc:
+            skipped.append({"candidate": str(raw), "reason": str(exc)})
+            continue
+        # Sources can repeat an existing identity despite normalization. Never
+        # overwrite its seeded ordering/payload or reattempt it in this run.
+        if candidate["id"] in known_ids:
+            continue
+        db.execute(
+            "INSERT INTO candidates(id,payload,first_seen,last_seen,next_check_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
+            (candidate["id"], json_dumps(candidate), at, at, at),
+        )
+        known_ids.add(candidate["id"])
+        discovered_ids.add(candidate["id"])
+    db.commit()
+    all_candidates = [
+        row
+        for row in db.execute(
+            "SELECT * FROM candidates ORDER BY next_check_at,first_seen,id"
+        ).fetchall()
+        if row["id"] not in quarantined_ids
+    ]
+    new_due = sorted(
+        (row for row in all_candidates if row["id"] in discovered_ids),
+        key=lambda row: (
+            -valid_stars(json.loads(row["payload"]).get("discovery_stars")),
+            row["id"],
+        ),
+    )
+    due = initial_due + new_due
+    for row in initial_due[1:] + new_due:
+        investigate(row)
+    for row in due:
+        if row["id"] in attempted_ids:
+            continue
         skipped.append(
             {
                 "candidate_id": row["id"],
-                "reason": "Run candidate limit reached; saved queue retained",
+                "reason": "Run candidate limit reached; saved queue retained"
+                if len(attempted_ids) >= limits["max_candidates"]
+                else "Run time or request limit reached; queued for next run",
             }
         )
+    no_progress = bool(due) and not attempted_ids and not resources_available()
+    scheduling = {
+        "status": "no_progress"
+        if no_progress
+        else ("progress" if attempted_ids else "no_work"),
+        "due_at_start": len(initial_due),
+        "due_total": len(due),
+        "attempted": len(attempted_ids),
+        "deferred_due": len(due) - len(attempted_ids),
+        "discovery_deferred": discovery_deferred,
+        "reason": "Due investigations could not start because the shared collection allowance was exhausted."
+        if no_progress
+        else (
+            "Investigations attempted within the shared allowance; remaining due work is retained."
+            if attempted_ids
+            else "No eligible investigations were due."
+        ),
+    }
+    if no_progress:
+        failures.append({"source": "scheduler", "reason": scheduling["reason"]})
     # Model latency has its own budget and cannot displace source collection.
     for result in findings:
         if result["ai_review"]["status"] != "pending":
@@ -671,7 +876,7 @@ def _run(
                     "reason": str(exc)[:500],
                 }
             )
-        serialized = json.dumps(result, ensure_ascii=False)
+        serialized = json_dumps(result)
         db.execute(
             "UPDATE observations SET result=? WHERE run_id=? AND candidate_id=?",
             (serialized, run_id, result["candidate_id"]),
@@ -686,6 +891,12 @@ def _run(
         "SELECT id,last_result,next_check_at,investigation_count FROM candidates WHERE last_result IS NOT NULL ORDER BY id"
     ).fetchall()
     saved_results = [json.loads(row["last_result"]) for row in saved]
+    identity_aliases = [
+        dict(row)
+        for row in db.execute(
+            "SELECT alias_id,canonical_id FROM candidate_aliases ORDER BY alias_id"
+        )
+    ]
     investigated_ids = {f["candidate_id"] for f in findings}
     retained_findings = [
         {**result, "historical": True}
@@ -734,6 +945,7 @@ def _run(
         for row in db.execute(
             "SELECT * FROM candidates WHERE last_result IS NULL ORDER BY first_seen,id"
         )
+        if row["id"] not in quarantined_ids
     ]
     previous_run_failures = [
         {
@@ -763,8 +975,12 @@ def _run(
         refreshed=sum(f["investigated_before"] for f in findings),
         catalog_tracked=sum(f["catalog_tracked"] is True for f in findings),
         queued_total=len(all_candidates),
+        stored_candidates=len(all_candidates) + len(quarantined),
+        quarantined_candidates=len(quarantined),
         pending_investigation=len(queue),
-        due_at_start=len(due),
+        due_at_start=len(initial_due),
+        due_total=len(due),
+        deferred_due=scheduling["deferred_due"],
         skipped=len(skipped),
         failures=len(failures),
         requests=http.requests_used,
@@ -784,6 +1000,7 @@ def _run(
         "status": "completed",
         "outcome": "degraded" if current_errors else "completed",
         "current_errors": current_errors,
+        "scheduling": scheduling,
         "run_id": run_id,
         "generated_at": at,
         "finished_at": timestamp(utcnow()),
@@ -796,6 +1013,8 @@ def _run(
         "state_path": str(state_path.resolve()),
         "report_paths": paths,
         "saved_history": history,
+        "identity_aliases": identity_aliases,
+        "quarantined_candidates": quarantined,
         "queue": queue,
         "previous_run_failures": previous_run_failures,
         "catalog_comparison": {"status": catalog_state, "identity_count": len(tracked)},
@@ -831,8 +1050,12 @@ def _run(
         ],
         "github_queries": config.get("discovery", {}).get("github_queries", []),
         "minimum_stars": config.get("discovery", {}).get("min_stars", 500),
-        "source_records_examined": source_records_examined,
-        "priority_policy": "Oldest due work first; configured seeds in order, then newly discovered repositories by GitHub stars. Pulls and stars are not combined.",
+        "source_records_examined": search_counts.get("Source records examined", 0),
+        "source_records_fetched": search_counts.get("Source records fetched", 0),
+        "source_candidates_selected": search_counts.get(
+            "Discovery candidates selected", len(discovered_ids)
+        ),
+        "priority_policy": "Attempt the oldest due scope, then bounded discovery, remaining saved due scopes, and newly discovered repositories by stars. One shared request/time/investigation allowance applies; a first investigation that exhausts it can defer discovery. Pulls and stars are not combined.",
         "repository_release_selection": "First non-draft, non-prerelease in GitHub API order, within configured pagination limits",
         "registry_selection": "Configured exact Docker Hub image/tag seeds",
         "retained_queue_policy": "Previously queued candidates remain eligible until investigated or not due; changing seeds does not delete history",
@@ -843,11 +1066,11 @@ def _run(
     write_reports(summary)
     latest = output_dir / "latest.json"
     temp = output_dir / f".latest-{run_id}.json"
-    temp.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    temp.write_text(json_dumps(summary, indent=2), encoding="utf-8")
     temp.replace(latest)
     db.execute(
         "UPDATE runs SET finished_at=?,summary=? WHERE id=?",
-        (summary["finished_at"], json.dumps(summary), run_id),
+        (summary["finished_at"], json_dumps(summary), run_id),
     )
     db.commit()
     return summary

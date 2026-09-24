@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
@@ -125,13 +125,40 @@ def github_pages(
     stop_after=None,
     stop_when=None,
     alternate_paths=(),
+    max_records=None,
 ):
-    """Follow GitHub Link pagination. Return items, completeness, and errors."""
+    """Follow GitHub Link pagination. Return items, completeness, and errors.
+
+    Discovery can impose a fetched-record allowance. Keep its page size fixed
+    within a query and stop before a further full page would exceed that
+    allowance. Release and asset pagination retain their completeness rules.
+    """
     values, seen, incomplete_seen = [], set(), False
     origin = urlparse(url)
     approved_paths = {origin.path, *alternate_paths}
     next_url, first_params = url, {"per_page": 100, **(params or {})}
+    page_size = first_params["per_page"]
     for _ in range(max_pages):
+        if (
+            max_records is not None
+            and hasattr(http, "limits")
+            and (
+                getattr(http, "requests_used", 0) >= http.limits["max_requests"]
+                or time.monotonic() - getattr(http, "started", time.monotonic())
+                >= http.limits["max_seconds"]
+            )
+        ):
+            return (
+                values,
+                False,
+                ["GitHub search reports incomplete results"] if incomplete_seen else [],
+            )
+        if max_records is not None and len(values) + page_size > max_records:
+            return (
+                values,
+                False,
+                ["GitHub search reports incomplete results"] if incomplete_seen else [],
+            )
         if next_url in seen:
             return values, False, ["Pagination cycle detected"]
         seen.add(next_url)
@@ -147,6 +174,10 @@ def github_pages(
             isinstance(data, dict) and bool(data.get("incomplete_results", False))
         )
         values.extend(page)
+        if max_records is not None and len(page) > page_size:
+            # A remote endpoint can violate per_page. Account for what it
+            # actually returned, stop immediately, and surface the violation.
+            return values, False, ["Search response exceeded its requested page size"]
         link = headers.get("Link", headers.get("link", ""))
         if not isinstance(link, str):
             return values, False, ["Unexpected pagination header shape"]
@@ -200,4 +231,18 @@ def github_pages(
                 False,
                 ["Rejected pagination URL outside the original metadata endpoint"],
             )
+        if max_records is not None:
+            next_page_sizes = parse_qs(target.query, keep_blank_values=True).get(
+                "per_page"
+            )
+            if next_page_sizes is not None and next_page_sizes != [str(page_size)]:
+                return values, False, ["Search pagination changed its fixed page size"]
+            if next_page_sizes is None:
+                first_params = {"per_page": page_size}
+    if max_records is not None:
+        return (
+            values,
+            False,
+            ["GitHub search reports incomplete results"] if incomplete_seen else [],
+        )
     return values, False, ["Pagination limit reached; inventory is incomplete"]

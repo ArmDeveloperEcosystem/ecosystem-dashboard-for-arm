@@ -14,6 +14,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
+from .text import display_text, json_dumps
+
 STATUS = {
     "supported": "Arm64 supported",
     "gap": "Arm64 support gap",
@@ -22,12 +24,17 @@ STATUS = {
 
 
 def clean(value):
-    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", str(value))
+    return display_text(value)
 
 
 def hyperlink(paragraph, label, url):
     """Write evidence as a link only when its destination is unambiguous HTTPS."""
     url = str(url)
+    if clean(url) != url:
+        # A display escape is not a replacement URL. Keep the original destination
+        # in raw JSON; show its escaped form here without creating a relationship.
+        paragraph.add_run(clean(label) + " (" + clean(url) + ")")
+        return
     try:
         parts = urlsplit(url)
         valid = (
@@ -236,6 +243,11 @@ def write_csv(path, summary):
         "reason",
         "recommended_action",
         "evidence_urls",
+        "coverage_review_required",
+        "coverage_review_reasons",
+        "coverage_inventory_complete",
+        "coverage_evidence_urls",
+        "assessment_coverage",
     ]
     with open(path, "w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
@@ -253,6 +265,19 @@ def write_csv(path, summary):
                 values["evidence_urls"] = " | ".join(
                     e["url"] for e in finding.get("evidence", [])
                 )
+                coverage = finding.get("assessment_coverage")
+                if coverage is not None:
+                    values.update(
+                        coverage_review_required=coverage.get("review_required"),
+                        coverage_review_reasons=" | ".join(
+                            coverage.get("review_reasons", [])
+                        ),
+                        coverage_inventory_complete=coverage.get("inventory_complete"),
+                        coverage_evidence_urls=" | ".join(
+                            coverage.get("evidence_urls", [])
+                        ),
+                        assessment_coverage=json_dumps(coverage),
+                    )
                 writer.writerow({k: csv_safe(v) for k, v in values.items()})
 
 
@@ -266,6 +291,68 @@ def catalog_label(value):
     )
 
 
+def add_coverage(doc, finding):
+    """Expose inventory questions without reclassifying the evidence verdict."""
+    coverage = finding.get("assessment_coverage")
+    if coverage is None:
+        if finding.get("source") == "github":
+            doc.add_paragraph(
+                "Structured assessment coverage was not recorded for this finding. "
+                "Refer to its dated scope and original evidence.",
+                "Evidence",
+            )
+        return
+    doc.add_heading("Assessment coverage", level=3)
+    complete = coverage.get("inventory_complete")
+    doc.add_paragraph(
+        "Inventory completeness: "
+        + (
+            "complete for the inspected scope"
+            if complete is True
+            else "incomplete"
+            if complete is False
+            else "not established"
+        )
+        + ". Coverage review does not change the support verdict.",
+        "Metadata",
+    )
+    if coverage.get("review_required"):
+        doc.add_paragraph(
+            "Coverage review needed: "
+            + clean(" ".join(coverage.get("review_reasons", []))),
+            "Metadata",
+        )
+    supported = coverage.get("supported_artifacts", [])
+    doc.add_paragraph(
+        "Verified advertised Linux Arm64 artifacts: " + clean("; ".join(supported))
+        if supported
+        else "No advertised Linux Arm64 artifact was established in this inventory.",
+        "Evidence",
+    )
+    remaining = coverage.get("remaining_inventory", [])
+    doc.add_paragraph(
+        f"Remaining collected inventory: {len(remaining)} records. "
+        "Other architectures or component names alone do not establish a missing Arm64 component.",
+        "Evidence",
+    )
+    if remaining:
+        table(
+            doc,
+            ["Collected asset", "Inventory assessment"],
+            [
+                [
+                    item.get("name") or "(unnamed asset)",
+                    str(item.get("assessment", "unassessed")).replace("_", " ")
+                    + (": " + str(item["reason"]) if item.get("reason") else ""),
+                ]
+                for item in remaining
+            ],
+            [5100, 4260],
+        )
+    for url in coverage.get("evidence_urls", []):
+        hyperlink(doc.add_paragraph(style="Evidence"), "Inventory evidence", url)
+
+
 def add_finding(doc, finding):
     """A readable, scoped decision record; it never widens a collector verdict."""
     f = finding
@@ -273,7 +360,9 @@ def add_finding(doc, finding):
     doc.add_heading(clean(f["name"]), level=2)
     doc.add_paragraph("Checked scope: " + clean(f["scope"]), "Metadata")
     doc.add_paragraph(
-        f"Evidence checked: {f['checked_at']} | Next refresh: {f['next_check_at']}",
+        clean(
+            f"Evidence checked: {f['checked_at']} | Next refresh: {f['next_check_at']}"
+        ),
         "Metadata",
     )
     doc.add_paragraph(
@@ -295,7 +384,7 @@ def add_finding(doc, finding):
             "Repository archived: " + ("yes" if metadata["archived"] else "no")
         )
     if maintenance:
-        doc.add_paragraph(" | ".join(maintenance), "Metadata")
+        doc.add_paragraph(clean(" | ".join(maintenance)), "Metadata")
     if metadata.get("publisher_recognition"):
         doc.add_paragraph(
             "Publisher context: "
@@ -380,6 +469,7 @@ def add_finding(doc, finding):
     # Word can still paginate an unusually long AI note/evidence record.
     for paragraph in doc.paragraphs[first_paragraph:-1]:
         paragraph.paragraph_format.keep_with_next = True
+    add_coverage(doc, f)
 
 
 def add_ai_review(doc, f):
@@ -427,7 +517,9 @@ def add_history(doc, summary):
         doc.add_heading(clean(f["name"]) + " | " + STATUS[f["status"]], level=2)
         doc.add_paragraph("Historical scope: " + clean(f["scope"]), "Metadata")
         doc.add_paragraph(
-            f"Originally checked: {f['checked_at']} | Refresh due: {f['next_check_at']}",
+            clean(
+                f"Originally checked: {f['checked_at']} | Refresh due: {f['next_check_at']}"
+            ),
             "Metadata",
         )
         doc.add_paragraph(
@@ -459,6 +551,7 @@ def add_history(doc, summary):
         # when the bounded record fits on a page, as for a fresh finding above.
         for paragraph in doc.paragraphs[first_paragraph:-1]:
             paragraph.paragraph_format.keep_with_next = True
+        add_coverage(doc, f)
 
 
 def add_work_list(doc, title, items):
@@ -495,9 +588,7 @@ def add_work_list(doc, title, items):
 def write_reports(summary):
     """Write one consistent report set; fresh counts never include historical rows."""
     paths = summary["report_paths"]
-    Path(paths["json"]).write_text(
-        json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    Path(paths["json"]).write_text(json_dumps(summary, indent=2), encoding="utf-8")
     write_csv(paths["csv"], summary)
     doc = Document()
     document_style(doc)
@@ -506,7 +597,9 @@ def write_reports(summary):
         "Internal evidence review | Selected releases and container tags", "Subtitle"
     )
     doc.add_paragraph(
-        "Run started: " + summary["generated_at"] + " | Run: " + summary["run_id"],
+        clean(
+            "Run started: " + summary["generated_at"] + " | Run: " + summary["run_id"]
+        ),
         "Metadata",
     )
     doc.add_heading("Decision summary", level=1)
@@ -529,6 +622,29 @@ def write_reports(summary):
         f"Metadata requests: {c['requests']}. Collection/review issues: {c['failures']}.",
         "Table Summary",
     )
+    coverage_current = sum(
+        bool(f.get("assessment_coverage", {}).get("review_required"))
+        for f in summary["findings"]
+    )
+    coverage_historical = sum(
+        bool(f.get("assessment_coverage", {}).get("review_required"))
+        for f in summary.get("retained_findings", [])
+    )
+    doc.add_paragraph(
+        f"Coverage questions: {coverage_current} findings checked this run; "
+        f"{coverage_historical} historical findings. These flags are separate from support status counts.",
+        "Metadata",
+    )
+    scheduling = summary.get("scheduling")
+    if scheduling:
+        doc.add_paragraph(
+            clean(
+                f"Queue progress: {scheduling['status'].replace('_', ' ')}; "
+                f"{scheduling['attempted']} attempted; {scheduling['deferred_due']} due scopes deferred. "
+                + scheduling.get("reason", "")
+            ),
+            "Metadata",
+        )
     if summary.get("queue") or c.get("pending_investigation"):
         doc.add_paragraph(
             f"Awaiting first investigation: {c.get('pending_investigation', len(summary.get('queue', [])))}. "
@@ -540,7 +656,7 @@ def write_reports(summary):
         "Unknown does not mean unsupported. These are metadata findings, not certification or runtime tests. "
         "Catalog membership is context and does not determine the verdict."
     )
-    doc.add_paragraph(summary["ai_review"]["disclosure"], "Metadata")
+    doc.add_paragraph(clean(summary["ai_review"]["disclosure"]), "Metadata")
     if summary["ai_review"].get("requested"):
         ai = summary["ai_review"]
         doc.add_paragraph(
@@ -601,9 +717,11 @@ def write_reports(summary):
     )
     if selection:
         doc.add_paragraph(
-            f"Configured seeds: {len(selection.get('seeds', []))}. GitHub discovery queries: "
-            + ("; ".join(queries) or "none")
-            + f". Minimum search stars: {selection.get('minimum_stars', 'not specified')}.",
+            clean(
+                f"Configured seeds: {len(selection.get('seeds', []))}. GitHub discovery queries: "
+                + ("; ".join(queries) or "none")
+                + f". Minimum search stars: {selection.get('minimum_stars', 'not specified')}."
+            ),
             "Metadata",
         )
         for key, label in (
@@ -614,35 +732,56 @@ def write_reports(summary):
         ):
             if selection.get(key):
                 doc.add_paragraph(label + ": " + clean(selection[key]), "Metadata")
+    if selection.get("source_records_fetched") is not None:
+        doc.add_paragraph(
+            f"Discovery source records: {selection['source_records_fetched']} collected; "
+            f"{selection.get('source_records_examined', 0)} examined; "
+            f"{selection.get('source_candidates_selected', 0)} candidates selected.",
+            "Metadata",
+        )
     limits = summary["limits"]
     main_limits = [
         ("max_candidates", "Scopes investigated"),
         ("max_discovered", "New search candidates"),
+        ("max_source_records", "Source records collected"),
         ("max_requests", "Metadata requests"),
         ("max_seconds", "Run seconds"),
         ("max_queries", "Search queries"),
     ]
-    table(
+    workload_table = table(
         doc,
         ["Workload limit", "Maximum per run"],
         [[label, limits[key]] for key, label in main_limits if key in limits],
         [6500, 2860],
     )
+    # This small table is one workload summary; keep it on one page when it fits.
+    for row in workload_table.rows[:-1]:
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.keep_with_next = True
     doc.add_paragraph(
         "These are maximum workloads, not promised findings. A request limit is not a package count: "
         "one candidate may need several requests. Full request, response-size and pagination limits are retained in JSON.",
         "Evidence",
     )
     doc.add_paragraph(
-        "Refresh intervals: "
-        + "; ".join(
-            f"{STATUS.get(key, key)} every {value} hours"
-            for key, value in summary["refresh_hours"].items()
-        )
-        + ". Previously checked candidates retain their original dates until refreshed.",
+        clean(
+            "Refresh intervals: "
+            + "; ".join(
+                f"{STATUS.get(key, key)} every {value} hours"
+                for key, value in summary["refresh_hours"].items()
+            )
+            + ". Previously checked candidates retain their original dates until refreshed."
+        ),
         "Metadata",
     )
     add_work_list(doc, "Queued for first investigation", summary.get("queue", []))
+    if summary.get("quarantined_candidates"):
+        add_work_list(
+            doc,
+            "Saved identities requiring manual review",
+            summary["quarantined_candidates"],
+        )
     skipped = summary.get("skipped", [])
     not_due = [item for item in skipped if item.get("reason") == "Not due for refresh"]
     other_skips = [item for item in skipped if item not in not_due]
@@ -651,6 +790,7 @@ def write_reports(summary):
         doc, "Skipped, excluded or deferred work: recorded reasons", other_skips
     )
     add_work_list(doc, "Collection and review issues", summary.get("failures", []))
+    boundaries_start = len(doc.paragraphs)
     doc.add_heading("Boundaries and traceability", level=1)
     for limitation in summary["limitations"]:
         doc.add_paragraph(clean(limitation), "Metadata")
@@ -661,4 +801,12 @@ def write_reports(summary):
         "Saved state allows subsequent runs to continue work without reopening duplicate investigations.",
         "Evidence",
     )
+    doc.add_paragraph(
+        "Characters that cannot appear in Word XML are shown as visible Unicode escapes "
+        "in Word, CSV and diagnostics. Invalid link destinations are shown as plain text. "
+        "The accompanying JSON preserves the exact original source and model text.",
+        "Evidence",
+    )
+    for paragraph in doc.paragraphs[boundaries_start:-1]:
+        paragraph.paragraph_format.keep_with_next = True
     doc.save(paths["docx"])

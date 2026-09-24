@@ -290,3 +290,99 @@ def test_report_platform_summary_does_not_treat_sbom_as_runtime(report_summary):
         "Publisher context: Docker Official Image. This is not Arm64 certification."
         in xml
     )
+
+
+def test_coverage_questions_preserve_status_counts_and_match_all_exports(
+    report_summary,
+):
+    coverage = {
+        "kind": "github_release_assets",
+        "inventory_complete": False,
+        "supported_artifacts": ["server-linux-arm64.tgz"],
+        "remaining_inventory": [
+            {
+                "name": "client-linux-amd64.tgz",
+                "assessment": "other_linux_binary",
+                "reason": "Other Linux architecture; no component inference",
+            }
+        ],
+        "review_required": True,
+        "review_reasons": ["Inventory pagination is incomplete."],
+        "evidence_urls": [
+            "https://api.github.com/repos/example/supported/releases/1/assets"
+        ],
+        "limitations": ["Runtime compatibility unassessed"],
+    }
+    report_summary["findings"][1]["assessment_coverage"] = coverage
+    report_summary["retained_findings"][0]["assessment_coverage"] = coverage
+    expected_counts = dict(report_summary["counts"])
+    write_reports(report_summary)
+    exported = json.loads(Path(report_summary["report_paths"]["json"]).read_text())
+    assert exported["counts"] == expected_counts
+    assert exported["findings"][1]["status"] == "supported"
+    with open(report_summary["report_paths"]["csv"], newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert len(rows) == 4
+    supported = next(row for row in rows if row["status"] == "supported")
+    assert supported["coverage_review_required"] == "True"
+    assert json.loads(supported["assessment_coverage"]) == coverage
+    assert supported["coverage_review_reasons"] == coverage["review_reasons"][0]
+    assert supported["coverage_evidence_urls"] == coverage["evidence_urls"][0]
+    assert rows[-1]["record_type"] == "historical_not_rechecked"
+    text = report_text(report_summary["report_paths"]["docx"])
+    assert (
+        "Coverage questions: 1 findings checked this run; 1 historical findings" in text
+    )
+    assert "client-linux-amd64.tgz" in text
+    assert "Coverage review needed: Inventory pagination is incomplete." in text
+    assert "Historical scope:" in text
+    assert report_summary["counts"] == expected_counts
+
+
+def test_coverage_text_and_links_survive_invalid_unicode(report_summary):
+    report_summary["findings"][1]["assessment_coverage"] = {
+        "inventory_complete": True,
+        "supported_artifacts": ["linux-arm64-\ud800.tgz"],
+        "remaining_inventory": [
+            {
+                "name": "client\uffff",
+                "assessment": "ambiguous",
+                "reason": "unsafe\ud800",
+            }
+        ],
+        "review_required": True,
+        "review_reasons": ["ambiguous\ufffe"],
+        "evidence_urls": ["https://github.com/example/tool/\uffff"],
+    }
+    write_reports(report_summary)
+    text = report_text(report_summary["report_paths"]["docx"])
+    assert "client\\uffff" in text
+    assert "ambiguous\\ufffe" in text
+    doc = Document(report_summary["report_paths"]["docx"])
+    assert not any(
+        "\\uffff" in str(rel.target_ref) or "\uffff" in str(rel.target_ref)
+        for rel in doc.part.rels.values()
+    )
+    exported = json.loads(Path(report_summary["report_paths"]["json"]).read_text())
+    assert (
+        exported["findings"][1]["assessment_coverage"]
+        == report_summary["findings"][1]["assessment_coverage"]
+    )
+
+
+def test_run_health_and_collection_counters_are_visible(report_summary):
+    report_summary["scheduling"] = {
+        "status": "no_progress",
+        "attempted": 0,
+        "deferred_due": 1,
+        "reason": "Source budget exhausted; saved work retained.",
+    }
+    report_summary["selection"].update(
+        source_records_fetched=100,
+        source_records_examined=80,
+        source_candidates_selected=2,
+    )
+    write_reports(report_summary)
+    text = report_text(report_summary["report_paths"]["docx"])
+    assert "Queue progress: no progress; 0 attempted; 1 due scopes deferred." in text
+    assert "100 collected; 80 examined; 2 candidates selected" in text
