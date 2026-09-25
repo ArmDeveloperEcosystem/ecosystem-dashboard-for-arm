@@ -1,6 +1,6 @@
 # Conversational package search — validation and release status
 
-Date: 24 September 2026. Review: [PR #1092](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/pull/1092).
+Date: 25 September 2026. Review: [PR #1092](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/pull/1092).
 Base: upstream `main`, `e1871540f0a3e42e7588ab44b09e4796de967fd8`.
 
 The corrected search implementation is a candidate for team acceptance and
@@ -31,6 +31,49 @@ No LLM is added. Default builds keep existing search; the production overlay is
 an explicit opt-in. Windows search remains unchanged. See the [implementation
 guide](README.md) for behavior and limitations and the [deployment
 runbook](deploy/README.md) for runtime limits, routing, rollout and rollback.
+
+## 25 September latency validation
+
+Article-to-package matching now compiles literal package-name patterns once per
+catalog snapshot. Matching boundaries, identities, editions, ordering and evidence
+checks retain their previous behavior. KB requests reuse a bounded HTTP connection
+pool. Pool initialization remains lazy inside admitted workers; per-request
+headers and rejected response cookies prevent session or credential carryover.
+The transport closes only after admitted work finishes, including when the
+application requests nonblocking shutdown.
+
+**419 Python tests**, **113 repository tests** and **10 JavaScript tests** pass.
+Local and production-overlay Hugo builds pass. Added cases cover literal and
+Unicode name boundaries, duplicate editions, equivalence with the former resolver
+on a 1,208-row catalog, actual loopback HTTP/1.1 connection reuse, request isolation,
+initialization deadlines, response-size recovery and shutdown. An independent
+reviewer ran 144 targeted tests plus initialization-recovery and 40 concurrent
+shutdown probes, with no remaining actionable finding in this scope.
+
+Two separate measurements compare the changes with `1076713cc`:
+
+| Measurement | Before, median | After, median | Scope |
+| --- | ---: | ---: | --- |
+| Offline processing with frozen KB responses | 1.06s | 0.24s | Four queries, three repetitions each |
+| Fresh search with live KB retrieval | 3.80s | 2.89s | Four queries, two repetitions per revision |
+| Immediate repeat with KB responses cached | 1.12s | 0.25s | Eight repeats per revision |
+
+The frozen-response check preserved complete responses across 42 query/filter
+cases. Four captured KB payloads were available; remaining cases used controlled
+empty provider responses. The live comparison ran old and new implementations
+sequentially, reversing their order in the second round. It covered vector
+databases, monitoring/alerting, local language-model serving and reverse-proxy web
+servers. All eight paired fresh searches returned identical package IDs, and all
+16 fresh calls succeeded without fallback. Fresh means the local retrieval cache
+was cleared; provider caching was not controlled.
+
+These are small local service measurements, excluding browser rendering and
+production traffic. They do not establish a latency target. The observed KB
+retrieval median remains about 2.45s after the change, including network/client
+overhead; connection reuse alone cannot remove upstream processing time. Server
+stage timings with the KB owners and approved staging measurements remain needed.
+The earlier 118-case concurrent run below mixed cache hits and fallbacks and must
+not be treated as the before/after performance baseline.
 
 ## 24 September correction validation
 

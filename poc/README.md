@@ -151,6 +151,14 @@ descriptions of related software. Follow-up inheritance covers the documented
 license and recorded-test filters; arbitrary language/attribute follow-ups are
 not implemented. The team should include these limits in acceptance decisions.
 
+Package-name matching patterns are prepared once per catalog snapshot and reused
+without changing evidence or identity checks. KB connections use a bounded,
+lazily initialized pool; request headers remain isolated and response cookies
+are not retained. The existing five-minute KB-response cache avoids repeat
+retrieval, while each search still applies its current filters and evidence checks.
+See [RESULTS.md](RESULTS.md#25-september-latency-validation) for measured latency
+changes and their scope.
+
 Configuration: `ARM_KB_SEARCH_URL` (default documented endpoint), optional
 `ARM_KB_API_TOKEN` (server-side environment only). The local run currently needs
 no KB token. Approved staging access, quotas, corpus freshness and dashboard-only

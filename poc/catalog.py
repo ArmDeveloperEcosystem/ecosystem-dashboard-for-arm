@@ -24,6 +24,7 @@ class Catalog:
             )
         self.by_url_id = {}
         self.by_slug = {}
+        title_patterns = []
         for p in self.packages:
             self.by_url_id.setdefault(p.get("url_id", p["id"]), []).append(p)
             self.by_slug.setdefault(p["slug"], []).append(p)
@@ -53,6 +54,15 @@ class Catalog:
                 and bool((record.get("run") or {}).get("url"))
                 and bool((record.get("tests") or {}).get("details"))
             )
+            name = p["title"].strip()
+            if len(name) >= 4:
+                title_patterns.append(
+                    (p, re.compile(r"(?<!\w)" + re.escape(name) + r"(?!\w)", re.I))
+                )
+        # Retain every row, including editions with the same display name.
+        # Catalog-sized pattern sets can exceed re's shared cache, so keep the
+        # compiled patterns for this catalog's lifetime instead of per hit.
+        self._title_patterns = tuple(title_patterns)
 
     def resolve_hit(self, hit: dict) -> list[dict]:
         """Only trusted Arm evidence URLs; identities must exist in this catalog."""
@@ -82,10 +92,7 @@ class Catalog:
         # validate evidence attribution, software roles and query requirements.
         title = str(hit.get("title") or "") + " " + str(hit.get("heading") or "")
         matched = []
-        for p in self.packages:
-            name = p["title"].strip()
-            if len(name) >= 4 and re.search(
-                r"(?<!\w)" + re.escape(name) + r"(?!\w)", title, re.I
-            ):
+        for p, pattern in self._title_patterns:
+            if pattern.search(title):
                 matched.append(p)
         return matched
