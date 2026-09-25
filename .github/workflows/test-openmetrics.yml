@@ -1,4 +1,4 @@
-name: Test OpenMetrics Python Library on Arm64
+name: Test OpenMetrics text format on Arm64
 permissions:
   contents: read
 
@@ -77,10 +77,11 @@ on:
 jobs:
   test-openmetrics:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
     outputs:
       contract_version: "2.0"
       package_slug: ${{ steps.metadata.outputs.package_slug }}
-      package_name: 'OpenMetrics Python Library'
+      package_name: 'OpenMetrics'
       package_version: ${{ steps.version.outputs.version || 'unknown' }}
       run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
       badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
@@ -112,183 +113,391 @@ jobs:
         run: |
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=openmetrics" >> "$GITHUB_OUTPUT"
-          echo "dashboard_link=/opensource_packages/openmetrics" >> "$GITHUB_OUTPUT"
-      - name: Install OpenMetrics Library
+          echo "dashboard_link=/linux/opensource_packages/openmetrics" >> "$GITHUB_OUTPUT"
+      - name: Install official OpenMetrics Python implementation
         id: install
-        run: |
-          echo "Installing OpenMetrics Library (prometheus-client)..."
-          
-          # Install prerequisites
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "python3-pip python3-venv"
-          # Create venv
-          python3 -m venv venv
-          source venv/bin/activate
-          
-          # Install prometheus-client which is the standard implementation for OpenMetrics
-          if pip install prometheus-client; then
-             echo "prometheus-client installed successfully"
-             echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-             echo "prometheus-client installation failed"
-             echo "install_status=failed" >> $GITHUB_OUTPUT
-             exit 1
-          fi
-
-      # ============================================================
-      # CUSTOMIZE THIS: Get the package version
-      # ============================================================
-      - name: Get package version
-        id: version
-        run: |
-          source venv/bin/activate
-          VERSION=$(pip show prometheus-client | grep Version | awk '{print $2}' || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected version: $VERSION"
-
-      # ============================================================
-      # ADD YOUR TESTS BELOW
-      # Each test should:
-      # 1. Have a unique id (test1, test2, etc.)
-      # 2. Track start/end time for duration
-      # 3. Set status=passed or status=failed
-      # 4. Exit 1 on failure
-      # ============================================================
-
-      - name: Test 1 - Import Library
-        id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          source venv/bin/activate
-          
-          if python3 -c "import prometheus_client; print('Import successful')" | grep -q "Import successful"; then
-            echo "✓ Import successful"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ Import failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "install_status=success" >> "$GITHUB_OUTPUT"
+            else
+              echo "install_status=failed" >> "$GITHUB_OUTPUT"
             fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          timeout --kill-after=10s 300s bash .github/actions/apt-bootstrap/bootstrap.sh --packages "python3-venv"
+          VENV=$(mktemp -d "$RUNNER_TEMP/openmetrics-venv.XXXXXX")
+          timeout --kill-after=5s 60s python3 -I -m venv "$VENV"
+          timeout --kill-after=10s 180s "$VENV/bin/python" -I -m pip --isolated install --index-url https://pypi.org/simple --only-binary=:all: --disable-pip-version-check --no-input --retries 2 --timeout 30 prometheus-client
+          echo "OPENMETRICS_PYTHON=$VENV/bin/python" >> "$GITHUB_ENV"
+          finish 0
 
-      - name: Test 2 - Check Installed Version
+      - name: Identify emitted and parsed OpenMetrics format version
+        id: version
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          REPORT=$(timeout --kill-after=5s 30s "$OPENMETRICS_PYTHON" -I - <<'PY'
+          import importlib.metadata as metadata
+          import inspect
+          import os
+          from email.message import Message
+          from pathlib import Path
+          import re
+          import sys
+          import prometheus_client
+          from prometheus_client import CollectorRegistry, Gauge
+          from prometheus_client.openmetrics.exposition import CONTENT_TYPE_LATEST, generate_latest
+          from prometheus_client.openmetrics.parser import text_string_to_metric_families
+
+          dist = metadata.distribution("prometheus-client")
+          assert dist.metadata["Name"] == "prometheus_client" or dist.metadata["Name"] == "prometheus-client", "Wrong implementation"
+          assert re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", dist.version or ""), "Invalid implementation version"
+          assert dist.files, "Missing implementation ownership records"
+          owned = {Path(dist.locate_file(item)).resolve() for item in dist.files}
+          for path in (prometheus_client.__file__, inspect.getfile(generate_latest), inspect.getfile(text_string_to_metric_families)):
+              assert Path(path).resolve() in owned, "Foreign OpenMetrics implementation"
+              print(f"prometheus-client owns {path}", file=sys.stderr)
+          media = Message()
+          media["Content-Type"] = CONTENT_TYPE_LATEST
+          assert media.get_content_type() == "application/openmetrics-text", "Wrong wire format"
+          assert media.get_param("charset") == "utf-8", "Wrong charset"
+          wire_version = media.get_param("version")
+          assert wire_version == "1.0.0", "Unexpected OpenMetrics format version"
+          registry = CollectorRegistry()
+          Gauge("arm_identity", "Wire identity probe", registry=registry).set(7)
+          wire = generate_latest(registry, version=wire_version).decode("utf-8", errors="strict")
+          assert wire.endswith("# EOF\n") and "\r" not in wire, "Invalid OpenMetrics framing"
+          families = list(text_string_to_metric_families(wire))
+          assert len(families) == 1 and families[0].name == "arm_identity" and families[0].type == "gauge"
+          assert [(s.name, s.labels, s.value) for s in families[0].samples] == [("arm_identity", {}, 7)]
+          if "EXPECTED_VERSION" in os.environ:
+              assert wire_version == os.environ["EXPECTED_VERSION"], "Changed format baseline"
+              assert dist.version == os.environ["EXPECTED_IMPLEMENTATION_VERSION"], "Changed implementation baseline"
+          print(f"{wire_version} {dist.version}")
+          PY
+          )
+          [[ "$REPORT" =~ ^1\.0\.0\ [0-9]+(\.[0-9]+){1,3}$ ]]
+          read -r VERSION IMPLEMENTATION_VERSION <<< "$REPORT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "implementation_name=prometheus-client" >> "$GITHUB_OUTPUT"
+          echo "implementation_version=$IMPLEMENTATION_VERSION" >> "$GITHUB_OUTPUT"
+          echo "content_type=application/openmetrics-text; version=1.0.0; charset=utf-8" >> "$GITHUB_OUTPUT"
+          finish 0
+
+      - name: Test 1 - Import OpenMetrics encoder and parser
+        id: test1
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          timeout --kill-after=5s 30s "$OPENMETRICS_PYTHON" -I - <<'PY'
+          from prometheus_client.openmetrics.exposition import generate_latest
+          from prometheus_client.openmetrics.parser import text_string_to_metric_families
+          
+          assert callable(generate_latest) and callable(text_string_to_metric_families)
+          assert generate_latest.__module__ == "prometheus_client.openmetrics.exposition"
+          assert text_string_to_metric_families.__module__.startswith("prometheus_client.openmetrics.")
+          print("OpenMetrics encoder and parser loaded")
+          PY
+          finish 0
+
+      - name: Test 2 - Verify wire version and implementation ownership
         id: test2
+        if: always()
         continue-on-error: true
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+          EXPECTED_IMPLEMENTATION_VERSION: ${{ steps.version.outputs.implementation_version }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          source venv/bin/activate
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          REPORT=$(timeout --kill-after=5s 30s "$OPENMETRICS_PYTHON" -I - <<'PY'
+          import importlib.metadata as metadata
+          import inspect
+          import os
+          from email.message import Message
+          from pathlib import Path
+          import re
+          import sys
+          import prometheus_client
+          from prometheus_client import CollectorRegistry, Gauge
+          from prometheus_client.openmetrics.exposition import CONTENT_TYPE_LATEST, generate_latest
+          from prometheus_client.openmetrics.parser import text_string_to_metric_families
           
-          if python3 -c "from importlib.metadata import version; print(version('prometheus-client'))" | grep -Eq '^[0-9]'; then
-             echo "✓ Installed version metadata resolved"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ Installed version metadata check failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          dist = metadata.distribution("prometheus-client")
+          assert dist.metadata["Name"] == "prometheus_client" or dist.metadata["Name"] == "prometheus-client", "Wrong implementation"
+          assert re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", dist.version or ""), "Invalid implementation version"
+          assert dist.files, "Missing implementation ownership records"
+          owned = {Path(dist.locate_file(item)).resolve() for item in dist.files}
+          for path in (prometheus_client.__file__, inspect.getfile(generate_latest), inspect.getfile(text_string_to_metric_families)):
+              assert Path(path).resolve() in owned, "Foreign OpenMetrics implementation"
+              print(f"prometheus-client owns {path}", file=sys.stderr)
+          media = Message()
+          media["Content-Type"] = CONTENT_TYPE_LATEST
+          assert media.get_content_type() == "application/openmetrics-text", "Wrong wire format"
+          assert media.get_param("charset") == "utf-8", "Wrong charset"
+          wire_version = media.get_param("version")
+          assert wire_version == "1.0.0", "Unexpected OpenMetrics format version"
+          registry = CollectorRegistry()
+          Gauge("arm_identity", "Wire identity probe", registry=registry).set(7)
+          wire = generate_latest(registry, version=wire_version).decode("utf-8", errors="strict")
+          assert wire.endswith("# EOF\n") and "\r" not in wire, "Invalid OpenMetrics framing"
+          families = list(text_string_to_metric_families(wire))
+          assert len(families) == 1 and families[0].name == "arm_identity" and families[0].type == "gauge"
+          assert [(s.name, s.labels, s.value) for s in families[0].samples] == [("arm_identity", {}, 7)]
+          if "EXPECTED_VERSION" in os.environ:
+              assert wire_version == os.environ["EXPECTED_VERSION"], "Changed format baseline"
+              assert dist.version == os.environ["EXPECTED_IMPLEMENTATION_VERSION"], "Changed implementation baseline"
+          print(f"{wire_version} {dist.version}")
+          PY
+          )
+          [[ "$REPORT" =~ ^1\.0\.0\ [0-9]+(\.[0-9]+){1,3}$ ]]
+          read -r VERSION IMPLEMENTATION_VERSION <<< "$REPORT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "implementation_name=prometheus-client" >> "$GITHUB_OUTPUT"
+          echo "implementation_version=$IMPLEMENTATION_VERSION" >> "$GITHUB_OUTPUT"
+          echo "content_type=application/openmetrics-text; version=1.0.0; charset=utf-8" >> "$GITHUB_OUTPUT"
+          echo "installed_version=$VERSION" >> "$GITHUB_OUTPUT"
+          finish 0
 
-      - name: Test 3 - Render API Documentation
+      - name: Test 3 - Reject malformed OpenMetrics exposition
         id: test3
+        if: always()
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          source venv/bin/activate
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          timeout --kill-after=5s 30s "$OPENMETRICS_PYTHON" -I - <<'PY'
+          from prometheus_client.openmetrics.parser import text_string_to_metric_families
           
-          cat <<'EOF' > test_openmetrics_docs.py
-          import pydoc
-          from prometheus_client import Counter
+          valid = "# TYPE arm_probe gauge\narm_probe 2\n# EOF\n"
+          parsed = list(text_string_to_metric_families(valid))
+          assert len(parsed) == 1 and parsed[0].samples[0].value == 2
+          invalid = {
+              "missing EOF": valid.removesuffix("# EOF\n"),
+              "sample after EOF": valid + "arm_probe 3\n",
+              "negative counter": "# TYPE arm_probe counter\narm_probe_total -1\n# EOF\n",
+              "histogram count mismatch": "# TYPE arm_probe histogram\narm_probe_bucket{le=\"+Inf\"} 2\narm_probe_count 3\narm_probe_sum 1\n# EOF\n",
+          }
+          for label, wire in invalid.items():
+              try:
+                  list(text_string_to_metric_families(wire))
+              except ValueError:
+                  print(f"Rejected {label}")
+              else:
+                  raise AssertionError(f"Parser accepted {label}")
+          PY
+          finish 0
 
-          rendered = pydoc.render_doc(Counter, "Help on %s")
-          if "Counter" in rendered and "labels" in rendered:
-              print("Docs rendered successfully")
-          else:
-              raise SystemExit("Docs did not include expected content")
-          EOF
-          
-          if python3 test_openmetrics_docs.py | grep -q "Docs rendered successfully"; then
-             echo "✓ API documentation renders"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ API documentation render failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-            # ============================================================
-      # UPDATE THIS: Calculate summary based on your number of tests
-      # Add/remove test result checks to match your tests above
-      # ============================================================
-      
-      - name: Test 4 - Architecture Verification
+      - name: Test 4 - Verify native Arm64 Python runtime
         id: test4
+        if: always()
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          [ "$(uname -m)" = aarch64 ]
+          timeout --kill-after=5s 30s "$OPENMETRICS_PYTHON" -I - <<'PY'
+          import platform
+          import sys
           
-          echo "Checking system architecture..."
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          assert sys.platform == "linux" and platform.machine() == "aarch64", "Wrong Python architecture"
+          with open(sys.executable, "rb") as stream:
+              elf = stream.read(20)
+          assert elf[:6] == b"\x7fELF\x02\x01" and int.from_bytes(elf[18:20], "little") == 183, "Python is not an Arm64 ELF"
+          print("Native Linux Arm64 Python ELF verified")
+          PY
+          finish 0
 
-      - name: Test 5 - Functional Validation
+      - name: Test 5 - Emit and parse OpenMetrics metric semantics
         id: test5
+        if: always()
         continue-on-error: true
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+          EXPECTED_IMPLEMENTATION_VERSION: ${{ steps.version.outputs.implementation_version }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          source venv/bin/activate
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          timeout --kill-after=5s 30s "$OPENMETRICS_PYTHON" -I - <<'PY'
+          from email.message import Message
+          from importlib.metadata import version
+          import os
+          from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, disable_created_metrics
+          from prometheus_client.openmetrics.exposition import CONTENT_TYPE_LATEST, generate_latest
+          from prometheus_client.openmetrics.parser import text_string_to_metric_families
           
-          cat <<'EOF' > test_openmetrics_usage.py
-          from prometheus_client import Counter, generate_latest
-
-          counter = Counter("arm_dashboard_total", "Smoke-test counter")
-          counter.inc()
-          metrics = generate_latest()
-          if b"arm_dashboard_total 1.0" in metrics:
-              print("Metrics generated correctly")
-          else:
-              raise SystemExit("Metrics generation failed")
-          EOF
-          
-          if python3 test_openmetrics_usage.py | grep -q "Metrics generated correctly"; then
-            echo "✓ Metrics generation check passed"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ Metrics generation check failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          assert version("prometheus-client") == os.environ["EXPECTED_IMPLEMENTATION_VERSION"], "Changed implementation"
+          media = Message()
+          media["Content-Type"] = CONTENT_TYPE_LATEST
+          assert media.get_content_type() == "application/openmetrics-text"
+          assert media.get_param("charset") == "utf-8"
+          assert media.get_param("version") == os.environ["EXPECTED_VERSION"] == "1.0.0"
+          disable_created_metrics()
+          registry = CollectorRegistry()
+          route = '/arm/"quoted"\\path\nnext'
+          counter = Counter("arm_requests", "Requests", ["route"], registry=registry)
+          counter.labels(route).inc(2)
+          counter.labels(route).inc(3)
+          gauge = Gauge("arm_inflight", "In flight", registry=registry)
+          gauge.set(3)
+          gauge.dec()
+          histogram = Histogram("arm_latency_seconds", "Latency", buckets=(0.1, 0.5, 1.0), unit="seconds", registry=registry)
+          histogram.observe(0.25)
+          histogram.observe(0.75)
+          wire = generate_latest(registry, version=media.get_param("version")).decode("utf-8", errors="strict")
+          assert wire.endswith("# EOF\n") and wire.count("# EOF\n") == 1
+          assert "\r" not in wire and not wire.startswith("\ufeff")
+          parsed = list(text_string_to_metric_families(wire))
+          assert len(parsed) == 3
+          families = {family.name: family for family in parsed}
+          assert set(families) == {"arm_requests", "arm_inflight", "arm_latency_seconds"}
+          assert [(f.name, f.type, f.documentation, f.unit) for f in parsed] == [
+              ("arm_requests", "counter", "Requests", ""),
+              ("arm_inflight", "gauge", "In flight", ""),
+              ("arm_latency_seconds", "histogram", "Latency", "seconds"),
+          ]
+          samples = [s for family in parsed for s in family.samples]
+          actual = {(s.name, tuple(sorted(s.labels.items()))): s.value for s in samples}
+          expected = {
+              ("arm_requests_total", (("route", route),)): 5,
+              ("arm_inflight", ()): 2,
+              ("arm_latency_seconds_bucket", (("le", "0.1"),)): 0,
+              ("arm_latency_seconds_bucket", (("le", "0.5"),)): 1,
+              ("arm_latency_seconds_bucket", (("le", "1.0"),)): 2,
+              ("arm_latency_seconds_bucket", (("le", "+Inf"),)): 2,
+              ("arm_latency_seconds_count", ()): 2,
+              ("arm_latency_seconds_sum", ()): 1,
+          }
+          assert len(samples) == len(actual) == len(expected), "Missing or duplicate samples"
+          assert actual == expected, f"Metric values or labels differ: {actual}"
+          print(CONTENT_TYPE_LATEST)
+          print(wire, end="")
+          print("OpenMetrics 1.0.0 bounded text emit/parse semantics passed")
+          PY
+          finish 0
 
       - name: Regression applicability - package manager installed
         id: test6
+        if: always()
+        env:
+          CURRENT: ${{ steps.version.outputs.version || 'unknown' }}
         run: |
           set -euo pipefail
-          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
           echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.install.outputs.install_status }}" != success ]; then
+            echo "decision=baseline_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression skipped: the the OpenMetrics implementation pip installation failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=No valid installed baseline is available for comparison." >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.test1.outcome }}" = success ] && [ "${{ steps.test1.outputs.status }}" = passed ] && \
+               [ "${{ steps.test2.outcome }}" = success ] && [ "${{ steps.test2.outputs.status }}" = passed ] && \
+               [ "${{ steps.test3.outcome }}" = success ] && [ "${{ steps.test3.outputs.status }}" = passed ] && \
+               [ "${{ steps.test4.outcome }}" = success ] && [ "${{ steps.test4.outputs.status }}" = passed ] && \
+               [ "${{ steps.test5.outcome }}" = success ] && [ "${{ steps.test5.outputs.status }}" = passed ]; then
+            echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation not applicable: the OpenMetrics emitter/parser is installed from PyPI using pip in Tests 1-5" >> "$GITHUB_OUTPUT"
+            echo "comparison=The baseline uses the pip package manager; no next-version artifact was installed or compared." >> "$GITHUB_OUTPUT"
+          else
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression skipped: the OpenMetrics implementation baseline validation failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=All five core checks must pass before a baseline can be compared." >> "$GITHUB_OUTPUT"
+          fi
           echo "status=skipped" >> "$GITHUB_OUTPUT"
           echo "duration=0" >> "$GITHUB_OUTPUT"
 
@@ -296,78 +505,91 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
 
-          # Import Library
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test1.outcome }}" = "success" ] && [ "${{ steps.test1.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
 
-          # Check Installed Version
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test2.outcome }}" = "success" ] && [ "${{ steps.test2.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
 
-          # Render API Documentation
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test3.outcome }}" = "success" ] && [ "${{ steps.test3.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
 
-          # Architecture Verification
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test4.outcome }}" = "success" ] && [ "${{ steps.test4.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
-          # Functional Validation
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test5.outcome }}" = "success" ] && [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          CORE_FAILED=$FAILED
+          if [ "${{ steps.test6.outcome }}" = "success" ] && \
+             [ "${{ steps.test6.outputs.status }}" = "skipped" ] && \
+             { { [ "$CORE_FAILED" -eq 0 ] && [ "${{ steps.test6.outputs.decision }}" = "not_applicable_package_manager" ]; } || \
+               { [ "$CORE_FAILED" -gt 0 ] && { [ "${{ steps.test6.outputs.decision }}" = "baseline_failed" ] || \
+                                             [ "${{ steps.test6.outputs.decision }}" = "baseline_install_failed" ]; }; }; }; then
+            SKIPPED=$((SKIPPED + 1))
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
       - name: Create test summary
         if: always()
         run: |
-          echo "## OpenMetrics Python Library Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Test 1 - Import Library: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Test 2 - Check Installed Version: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Test 3 - Render API Documentation: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          {
+            echo "## OpenMetrics Test Results"
+            echo "- **Tested Text Format Version:** ${{ steps.version.outputs.version || 'unknown' }}"
+            echo "- **Implementation:** prometheus-client ${{ steps.version.outputs.implementation_version || 'unknown' }}"
+            echo "- **Media Type:** ${{ steps.version.outputs.content_type || 'unknown' }}"
+            echo "- **Scope:** Bounded text emit/parse smoke; not full specification, HTTP transport or upstream conformance testing."
+            echo "- **Status:** ${{ steps.summary.outputs.overall_status || 'failure' }}"
+            echo "- **Tests Passed:** ${{ steps.summary.outputs.passed || 0 }}"
+            echo "- **Tests Failed:** ${{ steps.summary.outputs.failed || 0 }}"
+            echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped || 0 }}"
+            echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s"
+            echo "1. OpenMetrics encoder and parser: ${{ steps.test1.outputs.status || 'failed' }}"
+            echo "2. Format and implementation identity: ${{ steps.test2.outputs.status || 'failed' }}"
+            echo "3. Malformed exposition rejection: ${{ steps.test3.outputs.status || 'failed' }}"
+            echo "4. Native Arm64 Python: ${{ steps.test4.outputs.status || 'failed' }}"
+            echo "5. Metric values, labels, types and EOF: ${{ steps.test5.outputs.status || 'failed' }}"
+            echo "6. Package-manager regression applicability: ${{ steps.test6.outputs.status || 'failed' }}"
+          } >> "$GITHUB_STEP_SUMMARY"

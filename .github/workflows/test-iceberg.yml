@@ -95,8 +95,62 @@ jobs:
         test -f README.md && test -f build.gradle && test -f settings.gradle && test -f gradlew && test -d core && test "$RESOLVED_TAG" = "apache-iceberg-1.1.0"
       TEST3_COMMAND: >-
         test -d docs && test -d examples && grep -Fq './gradlew build' README.md
-      TEST5_COMMAND: >-
-        echo "status=failed" >> "$GITHUB_OUTPUT"; echo "note=Runtime smoke deferred: README/Gradle marker checks are not an Apache Iceberg compile or local table operation on Arm64." >> "$GITHUB_OUTPUT"; END_TIME=$(date +%s); echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"; exit 1
+      TEST5_COMMAND: |
+        test "$(uname -m)" = "aarch64"
+        SMOKE_DIR=$(mktemp -d "$RUNNER_TEMP/iceberg-smoke.XXXXXX")
+        trap 'rm -rf "$SMOKE_DIR"' EXIT
+        cd "$SMOKE_DIR"
+        cat > pom.xml <<XML
+        <project xmlns="http://maven.apache.org/POM/4.0.0">
+          <modelVersion>4.0.0</modelVersion>
+          <groupId>arm.smoke</groupId><artifactId>iceberg-smoke</artifactId><version>1</version>
+          <dependencies>
+            <dependency><groupId>org.apache.iceberg</groupId><artifactId>iceberg-core</artifactId><version>$BASELINE_VERSION</version></dependency>
+            <dependency><groupId>org.apache.hadoop</groupId><artifactId>hadoop-common</artifactId><version>3.3.4</version></dependency>
+            <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-simple</artifactId><version>1.7.36</version></dependency>
+          </dependencies>
+        </project>
+        XML
+        timeout 300s mvn -B -ntp org.apache.maven.plugins:maven-dependency-plugin:3.6.1:build-classpath -Dmdep.outputFile=classpath.txt
+        cat > IcebergSmoke.java <<'JAVA'
+        import java.nio.file.Paths;
+        import org.apache.iceberg.IcebergBuild;
+        import org.apache.iceberg.Schema;
+        import org.apache.iceberg.Table;
+        import org.apache.iceberg.hadoop.HadoopTables;
+        import org.apache.iceberg.types.Types;
+
+        public class IcebergSmoke {
+          public static void main(String[] args) {
+            if (!IcebergBuild.version().equals(args[0])) {
+              throw new AssertionError("Unexpected Iceberg version: " + IcebergBuild.version());
+            }
+            String location = Paths.get("table").toAbsolutePath().toUri().toString();
+            HadoopTables tables = new HadoopTables();
+            Schema schema = new Schema(Types.NestedField.required(1, "id", Types.LongType.get()));
+            Table table = tables.create(schema, location);
+            if (!tables.exists(location) || !table.schema().sameSchema(schema)) {
+              throw new AssertionError("Created table schema did not match");
+            }
+            table.updateSchema().addColumn("value", Types.StringType.get()).commit();
+            table.updateProperties().set("arm.smoke", "committed").commit();
+            Table reopened = new HadoopTables().load(location);
+            if (reopened.schema().columns().size() != 2
+                || !Types.StringType.get().equals(reopened.schema().findType("value"))
+                || !"committed".equals(reopened.properties().get("arm.smoke"))) {
+              throw new AssertionError("Committed table metadata did not survive reload");
+            }
+            if (!tables.dropTable(location) || tables.exists(location)) {
+              throw new AssertionError("Table was not dropped");
+            }
+            System.out.println("Iceberg " + IcebergBuild.version() + ": create, alter, reload and drop passed");
+          }
+        }
+        JAVA
+        CLASSPATH=$(cat classpath.txt)
+        timeout 60s javac -cp "$CLASSPATH" IcebergSmoke.java
+        timeout 60s java -cp ".:$CLASSPATH" IcebergSmoke "$BASELINE_VERSION"
+        echo "note=Compiled and executed Iceberg $BASELINE_VERSION on Arm64: created a local HadoopTables table, committed schema and property changes, reloaded and verified them, then dropped the table. No engine integration or data-file read/write is claimed." >> "$GITHUB_OUTPUT"
 
     outputs:
       contract_version: "2.0"
@@ -140,7 +194,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates openjdk-17-jdk-headless maven"
           extra_packages: "${{ env.EXTRA_APT_PACKAGES }}"
           quiet: "true"
 
@@ -271,12 +325,14 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          trap 'echo "status=failed" >> "$GITHUB_OUTPUT"; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' ERR
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
           fi
           eval "$TEST5_COMMAND"
+          trap - ERR
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -290,6 +346,7 @@ jobs:
           next_version_override: "1.10.1"
           candidate_tag_override: "apache-iceberg-1.10.1"
           limited_cpu_probe: |
+            test "$CANDIDATE_TAG" = "apache-iceberg-$LATEST_VERSION"
             test -d next-src/core
             test -f next-src/build.gradle
             test -f next-src/settings.gradle
@@ -299,48 +356,47 @@ jobs:
             assert Path("next-src/core").is_dir()
             assert "iceberg-core" in settings or "core" in settings
             PY
-          limited_cpu_description: "A bounded Arm64 CPU-side source probe validated the next Apache Iceberg candidate checkout and package identity. This does not run a full Gradle build or engine integration test."
+            BASELINE_VERSION="$LATEST_VERSION" bash -euo pipefail -c "$TEST5_COMMAND"
+          limited_cpu_description: "Candidate validation requires the Apache Iceberg 1.10.1 checkout and a compiled Arm64 smoke against its Maven artifact that verifies runtime version and local HadoopTables create, alter, reload and drop. No full Gradle build, engine integration, or data-file read/write is claimed."
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
-          D1="${{ steps.test1.outputs.duration || '0' }}"
-          D2="${{ steps.test2.outputs.duration || '0' }}"
-          D3="${{ steps.test3.outputs.duration || '0' }}"
-          D4="${{ steps.test4.outputs.duration || '0' }}"
-          D5="${{ steps.test5.outputs.duration || '0' }}"
-          D6="${{ steps.test6.outputs.duration || '0' }}"
+          set -euo pipefail
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          DURATION=0
+          check_core_test() {
+            if [ "$1" = "passed" ] && [ "$3" = "success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
-          done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
-            OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
+            DURATION=$((DURATION + $2))
+          }
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || '0' }}" "${{ steps.test1.outcome }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || '0' }}" "${{ steps.test2.outcome }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || '0' }}" "${{ steps.test3.outcome }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || '0' }}" "${{ steps.test4.outcome }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || '0' }}" "${{ steps.test5.outcome }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O6="${{ steps.test6.outcome }}"
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
-            OVERALL_STATUS="failure"
-            BADGE_STATUS="failing"
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((DURATION + ${{ steps.test6.outputs.duration || '0' }}))
+          OVERALL_STATUS=failure
+          BADGE_STATUS=failing
+          if [ "$FAILED" -eq 0 ]; then
+            OVERALL_STATUS=success
+            BADGE_STATUS=passing
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
@@ -349,3 +405,4 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0

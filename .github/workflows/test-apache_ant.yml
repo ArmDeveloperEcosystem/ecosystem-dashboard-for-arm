@@ -82,6 +82,9 @@ jobs:
     env:
       ANT_VERSION: "1.10.14"
       ANT_NEXT_VERSION: "1.10.15"
+      # Publisher hashes: https://archive.apache.org/dist/ant/binaries/apache-ant-VERSION-bin.tar.gz.sha512
+      ANT_SHA512: "4e74b382dd8271f9eac9fef69ba94751fb8a8356dbd995c4d642f2dad33de77bd37d4001d6c8f4f0ef6789529754968f0c1b6376668033c8904c6ec84543332a"
+      ANT_NEXT_SHA512: "d78427aff207592c024ff1552dc04f7b57065a195c42d398fcffe7a0145e8d00cd46786f5aa52e77ab0fdf81334f065eb8011eecd2b48f7228e97ff4cb20d16c"
     
     outputs:
       contract_version: "2.0"
@@ -129,20 +132,30 @@ jobs:
           BASELINE_VERSION="${ANT_VERSION}"
           ARCHIVE_URL="https://archive.apache.org/dist/ant/binaries/apache-ant-${BASELINE_VERSION}-bin.tar.gz"
           PRIMARY_URL="https://downloads.apache.org/ant/binaries/apache-ant-${BASELINE_VERSION}-bin.tar.gz"
+          MIRROR_URL="https://repo.huaweicloud.com/apache/ant/binaries/apache-ant-${BASELINE_VERSION}-bin.tar.gz"
           download_ant_tarball() {
             local primary_url="$1"
             local archive_url="$2"
             local dest="$3"
-            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar -o "$dest" "$primary_url"; then
-              return 0
-            fi
-            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar -o "$dest" "$archive_url"; then
-              return 0
-            fi
-            wget -4 --tries=5 --timeout=30 -O "$dest" "$archive_url"
+            local mirror_url="$4"
+            local expected_sha512="$5"
+            local url
+            rm -f "$dest" "$dest.part"
+            for url in "$primary_url" "$archive_url" "$mirror_url"; do
+              echo "Downloading Apache Ant: $url"
+              if curl --fail --location --proto '=https' --proto-redir '=https' --http1.1 --ipv4 --retry 1 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 120 --silent --show-error -o "$dest.part" "$url" \
+                && printf '%s  %s\n' "$expected_sha512" "$dest.part" | sha512sum -c -; then
+                mv "$dest.part" "$dest" || return 1
+                return 0
+              fi
+              echo "Apache Ant download or SHA-512 verification failed: $url" >&2
+              rm -f "$dest.part"
+            done
+            return 1
           }
 
-          if ! download_ant_tarball "$PRIMARY_URL" "$ARCHIVE_URL" /tmp/apache-ant.tar.gz; then
+          # The pinned historical release is served by the archive.
+          if ! download_ant_tarball "$ARCHIVE_URL" "$PRIMARY_URL" /tmp/apache-ant.tar.gz "$MIRROR_URL" "$ANT_SHA512"; then
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
             echo "install_blocker=baseline_download_failed" >> "$GITHUB_OUTPUT"
             exit 1
@@ -151,11 +164,14 @@ jobs:
           sudo tar -xzf /tmp/apache-ant.tar.gz -C /opt
           sudo ln -sfn "/opt/apache-ant-${BASELINE_VERSION}" /opt/apache-ant-current
           sudo ln -sfn /opt/apache-ant-current/bin/ant /usr/local/bin/ant
+          echo "ANT_HOME=/opt/apache-ant-current" >> "$GITHUB_ENV"
+          echo "/opt/apache-ant-current/bin" >> "$GITHUB_PATH"
           JAVA_BIN=$(readlink -f "$(command -v java)")
           echo "JAVA_HOME=$(dirname "$(dirname "$JAVA_BIN")")" >> "$GITHUB_ENV"
           echo "baseline_version=${BASELINE_VERSION}" >> "$GITHUB_OUTPUT"
 
-          if command -v ant &> /dev/null; then
+          INSTALLED_VERSION=$(ANT_HOME=/opt/apache-ant-current /opt/apache-ant-current/bin/ant -version)
+          if [[ "$INSTALLED_VERSION" == "Apache Ant(TM) version ${BASELINE_VERSION} "* ]]; then
             echo "Apache Ant installed successfully"
             echo "install_status=success" >> $GITHUB_OUTPUT
           else
@@ -182,7 +198,8 @@ jobs:
         run: |
           START_TIME=$(date +%s)
 
-          if command -v ant &> /dev/null; then
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" = "success" ] \
+            && [ "$(readlink -f "$(command -v ant)")" = "/opt/apache-ant-${ANT_VERSION}/bin/ant" ]; then
             echo "✓ ant binary found"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -207,7 +224,8 @@ jobs:
             exit 0
           fi
 
-          if ant -version 2>&1 | grep -q "version\|[0-9]"; then
+          ACTUAL_VERSION=$(ant -version 2>&1)
+          if [[ "$ACTUAL_VERSION" == "Apache Ant(TM) version ${ANT_VERSION} "* ]]; then
             echo "✓ ant version command works"
             ant -version
             echo "status=passed" >> $GITHUB_OUTPUT
@@ -306,13 +324,13 @@ jobs:
           NEXT_VERSION="${ANT_NEXT_VERSION}"
           INSTALL_STATUS="${{ steps.install.outputs.install_status || 'failed' }}"
           CORE_FAILURES=0
-          for conclusion in \
-            "${{ steps.test1.conclusion || 'skipped' }}" \
-            "${{ steps.test2.conclusion || 'skipped' }}" \
-            "${{ steps.test3.conclusion || 'skipped' }}" \
-            "${{ steps.test4.conclusion || 'skipped' }}" \
-            "${{ steps.test5.conclusion || 'skipped' }}"; do
-            if [ "$conclusion" = "failure" ]; then
+          for status in \
+            "${{ steps.test1.outputs.status || 'failed' }}" \
+            "${{ steps.test2.outputs.status || 'failed' }}" \
+            "${{ steps.test3.outputs.status || 'failed' }}" \
+            "${{ steps.test4.outputs.status || 'failed' }}" \
+            "${{ steps.test5.outputs.status || 'failed' }}"; do
+            if [ "$status" != "passed" ]; then
               CORE_FAILURES=$((CORE_FAILURES + 1))
             fi
           done
@@ -368,26 +386,35 @@ jobs:
           NEXT_DIR=$(mktemp -d)
           NEXT_PRIMARY_URL="https://downloads.apache.org/ant/binaries/apache-ant-${NEXT_VERSION}-bin.tar.gz"
           NEXT_ARCHIVE_URL="https://archive.apache.org/dist/ant/binaries/apache-ant-${NEXT_VERSION}-bin.tar.gz"
+          NEXT_MIRROR_URL="https://repo.huaweicloud.com/apache/ant/binaries/apache-ant-${NEXT_VERSION}-bin.tar.gz"
           download_ant_tarball() {
             local primary_url="$1"
             local archive_url="$2"
             local dest="$3"
-            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar -o "$dest" "$primary_url"; then
-              return 0
-            fi
-            if curl --fail --location --http1.1 --ipv4 --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 1800 --progress-bar -o "$dest" "$archive_url"; then
-              return 0
-            fi
-            wget -4 --tries=5 --timeout=30 -O "$dest" "$archive_url"
+            local mirror_url="$4"
+            local expected_sha512="$5"
+            local url
+            rm -f "$dest" "$dest.part"
+            for url in "$primary_url" "$archive_url" "$mirror_url"; do
+              echo "Downloading Apache Ant: $url"
+              if curl --fail --location --proto '=https' --proto-redir '=https' --http1.1 --ipv4 --retry 1 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 120 --silent --show-error -o "$dest.part" "$url" \
+                && printf '%s  %s\n' "$expected_sha512" "$dest.part" | sha512sum -c -; then
+                mv "$dest.part" "$dest" || return 1
+                return 0
+              fi
+              echo "Apache Ant download or SHA-512 verification failed: $url" >&2
+              rm -f "$dest.part"
+            done
+            return 1
           }
-          if download_ant_tarball "$NEXT_PRIMARY_URL" "$NEXT_ARCHIVE_URL" "$NEXT_TAR"; then
+          if download_ant_tarball "$NEXT_PRIMARY_URL" "$NEXT_ARCHIVE_URL" "$NEXT_TAR" "$NEXT_MIRROR_URL" "$ANT_NEXT_SHA512"; then
             tar -xzf "$NEXT_TAR" -C "$NEXT_DIR"
             NEXT_BIN=$(find "$NEXT_DIR" -maxdepth 3 -type f -path "*/bin/ant" | head -n 1)
             if [ -n "$NEXT_BIN" ] && [ -x "$NEXT_BIN" ]; then
               NEXT_HOME=$(cd "$(dirname "$NEXT_BIN")/.." && pwd)
               NEXT_INSTALLED_VERSION=$(unzip -p "$NEXT_HOME/lib/ant.jar" org/apache/tools/ant/version.txt 2>/dev/null | sed -n 's/^VERSION=//p' | head -n 1 || true)
               if [ -z "$NEXT_INSTALLED_VERSION" ]; then
-                NEXT_INSTALLED_VERSION=$("$NEXT_BIN" -version 2>&1 | sed -n 's/^Apache Ant(TM) version \([^ ]*\).*/\1/p' | head -n 1 || true)
+                NEXT_INSTALLED_VERSION=$(ANT_HOME="$NEXT_HOME" "$NEXT_BIN" -version 2>&1 | sed -n 's/^Apache Ant(TM) version \([^ ]*\).*/\1/p' | head -n 1 || true)
               fi
               cat > "$NEXT_DIR/build.xml" <<'EOF'
           <project name="arm-validation" default="hello">
@@ -396,7 +423,7 @@ jobs:
             </target>
           </project>
           EOF
-              if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_INSTALLED_VERSION" = "$NEXT_VERSION" ] && "$NEXT_BIN" -f "$NEXT_DIR/build.xml" hello > /tmp/apache-ant-next-functional.log 2>&1; then
+              if [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_INSTALLED_VERSION" = "$NEXT_VERSION" ] && ANT_HOME="$NEXT_HOME" "$NEXT_BIN" -f "$NEXT_DIR/build.xml" hello > /tmp/apache-ant-next-functional.log 2>&1; then
                 echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
@@ -565,15 +592,13 @@ jobs:
 
           TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
 
-          if [ "$CORE_FAILED" -eq 0 ]; then
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" = "success" ] \
+            && [ "$PASSED" -eq 6 ] && [ "$FAILED" -eq 0 ] && [ "$SKIPPED" -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
             echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
             echo "badge_status=failing" >> $GITHUB_OUTPUT
-          fi
-
-          if [ "$CORE_FAILED" -ne 0 ]; then
             exit 1
           fi
       - name: Create test summary

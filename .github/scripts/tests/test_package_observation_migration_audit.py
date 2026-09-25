@@ -27,7 +27,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
                 "custom_summary_workflows": 924,
                 "emitter_workflows": 36,
                 "shared_smoke_workflows": 13,
-                "package_manager_workflows": 431,
+                "package_manager_workflows": 428,
             },
             self.report["totals"],
         )
@@ -39,8 +39,8 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             {
                 "shared_smoke": 13,
                 "emitter_only": 23,
-                "generic_source": 97,
-                "fully_custom": 827,
+                "generic_source": 91,
+                "fully_custom": 833,
             },
             {
                 key: len(value)
@@ -68,22 +68,20 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(
             [], remediation["shared_smoke_literal_pair_contradictions"]
         )
-        self.assertEqual(
-            {"test4": ["cobbler"]}, remediation["baseline_dynamic_skip"]
-        )
+        self.assertEqual({}, remediation["baseline_dynamic_skip"])
 
     def test_remediation_counts_are_explicit_and_reproducible(self) -> None:
         remediation = self.report["remediation"]
         self.assertEqual(17, len(remediation["emitter_missing_slug"]))
         self.assertEqual(
-            {"test4": 4, "test5": 35, "test6": 4},
+            {"test4": 4, "test5": 42, "test6": 6},
             {
                 key: len(value)
                 for key, value in remediation["missing_test_duration"].items()
             },
         )
         self.assertEqual(
-            {"test3": 1, "test4": 1, "test5": 2, "test6": 341},
+            {"test3": 1, "test4": 1, "test5": 2, "test6": 320},
             {
                 key: len(value)
                 for key, value in remediation[
@@ -92,45 +90,46 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"core_failed": 402, "duration": 3, "skipped": 725},
+            {"core_failed": 375, "duration": 3, "skipped": 697},
             {
                 key: len(value)
                 for key, value in remediation["missing_summary_outputs"].items()
             },
         )
         self.assertEqual(
-            400,
+            398,
             len(remediation["package_manager_missing_explicit_skip_counter"]),
         )
-        self.assertEqual(79, len(remediation["package_manager_non_skipped_status"]))
-        self.assertEqual(286, len(remediation["literal_pair_contradictions"]))
-        self.assertEqual(21, len(remediation["no_literal_decision"]))
+        self.assertEqual(76, len(remediation["package_manager_non_skipped_status"]))
+        self.assertEqual(281, len(remediation["literal_pair_contradictions"]))
+        self.assertEqual(23, len(remediation["no_literal_decision"]))
         self.assertEqual(
-            326, len(remediation["package_manager_summary_omits_test6"])
+            304, len(remediation["package_manager_summary_omits_test6"])
         )
         self.assertEqual(8, len(remediation["unsafe_fallback_workflows"]))
         self.assertEqual(["freecad"], remediation["package_manager_missing_decision"])
         self.assertEqual(
-            {"test1": 27, "test2": 34, "test3": 34, "test4": 27, "test5": 31},
+            {"test1": 25, "test2": 32, "test3": 33, "test4": 26, "test5": 29},
             {
                 key: len(value)
                 for key, value in remediation["baseline_literal_skip"].items()
             },
         )
+        self.assertNotIn("signalfx-agent", remediation["baseline_literal_skip"]["test2"])
         baseline_skip_workflows = {
             slug
             for workflows in remediation["baseline_literal_skip"].values()
             for slug in workflows
         }
-        self.assertEqual(37, len(baseline_skip_workflows))
+        self.assertEqual(35, len(baseline_skip_workflows))
         self.assertEqual(
             13, len(remediation["shared_smoke_baseline_skip_callers"])
         )
         self.assertEqual(
-            97, len(remediation["generic_source_missing_baseline_facts"])
+            91, len(remediation["generic_source_missing_baseline_facts"])
         )
         self.assertEqual(
-            427, len(remediation["package_manager_missing_baseline_guard"])
+            406, len(remediation["package_manager_missing_baseline_guard"])
         )
         self.assertEqual(
             960, len(remediation["missing_package_observation_output"])
@@ -150,10 +149,10 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             [], remediation["invalid_workflow_call_observation_output"]
         )
         self.assertEqual(
-            371,
+            370,
             len(remediation["non_package_manager_missing_baseline_guard"]),
         )
-        self.assertEqual(344, len(remediation["summary_omits_test6_status"]))
+        self.assertEqual(320, len(remediation["summary_omits_test6_status"]))
         self.assertEqual(
             952, len(remediation["unsafe_package_version_fallback"])
         )
@@ -198,7 +197,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "5270bf8cf86bbd6bb9d0420de8d420777b695db4d080563fab380d88977e42b5",
+            "67587c8cb54841dce5213974008c3c6e29d8cdd9ade53f116e2cc06733d4538d",
             digest,
         )
 

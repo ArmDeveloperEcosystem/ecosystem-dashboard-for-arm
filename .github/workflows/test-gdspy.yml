@@ -85,6 +85,29 @@ jobs:
     env:
       BASELINE_VERSION: "0.2.9"
       DIST_NAME: "gdspy"
+      # These historical releases use the Python 2 C API (PyInt_FromLong).
+      VALIDATION_SCOPE: "Historical compatibility evidence only; this does not demonstrate modern Python compatibility or endorse Python 2 for production."
+      PINNED_CONTAINER_IMAGE_GDSPY: python@sha256:d8fac68ebdc45b8d66d53f1ed6c1532da81109a8f5532a6ca0c951ed31107d70 # original: python:2.7.18-buster
+      BASELINE_CONTAINER: "gdspy-${{ github.run_id }}-${{ github.run_attempt }}-baseline"
+      NEXT_CONTAINER: "gdspy-${{ github.run_id }}-${{ github.run_attempt }}-next"
+      GDSPY_SMOKE: |
+        import os
+        import platform
+        import gdspy
+        import numpy
+        import pkg_resources
+
+        expected = os.environ["EXPECTED_VERSION"]
+        assert pkg_resources.get_distribution("gdspy").version == expected
+        assert gdspy.__version__ == expected
+        left = gdspy.Rectangle(1, (0, 0), (2, 3))
+        right = gdspy.Rectangle(1, (1, 0), (3, 3))
+        assert left.area() == 6
+        intersection = gdspy.boolean(1, [left, right], lambda a, b: a and b)
+        assert intersection is not None
+        assert intersection.area() == 3
+        print("gdspy=%s numpy=%s python=%s machine=%s rectangle_area=6 intersection_area=3" % (
+            gdspy.__version__, numpy.__version__, platform.python_version(), platform.machine()))
 
     outputs:
       contract_version: "2.0"
@@ -125,7 +148,7 @@ jobs:
           echo "package_slug=gdspy" >> "$GITHUB_OUTPUT"
           echo "dashboard_link=/linux/opensource_packages/gdspy" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Python
+      - name: Set up Python for release lookup
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # original: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -134,158 +157,106 @@ jobs:
         id: install
         run: |
           set -euo pipefail
-          python -m venv .venv-current
-          . .venv-current/bin/activate
-          python -m pip install --upgrade "pip<24.1" packaging >/dev/null
-          python -m pip install "$DIST_NAME==$BASELINE_VERSION"
-          python - <<'PY2'
-          import importlib.metadata as im, json, os
-          dist_name = os.environ['DIST_NAME']
-          top_levels = []
-          version = im.version(dist_name)
-          for dist in im.distributions():
-              name = (dist.metadata.get('Name') or '').strip()
-              if name.lower() == dist_name.lower():
-                  txt = dist.read_text('top_level.txt')
-                  if txt:
-                      top_levels = [x.strip() for x in txt.splitlines() if x.strip()]
-                  break
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
-              fh.write(f"install_status=success\n")
-              fh.write(f"baseline_version={version}\n")
-              fh.write("top_levels_json=" + json.dumps(top_levels) + "\n")
-          PY2
+          python3 -m venv .venv-lookup
+          .venv-lookup/bin/python -m pip install packaging
+          docker run -d --name "$BASELINE_CONTAINER" "$PINNED_CONTAINER_IMAGE_GDSPY" sleep infinity
+          docker exec "$BASELINE_CONTAINER" python -m pip install "numpy==1.16.6" "$DIST_NAME==$BASELINE_VERSION"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get package version
         id: version
         run: |
           set -euo pipefail
-          . .venv-current/bin/activate
-          VERSION=$(python - <<'PY2'
-          import importlib.metadata as im, os
-          print(im.version(os.environ['DIST_NAME']))
-          PY2
-          )
+          VERSION=$(docker exec "$BASELINE_CONTAINER" python -c 'import pkg_resources; print(pkg_resources.get_distribution("gdspy").version)')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected version: $VERSION"
+          echo "Detected version: $VERSION (legacy Python 2.7 runtime)"
 
       - name: Test 1 - Package installed
         id: test1
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          . .venv-current/bin/activate
-          if python -m pip show "$DIST_NAME" >/dev/null 2>&1; then
+          if docker exec "$BASELINE_CONTAINER" python -m pip show "$DIST_NAME"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 2 - Version metadata matches baseline
         id: test2
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          . .venv-current/bin/activate
-          VERSION=$(python - <<'PY2'
-          import importlib.metadata as im, os
-          print(im.version(os.environ['DIST_NAME']))
-          PY2
-          )
+          VERSION=$(docker exec "$BASELINE_CONTAINER" python -c 'import pkg_resources; print(pkg_resources.get_distribution("gdspy").version)')
           if [ "$VERSION" = "$BASELINE_VERSION" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 3 - Installed files metadata
         id: test3
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          . .venv-current/bin/activate
-          if python - <<'PY2'
-          import importlib.metadata as im, os
-          files = list(im.files(os.environ['DIST_NAME']) or [])
-          raise SystemExit(0 if files else 1)
-          PY2
-          then
+          if docker exec "$BASELINE_CONTAINER" python -c 'import pkg_resources; dist = pkg_resources.get_distribution("gdspy"); assert dist.has_metadata("RECORD"); assert dist.get_metadata("RECORD").strip()'; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 4 - Architecture Verification
         id: test4
         continue-on-error: true
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          if [ "$(uname -m)" = "aarch64" ]; then
+          if [ "$(uname -m)" = "aarch64" ] && [ "$(docker exec "$BASELINE_CONTAINER" uname -m)" = "aarch64" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 5 - Functional Validation
         id: test5
         continue-on-error: true
-        env:
-          TOP_LEVELS_JSON: ${{ steps.install.outputs.top_levels_json || '[]' }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          . .venv-current/bin/activate
-          if python - <<'PY2'
-          import json, os, importlib, importlib.metadata as im
-          top_levels = json.loads(os.environ.get('TOP_LEVELS_JSON', '[]'))
-          if top_levels:
-              imported = False
-              for mod in top_levels:
-                  try:
-                      importlib.import_module(mod)
-                      imported = True
-                      break
-                  except Exception:
-                      continue
-              raise SystemExit(0 if imported else 1)
-          files = list(im.files(os.environ['DIST_NAME']) or [])
-          raise SystemExit(0 if files else 1)
-          PY2
-          then
+          if docker exec -e EXPECTED_VERSION="$BASELINE_VERSION" "$BASELINE_CONTAINER" python -c "$GDSPY_SMOKE"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
+            echo "note=Imported gdspy and checked rectangle and native boolean intersection areas in its legacy Python 2.7 Arm64 runtime. $VALIDATION_SCOPE" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Python 3.10 for legacy regression candidate
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # original: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 6 - Regression Validation
         id: test6
         env:
           CURRENT_VERSION: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
+          BASELINE_STATUS: ${{ steps.test5.outputs.status || 'failed' }}
+          BASELINE_OUTCOME: ${{ steps.test5.outcome }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          . .venv-current/bin/activate
+          . .venv-lookup/bin/activate
           CURRENT="${CURRENT_VERSION}"
+          if [ "$BASELINE_OUTCOME" != "success" ]; then
+            BASELINE_STATUS=failed
+          fi
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           LATEST=$(
             python -c "import textwrap; exec(textwrap.dedent('''
@@ -323,7 +294,7 @@ jobs:
             echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version lookup failed" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned package version $CURRENT passed smoke tests in this run, but the next PyPI regression candidate could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline $CURRENT functional validation: $BASELINE_STATUS, but the next PyPI regression candidate could not be resolved automatically." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -341,25 +312,19 @@ jobs:
             exit 0
           fi
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
-          python3.10 -m venv .venv-next
-          . .venv-next/bin/activate
-          if ! command -v gcc >/dev/null 2>&1; then
-            bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential"
-            fi
-          # gdspy 0.3 still relies on legacy distutils/build_py_2to3 behavior.
-          python -m pip install --upgrade "pip<24.1" "setuptools<58" wheel packaging >/dev/null
-          if python -m pip install --no-build-isolation --no-use-pep517 "$DIST_NAME==$LATEST" >/dev/null 2>&1; then
-            NEXT_VERSION=$(python -c 'import importlib.metadata as im, os; print(im.version(os.environ["DIST_NAME"]))')
+          if docker run -d --name "$NEXT_CONTAINER" "$PINNED_CONTAINER_IMAGE_GDSPY" sleep infinity &&
+             docker exec "$NEXT_CONTAINER" python -m pip install "numpy==1.16.6" "$DIST_NAME==$LATEST"; then
+            NEXT_VERSION=$(docker exec "$NEXT_CONTAINER" python -c 'import pkg_resources; print(pkg_resources.get_distribution("gdspy").version)')
             echo "next_installed_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
-            if [ "$NEXT_VERSION" = "$LATEST" ]; then
+            if [ "$NEXT_VERSION" = "$LATEST" ] && docker exec -e EXPECTED_VERSION="$LATEST" "$NEXT_CONTAINER" python -c "$GDSPY_SMOKE"; then
               echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned package version $CURRENT passed smoke tests in this run, and the newer stable PyPI candidate $LATEST installed successfully on Arm64." >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed and geometry validated on Arm64 with Python 2.7" >> "$GITHUB_OUTPUT"
+              echo "comparison=Baseline $CURRENT functional validation: $BASELINE_STATUS, and the newer stable PyPI candidate $LATEST passed the same import and geometry checks in its legacy Python 2.7 Arm64 runtime. $VALIDATION_SCOPE" >> "$GITHUB_OUTPUT"
               echo "status=passed" >> "$GITHUB_OUTPUT"
             else
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned package version $CURRENT passed smoke tests in this run, but the regression candidate $LATEST did not report the expected installed version on Arm64." >> "$GITHUB_OUTPUT"
+              echo "comparison=Baseline $CURRENT functional validation: $BASELINE_STATUS, but the regression candidate $LATEST reported a different version or failed the legacy Python 2.7 import and geometry checks on Arm64." >> "$GITHUB_OUTPUT"
               echo "status=failed" >> "$GITHUB_OUTPUT"
               END_TIME=$(date +%s)
               echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -369,7 +334,7 @@ jobs:
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned package version $CURRENT passed smoke tests in this run, but the regression candidate $LATEST could not be installed on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline $CURRENT functional validation: $BASELINE_STATUS, but the regression candidate $LATEST could not be installed on Arm64." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -382,42 +347,44 @@ jobs:
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
-          D1="${{ steps.test1.outputs.duration || '0' }}"
-          D2="${{ steps.test2.outputs.duration || '0' }}"
-          D3="${{ steps.test3.outputs.duration || '0' }}"
-          D4="${{ steps.test4.outputs.duration || '0' }}"
-          D5="${{ steps.test5.outputs.duration || '0' }}"
-          D6="${{ steps.test6.outputs.duration || '0' }}"
+          set -euo pipefail
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          DURATION=0
+          check_core_test() {
+            if [ "$1" = "passed" ] && [ "$3" = "success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
-          done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+            DURATION=$((DURATION + $2))
+          }
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || '0' }}" "${{ steps.test1.outcome }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || '0' }}" "${{ steps.test2.outcome }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || '0' }}" "${{ steps.test3.outcome }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || '0' }}" "${{ steps.test4.outcome }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || '0' }}" "${{ steps.test5.outcome }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O6="${{ steps.test6.outcome }}"
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ]; then
+            SKIPPED=$((SKIPPED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((DURATION + ${{ steps.test6.outputs.duration || '0' }}))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -427,8 +394,14 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          [ "$OVERALL_STATUS" = "success" ]
 
       - name: Cleanup
         if: always()
         run: |
-          rm -rf .venv-current .venv-next || true
+          for CONTAINER in "$BASELINE_CONTAINER" "$NEXT_CONTAINER"; do
+            if docker container inspect "$CONTAINER" >/dev/null 2>&1; then
+              docker rm -f "$CONTAINER"
+            fi
+          done
+          rm -rf .venv-lookup

@@ -79,6 +79,7 @@ on:
 jobs:
   test-vue:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
 
     outputs:
       contract_version: "2.0"
@@ -115,114 +116,313 @@ jobs:
         run: |
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=vue" >> "$GITHUB_OUTPUT"
-          echo "dashboard_link=/opensource_packages/vue" >> "$GITHUB_OUTPUT"
-      - name: Install Vue CLI
+          echo "dashboard_link=/linux/opensource_packages/vue" >> "$GITHUB_OUTPUT"
+      - name: Install Vue framework using npm
         id: install
+        continue-on-error: true
         run: |
           set -euo pipefail
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "nodejs npm"
-          sudo npm install -g --ignore-scripts --no-audit --no-fund @vue/cli@5.0.9
-          command -v vue
-          echo "install_status=success" >> "$GITHUB_OUTPUT"
+          START_TIME=$(date +%s)
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "install_status=success" >> "$GITHUB_OUTPUT"
+            else
+              echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          timeout --kill-after=10s 300s bash .github/actions/apt-bootstrap/bootstrap.sh --packages "nodejs npm"
+          VUE_DIR=$(mktemp -d "$RUNNER_TEMP/vue-runtime.XXXXXX")
+          timeout --kill-after=10s 300s npm install --prefix "$VUE_DIR" --registry=https://registry.npmjs.org --ignore-scripts --no-audit --no-fund --fetch-retries=2 --fetch-timeout=30000 vue
+          echo "VUE_DIR=$VUE_DIR" >> "$GITHUB_ENV"
+          finish 0
 
-      - name: Get Vue version
+      - name: Get installed Vue framework version
         id: version
+        if: always()
+        continue-on-error: true
         run: |
           set -euo pipefail
-          VERSION=$(vue --version 2>&1 | head -n 1 | grep -Eo '[0-9]+([.][0-9]+)+' | head -n 1)
+          START_TIME=$(date +%s)
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          unset NODE_OPTIONS NODE_PATH
+          cd "$VUE_DIR"
+          VERSION=$(timeout --kill-after=5s 30s node --no-global-search-paths - <<'JS'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const pkg = require('./node_modules/vue/package.json');
+          const vue = require('./node_modules/vue');
+          assert.equal(pkg.name, 'vue');
+          assert.match(pkg.version, /^3\.[0-9]+\.[0-9]+$/);
+          assert.equal(vue.version, pkg.version);
+          assert.equal(fs.realpathSync(require.resolve('./node_modules/vue')),
+            fs.realpathSync(path.join(process.cwd(), 'node_modules/vue', pkg.main)));
+          const renderer = require('./node_modules/@vue/server-renderer/package.json');
+          assert.equal(renderer.name, '@vue/server-renderer');
+          assert.equal(renderer.version, pkg.version);
+          if ('EXPECTED_VERSION' in process.env) assert.equal(pkg.version, process.env.EXPECTED_VERSION);
+          console.log(pkg.version);
+          JS
+          )
+          [[ "$VERSION" =~ ^3\.[0-9]+\.[0-9]+$ ]]
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          finish 0
 
-      - name: Test 1 - Check vue binary exists
+      - name: Test 1 - Load Vue runtime APIs
         id: test1
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          if command -v vue >/dev/null 2>&1; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 2 - Check vue version command
-        id: test2
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          VERSION_OUTPUT=$(vue --version 2>&1 | tr -d '\r')
-          if printf '%s\n' "$VERSION_OUTPUT" | grep -Eo '[0-9]+([.][0-9]+)+' | head -n 1 | grep -Eq '^[0-9]+([.][0-9]+)+$'; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            printf '%s\n' "$VERSION_OUTPUT" || true
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 3 - Check vue help output
-        id: test3
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          if vue --help 2>&1 | grep -qi 'create a new project'; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 4 - Architecture Verification
-        id: test4
-        continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-      - name: Test 5 - Functional Validation
-        id: test5
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          export HOME="$RUNNER_TEMP/vue-functional-home"
-          rm -rf "$HOME"
-          mkdir -p "$HOME"
-          printf '{}\n' > "$HOME/.vuerc"
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          unset NODE_OPTIONS NODE_PATH
+          cd "$VUE_DIR"
+          timeout --kill-after=5s 30s node --no-global-search-paths - <<'JS'
+          const assert = require('node:assert/strict');
+          const vue = require('./node_modules/vue');
+          for (const name of ['reactive', 'computed', 'watch', 'createSSRApp', 'h']) {
+            assert.equal(typeof vue[name], 'function', name);
+          }
+          assert.equal(typeof require('./node_modules/@vue/server-renderer').renderToString, 'function');
+          console.log('Vue runtime and SSR APIs loaded');
+          JS
+          finish 0
 
-          vue config --set packageManager npm
-          test "$(vue config --get packageManager)" = "npm"
-          node -e 'const fs = require("fs"); const config = JSON.parse(fs.readFileSync(process.env.HOME + "/.vuerc", "utf8")); if (config.packageManager !== "npm") process.exit(1)'
-          test "$(vue --version)" = "@vue/cli 5.0.9"
+      - name: Test 2 - Verify Vue package identity and baseline
+        id: test2
+        if: always()
+        continue-on-error: true
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          unset NODE_OPTIONS NODE_PATH
+          cd "$VUE_DIR"
+          VERSION=$(timeout --kill-after=5s 30s node --no-global-search-paths - <<'JS'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const pkg = require('./node_modules/vue/package.json');
+          const vue = require('./node_modules/vue');
+          assert.equal(pkg.name, 'vue');
+          assert.match(pkg.version, /^3\.[0-9]+\.[0-9]+$/);
+          assert.equal(vue.version, pkg.version);
+          assert.equal(fs.realpathSync(require.resolve('./node_modules/vue')),
+            fs.realpathSync(path.join(process.cwd(), 'node_modules/vue', pkg.main)));
+          const renderer = require('./node_modules/@vue/server-renderer/package.json');
+          assert.equal(renderer.name, '@vue/server-renderer');
+          assert.equal(renderer.version, pkg.version);
+          if ('EXPECTED_VERSION' in process.env) assert.equal(pkg.version, process.env.EXPECTED_VERSION);
+          console.log(pkg.version);
+          JS
+          )
+          [[ "$VERSION" =~ ^3\.[0-9]+\.[0-9]+$ ]]
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "installed_version=$VERSION" >> "$GITHUB_OUTPUT"
+          finish 0
 
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+      - name: Test 3 - Verify reactive state and computed updates
+        id: test3
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          unset NODE_OPTIONS NODE_PATH
+          cd "$VUE_DIR"
+          timeout --kill-after=5s 30s node --no-global-search-paths - <<'JS'
+          const assert = require('node:assert/strict');
+          const { reactive, isReactive, computed, watch } = require('./node_modules/vue');
+          const state = reactive({ count: 2 });
+          assert.equal(isReactive(state), true);
+          const doubled = computed(() => state.count * 2);
+          assert.equal(doubled.value, 4);
+          const changes = [];
+          const stop = watch(() => state.count, (value, old) => changes.push([old, value]), { flush: 'sync' });
+          state.count = 5;
+          assert.equal(doubled.value, 10);
+          assert.deepEqual(changes, [[2, 5]]);
+          stop();
+          state.count = 7;
+          assert.equal(doubled.value, 14);
+          assert.deepEqual(changes, [[2, 5]]);
+          console.log('Vue reactive updates, computed invalidation and watcher disposal passed');
+          JS
+          finish 0
 
+      - name: Test 4 - Verify native Arm64 Node runtime
+        id: test4
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          [ "$(uname -m)" = aarch64 ]
+          unset NODE_OPTIONS NODE_PATH
+          timeout --kill-after=5s 30s node --no-global-search-paths - <<'JS'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          assert.equal(process.platform, 'linux');
+          assert.equal(process.arch, 'arm64');
+          const elf = fs.readFileSync(process.execPath).subarray(0, 20);
+          assert.equal(elf.subarray(0, 6).toString('hex'), '7f454c460201');
+          assert.equal(elf.readUInt16LE(18), 183);
+          console.log('Native Linux Arm64 Node ELF verified');
+          JS
+          finish 0
+
+      - name: Test 5 - Render Vue components with updated state
+        id: test5
+        if: always()
+        continue-on-error: true
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          START_TIME=$(date +%s)
+          finish() {
+            local RC="$1"
+            trap - EXIT
+            if [ "$RC" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap 'finish "$?"' EXIT
+          [ "${{ steps.install.outputs.install_status }}" = success ]
+          [ "${{ steps.version.outputs.status }}" = passed ]
+          unset NODE_OPTIONS NODE_PATH
+          cd "$VUE_DIR"
+          timeout --kill-after=5s 30s node --no-global-search-paths - <<'JS'
+          const assert = require('node:assert/strict');
+          const { version, createSSRApp, h, reactive, computed } = require('./node_modules/vue');
+          const { renderToString } = require('./node_modules/@vue/server-renderer');
+          assert.equal(version, process.env.EXPECTED_VERSION);
+          const state = reactive({ count: 2, label: '<Arm & Vue>' });
+          const doubled = computed(() => state.count * 2);
+          const Child = { props: ['label', 'value'], setup: props => () => h('p', props.label + ': ' + props.value) };
+          const render = () => renderToString(createSSRApp({
+            setup: () => () => h('section', { id: 'smoke' }, [
+              h(Child, { label: state.label, value: doubled.value })
+            ])
+          }));
+          (async () => {
+            const before = await render();
+            assert.equal(before, '<section id="smoke"><p>&lt;Arm &amp; Vue&gt;: 4</p></section>');
+            state.count = 5;
+            const after = await render();
+            assert.equal(after, '<section id="smoke"><p>&lt;Arm &amp; Vue&gt;: 10</p></section>');
+            assert.notEqual(before, after);
+            console.log(before);
+            console.log(after);
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+          JS
+          finish 0
 
       - name: Regression applicability - package manager installed
         id: test6
+        if: always()
+        env:
+          CURRENT: ${{ steps.version.outputs.version || 'unknown' }}
         run: |
           set -euo pipefail
-          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
           echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.install.outputs.install_status }}" != success ]; then
+            echo "decision=baseline_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression skipped: the Vue npm installation failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=No valid installed baseline is available for comparison." >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.test1.outcome }}" = success ] && [ "${{ steps.test1.outputs.status }}" = passed ] && \
+               [ "${{ steps.test2.outcome }}" = success ] && [ "${{ steps.test2.outputs.status }}" = passed ] && \
+               [ "${{ steps.test3.outcome }}" = success ] && [ "${{ steps.test3.outputs.status }}" = passed ] && \
+               [ "${{ steps.test4.outcome }}" = success ] && [ "${{ steps.test4.outputs.status }}" = passed ] && \
+               [ "${{ steps.test5.outcome }}" = success ] && [ "${{ steps.test5.outputs.status }}" = passed ]; then
+            echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation not applicable: Vue is installed using npm in Tests 1-5" >> "$GITHUB_OUTPUT"
+            echo "comparison=The baseline uses the npm package manager; no next-version artifact was installed or compared." >> "$GITHUB_OUTPUT"
+          else
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression skipped: Vue baseline validation failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=All five core checks must pass before a baseline can be compared." >> "$GITHUB_OUTPUT"
+          fi
           echo "status=skipped" >> "$GITHUB_OUTPUT"
           echo "duration=0" >> "$GITHUB_OUTPUT"
 
@@ -230,26 +430,63 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
-          check_test() {
-            local status="$1"
-            local duration="$2"
-            if [ "$status" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            else
-              FAILED=$((FAILED + 1))
-            fi
-            TOTAL_DURATION=$((TOTAL_DURATION + duration))
-          }
-          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+
+          if [ "${{ steps.test1.outcome }}" = "success" ] && [ "${{ steps.test1.outputs.status }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
+
+          if [ "${{ steps.test2.outcome }}" = "success" ] && [ "${{ steps.test2.outputs.status }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
+
+          if [ "${{ steps.test3.outcome }}" = "success" ] && [ "${{ steps.test3.outputs.status }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
+
+          if [ "${{ steps.test4.outcome }}" = "success" ] && [ "${{ steps.test4.outputs.status }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
+
+          if [ "${{ steps.test5.outcome }}" = "success" ] && [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
+
+          CORE_FAILED=$FAILED
+          if [ "${{ steps.test6.outcome }}" = "success" ] && \
+             [ "${{ steps.test6.outputs.status }}" = "skipped" ] && \
+             { { [ "$CORE_FAILED" -eq 0 ] && [ "${{ steps.test6.outputs.decision }}" = "not_applicable_package_manager" ]; } || \
+               { [ "$CORE_FAILED" -gt 0 ] && { [ "${{ steps.test6.outputs.decision }}" = "baseline_failed" ] || \
+                                             [ "${{ steps.test6.outputs.decision }}" = "baseline_install_failed" ]; }; }; }; then
+            SKIPPED=$((SKIPPED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
           if [ "$FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
@@ -265,18 +502,17 @@ jobs:
         run: |
           {
             echo "## Vue Test Results"
-            echo ""
-            echo "- **Version:** ${{ steps.version.outputs.version || 'unknown' }}"
+            echo "- **Framework Version:** ${{ steps.version.outputs.version || 'unknown' }}"
+            echo "- **Scope:** Bounded Node runtime and SSR smoke; browser mounting, hydration and the upstream suite are not tested."
             echo "- **Status:** ${{ steps.summary.outputs.overall_status || 'failure' }}"
             echo "- **Tests Passed:** ${{ steps.summary.outputs.passed || 0 }}"
             echo "- **Tests Failed:** ${{ steps.summary.outputs.failed || 0 }}"
+            echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped || 0 }}"
             echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s"
-            echo "- **Runner:** ubuntu-24.04 (arm64)"
-            echo ""
-            echo "### Test Details"
-            echo "1. Test 1 - Check vue binary exists: ${{ steps.test1.outputs.status || 'skipped' }}"
-            echo "2. Test 2 - Check vue version command: ${{ steps.test2.outputs.status || 'skipped' }}"
-            echo "3. Test 3 - Check vue help output: ${{ steps.test3.outputs.status || 'skipped' }}"
-            echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}"
-            echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}"
+            echo "1. Runtime APIs: ${{ steps.test1.outputs.status || 'failed' }}"
+            echo "2. Package identity and baseline: ${{ steps.test2.outputs.status || 'failed' }}"
+            echo "3. Reactivity and computed state: ${{ steps.test3.outputs.status || 'failed' }}"
+            echo "4. Native Arm64 Node: ${{ steps.test4.outputs.status || 'failed' }}"
+            echo "5. Component SSR and escaped output: ${{ steps.test5.outputs.status || 'failed' }}"
+            echo "6. Package-manager regression applicability: ${{ steps.test6.outputs.status || 'failed' }}"
           } >> "$GITHUB_STEP_SUMMARY"

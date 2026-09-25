@@ -1,42 +1,91 @@
 name: build-and-deploy
 
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push events but only for the default branch
-  push:
-    branches: [ main ]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
-jobs:
-  # This workflow contains a single job called "build"
-  build_and_deploy_s3:
-    # The type of runner that the job will run on
-    runs-on: ubuntu-24.04-arm
+permissions:
+  contents: read
 
-    # Required so the workflow can push changes back to the repo
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  activation:
+    name: Verify production activation gate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      base_branch: ${{ steps.gate.outputs.base_branch }}
+      base_sha: ${{ steps.gate.outputs.base_sha }}
+    steps:
+      - name: Require an explicitly enabled manual main run
+        id: gate
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PRODUCTION_DEPLOYMENT_ENABLED: ${{ vars.PRODUCTION_DEPLOYMENT_ENABLED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]
+          [[ "$PRODUCTION_DEPLOYMENT_ENABLED" == "true" ]] || {
+            echo "Production deployment is disabled. Set PRODUCTION_DEPLOYMENT_ENABLED to exactly true for a bounded manual run." >&2
+            exit 1
+          }
+          [[ "$GITHUB_REF_TYPE" == "branch" ]]
+          [[ "$GITHUB_REF_NAME" == "$DEFAULT_BRANCH" ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          {
+            printf 'base_branch=%s\n' "$GITHUB_REF_NAME"
+            printf 'base_sha=%s\n' "$GITHUB_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+  build_and_deploy_s3:
+    name: Build and deploy reviewed main
+    needs: activation
+    if: >-
+      ${{
+        needs.activation.result == 'success' &&
+        vars.PRODUCTION_DEPLOYMENT_ENABLED == 'true'
+      }}
+    environment: production
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    permissions:
+      contents: read
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true  # Fetch Hugo Themes
-          fetch-depth: 0 
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.activation.outputs.base_sha }}
 
-      # Sets up Git author so commits from Actions are attributed correctly
-      - name: Set up Git author
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Set up pinned preprocessing Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install hash-locked preprocessing dependency
+        run: >-
+          python3 -m pip install
+          --disable-pip-version-check
+          --no-deps
+          --only-binary=:all:
+          --require-hashes
+          --requirement .github/scripts/generated-site-data-requirements.txt
 
       # Sets Up Hugo
       - name: Setup Hugo
-        uses: peaceiris/actions-hugo@v3
+        uses: peaceiris/actions-hugo@2752ce1d29631191ea3f27c23495fa06139a5b78 # v3.2.1
         with:
           hugo-version: '0.130.0'
           extended: true
@@ -46,27 +95,58 @@ jobs:
       # (2) category descriptions are always up-to-date,
       # (3) the packages have valid categories
       - name: Python pre-processing
+        shell: bash
         run: |
-          python --version
-          python ./build_steps/update_category_mappings.py
-          python ./build_steps/update_recently_added_json.py
-          python ./build_steps/validate_package_catagories.py
+          set -euo pipefail
+          [[ "$(git rev-parse --verify 'HEAD^{commit}')" == "${{ needs.activation.outputs.base_sha }}" ]]
+          python3 --version
+          python3 ./build_steps/update_category_mappings.py
+          python3 ./build_steps/update_recently_added_json.py
+          python3 ./build_steps/validate_package_catagories.py
 
-      # Debug step to confirm Windows category data is generated correctly
-      - name: Debug Windows file after generation
+      - name: Require reviewed generated site data
+        shell: bash
         run: |
-          echo "---- ls data ----"
-          ls -l ./data
-          echo "---- windows file ----"
-          cat ./data/category_data_windows.yml || true
-          echo "---- git status ----"
-          git status --short
-          echo "---- git diff for windows file ----"
-          git diff -- data/category_data_windows.yml || true
+          set -euo pipefail
+          generated_paths=(
+            data/category_data.yml
+            data/category_data_windows.yml
+            data/recently_added_packages.yaml
+          )
+          if ! git diff --quiet HEAD -- "${generated_paths[@]}"; then
+            git diff -- "${generated_paths[@]}"
+            echo "Generated site data differs from the reviewed repository bytes." >&2
+            echo "Use the generated site data review workflow to open a draft PR." >&2
+            exit 1
+          fi
+          [[ -z "$(git ls-files --others --exclude-standard -- "${generated_paths[@]}")" ]] || {
+            echo "Generated site data contains an unreviewed untracked file." >&2
+            exit 1
+          }
+          if ! git diff --quiet HEAD -- || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+            git status --short
+            echo "Preprocessing left unexpected repository changes." >&2
+            exit 1
+          fi
 
       # Builds arm-software-developer repo
       - name: Build
         run: hugo --minify --config config.toml,config.cloudfront.toml
+
+      - name: Require the reviewed commit to remain current
+        env:
+          BASE_BRANCH: ${{ needs.activation.outputs.base_branch }}
+          EXPECTED_BASE_SHA: ${{ needs.activation.outputs.base_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git check-ref-format --branch "$BASE_BRANCH" >/dev/null
+          remote_sha="$(git ls-remote --exit-code origin "refs/heads/$BASE_BRANCH" | awk 'NR == 1 {print $1}')"
+          [[ "$remote_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$remote_sha" == "$EXPECTED_BASE_SHA" ]] || {
+            echo "The default branch advanced after this deployment was dispatched; refusing to deploy stale content." >&2
+            exit 1
+          }
 
       # Deploys website to AWS S3
       - name: Deploy to S3
@@ -74,13 +154,3 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
-      # Commits only the Windows category data file back to the repository if it has changed
-      - name: Commit Windows category data only
-        run: |
-          git add data/category_data_windows.yml
-
-          git diff --cached --quiet && echo "No changes to commit" && exit 0
-
-          git commit -m "Update Windows category data [skip ci]"
-          git push

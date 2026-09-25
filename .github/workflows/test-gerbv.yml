@@ -179,7 +179,9 @@ jobs:
           VERSION="${{ steps.version.outputs.version || 'unknown' }}"
           test "$VERSION" != "unknown"
           dpkg-query -W -f='${Version}\n' gerbv | grep -F "$VERSION"
-          ("${{ steps.install.outputs.command_path }}" --version 2>&1 || true) | grep -Eiq 'gerbv|version'
+          VERSION_TEXT=$(timeout 30s "${{ steps.install.outputs.command_path }}" --version 2>&1)
+          printf '%s\n' "$VERSION_TEXT"
+          grep -Eiq 'gerbv|version' <<< "$VERSION_TEXT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -190,7 +192,14 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          ("${{ steps.install.outputs.command_path }}" --help 2>&1 || true) | grep -Eiq 'gerbv|export|Gerber'
+          # Gerbv 2.10 returns 1 for its complete usage page.
+          HELP_RESULT=0
+          HELP_TEXT=$(timeout 30s "${{ steps.install.outputs.command_path }}" --help 2>&1) || HELP_RESULT=$?
+          printf '%s\n' "$HELP_TEXT"
+          test "$HELP_RESULT" -le 1
+          grep -q '^Usage: gerbv ' <<< "$HELP_TEXT"
+          grep -q 'Available options:' <<< "$HELP_TEXT"
+          grep -q -- '--export=' <<< "$HELP_TEXT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -223,7 +232,19 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          cat > /tmp/gerbv-smoke.gbr <<'EOF'
+          SMOKE_DIR=$(mktemp -d "${RUNNER_TEMP:-/tmp}/gerbv-smoke.XXXXXX")
+          finish() {
+            RESULT=$?
+            trap - EXIT
+            if [ "$RESULT" -ne 0 ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            fi
+            rm -rf "$SMOKE_DIR"
+            exit "$RESULT"
+          }
+          trap finish EXIT
+          cat > "$SMOKE_DIR/input.gbr" <<'EOF'
           G04 Arm64 gerbv smoke*
           %FSLAX24Y24*%
           %MOMM*%
@@ -233,9 +254,9 @@ jobs:
           X010000Y000000D01*
           M02*
           EOF
-          "${{ steps.install.outputs.command_path }}" -x png -o /tmp/gerbv-smoke.png /tmp/gerbv-smoke.gbr
-          test -s /tmp/gerbv-smoke.png
-          file /tmp/gerbv-smoke.png | grep -qi 'PNG image'
+          timeout 30s "${{ steps.install.outputs.command_path }}" -x png -w 256x256 -o "$SMOKE_DIR/output.png" "$SMOKE_DIR/input.gbr"
+          test -s "$SMOKE_DIR/output.png"
+          file "$SMOKE_DIR/output.png" | grep -q 'PNG image data, 256 x 256'
           echo "note=Exported a generated Gerber file to PNG with gerbv on the Arm64 runner." >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
@@ -258,12 +279,20 @@ jobs:
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -273,27 +302,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ] && [ "$DECISION" = "not_applicable_package_manager" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -303,3 +336,4 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0

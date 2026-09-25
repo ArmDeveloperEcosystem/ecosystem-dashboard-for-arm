@@ -89,15 +89,70 @@ jobs:
       DOWNLOAD_URL: "https://learn.microsoft.com/en-us/java/openjdk/download"
       HOMEPAGE_URL: "https://learn.microsoft.com/en-us/java/openjdk/overview"
       OFFICIAL_DOCS: "https://learn.microsoft.com/en-us/java/openjdk/install#install-on-ubuntu"
+      RELEASES_URL: "https://learn.microsoft.com/en-us/java/openjdk/older-releases#openjdk-11012"
+      BASELINE_JDK_URL: "https://aka.ms/download-jdk/microsoft-jdk-11.0.12.7.1-linux-aarch64.tar.gz"
+      # Microsoft's .tar.gz.sha256sum.txt files linked from the older-releases page.
+      BASELINE_JDK_SHA256: "659fdb96c1cc13a56512b91dc765e43d683e6d211bf83bb7fe29421ad6d5a1bd"
+      CANDIDATE_JDK_SHA256: "7aff4aa763fc4c00899e48ab0fc8e059c969463fd9857915ce30931b2df5cbb3"
       GITHUB_REPO: ""
+      # Consume complete responses so a successful match cannot close curl's pipe early.
       TEST1_COMMAND: >-
-        test -f baseline-external/metadata.txt && curl -fsL "$DOWNLOAD_URL" | grep -Fqi "OpenJDK"
+        test -f baseline-external/metadata.txt && curl -fsL "$DOWNLOAD_URL" | grep -Fi "OpenJDK" >/dev/null
       TEST2_COMMAND: >-
-        curl -fsL "$DOWNLOAD_URL" | grep -Fqi "OpenJDK" && curl -fsL "$OFFICIAL_DOCS" | grep -Fqi "11.0.12"
+        curl -fsL "$DOWNLOAD_URL" | grep -Fi "OpenJDK" >/dev/null && curl -fsL "$RELEASES_URL" | grep -Fi "11.0.12" >/dev/null
       TEST3_COMMAND: >-
-        curl -fsL "$OFFICIAL_DOCS" | grep -Eqi 'ubuntu|apt|linux'
+        curl -fsL "$OFFICIAL_DOCS" | grep -Ei 'ubuntu|apt|linux' >/dev/null
       TEST5_COMMAND: >-
         python3 -c "import urllib.request; text=urllib.request.urlopen('https://learn.microsoft.com/en-us/java/openjdk/older-releases#openjdk-11012').read().decode('utf-8','ignore').lower(); assert '11.0.12' in text and ('aarch64' in text or 'arm64' in text) and 'linux' in text"
+      JDK_SMOKE_COMMAND: |
+        set -euo pipefail
+        test "$(uname -m)" = "aarch64"
+        SMOKE_DIR=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ms-openjdk-smoke.XXXXXX")
+        trap 'rm -rf "$SMOKE_DIR"' EXIT
+        export SMOKE_DIR
+        unset JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS _JAVA_OPTIONS CLASSPATH
+        curl -fsSL --retry 2 --connect-timeout 20 --max-time 180 "$JDK_URL" --output "$SMOKE_DIR/jdk.tar.gz"
+        printf '%s  %s\n' "$JDK_SHA256" "$SMOKE_DIR/jdk.tar.gz" | sha256sum -c - >&2
+        mkdir "$SMOKE_DIR/jdk"
+        tar -xzf "$SMOKE_DIR/jdk.tar.gz" -C "$SMOKE_DIR/jdk" --strip-components=1
+        file "$SMOKE_DIR/jdk/bin/java" | grep -F 'ARM aarch64' >&2
+        timeout 30 "$SMOKE_DIR/jdk/bin/java" -XshowSettings:properties -version > "$SMOKE_DIR/properties.txt" 2>&1
+        cat "$SMOKE_DIR/properties.txt" >&2
+        python3 - <<'PY'
+        import os
+        from pathlib import Path
+        root = Path(os.environ['SMOKE_DIR'])
+        properties = {}
+        for line in (root / 'properties.txt').read_text().splitlines():
+            if ' = ' in line:
+                key, value = line.split('=', 1)
+                properties[key.strip()] = value.strip()
+        for key, expected in {'java.version': os.environ['EXPECTED_VERSION'],
+                              'java.vendor': 'Microsoft', 'java.vm.vendor': 'Microsoft',
+                              'os.arch': 'aarch64', 'os.name': 'Linux'}.items():
+            assert properties.get(key) == expected, (key, properties.get(key), expected)
+        (root / 'version.txt').write_text(properties['java.version'] + '\n')
+        PY
+        cat > "$SMOKE_DIR/Hello.java" <<'JAVA'
+        public class Hello {
+            public static void main(String[] args) {
+                String version = System.getProperty("java.version");
+                String vendor = System.getProperty("java.vendor");
+                String arch = System.getProperty("os.arch");
+                if (!version.equals(args[0]) || !vendor.equals("Microsoft") || !arch.equals("aarch64")) {
+                    throw new AssertionError("Unexpected JDK identity");
+                }
+                long sum = 0;
+                for (int i = 1; i <= 10000; i++) sum += i;
+                if (sum != 50005000L) throw new AssertionError("CPU calculation failed");
+                System.out.println("Hello " + version + " " + vendor + " " + arch + " " + sum);
+            }
+        }
+        JAVA
+        timeout 30 "$SMOKE_DIR/jdk/bin/javac" -J-Xmx128m -d "$SMOKE_DIR" "$SMOKE_DIR/Hello.java"
+        timeout 30 "$SMOKE_DIR/jdk/bin/java" -Xms16m -Xmx128m -cp "$SMOKE_DIR" Hello "$EXPECTED_VERSION" > "$SMOKE_DIR/hello.txt"
+        grep -Fx "Hello $EXPECTED_VERSION Microsoft aarch64 50005000" "$SMOKE_DIR/hello.txt" >&2
+        cat "$SMOKE_DIR/version.txt"
 
     outputs:
       contract_version: "2.0"
@@ -281,15 +336,25 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          finish() {
+            RESULT=$?
+            if [ "$RESULT" -ne 0 ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+          }
+          trap finish EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
           fi
           eval "$TEST5_COMMAND"
+          export EXPECTED_VERSION="$BASELINE_VERSION" JDK_URL="$BASELINE_JDK_URL" JDK_SHA256="$BASELINE_JDK_SHA256"
+          INSTALLED_VERSION=$(bash -euo pipefail -c "$JDK_SMOKE_COMMAND")
+          test "$INSTALLED_VERSION" = "$BASELINE_VERSION"
+          echo "installed_version=$INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
         id: test6
         run: |
@@ -298,34 +363,46 @@ jobs:
           CURRENT="${{ steps.version.outputs.version || env.BASELINE_VERSION }}"
           NEXT_VERSION="11.0.28"
           CANDIDATE_URL="https://aka.ms/download-jdk/microsoft-jdk-${NEXT_VERSION}-linux-aarch64.tar.gz"
+          finish() {
+            RESULT=$?
+            if [ "$RESULT" -ne 0 ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+              echo "regression_result=Candidate download, identity, compilation, or execution failed" >> "$GITHUB_OUTPUT"
+              echo "comparison=Baseline $CURRENT; candidate $NEXT_VERSION did not complete verified native Arm64 JDK validation." >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+          }
+          trap finish EXIT
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
-          if curl -fsLI "$CANDIDATE_URL" >/dev/null 2>&1; then
-            echo "next_installed_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
-            echo "decision=validated_next_release" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next stable Arm64 binary release validated" >> "$GITHUB_OUTPUT"
-            echo "comparison=Tests 1-5 validated the current published Microsoft Build of OpenJDK Arm64 release metadata and bounded package smoke. The newer stable Arm64 release $NEXT_VERSION resolved successfully from the official Microsoft Arm64 download URL." >> "$GITHUB_OUTPUT"
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next stable Arm64 binary release could not be validated" >> "$GITHUB_OUTPUT"
-            echo "comparison=Tests 1-5 validated the current published Microsoft Build of OpenJDK Arm64 release metadata, but the expected newer stable Arm64 release $NEXT_VERSION could not be resolved from the official Microsoft Arm64 download URL." >> "$GITHUB_OUTPUT"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          export EXPECTED_VERSION="$NEXT_VERSION" JDK_URL="$CANDIDATE_URL" JDK_SHA256="$CANDIDATE_JDK_SHA256"
+          INSTALLED_VERSION=$(bash -euo pipefail -c "$JDK_SMOKE_COMMAND")
+          test "$INSTALLED_VERSION" = "$NEXT_VERSION"
+          echo "next_installed_version=$INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+          echo "decision=validated_next_release" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Microsoft Arm64 JDK $INSTALLED_VERSION compiled and ran the CPU smoke program" >> "$GITHUB_OUTPUT"
+          echo "comparison=Baseline $CURRENT native smoke: ${{ steps.test5.outputs.status || 'failed' }} (outcome: ${{ steps.test5.outcome || 'failure' }}). Candidate $INSTALLED_VERSION passed SHA-256, native executable architecture, Java version/vendor/architecture, and Hello CPU compilation/execution checks." >> "$GITHUB_OUTPUT"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -335,27 +412,29 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -365,6 +444,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
 
       - name: Create test summary
         if: always()
