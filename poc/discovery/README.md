@@ -338,7 +338,11 @@ ephemeral CI caches must not be used as the sole investigation memory.
 Source and AI budgets are separate. The deployment service adds a ten-minute
 outer deadline and targeted container cleanup. Operators must validate the real
 host, approved credentials, alerts, image scan, backup/restore and retention
-before enabling its weekly timer. See [RESULTS.md](RESULTS.md) for what was
+before enabling its weekly timer. The [acceptance guide](deploy/ACCEPTANCE.md)
+provides a read-only run verifier and the remaining owner decisions; the
+[recovery drill](deploy/README.md#executable-offline-recovery-drill) exercises
+crash, SQLite backup/restore and continuation with synthetic data. These tools
+are excluded from the production image. See [RESULTS.md](RESULTS.md) for what was
 actually validated and what still requires deployment acceptance.
 
 Tests cover classification, malformed data, pagination, request limits, private

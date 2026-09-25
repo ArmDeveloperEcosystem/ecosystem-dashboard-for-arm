@@ -10,6 +10,9 @@ The supplied systemd units are **opt-in examples for one dedicated internal Linu
 host**. They are not installed by tests or CI. Packaging and local validation do
 not establish production authorization or live AI acceptance.
 
+See [production acceptance](ACCEPTANCE.md) for the owner decisions, saved-run
+verification command and distinction between automated evidence and approval.
+
 ## Release inputs and gates
 
 An operational owner must agree the candidate scope, source quotas, private
@@ -196,9 +199,14 @@ portable script/unit tests cannot establish the host's systemd configuration.
   manually. Completed observations persist. The next startup marks interrupted
   runs; never overwrite them to conceal failures.
 - **Backup:** stop the timer, wait for or stop the service, verify no manual
-  process uses the same state, then snapshot the whole state directory including
-  SQLite, WAL/SHM files if present, and reports. Use encrypted approved storage.
-  Test restoration to a separate directory before relying on backups.
+  process uses the same state, then back up SQLite through
+  `sqlite3.Connection.backup` and copy the dated reports and `latest.json` while
+  writers remain stopped. This captures committed WAL content into a consistent
+  database; do not copy the main database alone while a WAL may contain newer
+  observations. Retain the reviewed configuration and immutable image reference
+  through the approved host backup process, keeping credentials in the secret
+  manager. Use encrypted approved storage and a checksum manifest. Test a restore
+  into a separate directory before relying on backups.
 - **Retention:** agree a retention period for generated reports, SQLite evidence
   history and logs. The program does not silently purge history. Review growth
   and storage capacity; archive deliberately. Removing old dated report folders
@@ -212,6 +220,41 @@ portable script/unit tests cannot establish the host's systemd configuration.
 - **Stop:** `systemctl disable --now arm64-opportunity-report.timer` stops future
   scheduling; `systemctl stop arm64-opportunity-report.service` stops the active
   service and its container. Keep the state for a future restart.
+
+### Executable offline recovery drill
+
+From a checkout with the development requirements installed, run:
+
+```sh
+python -m poc.discovery.deploy.recovery_acceptance \
+  --work-dir .poc/recovery-acceptance-new
+```
+
+The directory must be new. This command creates only synthetic private state;
+it cannot be pointed at an existing state directory. Its closed source fixture
+makes no network requests and AI is disabled. The script is excluded from the
+production image and is an acceptance harness, not the organization's backup
+service.
+
+The drill commits findings and queued work, retires an obsolete scope, then
+abruptly exits a child process immediately after another observation is saved.
+It snapshots that unclean SQLite state using the backup API, verifies checksums,
+restores to a separate directory and resumes pending work. It checks that original
+observations, retirement decisions and historical report bytes survive; the
+interrupted run remains auditable; and the original state is unchanged. A
+successful drill writes `acceptance.json` and retains the source, snapshot and
+restored artifacts for inspection. Any failed assertion returns nonzero.
+
+Historical report content keeps its original paths and dates. After restoring
+to a different directory, a healthy resumed run publishes a new `latest.json`
+with local report paths; do not rewrite old reports or serve their old absolute
+references as if they point into the restore directory. The private latest-report
+pointer is an operational aid, not proof that no newer run failed.
+
+This verifies application recovery behavior. The deployment owner must still
+exercise encrypted backup retrieval, retention, filesystem ownership, service
+deadline cleanup, reboot behavior and the actual alert destination on staging.
+Record those host results against the exact deployed image and configuration.
 
 The program drafts opportunities; people decide follow-up, dashboard changes and
 maintainer contact. Supported means scoped distribution evidence, not runtime

@@ -13,12 +13,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY poc/discovery/deploy/requirements.build.lock /tmp/requirements.build.lock
 COPY poc/discovery/deploy/requirements.runtime.lock /tmp/requirements.runtime.lock
+# The batch never mounts filesystems. Remove that optional utility normally;
+# retain Debian Essential packages and the complete package inventory.
 RUN python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.build.lock \
     && python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.runtime.lock \
     && python -m pip check \
     && python -m pip uninstall --yes pip \
     && rm -rf /usr/local/lib/python3.12/ensurepip \
     && rm /tmp/requirements.runtime.lock /tmp/requirements.build.lock \
+    && apt-get purge --yes mount \
+    && apt-get check \
+    && dpkg --audit \
     && groupadd --gid 10001 discovery \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin discovery \
     && install -d -m 0700 -o 10001 -g 10001 /state \

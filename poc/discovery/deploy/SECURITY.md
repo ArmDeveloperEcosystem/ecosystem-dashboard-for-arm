@@ -1,37 +1,47 @@
-# Image security validation — 24 September 2026
+# Image security validation
 
 The implementation is ready for code review. **Production security acceptance
-remains open:** the final image retains eight distinct HIGH advisory IDs that
+remains open:** the measured hardened image retains eight distinct HIGH advisory IDs that
 need an operational security owner's disposition or further remediation. No
 findings were suppressed and no risk waiver was granted.
 
-## Exact image and scan
+## Exact measured images and scan
 
-- Final Linux Arm64 image index:
-  `sha256:40a71b70f8610bb2f32f002172d8ef93f7eddc6c2d10668e6cc4881c069da5b8`.
-- Image configuration digest, as reported by Trivy:
-  `sha256:f5d3a246b08538c52c105cb9b1687b2ab04cf46ed0c7da037f42de14f8099a92`.
+- Baseline Linux Arm64 image at commit
+  `ff2e0310983a03c48ec683d56019d94230aba701`:
+  `sha256:0782987fae76dcf88312d5ee8b47f4fac94fb4006f51f47fb848f02cd55e9a52`.
+- Isolated hardening probe derived from that exact baseline by normal removal
+  of the unused `mount` package:
+  `sha256:c7efc4cb51cfa7f73938976823aff286c4478d4b777fde2581768a52e9691bcf`.
+  This is a measured experiment, not an approved production release. Rebuild
+  and scan the final release commit; record its own image digest and results.
 - Scanner: [Trivy 0.74.0 official immutable release](https://github.com/aquasecurity/trivy/releases/tag/v0.74.0).
   The downloaded macOS Arm64 archive matched both its official checksum file
   and GitHub release asset digest:
   `1caada5e0e2091909357c7525d3aa76f4b660b13821bc143b190c7483e31cc11`.
 - Database: `ghcr.io/aquasecurity/trivy-db:2`, updated
-  `2026-09-24T13:23:01Z`; scan completed `2026-09-24T17:57:02Z`.
+  `2026-09-24T13:23:01Z`; hardening scan timestamp
+  `2026-09-24T22:47:30-05:00`.
 
-The local Docker archive links the image index to the configuration digest.
-Scanning inspected 87 Debian 13.7 packages and nine Python packages. These are
+The hardening scan inspected 86 Debian 13.7 packages and nine Python packages. These are
 **package/advisory occurrences**, so one advisory can appear against several
 binary packages built from the same source package.
 
-| Final result | Critical | High | Medium | Low | Unknown | Total |
+| Measured result | Critical | High | Medium | Low | Unknown | Total |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Debian packages | 0 | 44 | 53 | 57 | 2 | 156 |
+| Baseline Debian packages | 0 | 44 | 53 | 57 | 2 | 156 |
+| Hardened Debian packages | 0 | 40 | 52 | 56 | 2 | 150 |
 | Python packages | 0 | 0 | 0 | 0 | 0 | 0 |
 
-There are 68 distinct advisory IDs overall; eight account for the 44 HIGH
+There are 68 distinct advisory IDs overall; eight account for the 40 HIGH
 occurrences. The database supplies no fixed Trixie version for these remaining
 findings. Some severity ratings come from other vendors; package matching is
 not proof of exploitability in this application.
+
+The hardening removes four HIGH occurrences and the actual `mount`/`umount`
+executables. It does not eliminate the underlying util-linux advisory IDs:
+other packages from that source remain. No scan filters or inventory edits were
+used to obtain the reduction.
 
 ## Remediation completed
 
@@ -52,6 +62,25 @@ dependencies, then removes pip and ensurepip from the runtime image. The final
 scan contains neither installer. Separate pip-audit 2.10.1 checks against PyPI
 found no known advisories in the nine runtime pins or the build-only pip pin.
 
+The Dockerfile now removes the runtime-unused `mount` package using
+`apt-get purge --yes mount`, then verifies dependencies with `apt-get check`
+and the package database with `dpkg --audit`. The probe passed the native Arm64
+default-command smoke test twice with persistent state, UID 10001, a read-only
+root filesystem, no network, dropped capabilities and `no-new-privileges`.
+No source requests or model calls occurred. `mount` and `umount` are absent;
+`nsenter`, `infocmp` and Perl remain recorded in the inventory.
+
+Further normal removal is constrained by Debian's Essential package dependency
+graph. `util-linux`, `bsdutils`, `ncurses-bin` and `perl-base` are Essential;
+the systemd/udev and ACL libraries are dependencies of Essential packages.
+The build does not force removal, manually delete package records, import
+testing/unstable packages or change distributions just to improve a scan.
+Debian currently lists the [util-linux fix](https://security-tracker.debian.org/tracker/CVE-2026-76642),
+[ACL fix](https://security-tracker.debian.org/tracker/CVE-2026-54369) and
+[ncurses fix](https://security-tracker.debian.org/tracker/CVE-2025-69720)
+in testing/unstable, with Trixie still affected. Follow supported stable updates
+and retain the owner decision for residual findings.
+
 ## Remaining HIGH advisory applicability
 
 All rows below have **no fixed Trixie package version listed** on the scan date.
@@ -60,7 +89,7 @@ they do not approve an exception to security policy.
 
 | Advisory IDs | Installed packages / occurrences | Observed boundary |
 | --- | --- | --- |
-| [CVE-2026-76642](https://security-tracker.debian.org/tracker/CVE-2026-76642), [CVE-2026-78408](https://security-tracker.debian.org/tracker/CVE-2026-78408), [CVE-2026-78409](https://security-tracker.debian.org/tracker/CVE-2026-78409), [CVE-2026-78410](https://security-tracker.debian.org/tracker/CVE-2026-78410) | util-linux source package 2.41.5-0+deb13u1; nine binary packages, 36 occurrences | These involve privileged mount hooks, configured fstab paths or root `nsenter --join-cgroup`. Mount and nsenter are present; fstab is unconfigured. The crawler invokes neither. |
+| [CVE-2026-76642](https://security-tracker.debian.org/tracker/CVE-2026-76642), [CVE-2026-78408](https://security-tracker.debian.org/tracker/CVE-2026-78408), [CVE-2026-78409](https://security-tracker.debian.org/tracker/CVE-2026-78409), [CVE-2026-78410](https://security-tracker.debian.org/tracker/CVE-2026-78410) | util-linux source package 2.41.5-0+deb13u1; eight binary packages, 32 occurrences | These involve privileged mount hooks, configured fstab paths or root `nsenter --join-cgroup`. Mount and umount are absent; nsenter remains and fstab is unconfigured. The crawler invokes none of them. |
 | [CVE-2026-54369](https://security-tracker.debian.org/tracker/CVE-2026-54369) | libacl1 2.3.2-2+b1; 1 occurrence | libacl is present. Exploitation requires a privileged caller processing an attacker-controlled path. Packaged crawler code does not call the affected ACL interfaces. |
 | [CVE-2025-69720](https://security-tracker.debian.org/tracker/CVE-2025-69720) | ncurses 6.5+20250216-2; four binary packages, 4 occurrences | The affected infocmp command is present, but the crawler never invokes it or processes terminal descriptions. |
 | [CVE-2026-16742](https://security-tracker.debian.org/tracker/CVE-2026-16742) | libsystemd0 and libudev1 257.13-1~deb13u1; 2 occurrences | The advisory targets systemd-homed. Its executable is absent from the inspected runtime image; the batch does not run a homed service. |
@@ -77,7 +106,7 @@ Use a checksum-verified Trivy 0.74.0 binary. Export the locally built immutable
 image and download the public database before scanning:
 
 ```sh
-docker image save --output image.tar sha256:40a71b70f8610bb2f32f002172d8ef93f7eddc6c2d10668e6cc4881c069da5b8
+docker image save --output image.tar "$RELEASE_IMAGE"
 trivy image --download-db-only --db-repository ghcr.io/aquasecurity/trivy-db:2 \
   --cache-dir ./trivy-cache --disable-telemetry --skip-version-check
 trivy image --input image.tar --cache-dir ./trivy-cache \
@@ -87,14 +116,17 @@ trivy image --input image.tar --cache-dir ./trivy-cache \
   --format json --output image-scan.json --exit-code 1
 ```
 
-The final command returned 1 because advisories were found, not because scanning
-failed. The actual scan used an isolated environment, disabled telemetry and
+Set `RELEASE_IMAGE` to the immutable image digest being accepted. The scan command
+returns 1 when advisories are found; that is separate from scanner failure. The
+hardening measurement used the cached database and local Docker socket with
+offline scanning, `--ignorefile /dev/null` and the full package inventory; it
 performed no image, source or findings upload. A later database can produce
 different results. [Trivy documents archive scanning and offline options](https://trivy.dev/docs/v0.74/references/configuration/cli/trivy_image/).
 
-Raw reports, every finding with installed/fixed versions, database metadata and
-component-presence evidence stay in ignored local
-`.poc/validation/production-final-image-*` files; verified scanner downloads and
+Raw baseline evidence remains in ignored `.poc/current-focus/final-trivy.json`.
+The hardening build, apt dependency simulation, full scan, component-presence
+evidence and native smoke results are under ignored
+`.poc/prod-readiness/security/`; verified scanner downloads and
 checksums are under `.poc/tools/trivy/`. These are validation records, separate
 from ecosystem opportunity findings.
 

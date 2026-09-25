@@ -1,9 +1,10 @@
-# PoC2 validation — 24 September 2026
+# PoC2 validation — 24–25 September 2026
 
 The bounded internal implementation has passed local and native Linux Arm64
 validation and independent verification of the review corrections. It is ready
-for technical review. Approved live AI, actual staging-host acceptance, browser
-acceptance, stakeholder review and security disposition remain release gates.
+for technical review. Approved live AI, actual staging-host acceptance,
+stakeholder review and security disposition remain release gates. Browser
+acceptance remains separate for the loopback demo; the batch has no web UI.
 No runtime certification or universal correctness is claimed.
 
 ## Verified behavior
@@ -31,14 +32,23 @@ No runtime certification or universal correctness is claimed.
 
 ## Automated and independent validation
 
-- Local Python suite: **310 tests passed**.
-- Native Linux Arm64 suite: **310 tests passed**, with hash-locked dependencies,
+- Local Python suite: **346 tests passed**.
+- Native Linux Arm64 suite: **346 tests passed**, with hash-locked dependencies,
   a nonroot user, read-only root filesystem and no network. Test-only temporary
   storage permits executable fixtures; the production image uses `noexec`.
 - Existing root repository regression suite: **113 tests passed**, with the
   required Hugo 0.130.0 and Command Line Tools Git. No system Xcode license or
   system settings were changed.
 - JavaScript renderer/link/filter/coverage/health checks: **11 passed**.
+- Offline recovery drill: a real unclean child-process exit left 57,712 bytes
+  of WAL before consistent SQLite backup. Restore preserved two prior observations,
+  retirement and historical report bytes; pending work resumed to a third
+  observation and the interrupted run remained auditable. Original state was
+  unchanged. Zero live source/model calls.
+- Read-only acceptance verifier: 31 regressions distinguish fresh healthy
+  evidence from empty/history-only, stale, malformed or incomplete advisory
+  runs. The saved eight-finding live sample passes metadata mode and correctly
+  fails AI mode because AI was disabled; no production approval is inferred.
 - Runtime image: two offline default-command executions passed with persistent
   SQLite/report state, private output permissions, UID 10001, read-only root,
   dropped capabilities and no-new-privileges. The runtime excludes the web
@@ -88,14 +98,17 @@ reports of eight and seven pages also passed full visual inspection.
 
 Real Chrome interaction remains blocked locally by `ERR_BLOCKED_BY_CLIENT`.
 HTTP and controlled DOM checks are useful validation, but do not constitute
-interactive browser acceptance.
+interactive browser acceptance. A new attempt remains blocked; no browser
+settings were changed. This affects demo acceptance, not a nonexistent batch UI.
 
 ## Security and release gates
 
 The runtime dependency lock and pinned Debian Trixie base remain unchanged.
 The dated baseline audit found no known advisories in the nine Python runtime
-packages. Its image scan found no critical or Python findings, with 44 high
-package occurrences across eight distinct OS advisories. See
+packages. Normal removal of unused mount/umount utilities reduced measured
+HIGH occurrences from 44 to 40 and total OS occurrences from 156 to 150.
+Eight distinct HIGH advisories remain; no CRITICAL or Python findings were
+reported. Essential packages and package inventory are preserved. See
 [deploy/SECURITY.md](deploy/SECURITY.md) for scope and residual risk; this is not a
 security waiver. Keep the exact rebuilt image ID, commit label and final scan
 with the release evidence.
@@ -104,8 +117,8 @@ Before rollout, complete:
 
 1. Approved dedicated model/provider access, entitlement and data policy, followed
    by representative live AI-quality validation with adequate coverage.
-2. Real browser acceptance and stakeholder review of evidence usefulness and
-   false-positive/negative behavior on current scopes.
+2. Stakeholder review of evidence usefulness and false-positive/negative
+   behavior on current scopes. Browser review applies separately to the demo UI.
 3. Private staging-host storage, scheduling, monitoring, backup/restore, retention
    and operational ownership acceptance.
 4. Security-owner disposition of residual image advisories.
@@ -116,6 +129,9 @@ PR #1092 remains separate and unchanged.
 
 ## Evidence retained locally
 
+Production acceptance preparation is under `.poc/prod-readiness/`: recovery
+drills, verifier results, security probes and final local/native image validation.
+[ACCEPTANCE.md](deploy/ACCEPTANCE.md) specifies the remaining owner decisions.
 Current-selection correction evidence is under `.poc/current-focus/`: local/native
 logs, state migration assertions, current live report, renders and image checks.
 Earlier correction evidence is under `.poc/review-fixes/`: reviewer notes,
