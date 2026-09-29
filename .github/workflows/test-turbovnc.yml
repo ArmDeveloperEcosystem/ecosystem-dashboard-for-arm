@@ -109,7 +109,8 @@ jobs:
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
-      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      # Test 6 inspects the candidate package without installing TurboVNC.
+      regression_next_installed_version: 'not_installed'
       regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
@@ -192,6 +193,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           SOURCE_MARKERS="${{ steps.expectations.outputs.source_markers }}"
           if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
@@ -250,6 +253,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
           [ -f "$CONTENT_PAGE" ]
           grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
@@ -268,6 +273,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           DOC_MARKERS="${{ steps.expectations.outputs.doc_markers }}"
           ENTRYPOINT_MARKERS="${{ steps.expectations.outputs.entrypoint_markers }}"
@@ -329,6 +336,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
           [ "$(uname -m)" = "aarch64" ]
           grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
@@ -347,37 +356,61 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           TAG="${{ steps.install.outputs.resolved_tag || '' }}"
           [ -n "$TAG" ] && [ "$TAG" != "default_branch" ]
-          mkdir -p artifacts turbovnc-root
+          WORK=$(mktemp -d)
+          XVNC_PID=""
+          cleanup() {
+            if [ -n "$XVNC_PID" ] && kill -0 "$XVNC_PID" 2>/dev/null; then
+              kill "$XVNC_PID"
+              wait "$XVNC_PID" || true
+            fi
+            rm -rf "$WORK"
+          }
+          trap cleanup EXIT
+          mkdir -p "$WORK/root"
           ASSET_URL="$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$TAG" | jq -r '[.assets[] | select(.name | test("turbovnc_.*arm64\\.deb$"; "i")) | .browser_download_url][0] // empty')"
           [ -n "$ASSET_URL" ]
-          curl -fL --retry 3 -o artifacts/turbovnc.deb "$ASSET_URL"
-          dpkg-deb -f artifacts/turbovnc.deb Package Version Architecture | tee /tmp/turbovnc-control.txt
-          grep -Fx arm64 /tmp/turbovnc-control.txt >/dev/null
-          dpkg-deb -x artifacts/turbovnc.deb turbovnc-root
-          XVNC_EXTRACTED="$(find turbovnc-root -type f -path '*/bin/Xvnc' -print -quit)"
+          curl -fL --retry 3 -o "$WORK/turbovnc.deb" "$ASSET_URL"
+          dpkg-deb -f "$WORK/turbovnc.deb" Package Version Architecture
+          test "$(dpkg-deb -f "$WORK/turbovnc.deb" Architecture)" = arm64
+          test "$(dpkg-deb -f "$WORK/turbovnc.deb" Package)" = turbovnc
+          PACKAGE_VERSION=$(dpkg-deb -f "$WORK/turbovnc.deb" Version)
+          test "${PACKAGE_VERSION%%-*}" = "$BASELINE_VERSION"
+          dpkg-deb -x "$WORK/turbovnc.deb" "$WORK/root"
+          XVNC_EXTRACTED="$(find "$WORK/root" -type f -path '*/bin/Xvnc' -print -quit)"
           [ -n "$XVNC_EXTRACTED" ]
-          file "$XVNC_EXTRACTED" | tee /tmp/turbovnc-xvnc.file
-          grep -Eiq 'ARM aarch64|aarch64' /tmp/turbovnc-xvnc.file
-          sudo dpkg -i artifacts/turbovnc.deb || sudo apt-get -f install -y
+          file "$XVNC_EXTRACTED" | tee "$WORK/xvnc.file"
+          grep -Eiq 'ARM aarch64|aarch64' "$WORK/xvnc.file"
+          sudo apt-get install -y --no-install-recommends "$WORK/turbovnc.deb"
+          test "$(dpkg-query -W -f='${Version}' turbovnc)" = "$PACKAGE_VERSION"
           XVNC="/opt/TurboVNC/bin/Xvnc"
           [ -x "$XVNC" ]
-          "$XVNC" -version >/tmp/turbovnc-version.log 2>&1 || true
-          grep -Eiq 'TurboVNC|Xvnc|version' /tmp/turbovnc-version.log
-          DISPLAY_NUM=29
-          "$XVNC" ":$DISPLAY_NUM" -geometry 800x600 -depth 24 -SecurityTypes None -rfbport 5929 -localhost >/tmp/turbovnc-xvnc.log 2>&1 &
+          "$XVNC" -version >turbovnc-version.log 2>&1
+          grep -F "TurboVNC Server (Xvnc) 64-bit v$BASELINE_VERSION " turbovnc-version.log
+          "$XVNC" -displayfd 3 -geometry 800x600 -depth 24 -SecurityTypes None \
+            -rfbport 0 -localhost -nolisten tcp 3>"$WORK/display" >turbovnc-xvnc.log 2>&1 &
           XVNC_PID=$!
-          trap 'kill "$XVNC_PID" 2>/dev/null || true' EXIT
+          READY=false
           for _ in $(seq 1 20); do
-            if xdpyinfo -display ":$DISPLAY_NUM" >/tmp/turbovnc-xdpyinfo.log 2>&1; then
-              break
+            kill -0 "$XVNC_PID"
+            if [ -s "$WORK/display" ]; then
+              DISPLAY_NUM=$(tr -d '\n' < "$WORK/display")
+              [[ "$DISPLAY_NUM" =~ ^[0-9]+$ ]]
+              if xdpyinfo -display ":$DISPLAY_NUM" >turbovnc-xdpyinfo.log 2>&1; then
+                READY=true
+                break
+              fi
             fi
             sleep 1
           done
-          xdpyinfo -display ":$DISPLAY_NUM" | grep -Eiq 'dimensions|screen|vendor'
-          kill "$XVNC_PID" 2>/dev/null || true
-          wait "$XVNC_PID" 2>/dev/null || true
+          test "$READY" = true
+          grep -Eq 'dimensions:[[:space:]]+800x600 pixels' turbovnc-xdpyinfo.log
+          kill "$XVNC_PID"
+          wait "$XVNC_PID"
+          XVNC_PID=""
           echo "status=passed" >> "$GITHUB_OUTPUT"
           echo "note=Arm preflight smoke passed for TurboVNC: downloaded $ASSET_URL, verified Debian package architecture arm64, verified extracted Xvnc as AArch64, ran Xvnc version, started a local VNC/X server, queried the display with xdpyinfo, and stopped cleanly. WAN client performance, VirtualGL, and 3D remoting were not claimed." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
@@ -395,12 +428,16 @@ jobs:
             [ -n "$TAG" ]
             ASSET_URL="$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$TAG" | jq -r '[.assets[] | select(.name | test("turbovnc_.*arm64\\.deb$"; "i")) | .browser_download_url][0] // empty')"
             [ -n "$ASSET_URL" ]
-            curl -fL --retry 3 -o /tmp/turbovnc-next.deb "$ASSET_URL"
-            dpkg-deb -f /tmp/turbovnc-next.deb Architecture | grep -Fx arm64
-            rm -rf /tmp/turbovnc-next-root
-            mkdir -p /tmp/turbovnc-next-root
-            dpkg-deb -x /tmp/turbovnc-next.deb /tmp/turbovnc-next-root
-            XVNC_EXTRACTED="$(find /tmp/turbovnc-next-root -type f -path '*/bin/Xvnc' -print -quit)"
+            WORK=$(mktemp -d)
+            trap 'rm -rf "$WORK"' EXIT
+            curl -fL --retry 3 -o "$WORK/next.deb" "$ASSET_URL"
+            test "$(dpkg-deb -f "$WORK/next.deb" Architecture)" = arm64
+            test "$(dpkg-deb -f "$WORK/next.deb" Package)" = turbovnc
+            PACKAGE_VERSION=$(dpkg-deb -f "$WORK/next.deb" Version)
+            test "${PACKAGE_VERSION%%-*}" = "$LATEST_VERSION"
+            mkdir -p "$WORK/root"
+            dpkg-deb -x "$WORK/next.deb" "$WORK/root"
+            XVNC_EXTRACTED="$(find "$WORK/root" -type f -path '*/bin/Xvnc' -print -quit)"
             [ -n "$XVNC_EXTRACTED" ]
             file "$XVNC_EXTRACTED" | grep -Eiq 'ARM aarch64|aarch64'
           limited_cpu_description: "Test 6 repeated the TurboVNC scoped Arm preflight against the next stable release candidate: Arm64 package download, package architecture check, and extracted AArch64 Xvnc proof. It does not prove WAN client performance, VirtualGL, or 3D remoting."
@@ -408,12 +445,20 @@ jobs:
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -423,27 +468,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -453,6 +502,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
 
       - name: Create test summary
         if: always()
@@ -474,6 +524,6 @@ jobs:
           test6_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
           regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
           regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
-          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_next_installed_version: 'not_installed'
           regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
           regression_details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}

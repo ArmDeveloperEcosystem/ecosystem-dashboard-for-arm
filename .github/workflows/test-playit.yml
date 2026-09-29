@@ -140,45 +140,30 @@ jobs:
         id: install
         run: |
           set -euo pipefail
-          rm -rf baseline-src baseline-external
-          mkdir -p baseline-src baseline-external
-          if [ -n "$GITHUB_REPO" ]; then
-            RESOLVED_TAG=""
-            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
-              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
-                RESOLVED_TAG="$CANDIDATE"
-                break
-              fi
-            done
-            if [ -n "$RESOLVED_TAG" ]; then
-              git clone --filter=blob:none --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
-            else
-              git clone --filter=blob:none --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
-            fi
-            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
+          RESOLVED_TAG="v$BASELINE_VERSION"
+          git clone --filter=blob:none --depth 1 --branch "$RESOLVED_TAG" \
+            "https://github.com/$GITHUB_REPO.git" baseline-src
+          test "$(git -C baseline-src describe --tags --exact-match)" = "$RESOLVED_TAG"
+          git -C baseline-src rev-parse HEAD
+          echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
+          echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get baseline version
         id: version
         run: |
-          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected baseline version: $BASELINE_VERSION"
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import tomllib
+          package = tomllib.loads(Path("baseline-src/packages/agent_cli/Cargo.toml").read_text())["package"]
+          assert package["name"] == "agent"
+          assert package["version"] == os.environ["BASELINE_VERSION"]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={package['version']}\n")
+          print(f"Playit CLI manifest: {package['name']} {package['version']}")
+          PY
 
       - name: Define package-specific expectations
         id: expectations
@@ -344,7 +329,7 @@ jobs:
               echo "doc_markers=README.md|packages/agent_cli/Cargo.toml|Dockerfile" >> "$GITHUB_OUTPUT"
               echo "identity_kind=cargo_package" >> "$GITHUB_OUTPUT"
               echo "identity_target=packages/agent_cli/Cargo.toml" >> "$GITHUB_OUTPUT"
-              echo "identity_expect=playit-cli" >> "$GITHUB_OUTPUT"
+              echo "identity_expect=agent" >> "$GITHUB_OUTPUT"
               echo "external_expect=playit" >> "$GITHUB_OUTPUT"
               ;;
             playwright)
@@ -427,6 +412,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           SOURCE_MARKERS="${{ steps.expectations.outputs.source_markers }}"
           if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
@@ -476,6 +463,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
           [ -f "$CONTENT_PAGE" ]
           grep -Fx "download_url: $DOWNLOAD_URL" "$CONTENT_PAGE" >/dev/null
@@ -494,6 +483,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           DOC_MARKERS="${{ steps.expectations.outputs.doc_markers }}"
           IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
@@ -540,6 +531,8 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           CONTENT_PAGE="${{ steps.expectations.outputs.content_page }}"
           [ "$(uname -m)" = "aarch64" ]
           grep -Fx "works_on_arm: true" "$CONTENT_PAGE" >/dev/null
@@ -558,77 +551,70 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if [ "$MODE" != "github_source" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "note=Playit Arm preflight requires the checked-out agent source tree so the Rust CLI can be compiled and exercised." >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          test "${{ steps.install.outputs.install_mode }}" = github_source
           cd baseline-src
-          cargo metadata --format-version 1 >/tmp/playit-cargo-metadata.json
-          cargo build --workspace --bins
-          BIN="$(find target/debug -maxdepth 1 -type f -perm -111 ! -name '*.d' -print -quit)"
-          [ -n "$BIN" ]
-          file "$BIN" | grep -Eiq 'aarch64|ARM aarch64|ARM64|Mach-O'
-          "$BIN" --help >/tmp/playit-help.txt 2>&1 || "$BIN" --version >/tmp/playit-version.txt 2>&1
-          (timeout 10s "$BIN" --secret invalid-smoke-token 2>&1 || true) | tee /tmp/playit-invalid-token.txt
-          grep -Eiq 'secret|token|account|claim|invalid|help|usage|playit' /tmp/playit-help.txt /tmp/playit-version.txt /tmp/playit-invalid-token.txt 2>/dev/null
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import tomllib
+          cli = tomllib.loads(Path("packages/agent_cli/Cargo.toml").read_text())["package"]
+          assert cli["name"] == "agent"
+          assert cli["version"] == os.environ["BASELINE_VERSION"]
+          manifest = Path("packages/agent_common/Cargo.toml")
+          original = manifest.read_text()
+          dependency = tomllib.loads(original)["dependencies"]["sha2"]
+          assert dependency == {"verion": "0.10.2", "optional": True}, dependency
+          lock = tomllib.loads(Path("Cargo.lock").read_text())
+          sha2 = [package for package in lock["package"] if package["name"] == "sha2"]
+          assert len(sha2) == 1 and sha2[0]["version"] == dependency["verion"]
+          assert sha2[0]["checksum"] == "55deaec60f81eefe3cce0dc50bda92d6d8e88f2a27df7c5033b42afeb1ed2676"
+          # v0.9.1 misspells only this manifest key; preserve its version and original lock.
+          bad = 'sha2 = { verion = "0.10.2", optional = true }'
+          good = 'sha2 = { version = "0.10.2", optional = true }'
+          assert original.count(bad) == 1
+          manifest.write_text(original.replace(bad, good, 1))
+          PY
+          cargo --version
+          rustc --version
+          cargo metadata --locked --format-version 1 --no-deps > playit-cargo-metadata.json
+          timeout 600 cargo build --locked --workspace --bins -j 2
+          git diff --exit-code -- Cargo.lock
+          BIN=target/debug/agent
+          test -x "$BIN"
+          file "$BIN" | grep -Eq 'ELF 64-bit.*ARM aarch64'
+          "$BIN" --help > playit-help.txt
+          grep -Fq -- '--config-file' playit-help.txt
+          "$BIN" --version > playit-version.txt
+          test "$(cat playit-version.txt)" = "agent $BASELINE_VERSION"
+
+          # CLI startup enters account claiming. Exercise the real validator offline instead.
+          TOKEN_TEST=packages/agent_common/tests/arm_invalid_secret.rs
+          test ! -e "$TOKEN_TEST"
+          mkdir -p "$(dirname "$TOKEN_TEST")"
+          trap 'rm -f "$TOKEN_TEST"' EXIT
+          python3 - <<'PY'
+          from pathlib import Path
+          Path("packages/agent_common/tests/arm_invalid_secret.rs").write_text("""
+          use playit_agent_common::agent_config::AgentConfigBuilder;
+
+          #[test]
+          fn rejects_invalid_tokens_without_network() {
+              let mut config = AgentConfigBuilder::default();
+              config.secret_key = "0011aaff".into();
+              assert!(config.valid_secret_key(), "valid hex must remain accepted");
+              for invalid in ["invalid-smoke-token", "abc", "zz"] {
+                  config.secret_key = invalid.into();
+                  assert!(!config.valid_secret_key(), "invalid token accepted: {invalid}");
+              }
+          }
+          """)
+          PY
+          timeout 120 cargo test --locked --offline -p playit-agent-common --test arm_invalid_secret -j 2
+          git diff --exit-code -- Cargo.lock
+          echo "scope=Native CLI compile/ELF/help/version and offline token rejection; no account or tunnel calls" >> "$GITHUB_OUTPUT"
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "note=Built the Playit Rust agent/CLI on Arm64, verified the executable, exercised help/version, and ran a bounded invalid-token startup probe without creating a tunnel or authenticating an account." >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-          exit 0
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            case "$IDENTITY_KIND" in
-              go_module)
-                grep -Fx "module $IDENTITY_EXPECT" "$IDENTITY_TARGET" >/dev/null
-                RESULT="Verified go module identity in $IDENTITY_TARGET"
-                ;;
-              toml_name)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); name=(data.get('project') or {}).get('name') or ((data.get('tool') or {}).get('poetry') or {}).get('name'); assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified TOML package identity in $IDENTITY_TARGET"
-                ;;
-              package_json_name)
-                python3 -c "import json,sys; data=json.load(open(sys.argv[1], encoding='utf-8')); assert data.get('name') == sys.argv[2], (data.get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified package.json identity in $IDENTITY_TARGET"
-                ;;
-              cargo_package)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); assert (data.get('package') or {}).get('name') == sys.argv[2], ((data.get('package') or {}).get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified Cargo package identity in $IDENTITY_TARGET"
-                ;;
-              chart_name)
-                python3 -c "from pathlib import Path; import sys; lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(); matches=[line.split(':', 1)[1].strip() for line in lines if line.startswith('name:')]; name=matches[0] if matches else ''; assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified chart identity in $IDENTITY_TARGET"
-                ;;
-              grep_file)
-                grep -Eiq "$IDENTITY_EXPECT" "$IDENTITY_TARGET"
-                RESULT="Verified package-specific content in $IDENTITY_TARGET"
-                ;;
-              *)
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                echo "note=No bounded identity check was configured for this package." >> "$GITHUB_OUTPUT"
-                exit 1
-                ;;
-            esac
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=$RESULT" >> "$GITHUB_OUTPUT"
-          else
-            TEMP_PAGE=$(mktemp)
-            trap 'rm -f "$TEMP_PAGE"' EXIT
-            if curl -fsSL "$OFFICIAL_DOCS" -o "$TEMP_PAGE" || curl -fsSL "$HOMEPAGE_URL" -o "$TEMP_PAGE" || curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_PAGE"; then
-              grep -Eiq "$EXTERNAL_EXPECT" "$TEMP_PAGE"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Verified external package identity from published docs or homepage content using /$EXTERNAL_EXPECT/." >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Could not fetch published docs or homepage content for bounded external validation." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
@@ -640,13 +626,19 @@ jobs:
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
           limited_cpu_probe: |
+            set -euo pipefail
             cd next-src
-            cargo metadata --format-version 1 >/tmp/playit-next-cargo-metadata.json
-            cargo build --workspace --bins
-            BIN="$(find target/debug -maxdepth 1 -type f -perm -111 ! -name '*.d' -print -quit)"
-            [ -n "$BIN" ]
-            file "$BIN" | grep -Eiq 'aarch64|ARM aarch64|ARM64|ELF'
-            "$BIN" --help >/tmp/playit-next-help.txt 2>&1 || "$BIN" --version >/tmp/playit-next-version.txt 2>&1
+            cargo metadata --locked --format-version 1 --no-deps > playit-next-cargo-metadata.json
+            cargo build --locked --workspace --bins -j 2
+            git diff --exit-code -- Cargo.lock
+            BIN=target/debug/playit-cli
+            test -x "$BIN"
+            file "$BIN" | grep -Eq 'ELF 64-bit.*ARM aarch64'
+            "$BIN" --help > playit-next-help.txt
+            # v0.17.1 exposes a local-only version subcommand, not a --version flag.
+            env -u PLAYIT_SECRET -u PLAYIT_SECRET_PATH "$BIN" --stdout \
+              --secret_path "$PWD/playit-unused-secret" version > playit-next-version.txt
+            test "$(cat playit-next-version.txt)" = 0.17.1
           limited_cpu_description: "Test 6 reran the scoped Playit Arm preflight against the next stable source tag: Rust workspace metadata, binary build, executable architecture check, and help/version smoke. Account auth, tunnel creation, and external traffic remain out of scope."
           next_version_override: "0.17.1"
           candidate_tag_override: "v0.17.1"
@@ -655,12 +647,20 @@ jobs:
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -670,27 +670,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -700,6 +704,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
 
       - name: Create test summary
         if: always()

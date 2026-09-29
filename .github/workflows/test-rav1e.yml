@@ -423,7 +423,7 @@ jobs:
 
       - name: Test 1 - Check package-specific baseline markers
         id: test1
-        continue-on-error: true
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -472,7 +472,7 @@ jobs:
 
       - name: Test 2 - Check published package metadata
         id: test2
-        continue-on-error: true
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -490,7 +490,7 @@ jobs:
 
       - name: Test 3 - Check package-specific docs and manifests
         id: test3
-        continue-on-error: true
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -536,7 +536,7 @@ jobs:
 
       - name: Test 4 - Verify Arm64 runner and lane assumptions
         id: test4
-        continue-on-error: true
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -552,44 +552,98 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare bounded Rav1e runtime validation
+        id: runtime_probe
+        if: always()
+        run: |
+          cat > "$RUNNER_TEMP/rav1e-smoke.py" <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import struct
+          import subprocess
+          import sys
+
+          binary, expected, prefix = sys.argv[1:]
+          binary = str(Path(binary).resolve())
+          env = {key: value for key, value in os.environ.items()
+                 if key not in ("GH_TOKEN", "GITHUB_TOKEN")}
+
+          def run(arguments, seconds):
+              result = subprocess.run(["timeout", "--kill-after=5s", f"{seconds}s", binary, *arguments],
+                                      env=env, capture_output=True, text=True)
+              print(result.stdout, end="")
+              print(result.stderr, file=sys.stderr, end="")
+              result.check_returncode()
+              return result.stdout
+
+          version_lines = run(["--version"], 30).strip().splitlines()
+          if not version_lines or not re.fullmatch(
+                  r"rav1e " + re.escape(expected) + r"(?: \([^()\r\n]*\))*", version_lines[0]):
+              raise SystemExit("Rav1e CLI did not report the selected release version")
+          help_text = run(["--help"], 30)
+          if (not re.search(r"(?im)^\s*usage:", help_text) or "rav1e" not in help_text or
+                  not all(flag in help_text for flag in ("--limit", "--speed", "--quantizer", "--output"))):
+              raise SystemExit("Rav1e help did not describe the required encoding options")
+          source, target = Path(prefix + ".y4m"), Path(prefix + ".ivf")
+          source.write_bytes(b"YUV4MPEG2 W16 H16 F1:1 Ip A1:1 C420jpeg\nFRAME\n" + bytes([128]) * 384)
+          target.unlink(missing_ok=True)
+          run(["--limit", "1", "--speed", "10", "--quantizer", "255", "-o", str(target), str(source)], 90)
+          if not target.is_file() or not 44 < target.stat().st_size <= 1024 * 1024:
+              raise SystemExit("Rav1e output is missing, empty, truncated or oversized")
+          data = target.read_bytes()
+          magic, version, size, codec, width, height, rate, scale, count, unused = struct.unpack_from("<4sHH4sHHIIII", data)
+          if ((magic, version, size, codec, width, height, rate, scale, unused) !=
+                  (b"DKIF", 0, 32, b"AV01", 16, 16, 1, 1, 0) or count not in (0, 1)):
+              raise SystemExit("Rav1e output has an unexpected IVF header")
+          # Rav1e's muxer writes count=0 (unknown); verify the actual single frame record.
+          length, timestamp = struct.unpack_from("<IQ", data, 32)
+          if length == 0 or timestamp != 0 or len(data) != 44 + length:
+              raise SystemExit("Rav1e output does not contain exactly one complete IVF frame")
+          print(f"Verified rav1e {expected}: AV01 IVF 16x16, one complete frame, payload_bytes={length}; no decode/quality claim")
+          PY
+
       - name: Test 5 - Run bounded package-specific smoke
         id: test5
-        continue-on-error: true
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          STATUS=failed
+          finish_probe() {
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+          }
+          trap finish_probe EXIT
           RELEASE_JSON=$(mktemp)
-          curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" -o "$RELEASE_JSON"
+          curl -fsSL --connect-timeout 10 --max-time 60 \
+            -H "Authorization: Bearer ${GH_TOKEN:?}" \
+            "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" -o "$RELEASE_JSON"
+          unset GH_TOKEN GITHUB_TOKEN
+          RELEASE_TAG=$(jq -er '.tag_name | select(test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$"))' "$RELEASE_JSON")
+          RELEASE_VERSION="${RELEASE_TAG#v}"
           RAV1E_URL=$(jq -r '.assets[] | select(.name | test("^rav1e-.*linux-aarch64\\.tar\\.gz$")) | .browser_download_url' "$RELEASE_JSON" | head -1)
           if [ -z "$RAV1E_URL" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
             echo "note=Latest rav1e release did not publish a linux-aarch64 CLI tarball, so no reliable generic Ubuntu Arm binary smoke can run." >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           mkdir -p rav1e-bin
-          curl -fsSL "$RAV1E_URL" -o rav1e.tar.gz
+          curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 180 "$RAV1E_URL" -o rav1e.tar.gz
           tar -xzf rav1e.tar.gz -C rav1e-bin
           chmod +x rav1e-bin/rav1e
-          rav1e-bin/rav1e --version
-          rav1e-bin/rav1e --help >/dev/null
-          python3 - <<'PY'
-          from pathlib import Path
-          y = bytes([128]) * (16 * 16)
-          u = bytes([128]) * (8 * 8)
-          v = bytes([128]) * (8 * 8)
-          Path("smoke.y4m").write_bytes(b"YUV4MPEG2 W16 H16 F1:1 Ip A1:1 C420jpeg\nFRAME\n" + y + u + v)
-          PY
-          rav1e-bin/rav1e --limit 1 --speed 10 --quantizer 255 -o smoke.ivf smoke.y4m
-          test -s smoke.ivf
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "note=Downloaded the latest linux-aarch64 rav1e release binary, verified version/help, and encoded a one-frame 16x16 Y4M fixture." >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          python3 "$RUNNER_TEMP/rav1e-smoke.py" rav1e-bin/rav1e "$RELEASE_VERSION" smoke
+          echo "note=Latest-release CLI ${RELEASE_VERSION} reported the selected version, documented required help options, and produced a structurally valid one-frame 16x16 AV01 IVF. Baseline ${BASELINE_VERSION} remains source/metadata-only; no decode or quality claim." >> "$GITHUB_OUTPUT"
+          STATUS=passed
+          trap - EXIT
+          finish_probe
 
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
         uses: ./.github/actions/generic-source-regression-check
         with:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
@@ -599,36 +653,38 @@ jobs:
           candidate_tag_override: "v0.8.1"
           limited_cpu_probe: |
             RELEASE_JSON=$(mktemp)
-            curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${CANDIDATE_TAG}" -o "$RELEASE_JSON"
+            curl -fsSL --connect-timeout 10 --max-time 60 \
+              -H "Authorization: Bearer ${GH_TOKEN:?}" \
+              "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${CANDIDATE_TAG}" -o "$RELEASE_JSON"
+            unset GH_TOKEN GITHUB_TOKEN
+            RELEASE_TAG=$(jq -er '.tag_name' "$RELEASE_JSON")
+            [ "$RELEASE_TAG" = "$CANDIDATE_TAG" ]
             RAV1E_URL=$(jq -r '.assets[] | select(.name | test("^rav1e-.*linux-aarch64\\.tar\\.gz$")) | .browser_download_url' "$RELEASE_JSON" | head -1)
             [ -n "$RAV1E_URL" ]
             mkdir -p rav1e-next-bin
-            curl -fsSL "$RAV1E_URL" -o rav1e-next.tar.gz
+            curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 180 "$RAV1E_URL" -o rav1e-next.tar.gz
             tar -xzf rav1e-next.tar.gz -C rav1e-next-bin
             chmod +x rav1e-next-bin/rav1e
-            rav1e-next-bin/rav1e --version
-            rav1e-next-bin/rav1e --help >/dev/null
-            python3 - <<'PY'
-            from pathlib import Path
-            y = bytes([128]) * (16 * 16)
-            u = bytes([128]) * (8 * 8)
-            v = bytes([128]) * (8 * 8)
-            Path("smoke-next.y4m").write_bytes(b"YUV4MPEG2 W16 H16 F1:1 Ip A1:1 C420jpeg\nFRAME\n" + y + u + v)
-            PY
-            rav1e-next-bin/rav1e --limit 1 --speed 10 --quantizer 255 -o smoke-next.ivf smoke-next.y4m
-            test -s smoke-next.ivf
-          limited_cpu_description: "Test 6 downloaded the next rav1e linux-aarch64 release CLI, verified version/help, and encoded a one-frame 16x16 Y4M fixture to IVF on the Arm64 runner. Throughput, quality metrics, and long-form encode coverage remain out of scope."
+            python3 "$RUNNER_TEMP/rav1e-smoke.py" rav1e-next-bin/rav1e "$LATEST_VERSION" smoke-next
+          limited_cpu_description: "Candidate rav1e 0.8.1 CLI reported the exact version, documented required help options, and produced structurally valid one-frame 16x16 AV01 IVF on Arm64. Baseline 0.3.2 remains source/metadata-only. Decode, throughput, quality and long-form encoding are not validated."
 
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -637,37 +693,41 @@ jobs:
           D6="${{ steps.test6.outputs.duration || '0' }}"
           PASSED=0
           FAILED=0
-          SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
+          CORE_FAILED=0
+          INDEX=0
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5" "$T6:$O6"; do
+            INDEX=$((INDEX + 1))
+            STATUS=failed
+            if [ "$RESULT" = "passed:success" ]; then
+              STATUS=passed
               PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
             else
-              SKIPPED=$((SKIPPED + 1))
+              FAILED=$((FAILED + 1))
+              if [ "$INDEX" -le 5 ]; then
+                CORE_FAILED=$((CORE_FAILED + 1))
+              fi
             fi
+            echo "test${INDEX}_status=$STATUS" >> "$GITHUB_OUTPUT"
           done
           DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
-          CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
-              CORE_FAILED=$((CORE_FAILED + 1))
-            fi
-          done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
-          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "skipped=0" >> "$GITHUB_OUTPUT"
           echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
 
       - name: Create test summary
         if: always()
@@ -680,12 +740,12 @@ jobs:
           tests_failed: ${{ steps.summary.outputs.failed || '0' }}
           tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
           duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
-          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
-          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
-          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
-          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
-          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_status: ${{ steps.summary.outputs.test1_status || 'failed' }}
+          test2_status: ${{ steps.summary.outputs.test2_status || 'failed' }}
+          test3_status: ${{ steps.summary.outputs.test3_status || 'failed' }}
+          test4_status: ${{ steps.summary.outputs.test4_status || 'failed' }}
+          test5_status: ${{ steps.summary.outputs.test5_status || 'failed' }}
+          test6_status: ${{ steps.summary.outputs.test6_status || 'failed' }}
           test6_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
           regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
           regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}

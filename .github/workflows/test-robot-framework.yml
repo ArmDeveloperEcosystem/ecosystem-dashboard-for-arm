@@ -109,6 +109,43 @@ on:
 jobs:
   test-robot-framework:
     runs-on: ubuntu-24.04-arm
+    env:
+      ROBOT_VERSION_PROBE: |
+        import importlib.metadata as metadata
+        from pathlib import Path
+        import re
+        import subprocess
+        import sys
+
+        import robot
+        from robot.version import get_full_version
+
+        cli = Path(sys.argv[1]).resolve(strict=True)
+        distribution = metadata.distribution("robotframework")
+        version = distribution.version
+        if distribution.metadata["Name"] != "robotframework" or not re.fullmatch(
+            r"[0-9]+(\.[0-9]+)+((a|b|rc|\.dev)[0-9]+)?", version or ""
+        ):
+            raise SystemExit("Invalid Robot Framework distribution identity/version")
+        if robot.__version__ != version:
+            raise SystemExit("Robot Framework package/distribution version mismatch")
+
+        # Both the imported package and the selected CLI must belong to this installation.
+        files = distribution.files or ()
+        owned = {Path(distribution.locate_file(file)).resolve() for file in files}
+        module = Path(distribution.locate_file("robot/__init__.py")).resolve()
+        if cli not in owned or module not in owned or Path(robot.__file__).resolve() != module:
+            raise SystemExit("Robot Framework package/CLI installation mismatch")
+        entry_points = [entry for entry in distribution.entry_points
+                        if entry.group == "console_scripts" and entry.name == "robot"]
+        if len(entry_points) != 1 or entry_points[0].value != "robot:run_cli" or entry_points[0].load() is not robot.run_cli:
+            raise SystemExit("Invalid Robot Framework CLI entry point")
+
+        result = subprocess.run([str(cli), "--version", "--nostatusrc"],
+                                check=True, capture_output=True, text=True, timeout=15)
+        if result.stderr or result.stdout != get_full_version("Robot Framework") + "\n":
+            raise SystemExit("Robot Framework CLI/package version banner mismatch")
+        print(version)
     
     outputs:
       contract_version: "2.0"
@@ -167,8 +204,18 @@ jobs:
       - name: Get Robot Framework version
         id: version
         run: |
-          VERSION=$(robot --version --nostatusrc | awk '{print $2}' || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          ROBOT_CLI=$(command -v robot)
+          # Query metadata with the interpreter used by the installed console script.
+          ROBOT_PYTHON=$(sed -n '1s/^#!//p' "$ROBOT_CLI")
+          test -n "$ROBOT_PYTHON"
+          test -x "$ROBOT_PYTHON"
+          VERSION=$("$ROBOT_PYTHON" -c "$ROBOT_VERSION_PROBE" "$ROBOT_CLI")
+          if ! [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)+((a|b|rc|\.dev)[0-9]+)?$ ]]; then
+            echo "Invalid Robot Framework version probe output" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Robot Framework version: $VERSION"
       
       - name: Test 1 - Check robot binary exists
@@ -189,24 +236,40 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       
-      - name: Test 2 - Check robot version command
+      - name: Test 2 - Check installed Robot Framework identity and version
         id: test2
         continue-on-error: true
+        env:
+          EXPECTED_ROBOT_VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           START_TIME=$(date +%s)
-          
-          if robot --version --nostatusrc | grep -q "Robot Framework"; then
-            echo "✓ robot version command works"
-            robot --version --nostatusrc
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ robot version command failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          test -n "$EXPECTED_ROBOT_VERSION"
+          ROBOT_CLI=$(command -v robot)
+          ROBOT_PYTHON=$(sed -n '1s/^#!//p' "$ROBOT_CLI")
+          test -n "$ROBOT_PYTHON"
+          test -x "$ROBOT_PYTHON"
+          VERSION=$("$ROBOT_PYTHON" -c "$ROBOT_VERSION_PROBE" "$ROBOT_CLI")
+          if ! [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)+((a|b|rc|\.dev)[0-9]+)?$ ]]; then
+            echo "Invalid Robot Framework version probe output" >&2
             exit 1
           fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          test "$VERSION" = "$EXPECTED_ROBOT_VERSION"
+          echo "Verified installed Robot Framework version: $VERSION"
+          echo "installed_version=$VERSION" >> "$GITHUB_OUTPUT"
+          finish 0
       
       - name: Test 3 - Check robot help output
         id: test3
@@ -291,92 +354,104 @@ jobs:
 
       - name: Regression applicability - package manager installed
         id: test6
+        if: always()
+        env:
+          CURRENT_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          CURRENT="${CURRENT_VERSION:-unknown}"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
           echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          core_passed() {
+            [ "$1" = passed ] && [ "$2" = success ] && [[ "$3" =~ ^[0-9]{1,6}$ ]]
+          }
+          if [ "${{ steps.install.outcome }}" != success ] || [ "${{ steps.install.outputs.install_status }}" != success ]; then
+            echo "decision=baseline_install_failed" >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression skipped: Robot Framework package installation did not succeed." >> "$GITHUB_OUTPUT"
+            echo "comparison=No successfully installed baseline is available for comparison." >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.version.outcome }}" = success ] &&
+               [[ "$CURRENT" =~ ^[0-9]+(\.[0-9]+)+((a|b|rc|\.dev)[0-9]+)?$ ]] &&
+               core_passed "${{ steps.test1.outputs.status }}" "${{ steps.test1.outcome }}" "${{ steps.test1.outputs.duration }}" &&
+               core_passed "${{ steps.test2.outputs.status }}" "${{ steps.test2.outcome }}" "${{ steps.test2.outputs.duration }}" &&
+               core_passed "${{ steps.test3.outputs.status }}" "${{ steps.test3.outcome }}" "${{ steps.test3.outputs.duration }}" &&
+               core_passed "${{ steps.test4.outputs.status }}" "${{ steps.test4.outcome }}" "${{ steps.test4.outputs.duration }}" &&
+               core_passed "${{ steps.test5.outputs.status }}" "${{ steps.test5.outcome }}" "${{ steps.test5.outputs.duration }}"; then
+            echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
+            echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
+          else
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression skipped: Robot Framework baseline validation did not succeed." >> "$GITHUB_OUTPUT"
+            echo "comparison=All five core checks and the baseline version must be valid before a baseline can be compared." >> "$GITHUB_OUTPUT"
+          fi
           echo "duration=0" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         if: always()
         id: summary
+        env:
+          CURRENT_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          set +e # Disable exit on error for this step
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
-          
-          # Helper function to add duration safely
-          add_duration() {
-            local val=$1
-            if [[ "$val" =~ ^[0-9]+$ ]]; then
-              TOTAL_DURATION=$((TOTAL_DURATION + val))
+          check_core() {
+            local status="$1" outcome="$2" duration="$3"
+            if [[ "$duration" =~ ^[0-9]{1,6}$ ]]; then
+              TOTAL_DURATION=$((TOTAL_DURATION + 10#$duration))
+            else
+              status=failed
+            fi
+            if [ "$status" = passed ] && [ "$outcome" = success ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
             fi
           }
-
-          # Iterate through possible steps to check status
-          # We check explicit passed status, everything else is failure if not skipped (but simplification: if not passed, and supposed to run, it failed)
-          
-          # Check Test 1
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "${{ steps.test1.conclusion }}" == "failure" ] || [ "${{ steps.test1.outcome }}" == "failure" ]; then
-             FAILED=$((FAILED + 1))
-             echo "DEBUG: Test 1 Failed. Status=${{ steps.test1.outputs.status }} Conclusion=${{ steps.test1.conclusion }}"
+          check_core "${{ steps.test1.outputs.status }}" "${{ steps.test1.outcome }}" "${{ steps.test1.outputs.duration }}"
+          check_core "${{ steps.test2.outputs.status }}" "${{ steps.test2.outcome }}" "${{ steps.test2.outputs.duration }}"
+          check_core "${{ steps.test3.outputs.status }}" "${{ steps.test3.outcome }}" "${{ steps.test3.outputs.duration }}"
+          check_core "${{ steps.test4.outputs.status }}" "${{ steps.test4.outcome }}" "${{ steps.test4.outputs.duration }}"
+          check_core "${{ steps.test5.outputs.status }}" "${{ steps.test5.outcome }}" "${{ steps.test5.outputs.duration }}"
+          CORE_FAILED=$FAILED
+          DURATION6="${{ steps.test6.outputs.duration }}"
+          EXPECTED_DECISION=not_applicable_package_manager
+          if [ "${{ steps.install.outcome }}" != success ] || [ "${{ steps.install.outputs.install_status }}" != success ]; then
+            EXPECTED_DECISION=baseline_install_failed
+          elif [ "$CORE_FAILED" -gt 0 ] || [ "${{ steps.version.outcome }}" != success ] ||
+               ! [[ "$CURRENT_VERSION" =~ ^[0-9]+(\.[0-9]+)+((a|b|rc|\.dev)[0-9]+)?$ ]]; then
+            EXPECTED_DECISION=baseline_failed
           fi
-          add_duration "${{ steps.test1.outputs.duration }}"
-
-          # Check Test 2
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "${{ steps.test2.conclusion }}" == "failure" ] || [ "${{ steps.test2.outcome }}" == "failure" ]; then
-             FAILED=$((FAILED + 1))
-          fi
-          add_duration "${{ steps.test2.outputs.duration }}"
-
-          # Check Test 3
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "${{ steps.test3.conclusion }}" == "failure" ] || [ "${{ steps.test3.outcome }}" == "failure" ]; then
-             FAILED=$((FAILED + 1))
-          fi
-          add_duration "${{ steps.test3.outputs.duration }}"
-
-          # Check Test 4 - Architecture
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "${{ steps.test4.conclusion }}" == "failure" ] || [ "${{ steps.test4.outcome }}" == "failure" ]; then
-             FAILED=$((FAILED + 1))
-          fi
-          add_duration "${{ steps.test4.outputs.duration }}"
-
-          # Check Test 5 - Functional
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "${{ steps.test5.conclusion }}" == "failure" ] || [ "${{ steps.test5.outcome }}" == "failure" ]; then
-             FAILED=$((FAILED + 1))
-             echo "DEBUG: Test 5 Failed. Status=${{ steps.test5.outputs.status }} Conclusion=${{ steps.test5.conclusion }}"
-          fi
-          add_duration "${{ steps.test5.outputs.duration }}"
-
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-          
-          # Determine overall status
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
+          if [ "${{ steps.test6.outputs.status }}" = skipped ] &&
+             [ "${{ steps.test6.outputs.decision }}" = "$EXPECTED_DECISION" ] &&
+             { { [ "$CORE_FAILED" -eq 0 ] && [ "$EXPECTED_DECISION" = not_applicable_package_manager ]; } ||
+               { [ "$CORE_FAILED" -gt 0 ] && [ "$EXPECTED_DECISION" != not_applicable_package_manager ]; }; } &&
+             [ "${{ steps.test6.outcome }}" = success ] &&
+             [[ "$DURATION6" =~ ^[0-9]{1,6}$ ]]; then
+            SKIPPED=1
           else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
-            # Only exit 1 if we want to fail the job when tests fail
+            FAILED=$((FAILED + 1))
+          fi
+          if [[ "$DURATION6" =~ ^[0-9]{1,6}$ ]]; then
+            TOTAL_DURATION=$((TOTAL_DURATION + 10#$DURATION6))
+          fi
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
+          if [ "$FAILED" -eq 0 ]; then
+            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
@@ -389,6 +464,8 @@ jobs:
           echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Core Failed:** ${{ steps.summary.outputs.core_failed }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
           echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -399,4 +476,4 @@ jobs:
 
           echo "4. Test 4 - Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "6. Package manager regression applicability: ${{ steps.test6.outputs.status }} (${{ steps.test6.outputs.decision }})" >> $GITHUB_STEP_SUMMARY

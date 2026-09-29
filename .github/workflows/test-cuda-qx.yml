@@ -92,6 +92,93 @@ jobs:
       GITHUB_REPO: "NVIDIA/cudaqx"
       PACKAGE_PAGE: "content/linux/opensource_packages/cuda-qx.md"
       GIT_LFS_SKIP_SMUDGE: "1"
+      CUDA_QX_CPU_PREFLIGHT: |
+        python3 - "$PREFLIGHT_SOURCE_DIR" <<'PY'
+        import os
+        import platform
+        import re
+        import subprocess
+        import sys
+        import tempfile
+        import tomllib
+        from pathlib import Path
+
+        def verify_source(root, expected_libs=""):
+            def require_file(relative):
+                path = root / relative
+                if not path.is_file() or not path.stat().st_size:
+                    raise SystemExit(f"missing CUDA-QX source file: {relative}")
+                return path
+
+            cmake = require_file("CMakeLists.txt").read_text(encoding="utf-8")
+            # Official 0.2.0 declares qec;solvers; 0.8.0 declares qec only.
+            # Recognize these literal declarations, not arbitrary CMake code.
+            declarations = re.findall(
+                r'^\s*set\(CUDAQX_ALL_LIBS\s+"([^"]+)"\s*\)\s*$', cmake, re.M
+            )
+            if len(declarations) != 1 or declarations[0] not in ("qec;solvers", "qec"):
+                raise SystemExit("unrecognized CUDA-QX CUDAQX_ALL_LIBS declaration")
+            libraries = declarations[0]
+            if expected_libs and libraries != expected_libs:
+                raise SystemExit(f"expected CUDA-QX libraries {expected_libs}, found {libraries}")
+            require_file("libs/core/include/cuda-qx/core/tear_down.h")
+            for library in libraries.split(";"):
+                base = f"libs/{library}"
+                package = f"{base}/python/cudaq_{library}"
+                require_file(f"{base}/CMakeLists.txt")
+                require_file(f"{base}/python/CMakeLists.txt")
+                require_file(f"{package}/__init__.py")
+                metadata = sorted((root / base).glob("pyproject.toml*"))
+                if not metadata:
+                    raise SystemExit(f"missing CUDA-QX package metadata: {base}/pyproject.toml*")
+                names = {
+                    "pyproject.toml": f"cudaq-{library}",
+                    "pyproject.toml.cu12": f"cudaq-{library}-cu12",
+                    "pyproject.toml.cu13": f"cudaq-{library}-cu13",
+                }
+                for path in metadata:
+                    with path.open("rb") as stream:
+                        data = tomllib.load(stream)
+                    if path.name not in names or data.get("project", {}).get("name") != names[path.name]:
+                        raise SystemExit(f"wrong CUDA-QX package identity: {path.relative_to(root)}")
+                sources = sorted((root / package).rglob("*.py"))
+                for path in sources:
+                    # Compile without importing GPU dependencies or writing bytecode.
+                    compile(path.read_bytes(), str(path), "exec")
+                print(f"python-source-compiled: {package} ({len(sources)} files)", flush=True)
+
+            with tempfile.TemporaryDirectory(prefix="cudaqx-header-") as temporary:
+                probe = Path(temporary) / "probe.cpp"
+                probe.write_text('''
+        #include <cuda-qx/core/tear_down.h>
+        #include <memory>
+        #include <type_traits>
+        static_assert(std::is_abstract_v<cudaqx::tear_down>);
+        static_assert(std::has_virtual_destructor_v<cudaqx::tear_down>);
+        static_assert(std::is_same_v<decltype(&cudaqx::tear_down::runTearDown),
+                                    void (cudaqx::tear_down::*)() const>);
+        static_assert(std::is_same_v<decltype(&cudaqx::scheduleTearDown),
+                                    void (*)(std::unique_ptr<cudaqx::tear_down>)>);
+        struct ProofTearDown final : cudaqx::tear_down {
+          void runTearDown() const override {}
+        };
+        int main() {
+          std::unique_ptr<cudaqx::tear_down> proof(new ProofTearDown());
+          proof->runTearDown();
+          return 0;
+        }
+        ''', encoding="utf-8")
+                subprocess.run(
+                    ["g++", "-std=c++17", f"-I{root / 'libs/core/include'}",
+                     "-fsyntax-only", str(probe)], check=True, timeout=30,
+                )
+            print(f"cudaqx-source-preflight-ok: libraries={libraries}; core C++ API syntax and Python sources compiled")
+
+        if __name__ == "__main__":
+            if platform.system() != "Linux" or platform.machine() != "aarch64":
+                raise SystemExit("CUDA-QX workflow preflight requires a Linux Arm64 runner")
+            verify_source(Path(sys.argv[1]).resolve(), os.environ.get("PREFLIGHT_EXPECTED_LIBS", ""))
+        PY
 
     outputs:
       contract_version: "2.0"
@@ -105,7 +192,7 @@ jobs:
       tests_failed: ${{ steps.summary.outputs.failed || '0' }}
       tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
       duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_status: ${{ steps.summary.outputs.test6_status || 'failed' }}
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
@@ -294,56 +381,27 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          finish() {
+            local rc="$1"
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           if [ "$MODE" != "github_source" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
             echo "note=CUDA-QX Arm preflight requires the package source checkout; metadata-only evidence is not treated as a smoke pass." >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          ROOT="baseline-src"
-          [ "$(uname -m)" = "aarch64" ]
-          [ -f "$ROOT/CMakeLists.txt" ]
-          [ -f "$ROOT/libs/core/include/cuda-qx/core/tear_down.h" ]
-          [ -d "$ROOT/libs/qec/python/cudaq_qec" ]
-          [ -d "$ROOT/libs/solvers/python/cudaq_solvers" ]
-          TMPDIR="$(mktemp -d)"
-          trap 'rm -rf "$TMPDIR"' EXIT
-          cat > "$TMPDIR/cudaqx_header_probe.cpp" <<'CPP'
-          #include <cuda-qx/core/tear_down.h>
-          #include <memory>
-          struct ProofTearDown final : cudaqx::tear_down {
-            void runTearDown() const override {}
-          };
-          int main() {
-            std::unique_ptr<cudaqx::tear_down> proof(new ProofTearDown());
-            return proof ? 0 : 1;
-          }
-          CPP
-          g++ -std=c++17 -I"$ROOT/libs/core/include" -fsyntax-only "$TMPDIR/cudaqx_header_probe.cpp"
-          python3 - "$ROOT" <<'PY'
-          import compileall
-          import sys
-          from pathlib import Path
-
-          root = Path(sys.argv[1])
-          for rel in ("libs/qec/python/cudaq_qec", "libs/solvers/python/cudaq_solvers"):
-              target = root / rel
-              if not target.exists():
-                  raise SystemExit(f"missing CUDA-QX Python package source: {rel}")
-              if not compileall.compile_dir(str(target), quiet=1):
-                  raise SystemExit(f"compileall failed for {rel}")
-          for rel in ("libs/qec", "libs/solvers"):
-              pyprojects = sorted((root / rel).glob("pyproject.toml*"))
-              if not pyprojects:
-                  raise SystemExit(f"missing CUDA-QX package metadata under {rel}")
-              if not any("cudaq" in path.read_text(encoding="utf-8").lower() for path in pyprojects):
-                  raise SystemExit(f"CUDA-QX package identity missing from {rel}/pyproject.toml*")
-          print("cudaqx-preflight-ok: core header syntax and qec/solvers Python sources compiled")
-          PY
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "note=CUDA-QX Arm preflight passed: compiled a core C++ header surface and qec/solvers Python package sources on Arm64; CUDA-Q/GPU/QPU runtime execution is not claimed." >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          PREFLIGHT_SOURCE_DIR=baseline-src PREFLIGHT_EXPECTED_LIBS='qec;solvers' \
+            timeout 120s bash -euo pipefail -c "$CUDA_QX_CPU_PREFLIGHT"
+          echo "note=CUDA-QX Arm preflight passed: checked declared qec/solvers layout and package identities, compiled the core C++ API surface and Python sources; CUDA-Q/GPU/QPU runtime execution is not claimed." >> "$GITHUB_OUTPUT"
+          finish 0
 
       - name: Test 6 - Regression Validation
         id: test6
@@ -354,88 +412,53 @@ jobs:
           lane_kind: ${{ env.LANE_KIND }}
           limited_cpu_probe: |
             set -euo pipefail
-            ROOT="next-src"
-            [ "$(uname -m)" = "aarch64" ]
-            [ -f "$ROOT/CMakeLists.txt" ]
-            [ -f "$ROOT/libs/core/include/cuda-qx/core/tear_down.h" ]
-            [ -d "$ROOT/libs/qec/python/cudaq_qec" ]
-            [ -d "$ROOT/libs/solvers/python/cudaq_solvers" ]
-            TMPDIR="$(mktemp -d)"
-            trap 'rm -rf "$TMPDIR"' EXIT
-            cat > "$TMPDIR/cudaqx_header_probe.cpp" <<'CPP'
-            #include <cuda-qx/core/tear_down.h>
-            #include <memory>
-            struct ProofTearDown final : cudaqx::tear_down {
-              void runTearDown() const override {}
-            };
-            int main() {
-              std::unique_ptr<cudaqx::tear_down> proof(new ProofTearDown());
-              return proof ? 0 : 1;
-            }
-            CPP
-            g++ -std=c++17 -I"$ROOT/libs/core/include" -fsyntax-only "$TMPDIR/cudaqx_header_probe.cpp"
-            python3 - "$ROOT" <<'PY'
-            import compileall
-            import sys
-            from pathlib import Path
-
-            root = Path(sys.argv[1])
-            for rel in ("libs/qec/python/cudaq_qec", "libs/solvers/python/cudaq_solvers"):
-                target = root / rel
-                if not target.exists():
-                    raise SystemExit(f"missing CUDA-QX Python package source: {rel}")
-                if not compileall.compile_dir(str(target), quiet=1):
-                    raise SystemExit(f"compileall failed for {rel}")
-            for rel in ("libs/qec", "libs/solvers"):
-                pyprojects = sorted((root / rel).glob("pyproject.toml*"))
-                if not pyprojects:
-                    raise SystemExit(f"missing CUDA-QX package metadata under {rel}")
-                if not any("cudaq" in path.read_text(encoding="utf-8").lower() for path in pyprojects):
-                    raise SystemExit(f"CUDA-QX package identity missing from {rel}/pyproject.toml*")
-            print("cudaqx-next-preflight-ok: core header syntax and qec/solvers Python sources compiled")
-            PY
-          limited_cpu_description: "Test 6 limited_cpu_smoke_validated: reran the CUDA-QX bounded Arm preflight against the next stable source candidate, compiling the core C++ header surface and qec/solvers Python package sources on Arm64. This is CPU-side package preflight evidence only; no CUDA-Q, GPU, or QPU runtime execution is claimed."
+            PREFLIGHT_SOURCE_DIR=next-src PREFLIGHT_EXPECTED_LIBS='' \
+              timeout 120s bash -euo pipefail -c "$CUDA_QX_CPU_PREFLIGHT"
+          limited_cpu_description: "Bounded CUDA-QX CPU source preflight: check the declared library layout and package identities, compile the core C++ API surface and all declared Python package sources (qec-only or qec/solvers). The status and decision report the outcome. No package installation, CUDA-Q, GPU, or QPU runtime execution is claimed."
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
           # shellcheck disable=SC2129
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
-          D1="${{ steps.test1.outputs.duration || '0' }}"
-          D2="${{ steps.test2.outputs.duration || '0' }}"
-          D3="${{ steps.test3.outputs.duration || '0' }}"
-          D4="${{ steps.test4.outputs.duration || '0' }}"
-          D5="${{ steps.test5.outputs.duration || '0' }}"
-          D6="${{ steps.test6.outputs.duration || '0' }}"
+          set -euo pipefail
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          DURATION=0
+          check_core_test() {
+            if [ "$1" = "passed" ] && [ "$3" = "success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
-          done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+            DURATION=$((DURATION + $2))
+          }
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || '0' }}" "${{ steps.test1.outcome }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || '0' }}" "${{ steps.test2.outcome }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || '0' }}" "${{ steps.test3.outcome }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || '0' }}" "${{ steps.test4.outcome }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || '0' }}" "${{ steps.test5.outcome }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O6="${{ steps.test6.outcome }}"
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ]; then
+            SKIPPED=$((SKIPPED + 1))
+          else
+            T6=failed
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((DURATION + ${{ steps.test6.outputs.duration || '0' }}))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           {
@@ -446,4 +469,6 @@ jobs:
             echo "core_failed=$CORE_FAILED"
             echo "overall_status=$OVERALL_STATUS"
             echo "badge_status=$BADGE_STATUS"
+            echo "test6_status=$T6"
           } >> "$GITHUB_OUTPUT"
+          [ "$OVERALL_STATUS" = "success" ]
