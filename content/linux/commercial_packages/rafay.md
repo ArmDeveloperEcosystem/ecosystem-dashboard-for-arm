@@ -11,7 +11,7 @@ release_date_on_arm: 2021/06/25
 optional_info:
     homepage_url: https://rafay.co
     support_caveats: Arm64 support is explicitly documented for Rafay's minimal cluster blueprint. Architecture support for individual optional add-ons and customer workloads may depend on the corresponding container images/components.
-    alternative_options: Red Hat Advanced Cluster Management, Rancher/SUSE Rancher, VMware Tanzu, Google Anthos
+    alternative_options: Red Hat Advanced Cluster Management for Kubernetes
     getting_started_resources:
         official_docs: https://docs.rafay.co/learn/overview/
         arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/rafay-eks/
