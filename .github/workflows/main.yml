@@ -1,42 +1,66 @@
 name: build-and-deploy
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: production-deployment
-  cancel-in-progress: false
-
 jobs:
   activation:
-    name: Verify production activation gate
+    name: Verify main deployment scope
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
     outputs:
       base_branch: ${{ steps.gate.outputs.base_branch }}
       base_sha: ${{ steps.gate.outputs.base_sha }}
+      dashboard: ${{ steps.gate.outputs.dashboard }}
     steps:
-      - name: Require an explicitly enabled manual main run
+      - name: Check out the exact main event commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Route an authenticated main push or enabled manual run
         id: gate
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.event.after }}
+          GH_TOKEN: ${{ github.token }}
           PRODUCTION_DEPLOYMENT_ENABLED: ${{ vars.PRODUCTION_DEPLOYMENT_ENABLED }}
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]
-          [[ "$PRODUCTION_DEPLOYMENT_ENABLED" == "true" ]] || {
-            echo "Production deployment is disabled. Set PRODUCTION_DEPLOYMENT_ENABLED to exactly true for a bounded manual run." >&2
-            exit 1
-          }
-          [[ "$GITHUB_REF_TYPE" == "branch" ]]
-          [[ "$GITHUB_REF_NAME" == "$DEFAULT_BRANCH" ]]
-          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_REF_TYPE" == "branch" ]] || exit 1
+          [[ "$GITHUB_REF_NAME" == "$DEFAULT_BRANCH" ]] || exit 1
+          [[ "$GITHUB_REF_NAME" == "main" ]] || exit 1
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$(git rev-parse --verify 'HEAD^{commit}')" == "$GITHUB_SHA" ]] || exit 1
+          case "$GITHUB_EVENT_NAME" in
+            push)
+              [[ "$AFTER_SHA" == "$GITHUB_SHA" ]] || exit 1
+              python3 .github/scripts/ci_change_scope.py \
+                --base "$BEFORE_SHA" --head "$GITHUB_SHA" \
+                --deployed-baseline \
+                --github-output "$GITHUB_OUTPUT"
+              ;;
+            workflow_dispatch)
+              [[ "$PRODUCTION_DEPLOYMENT_ENABLED" == "true" ]] || {
+                echo "Manual production deployment is disabled. Set PRODUCTION_DEPLOYMENT_ENABLED to exactly true for a bounded manual run." >&2
+                exit 1
+              }
+              printf 'dashboard=true\n' >> "$GITHUB_OUTPUT"
+              ;;
+            *) exit 1 ;;
+          esac
           {
             printf 'base_branch=%s\n' "$GITHUB_REF_NAME"
             printf 'base_sha=%s\n' "$GITHUB_SHA"
@@ -45,10 +69,15 @@ jobs:
   build_and_deploy_s3:
     name: Build and deploy reviewed main
     needs: activation
+    concurrency:
+      group: production-deployment
+      cancel-in-progress: false
+      queue: max
     if: >-
       ${{
         needs.activation.result == 'success' &&
-        vars.PRODUCTION_DEPLOYMENT_ENABLED == 'true'
+        needs.activation.outputs.dashboard == 'true' &&
+        (github.event_name == 'push' || vars.PRODUCTION_DEPLOYMENT_ENABLED == 'true')
       }}
     environment: production
     runs-on: ubuntu-24.04-arm
