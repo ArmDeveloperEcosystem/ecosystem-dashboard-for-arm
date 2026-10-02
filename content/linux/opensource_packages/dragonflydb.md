@@ -1,7 +1,7 @@
 ---
 name: Dragonflydb (Dragonfly)
 category: Database
-description: DragonflyDB is a distributed SQL database designed to handle complex analytical tasks with high efficiency and scalability. It supports real-time analytics using ACID transactions, making it easy to query and process large amounts of data effectively.
+description: Dragonfly is an in-memory datastore with Redis and Memcached API compatibility and a multithreaded, shared-nothing architecture.
 download_url: https://github.com/dragonflydb/dragonfly/releases
 works_on_arm: true
 supported_minimum_version:
@@ -14,7 +14,7 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        official_docs: https://github.com/dragonflydb/dragonfly/tree/main/docs/quick-start
+        official_docs: https://www.dragonflydb.io/docs
         arm_content:
         partner_content:
     arm_recommended_minimum_version:

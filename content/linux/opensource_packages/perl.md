@@ -18,7 +18,7 @@ optional_info:
         arm_content:
         partner_content:
             - display_name: Oracle OCI
-                url:https://blogs.oracle.com/linux/post/announcing-the-release-of-oracle-linux-8-update-6
+              url: https://blogs.oracle.com/linux/post/announcing-the-release-of-oracle-linux-8-update-6
     arm_recommended_minimum_version:
         version_number:
         release_date:
