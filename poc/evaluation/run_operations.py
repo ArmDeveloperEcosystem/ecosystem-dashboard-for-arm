@@ -74,6 +74,8 @@ def main():
             "ARM_SEARCH_PUBLIC_ORIGIN": "https://dashboard.example",
             "ARM_SEARCH_SERVE_STATIC": "false",
             "ARM_KB_SEARCH_URL": "http://127.0.0.1:8772",
+            # Controlled fixture only, not confirmation of the live contract.
+            "ARM_KB_SCOPE_CONFIRMED": "true",
             "ARM_SEARCH_MAX_INFLIGHT": "2",
             "ARM_SEARCH_KB_MAX_INFLIGHT": "2",
             "ARM_SEARCH_KB_DEADLINE": "0.15",

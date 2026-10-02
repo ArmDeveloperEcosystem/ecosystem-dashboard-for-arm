@@ -1,16 +1,19 @@
 """Same-origin dashboard search service; loopback remains the default boundary."""
 
 from __future__ import annotations
-from contextlib import asynccontextmanager
+
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from pydantic import BaseModel, ConfigDict, Field
+
 from .catalog import Catalog
 from .http_guard import SearchBoundary, new_metrics
 from .kb_client import KBClient
@@ -31,8 +34,6 @@ class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: str = Field(max_length=500)
     filters: Filters = Field(default_factory=Filters)
-    previous_query: str | None = Field(default=None, max_length=500)
-    filters_override: bool = False
 
 
 def create_app(catalog_path=None, service=None, config: RuntimeConfig | None = None):
@@ -53,9 +54,12 @@ def create_app(catalog_path=None, service=None, config: RuntimeConfig | None = N
             headers["Authorization"] = "Bearer " + config.kb_token
         service = SearchService(
             catalog,
-            transport=lambda query: kb_client.fetch(config.kb_url, query, headers),
+            transport=lambda endpoint, params, _: kb_client.fetch(
+                endpoint, params, headers
+            ),
+            endpoint=config.kb_url,
+            scope_confirmed=config.kb_scope_confirmed,
         )
-        service.endpoint = config.kb_url
     search = service
     metrics = new_metrics()
 
@@ -72,7 +76,7 @@ def create_app(catalog_path=None, service=None, config: RuntimeConfig | None = N
                 kb_client.close(wait=False)
 
     app = FastAPI(
-        title="Arm Dashboard Conversational Search",
+        title="Arm Dashboard Scoped Knowledge-Base Search",
         docs_url="/api/docs" if config.docs_enabled else None,
         openapi_url="/api/openapi.json" if config.docs_enabled else None,
         redoc_url=None,
@@ -93,17 +97,23 @@ def create_app(catalog_path=None, service=None, config: RuntimeConfig | None = N
             "status": "ok",
             "catalog_count": len(catalog.packages),
             "kb_configured": bool(search.endpoint),
+            "scope_configured": config.kb_scope_confirmed,
+            "rollout_status": "provider_validation_required"
+            if config.kb_scope_confirmed
+            else "blocked_scope_unconfirmed",
             "hosting": "same_origin_service" if config.public_origin else "local_poc",
         }
 
     @app.get("/api/ready")
     def ready():
-        # KB availability is deliberately not a readiness condition: catalog
-        # fallback still serves requests during a provider outage.
+        # Process readiness only: the static dashboard remains available even
+        # when scoped KB search is disabled or its provider is unavailable.
         return JSONResponse(
             {
                 "status": "ready" if app.state.ready else "not_ready",
                 "catalog_count": len(catalog.packages),
+                "scope_configured": config.kb_scope_confirmed,
+                "readiness_scope": "process_only",
             },
             status_code=200 if app.state.ready else 503,
         )
@@ -115,14 +125,15 @@ def create_app(catalog_path=None, service=None, config: RuntimeConfig | None = N
                 search.search,
                 body.query,
                 body.filters.model_dump(),
-                body.previous_query,
-                body.filters_override,
             )
             # Serialize inside the boundary: unexpected provider strings (for
             # example an unpaired Unicode surrogate in an evidence URL) must not
             # escape as an uncaught framework error after this handler returns.
-            response = JSONResponse(result)
-        except Exception as exc:
+            response = JSONResponse(
+                result,
+                status_code=503 if result.get("mode") == "kb_unavailable" else 200,
+            )
+        except Exception as exc:  # noqa: BLE001 - sanitize the external API boundary
             metrics["search_internal_errors"] += 1
             # Exception messages/tracebacks may contain provider tokens or text.
             logging.getLogger("arm_search.service").error(
@@ -131,9 +142,9 @@ def create_app(catalog_path=None, service=None, config: RuntimeConfig | None = N
             return JSONResponse(
                 {"detail": "Search is temporarily unavailable."}, status_code=503
             )
-        if result.get("mode") == "catalog_fallback":
-            metrics["catalog_fallback_responses"] += 1
-            logging.getLogger("arm_search.service").info("search_used_catalog_fallback")
+        if result.get("mode") == "kb_unavailable":
+            metrics["kb_unavailable_responses"] += 1
+            logging.getLogger("arm_search.service").info("search_kb_unavailable")
         return response
 
     @app.get("/")

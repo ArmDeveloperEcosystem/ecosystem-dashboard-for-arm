@@ -59,7 +59,7 @@ class KBClient:
             max_workers=max_inflight, thread_name_prefix="arm-kb"
         )
 
-    def fetch(self, endpoint: str, query: str, headers: dict[str, str]) -> dict:
+    def fetch(self, endpoint: str, params: dict, headers: dict[str, str]) -> dict:
         started = time.monotonic()
         with self._lifecycle_lock:
             if self._closed:
@@ -69,7 +69,7 @@ class KBClient:
             self._inflight += 1
             try:
                 future = self._executor.submit(
-                    self._request, endpoint, query, dict(headers)
+                    self._request, endpoint, dict(params), dict(headers)
                 )
             except BaseException:
                 self._inflight -= 1
@@ -115,11 +115,11 @@ class KBClient:
                 )
             return self._http
 
-    def _request(self, endpoint: str, query: str, headers: dict[str, str]) -> dict:
+    def _request(self, endpoint: str, params: dict, headers: dict[str, str]) -> dict:
         worker_started = time.monotonic()
         # Headers remain request-local; never mutate defaults on the shared client.
         with self._http_client().stream(
-            "GET", endpoint, params={"q": query, "k": 50}, headers=headers
+            "GET", endpoint, params=params, headers=headers
         ) as response:
             response.raise_for_status()
             try:
@@ -141,7 +141,7 @@ class KBClient:
                 body.extend(chunk)
         payload = json.loads(body)
         if not isinstance(payload, dict):
-            raise ValueError("Invalid KB response")
+            raise ValueError("Invalid KB response")  # noqa: TRY004 - invalid provider JSON envelope
         return payload
 
     def close(self, *, wait: bool = True) -> None:
@@ -158,6 +158,6 @@ class KBClient:
 _CLIENT = KBClient()
 
 
-def fetch_kb(endpoint: str, query: str, headers: dict[str, str]) -> dict:
+def fetch_kb(endpoint: str, params: dict, headers: dict[str, str]) -> dict:
     """Fetch JSON with an eight-second caller deadline and four-work-item cap."""
-    return _CLIENT.fetch(endpoint, query, headers)
+    return _CLIENT.fetch(endpoint, params, headers)

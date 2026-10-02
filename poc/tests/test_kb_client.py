@@ -15,6 +15,16 @@ from poc.kb_client import KBClient
 ENDPOINT = "https://kb.example.test/search"
 
 
+def request_params(query):
+    return {
+        "q": query,
+        "k": 50,
+        "doc_type": "Ecosystem Dashboard",
+        "platform": "linux",
+        "edition": "open-source",
+    }
+
+
 def test_import_does_not_inspect_unused_default_client_environment(
     monkeypatch, tmp_path
 ):
@@ -75,7 +85,9 @@ def test_real_http_connection_is_reused_without_cookies_or_stale_headers(
             {"Authorization": "Bearer second"},
             {},
         ):
-            assert client.fetch(endpoint, "query", headers) == {"results": []}
+            assert client.fetch(endpoint, request_params("query"), headers) == {
+                "results": []
+            }
         assert server.connections == 1
         assert [request.get("Authorization") for request in requests] == [
             "Bearer first",
@@ -112,7 +124,10 @@ def test_concurrent_requests_keep_authorization_headers_isolated():
         with ThreadPoolExecutor(max_workers=2) as callers:
             futures = [
                 callers.submit(
-                    client.fetch, ENDPOINT, token, {"Authorization": f"Bearer {token}"}
+                    client.fetch,
+                    ENDPOINT,
+                    request_params(token),
+                    {"Authorization": f"Bearer {token}"},
                 )
                 for token in ("first", "second")
             ]
@@ -148,11 +163,11 @@ def test_slow_http_initialization_retains_deadline_and_admission_limit(monkeypat
     try:
         started = time.monotonic()
         with pytest.raises(httpx.TimeoutException, match="deadline"):
-            client.fetch(ENDPOINT, "first", {})
+            client.fetch(ENDPOINT, request_params("first"), {})
         assert time.monotonic() - started < 0.5
         assert initialization_started.is_set()
         with pytest.raises(httpx.TimeoutException, match="capacity"):
-            client.fetch(ENDPOINT, "second", {})
+            client.fetch(ENDPOINT, request_params("second"), {})
         client.close(wait=False)
         assert not transport_closed.is_set()
         release.set()
@@ -192,7 +207,7 @@ def test_shutdown_closes_transport_once_after_running_request_finishes(wait):
     callers = ThreadPoolExecutor(max_workers=1)
     closer = threading.Thread(target=close, daemon=True)
     try:
-        future = callers.submit(client.fetch, ENDPOINT, "query", {})
+        future = callers.submit(client.fetch, ENDPOINT, request_params("query"), {})
         assert started.wait(timeout=1)
         closer.start()
         if wait:
@@ -201,7 +216,7 @@ def test_shutdown_closes_transport_once_after_running_request_finishes(wait):
             assert close_returned.wait(timeout=0.5)
         assert not transport_closed.is_set()
         with pytest.raises(httpx.ConnectError, match="closed"):
-            client.fetch(ENDPOINT, "after shutdown", {})
+            client.fetch(ENDPOINT, request_params("after shutdown"), {})
         release.set()
         assert future.result(timeout=1) == {"results": []}
         assert close_returned.wait(timeout=1)
@@ -233,20 +248,22 @@ def test_deadline_returns_while_slow_worker_keeps_its_slot_then_recovers():
     try:
         started = time.monotonic()
         with pytest.raises(httpx.TimeoutException, match="deadline"):
-            client.fetch(ENDPOINT, "vector databases", {})
+            client.fetch(ENDPOINT, request_params("vector databases"), {})
         assert time.monotonic() - started < 0.75
         assert len(calls) == 1
         # A caller timeout must not release a still-running network worker.
         for _ in range(10):
             with pytest.raises(httpx.TimeoutException, match="capacity"):
-                client.fetch(ENDPOINT, "another query", {})
+                client.fetch(ENDPOINT, request_params("another query"), {})
         assert len(calls) == 1
         release.set()
         assert returned_from_transport.wait(1)
         expires = time.monotonic() + 1
         while True:
             try:
-                assert client.fetch(ENDPOINT, "retry", {}) == {"results": []}
+                assert client.fetch(ENDPOINT, request_params("retry"), {}) == {
+                    "results": []
+                }
                 break
             except httpx.TimeoutException:
                 if time.monotonic() >= expires:
@@ -276,11 +293,14 @@ def test_concurrent_capacity_rejects_additional_work_without_queuing():
     client = KBClient(deadline=2, max_inflight=2, transport=httpx.MockTransport(handle))
     callers = ThreadPoolExecutor(max_workers=2)
     try:
-        futures = [callers.submit(client.fetch, ENDPOINT, str(i), {}) for i in range(2)]
+        futures = [
+            callers.submit(client.fetch, ENDPOINT, request_params(str(i)), {})
+            for i in range(2)
+        ]
         assert both_started.wait(1)
         for _ in range(20):
             with pytest.raises(httpx.TimeoutException, match="capacity"):
-                client.fetch(ENDPOINT, "overflow", {})
+                client.fetch(ENDPOINT, request_params("overflow"), {})
         assert started_count == 2
         release.set()
         assert all(f.result(timeout=1) == {"results": []} for f in futures)
@@ -305,8 +325,8 @@ def test_http_errors_and_invalid_json_propagate_and_release_capacity():
     try:
         for exception in (httpx.HTTPStatusError, ValueError, ValueError):
             with pytest.raises(exception):
-                client.fetch(ENDPOINT, "search", {})
-        assert client.fetch(ENDPOINT, "search", {}) == {"results": []}
+                client.fetch(ENDPOINT, request_params("search"), {})
+        assert client.fetch(ENDPOINT, request_params("search"), {}) == {"results": []}
     finally:
         client.close()
 
@@ -324,8 +344,8 @@ def test_network_failure_propagates_without_losing_admission_slot():
     client = KBClient(max_inflight=1, transport=httpx.MockTransport(handle))
     try:
         with pytest.raises(httpx.ConnectError):
-            client.fetch(ENDPOINT, "query", {})
-        assert client.fetch(ENDPOINT, "query", {}) == {"results": []}
+            client.fetch(ENDPOINT, request_params("query"), {})
+        assert client.fetch(ENDPOINT, request_params("query"), {}) == {"results": []}
     finally:
         client.close()
 
@@ -360,10 +380,12 @@ def test_streamed_size_limit_is_enforced_without_trusting_content_length(
     )
     try:
         with pytest.raises(ValueError, match="exceeds limit"):
-            client.fetch(ENDPOINT, "query", {})
+            client.fetch(ENDPOINT, request_params("query"), {})
         assert body.consumed == 2
         assert body.closed
-        assert client.fetch(ENDPOINT, "after oversized response", {}) == {"results": []}
+        assert client.fetch(
+            ENDPOINT, request_params("after oversized response"), {}
+        ) == {"results": []}
     finally:
         client.close()
 
@@ -382,7 +404,7 @@ def test_declared_oversized_body_is_rejected_before_reading():
     client = KBClient(transport=transport)
     try:
         with pytest.raises(ValueError, match="exceeds limit"):
-            client.fetch(ENDPOINT, "query", {})
+            client.fetch(ENDPOINT, request_params("query"), {})
     finally:
         client.close()
 
@@ -393,7 +415,10 @@ def test_success_preserves_query_headers_limit_and_disallows_redirects():
     def handle(request):
         requests.append(request)
         if len(requests) == 1:
-            assert dict(request.url.params) == {"q": "message brokers", "k": "50"}
+            assert dict(request.url.params) == {
+                **request_params("message brokers"),
+                "k": "50",
+            }
             assert request.headers["User-Agent"] == "test-agent"
             assert request.extensions["timeout"] == {
                 "connect": 2.0,
@@ -406,10 +431,12 @@ def test_success_preserves_query_headers_limit_and_disallows_redirects():
 
     client = KBClient(transport=httpx.MockTransport(handle))
     try:
-        result = client.fetch(ENDPOINT, "message brokers", {"User-Agent": "test-agent"})
+        result = client.fetch(
+            ENDPOINT, request_params("message brokers"), {"User-Agent": "test-agent"}
+        )
         assert result["results"][0]["title"] == "RabbitMQ"
         with pytest.raises(httpx.HTTPStatusError):
-            client.fetch(ENDPOINT, "redirect", {})
+            client.fetch(ENDPOINT, request_params("redirect"), {})
         assert len(requests) == 2
     finally:
         client.close()
@@ -434,7 +461,7 @@ def test_slow_trickle_releases_worker_without_waiting_for_a_large_chunk():
     )
     try:
         with pytest.raises(httpx.TimeoutException):
-            client.fetch(ENDPOINT, "query", {})
+            client.fetch(ENDPOINT, request_params("query"), {})
         assert closed.wait(0.5), (
             "Timed-out trickle must not hold its worker until 64 KB"
         )

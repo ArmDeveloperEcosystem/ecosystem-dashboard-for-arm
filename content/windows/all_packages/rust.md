@@ -12,15 +12,15 @@ optional_info:
   homepage_url: https://www.rust-lang.org/learn
   support_caveats: null
   alternative_options: null
-arm_recommended_minimum_version:
-  version_number: null
-  release_date: null
-  reference_content: null
-  rationale: null
-getting_started_resources:
-  official_docs: https://www.rust-lang.org/tools/install
-  arm_content:
-  partner_content:
+  arm_recommended_minimum_version:
+    version_number: null
+    release_date: null
+    reference_content: null
+    rationale: null
+  getting_started_resources:
+    official_docs: https://www.rust-lang.org/tools/install
+    arm_content:
+    partner_content:
 optional_hidden_info:
   release_notes__supported_minimum: null
   release_notes__recommended_minimum: null

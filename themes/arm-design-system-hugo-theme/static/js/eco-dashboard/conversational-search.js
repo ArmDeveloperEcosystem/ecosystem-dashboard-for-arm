@@ -15,9 +15,11 @@
         const notice = root.querySelector('#nl-search-notice');
         const refinements = root.querySelector('#nl-search-refinements');
         const state = {
-            query: '', context: '', matches: null, fallback: false,
+            query: '', matches: null, fallback: false,
             version: 0, controller: null, filterTimer: null, pending: false
         };
+
+        const browseOrder = new Map(allRows().map((row, index) => [row.getAttribute('data-catalog-id'), index]));
 
         // Legacy table/filter code expects the ADS search component's async value().
         root.value = () => Promise.resolve(input.value);
@@ -65,7 +67,37 @@
             return count;
         }
 
+        function orderRows() {
+            const rank = new Map(state.matches ? Array.from(state.matches.keys(), (id, index) => [id, index]) : []);
+            const tables = new Map();
+            // Capture adjacent details before moving anything. Pinned placeholders
+            // share the package ID, so unpinning can restore the existing row pair.
+            for (const row of allRows()) {
+                const table = row.parentNode;
+                if (!table) continue;
+                if (!tables.has(table)) tables.set(table, []);
+                tables.get(table).push({ row, details: row.nextElementSibling });
+            }
+            for (const [table, pairs] of tables) {
+                pairs.sort((a, b) => {
+                    const aPinned = a.row.classList.contains('js-pinned');
+                    const bPinned = b.row.classList.contains('js-pinned');
+                    if (aPinned !== bPinned) return aPinned ? -1 : 1;
+                    if (aPinned) return 0; // Preserve the user's pinned section.
+                    const aID = a.row.getAttribute('data-catalog-id');
+                    const bID = b.row.getAttribute('data-catalog-id');
+                    return (rank.get(aID) ?? Infinity) - (rank.get(bID) ?? Infinity) ||
+                        (browseOrder.get(aID) ?? Infinity) - (browseOrder.get(bID) ?? Infinity);
+                });
+                for (const { row, details } of pairs) {
+                    table.appendChild(row);
+                    if (details) table.appendChild(details);
+                }
+            }
+        }
+
         function renderRows() {
+            orderRows();
             const rows = allRows();
             hideElements(rows, rowsToHide(rows));
             return updateCount();
@@ -75,51 +107,14 @@
             document.querySelectorAll('.nl-search-match').forEach(node => node.remove());
         }
 
-        function safeEvidenceURL(value) {
-            if (typeof value !== 'string' || !value || /[\u0000-\u0020\u007f-\u009f\\]/.test(value)) return null;
-            // Require explicit HTTP(S) authority or a local catalog reference;
-            // browsers otherwise repair malformed schemes and backslashes.
-            const absolute = /^https?:\/\/([^/?#]+)/i.exec(value);
-            if (!absolute && !/^(\/(?!\/)|\?)/.test(value)) return null;
-            try {
-                const page = new URL(window.location.href);
-                const url = new URL(value, page);
-                if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return null;
-                if (absolute) {
-                    const authority = absolute[1].toLowerCase();
-                    const defaultPort = url.protocol === 'https:' ? ':443' : ':80';
-                    if (authority !== url.host && !(url.port === '' && authority === url.host + defaultPort)) return null;
-                    // Keep this allowlist aligned with poc.catalog.ARM_HOSTS.
-                    const armHosts = ['arm.com', 'www.arm.com', 'developer.arm.com', 'learn.arm.com'];
-                    if (url.protocol === 'https:' && !url.port && armHosts.includes(url.hostname)) return url.href;
-                }
-                const catalogPath = page.pathname.replace(/\/$/, '');
-                return url.origin === page.origin && url.pathname.replace(/\/$/, '') === catalogPath && url.searchParams.get('package')
-                    ? url.href : null;
-            } catch (_) {
-                return null;
-            }
-        }
-
         function renderReasons() {
             removeReasons();
             for (const row of allRows()) {
                 const match = state.matches && state.matches.get(row.getAttribute('data-catalog-id'));
-                if (!match) continue;
+                if (!match || isPlaceholder(row)) continue;
                 const container = document.createElement('div');
                 container.className = 'nl-search-match';
-                container.textContent = typeof match.reason === 'string' ? match.reason.slice(0, 600) : 'Matches your search in the package catalog.';
-                const evidenceURL = safeEvidenceURL(match.evidence_url);
-                if (evidenceURL) {
-                    const link = document.createElement('a');
-                    link.href = evidenceURL;
-                    link.target = '_blank';
-                    link.rel = 'noopener noreferrer';
-                    link.textContent = 'View evidence ↗';
-                    link.setAttribute('aria-label', 'View evidence for ' + (row.getAttribute('data-title') || 'this package'));
-                    link.addEventListener('click', event => event.stopPropagation());
-                    container.appendChild(link);
-                }
+                container.textContent = typeof match.reason === 'string' ? match.reason.slice(0, 600) : 'Open this package to view its details.';
                 row.querySelector('.search-title').appendChild(container);
             }
         }
@@ -190,7 +185,6 @@
             cancelRequest();
             window.clearTimeout(state.filterTimer);
             state.query = '';
-            state.context = '';
             state.matches = null;
             state.fallback = false;
             input.value = '';
@@ -208,32 +202,31 @@
         function showNameFallback(query) {
             state.matches = null;
             state.fallback = true;
-            state.context = '';
             removeReasons();
             const count = renderRows();
             status.textContent = 'Natural-language search is unavailable. Name search only: ' + count + (count === 1 ? ' match.' : ' matches.');
             interpretation.textContent = 'Package name contains: “' + query + '”';
             interpretation.hidden = false;
             refinements.hidden = true;
-            setNotice('Try a package name, such as PostgreSQL, or use the filters. Submit again to retry natural-language search.');
+            setNotice('Try a package name or use the filters. Clear search to browse all packages, or submit again to retry.');
             renderConstraints();
         }
 
         async function search(query, options) {
             options = options || {};
-            query = String(query || '').trim().slice(0, 500);
+            query = String(query || '');
             input.value = query;
             window.clearTimeout(state.filterTimer);
-            if (!query) {
+            if (!query.trim()) {
                 restoreCatalog();
                 return;
             }
             // Unpinning or reapplying the same table search does not make another request.
             if (!options.force && query === state.query && !state.pending) {
+                renderReasons();
                 renderRows();
                 return;
             }
-            const previousQuery = state.context;
             cancelRequest();
             const version = state.version;
             const controller = new AbortController();
@@ -254,8 +247,6 @@
             const timeout = window.setTimeout(() => controller.abort(), 15000);
             try {
                 const payload = { query, filters: currentFilters() };
-                if (previousQuery) payload.previous_query = previousQuery;
-                if (options.filtersOverride) payload.filters_override = true;
                 const response = await fetch(root.dataset.endpoint, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload), signal: controller.signal,
@@ -264,27 +255,27 @@
                 if (!response.ok) throw new Error('Search request failed');
                 const data = await response.json();
                 if (version !== state.version) return;
-                if (!data || !Array.isArray(data.results) || !['ok', 'no_matches'].includes(data.status)) {
+                if (!data || data.mode !== 'kb_scoped' || !Array.isArray(data.results) || !['ok', 'no_matches'].includes(data.status)) {
                     throw new Error('Search response unavailable');
                 }
-                const localIDs = new Set(allRows().map(row => row.getAttribute('data-catalog-id')));
+                const localIDs = new Set(allRows().filter(row => !isPlaceholder(row)).map(row => row.getAttribute('data-catalog-id')));
                 state.matches = new Map();
                 let omitted = false;
                 for (const result of data.results) {
-                    if (result && typeof result.id === 'string' && localIDs.has(result.id)) state.matches.set(result.id, result);
-                    else omitted = true;
+                    if (result && typeof result.id === 'string' && localIDs.has(result.id)) {
+                        if (!state.matches.has(result.id)) state.matches.set(result.id, result);
+                    } else omitted = true;
                 }
-                state.context = typeof data.interpreted_query === 'string' && data.interpreted_query.trim() ? data.interpreted_query.slice(0, 1800) : query;
                 syncFilters(data.constraints);
                 busy(false);
                 renderReasons();
                 const count = renderRows();
-                const source = data.mode === 'catalog_fallback' ? 'Catalog search' : 'Search complete';
-                status.textContent = count ? source + ' · ' + count + (count === 1 ? ' matching package.' : ' matching packages.') : 'No matching packages in this catalog.';
-                interpretation.textContent = 'Interpreted as: ' + state.context;
+                status.textContent = count ? count + (count === 1 ? ' matching package.' : ' matching packages, ordered by relevance.') : 'No matching packages in this catalog.';
+                interpretation.textContent = 'Search: “' + query + '”';
                 interpretation.hidden = false;
                 renderConstraints();
-                const messages = Array.isArray(data.notices) ? data.notices.filter(item => typeof item === 'string').slice(0, 2).map(item => item.slice(0, 400)) : [];
+                const messages = Array.isArray(data.notices) ? data.notices.filter(item => typeof item === 'string').slice(0, 5).map(item => item.slice(0, 400)) : [];
+                if (allRows().some(row => !row.hidden && !isPlaceholder(row) && row.classList.contains('js-pinned'))) messages.push('Pinned packages stay at the top.');
                 if (omitted) messages.push('Suggestions outside the current catalog were omitted.');
                 if (!count) messages.push('Try broader wording, adjust the filters, or clear the search to browse all packages.');
                 setNotice(messages.join(' '));
@@ -307,9 +298,7 @@
             cancelRequest();
             state.filterTimer = window.setTimeout(() => {
                 if (input.value.trim()) {
-                    // Reuse the full interpreted request after a refinement.
-                    const query = input.value.trim() === state.query && state.context ? state.context : input.value;
-                    search(query, { force: true, filtersOverride: true });
+                    search(input.value, { force: true });
                 } else {
                     restoreCatalog();
                 }
@@ -345,7 +334,15 @@
         tested.addEventListener('change', filtersChanged);
         root.querySelectorAll('[data-search-example], [data-search-refinement]').forEach(button => {
             button.addEventListener('click', () => {
-                search(button.dataset.searchExample || button.dataset.searchRefinement, { force: true });
+                if (button.dataset.searchExample) {
+                    search(button.dataset.searchExample, { force: true });
+                    return;
+                }
+                const filters = currentFilters();
+                if (button.dataset.searchRefinement === 'opensource') filters.license = 'opensource';
+                if (button.dataset.searchRefinement === 'tested') filters.tested_only = true;
+                syncFilters(filters);
+                search(state.query, { force: true });
             });
         });
 

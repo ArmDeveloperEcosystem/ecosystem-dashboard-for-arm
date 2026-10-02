@@ -5,13 +5,13 @@ import logging
 import threading
 from types import SimpleNamespace
 
-from fastapi.testclient import TestClient
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from poc.runtime import RuntimeConfig
-from poc.server import create_app
 from poc.serve import trusted_proxies
+from poc.server import create_app
 
 
 class StubService:
@@ -19,7 +19,7 @@ class StubService:
     endpoint = "https://kb.example/search"
 
     def search(self, *args):
-        return {"status": "ok", "mode": "hybrid", "results": [], "total": 0}
+        return {"status": "ok", "mode": "kb_scoped", "results": [], "total": 0}
 
 
 def app_with(**kwargs):
@@ -288,7 +288,7 @@ def test_invalid_provider_output_is_sanitized_before_framework_serialization(cap
     class BrokenOutputService(StubService):
         def search(self, *args):
             return {
-                "mode": "hybrid",
+                "mode": "kb_scoped",
                 "evidence_url": "https://learn.arm.com/PRIVATE_QUERY_TEXT/\ud800",
             }
 
@@ -351,7 +351,7 @@ def test_kb_client_is_owned_and_closed_by_app_lifecycle():
         assert not owned._closed
     assert owned._closed
     with pytest.raises(httpx.ConnectError, match="closed"):
-        owned.fetch("https://kb.example/search", "test", {})
+        owned.fetch("https://kb.example/search", {"q": "test"}, {})
 
 
 @pytest.mark.parametrize("value", ["*", "0.0.0.0/0", "::/0", "proxy.example"])
@@ -361,3 +361,21 @@ def test_proxy_trust_requires_explicit_address_boundaries(value):
     with pytest.raises(argparse.ArgumentTypeError):
         trusted_proxies(value)
     assert trusted_proxies("10.1.2.3/32, 127.0.0.1") == "10.1.2.3/32,127.0.0.1"
+
+
+@pytest.mark.parametrize("value", ["true", "false", 1, None])
+def test_scope_confirmation_requires_boolean_runtime_value(value):
+    with pytest.raises(ValueError, match="explicit boolean"):
+        RuntimeConfig(kb_scope_confirmed=value)
+
+
+def test_scope_confirmation_environment_is_default_off_and_explicit(monkeypatch):
+    monkeypatch.delenv("ARM_KB_SCOPE_CONFIRMED", raising=False)
+    assert RuntimeConfig.from_env().kb_scope_confirmed is False
+    monkeypatch.setenv("ARM_KB_SCOPE_CONFIRMED", "true")
+    assert RuntimeConfig.from_env().kb_scope_confirmed is True
+    monkeypatch.setenv("ARM_KB_SCOPE_CONFIRMED", "false")
+    assert RuntimeConfig.from_env().kb_scope_confirmed is False
+    monkeypatch.setenv("ARM_KB_SCOPE_CONFIRMED", "yes")
+    with pytest.raises(ValueError, match="true or false"):
+        RuntimeConfig.from_env()

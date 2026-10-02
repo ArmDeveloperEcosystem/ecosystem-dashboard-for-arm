@@ -15,6 +15,19 @@ Browser: developer.arm.com/ecosystem-dashboard/linux/
   → exact catalog snapshot built from the same dashboard revision
 ```
 
+## Contract gate
+
+This candidate implements a **proposed**, not yet confirmed, scoped KB contract.
+The default `ARM_KB_SCOPE_CONFIRMED=false` blocks KB search calls and produces an
+explicit unavailable result. Enabling the flag alone is not validation. Confirm
+request syntax, pre-top-k filters, response metadata, ingestion completeness and
+Linux/edition isolation with the KB owners; run the representative live searches
+before enabling it in staging. Follow [the search contract](../README.md).
+
+The image smoke test sets the flag only against a deliberately unreachable
+loopback fixture. It expects HTTP 503 with no invented semantic records. Successful
+retrieval is exercised separately by the controlled HTTP integration tests.
+
 ## Build and run a candidate
 
 Use Python 3.12 and the checksum-verified Hugo extended 0.130.0 version used by
@@ -116,8 +129,9 @@ static dashboard stays on its established path.
 | `ARM_SEARCH_MAX_INFLIGHT` | 8 | Active search requests; overflow receives 503 |
 | `ARM_SEARCH_REQUESTS_PER_MINUTE` | 60 per client | Fixed-window limit; overflow receives 429 |
 | `ARM_SEARCH_MAX_RATE_CLIENTS` | 4,096 | Bounded client tracking; new clients get 429 when full |
-| `ARM_SEARCH_KB_DEADLINE` | 8 seconds | Caller wait for KB; then catalog fallback |
+| `ARM_SEARCH_KB_DEADLINE` | 8 seconds | Caller wait for KB; then unavailable response |
 | `ARM_SEARCH_KB_MAX_INFLIGHT` | 4 | Active provider work, including timed-out workers |
+| `ARM_KB_SCOPE_CONFIRMED` | `false` | Only enable after the scoped provider contract is confirmed and validated |
 | `ARM_KB_SEARCH_URL` | `https://knowledge.armdevtechapi.com/search` | Trusted operator-configured endpoint |
 
 Oversized bodies return 413; body timeouts 408; invalid/deep JSON 400; invalid
@@ -128,17 +142,18 @@ from the KB are bounded separately at two megabytes and redirects are refused.
 
 `GET /api/health` is liveness; `GET /api/ready` is readiness after a nonempty
 catalog is loaded and application startup completes. Readiness does not call the
-KB: its outage still permits labeled catalog fallback. Send the configured public
+KB: it reports process readiness only. Health includes the scope configuration and
+rollout status; a configured flag still does not prove provider behavior. Send the configured public
 Host when probing privately. Never use readiness success as proof that live KB
-semantic quality is healthy; monitor fallback events and run representative
+semantic quality is healthy; monitor unavailable responses and run representative
 synthetic search checks separately.
 
 ## Observe, recover and release
 
 The launcher emits `arm_search` events to stderr for the platform log collector:
-`search_request status=... duration_ms=...`, `search_used_catalog_fallback`, and
+`search_request status=... duration_ms=...`, `search_kb_unavailable`, and
 `search_failed exception_type=...`. Aggregate these into request rate, status
-counts, latency percentiles, fallback ratio and internal-error rate. Logs omit
+counts, latency percentiles, unavailable-response ratio and internal-error rate. Logs omit
 queries, bodies, tokens, client IPs and KB URLs; HTTP access logs are disabled.
 In-process counters are available at `app.state.metrics` for tests and future
 instrumentation; no unauthenticated metrics endpoint is exposed. Configure alerts

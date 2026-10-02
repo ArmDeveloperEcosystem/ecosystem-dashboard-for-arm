@@ -1,224 +1,330 @@
+"""Scoped provider contract, ordering, cache isolation, and API behavior."""
+
 from pathlib import Path
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+
 from poc.catalog import Catalog
+from poc.runtime import RuntimeConfig
 from poc.search_service import SearchService
 from poc.server import create_app
+from poc.tests.test_catalog_matching import hit, make_catalog, package
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
-def catalog():
-    return Catalog(ROOT / ".poc/public/poc-catalog.json")
+def catalog(tmp_path):
+    return make_catalog(
+        tmp_path,
+        [
+            package(
+                "redis",
+                test_record={
+                    "run": {
+                        "runner": {"arch": "arm64", "os": "Ubuntu"},
+                        "url": "https://ci.example/run",
+                    },
+                    "tests": {"details": ["failed"]},
+                },
+            ),
+            package("weaviate"),
+            package("weaviate", edition="commercial"),
+            package("nginx", category="Web", parent_category="Servers"),
+        ],
+    )
 
 
-@pytest.fixture
-def service(catalog):
-    return SearchService(catalog, transport=lambda _: {"results": []})
+def service_with(catalog, hits, **kwargs):
+    return SearchService(
+        catalog, transport=lambda *_: {"results": hits}, scope_confirmed=True, **kwargs
+    )
 
 
-def names(result):
-    return {p["title"] for p in result["results"]}
-
-
-def test_catalog_ids_match_unique_hugo_records(catalog):
+def test_catalog_ids_match_unique_scoped_hugo_records():
+    catalog = Catalog(ROOT / ".poc/public/poc-catalog.json")
     assert len(catalog.packages) > 1000
-    assert len(catalog.by_id) == len(catalog.packages)
+    assert len(catalog.by_id) == len(catalog.by_identity) == len(catalog.packages)
     assert all(p["id"].startswith("linux/") for p in catalog.packages)
 
 
-def test_capability_paraphrase_discovers_real_packages(service):
-    r = service.search("databases for storing embeddings", {"license": "opensource"})
-    assert {"Qdrant", "Milvus", "Chroma", "Weaviate"} <= names(r)
-    assert not {"AvxToNeon", "FreeType", "ThirdAI Platform"} & names(r)
-    assert all(p["id"] in service.catalog.by_id for p in r["results"])
+def test_unconfirmed_contract_never_calls_provider_even_for_matching_name(catalog):
+    def forbidden(*_):
+        pytest.fail("Default-off scope must not call the provider")
+
+    response = SearchService(catalog, transport=forbidden).search("Redis")
+    assert response["mode"] == "kb_unavailable"
+    assert response["status"] == "unavailable"
+    assert response["results"] == []
+    assert "not been confirmed" in " ".join(response["notices"])
 
 
-def test_fake_stale_untrusted_hits_never_create_records(catalog):
-    hits = [
-        {
-            "url": "https://developer.arm.com/ecosystem-dashboard/linux/?package=made-up-db",
-            "title": "Qdrant",
-        },
-        {"url": "https://evil.example/?package=qdrant", "title": "Qdrant"},
-        {"url": "javascript:alert(1)", "title": "Qdrant"},
-    ]
-    assert all(not catalog.resolve_hit(h) for h in hits)
+@pytest.mark.parametrize(
+    "filters,edition",
+    [
+        ({}, None),
+        ({"license": "opensource"}, "open-source"),
+        ({"license": "commercial"}, "commercial"),
+    ],
+)
+def test_query_and_explicit_scope_are_sent_without_rewriting(catalog, filters, edition):
+    calls = []
+    query = "  Could you find open-source tools for packets, with NO guesses?  "
 
+    def capture(endpoint, params, headers):
+        calls.append((endpoint, params, headers))
+        return {"results": []}
 
-def test_duplicate_display_names_preserve_editions(service):
-    r = service.search("Weaviate", {"license": "opensource"})
-    assert r["results"]
-    assert all(p["license"] == "opensource" for p in r["results"])
-    assert r["results"][0]["id"] == "linux/opensource_packages/weaviate.md"
-
-
-def test_tests_filter_checks_linux_and_architecture(catalog):
-    s = SearchService(catalog, transport=lambda _: {"results": []})
-    r = s.search("vector databases with recorded Arm64 tests")
-    assert r["constraints"]["tested_only"]
-    assert all(catalog.by_id[p["id"]]["has_recorded_tests"] for p in r["results"])
-    assert all(p["license"] == "opensource" for p in r["results"])
-
-
-def test_followup_keeps_subject_and_filters(service):
-    r = service.search("only open-source ones", previous_query="vector databases")
-    assert r["interpreted_query"] == "vector database"
-    assert r["constraints"]["license"] == "opensource"
-    assert {"Qdrant", "Milvus"} <= names(r)
-
-
-def test_explicit_sidebar_filter_wins(service):
-    r = service.search(
-        "open-source vector databases", {"license": "commercial"}, filters_override=True
+    response = SearchService(catalog, transport=capture, scope_confirmed=True).search(
+        query, filters
     )
-    assert r["constraints"]["license"] == "commercial"
-    assert all(p["license"] == "commercial" for p in r["results"])
+    assert len(calls) == 1
+    expected = {
+        "q": query,
+        "k": 50,
+        "doc_type": "Ecosystem Dashboard",
+        "platform": "linux",
+    }
+    if edition:
+        expected["edition"] = edition
+    assert calls[0][1] == expected
+    assert response["query"] == response["interpreted_query"] == query
+    assert response["constraints"]["license"] == filters.get("license", "all")
 
 
-def test_unknown_constraints_do_not_silently_pass(service):
-    for q in [
-        "fastest vector database",
-        "databases certified on Arm",
-        "databases recommended after 2024",
-    ]:
-        r = service.search(q)
-        assert r["results"] == []
-        assert r["notices"]
+def test_catalog_descriptions_and_titles_do_not_discover_independent_candidates(
+    catalog,
+):
+    search = service_with(catalog, [])
+    for query in (
+        "Redis",
+        "Current catalog description",
+        "Databases",
+        "only open-source ones",
+    ):
+        response = search.search(query)
+        assert response["results"] == []
+        assert response["mode"] == "kb_scoped"
+        assert response["status"] == "no_matches"
+        assert response["interpreted_query"] == query
 
 
-def test_no_match_empty_and_contextless_followup(service):
-    assert not service.search("quantum teleportation hyperdrive")["results"]
-    assert service.search("")["status"] == "ok"
-    assert not service.search("only open-source ones")["results"]
+def test_kb_rank_dedup_and_separate_editions_use_current_catalog_details(catalog):
+    search = service_with(
+        catalog,
+        [
+            hit(
+                "weaviate",
+                edition="commercial",
+                title="Stale title",
+                snippet="Invented claim",
+            ),
+            hit("nginx"),
+            hit("weaviate", edition="commercial"),
+            hit("weaviate"),
+        ],
+    )
+    result = search.search("Redis")
+    assert [p["id"] for p in result["results"]] == [
+        "linux/commercial_packages/weaviate.md",
+        "linux/opensource_packages/nginx.md",
+        "linux/opensource_packages/weaviate.md",
+    ]
+    assert result["total"] == 3
+    assert all(p["title"] == catalog.by_id[p["id"]]["title"] for p in result["results"])
+    assert all(p["reason"] == "Current catalog description" for p in result["results"])
+    assert all(p["match_source"] == "kb_scoped" for p in result["results"])
 
 
-def test_outage_returns_labelled_catalog_fallback(catalog):
-    def fail(_):
-        raise httpx.ConnectError("unreachable")
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {},
+        {"url": "https://developer.arm.com/ecosystem-dashboard/linux/?package=redis"},
+        hit("redis", doc_type="Article"),
+        hit("redis", platform="windows"),
+        hit("redis", edition=None),
+        hit("redis", edition=["open-source"]),
+        hit("redis", url="https://evil.example/?package=redis"),
+        hit("redis", url="https://learn.arm.com/learning-paths/redis/"),
+        hit(
+            "redis",
+            url="https://developer.arm.com/ecosystem-dashboard/linux/?package=redis&package=nginx",
+        ),
+        None,
+        7,
+    ],
+)
+def test_any_contract_violation_rejects_entire_batch_and_does_not_cache(catalog, bad):
+    calls = []
+    responses = iter([{"results": [hit("redis"), bad]}, {"results": [hit("redis")]}])
 
-    s = SearchService(catalog, transport=fail)
-    r = s.search("vector databases")
-    assert r["mode"] == "catalog_fallback"
-    assert "Qdrant" in names(r)
-    assert any("unavailable" in x for x in r["notices"])
+    def provider(*args):
+        calls.append(args)
+        return next(responses)
+
+    search = SearchService(catalog, transport=provider, scope_confirmed=True)
+    failed = search.search("request")
+    assert failed["results"] == []
+    assert failed["mode"] == "kb_unavailable"
+    assert "contract" in " ".join(failed["notices"])
+    assert not search.cache
+    assert search.search("request")["total"] == 1
+    assert len(calls) == 2
 
 
-def test_malformed_response_is_safe_fallback(catalog):
-    s = SearchService(catalog, transport=lambda _: {"results": None})
-    assert s.search("Prometheus")["mode"] == "catalog_fallback"
+def test_wrong_selected_edition_invalidates_response_before_local_filtering(catalog):
+    response = service_with(
+        catalog, [hit("weaviate"), hit("weaviate", edition="commercial")]
+    ).search("request", {"license": "opensource", "category": "Other"})
+    assert response["mode"] == "kb_unavailable"
+    assert response["results"] == []
 
 
-def test_api_validation_and_local_boundary(service):
-    app = create_app(service=service)
-    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
-        assert client.get("/api/health").status_code == 200
-        assert client.post("/api/search", json={"query": "x" * 501}).status_code == 422
+def test_unknown_identity_is_omitted_with_notice_without_title_guessing(catalog):
+    result = service_with(
+        catalog, [hit("deleted", title="Redis"), hit("nginx")]
+    ).search("Redis")
+    assert [p["title"] for p in result["results"]] == ["Nginx"]
+    assert "Omitted 1 KB hit" in " ".join(result["notices"])
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        [],
+        {},
+        {"results": None},
+        {"results": {}},
+        {"results": [hit("redis")] * 51},
+    ],
+)
+def test_invalid_provider_envelopes_are_unavailable(catalog, payload):
+    search = SearchService(catalog, transport=lambda *_: payload, scope_confirmed=True)
+    assert search.search("Redis")["mode"] == "kb_unavailable"
+    assert not search.cache
+
+
+def test_provider_outage_has_no_semantic_catalog_fallback_and_is_not_cached(catalog):
+    calls = []
+
+    def fail(*args):
+        calls.append(args)
+        raise httpx.TimeoutException("PRIVATE PROVIDER DETAILS")
+
+    search = SearchService(catalog, transport=fail, scope_confirmed=True)
+    for _ in range(2):
+        result = search.search("Redis")
+        assert result["results"] == []
+        assert result["mode"] == "kb_unavailable"
+        assert "PRIVATE" not in str(result)
+    assert len(calls) == 2
+    assert not search.cache
+
+
+def test_filters_refine_only_retrieved_candidates_in_original_order(catalog):
+    calls = []
+
+    def provider(endpoint, params, _headers):
+        calls.append(params)
+        return {"results": [hit("nginx"), hit("redis"), hit("weaviate")]}
+
+    search = SearchService(catalog, transport=provider, scope_confirmed=True)
+    result = search.search("unaltered query", {"category": "Data", "tested_only": True})
+    assert [p["title"] for p in result["results"]] == ["Redis"]
+    assert "locally" in " ".join(result["notices"])
+    assert "does not guarantee every test passed" in " ".join(result["notices"])
+    empty = search.search("unaltered query", {"category": "Imaginary"})
+    assert empty["results"] == []
+    assert len(calls) == 1
+    assert set(calls[0]) == {"q", "k", "doc_type", "platform"}
+
+
+def test_valid_response_cache_separates_endpoint_query_scope_and_edition(catalog):
+    calls = []
+
+    def provider(endpoint, params, headers):
+        calls.append((endpoint, dict(params)))
+        return {
+            "results": [hit("weaviate", edition=params.get("edition", "open-source"))]
+        }
+
+    search = SearchService(catalog, transport=provider, scope_confirmed=True)
+    assert search.search("request")["total"] == 1
+    assert search.search("request")["total"] == 1
+    assert search.search("request", {"license": "opensource"})["total"] == 1
+    assert (
+        search.search("request", {"license": "commercial"})["results"][0]["license"]
+        == "commercial"
+    )
+    search.endpoint = "https://other.example/search"
+    search.search("request")
+    search.search("Request")
+    assert len(calls) == 5
+    assert all(key[2:5] == (50, "Ecosystem Dashboard", "linux") for key in search.cache)
+
+
+def test_cache_expires_and_empty_valid_responses_are_cached(catalog, monkeypatch):
+    now = [1000]
+    calls = []
+    monkeypatch.setattr("poc.search_service.time.monotonic", lambda: now[0])
+
+    def provider(*args):
+        calls.append(args)
+        return {"results": []}
+
+    search = SearchService(catalog, transport=provider, scope_confirmed=True)
+    search.search("request")
+    search.search("request")
+    assert len(calls) == 1
+    now[0] += 301
+    search.search("request")
+    assert len(calls) == 2
+
+
+def test_api_rejects_invalid_and_removed_context_fields(catalog):
+    service = service_with(catalog, [hit("redis")])
+    with TestClient(
+        create_app(service=service, config=RuntimeConfig(serve_static=False)),
+        base_url="http://127.0.0.1",
+    ) as client:
+        for body in (
+            {"query": "x" * 501},
+            {"query": "request", "filters": {"license": "bad"}},
+            {"query": "request", "previous_query": "Redis"},
+            {"query": "request", "filters_override": True},
+        ):
+            assert client.post("/api/search", json=body).status_code == 422
         assert (
             client.post(
                 "/api/search",
-                json={"query": "Prometheus", "filters": {"license": "bad"}},
-            ).status_code
-            == 422
-        )
-        assert (
-            client.post(
-                "/api/search",
-                json={"query": "Prometheus"},
+                json={"query": "Redis"},
                 headers={"Origin": "https://evil.example"},
             ).status_code
             == 403
         )
-        result = client.post("/api/search", json={"query": "Prometheus"})
+        result = client.post("/api/search", json={"query": "Redis"})
         assert result.status_code == 200
-        assert result.json()["results"][0]["title"] == "Prometheus"
+        assert result.json()["results"][0]["title"] == "Redis"
 
 
-def test_reviewed_adversarial_queries(service):
-    for q in [
-        "vector databases with no recorded tests",
-        "vector databases with Apache 2.0 licenses",
-        "SQL databases supporting geospatial indexes",
-    ]:
-        result = service.search(q)
-        assert not result["results"]
-        assert result["notices"]
-    assert not {"Qdrant", "Milvus", "Chroma", "Vector"} & names(
-        service.search("vector graphics tools")
+def test_api_unavailable_is_503_and_process_readiness_does_not_claim_kb_ready(catalog):
+    app = create_app(
+        service=SearchService(catalog), config=RuntimeConfig(serve_static=False)
     )
-    assert not {
-        "CRI-O",
-        "Calico",
-        "Qualys Container Security",
-        "NVIDIA Container Toolkit",
-    } & names(service.search("container orchestration"))
-    assert "Kubernetes" in names(service.search("container orchestration"))
-    assert not {"MySQL", "Bcache", "NGINX Plus", "Harness CI", "Apache Arrow"} & names(
-        service.search("in-memory cache")
-    )
-    assert names(service.search("tools to serve language models locally")) == {"Ollama"}
-
-
-def test_malformed_kb_url_is_rejected(catalog):
-    assert catalog.resolve_hit({"url": "https://[malformed", "title": "Qdrant"}) == []
-
-
-def test_malformed_content_length_returns_400(service):
-    with TestClient(
-        create_app(service=service),
-        base_url="http://127.0.0.1:8765",
-    ) as c:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        result = client.post("/api/search", json={"query": "Redis"})
+        assert result.status_code == 503
+        assert result.json()["mode"] == "kb_unavailable"
+        assert result.json()["results"] == []
+        ready = client.get("/api/ready").json()
+        assert ready["status"] == "ready"
+        assert ready["readiness_scope"] == "process_only"
+        assert ready["scope_configured"] is False
         assert (
-            c.post(
-                "/api/search", content="{}", headers={"Content-Length": "wat"}
-            ).status_code
-            == 400
+            client.get("/api/health").json()["rollout_status"]
+            == "blocked_scope_unconfirmed"
         )
-
-
-def test_package_names_containing_license_words_remain_searchable(service):
-    assert "Apache Kafka" in names(service.search("Apache Kafka")) or "Kafka" in names(
-        service.search("Kafka")
-    )
-    actual = next(
-        p for p in service.catalog.packages if p["title"].startswith("Apache ")
-    )
-    assert actual["title"] in names(service.search(actual["title"]))
-
-
-@pytest.mark.parametrize(
-    "query",
-    [
-        "Message broker",
-        "Message brokers",
-        "Message queue",
-        "Message queues",
-        "Stream events with a message broker",
-    ],
-)
-def test_message_service_role_excludes_video_and_client_libraries(service, query):
-    result = names(service.search(query))
-    assert {"RabbitMQ", "Redis", "Kafka"} <= result
-    assert (
-        not {
-            "Restreamer",
-            "Simple Real-time Server (SRS)",
-            "MediaMTX",
-            "Owncast",
-            "Libopus",
-            "Sunshine",
-            "ACL",
-        }
-        & result
-    )
-
-
-def test_incidental_capability_mentions_do_not_claim_package_roles(service):
-    result = names(service.search("Web servers"))
-    assert {"Apache httpd", "Caddy", "NGINX"} <= result
-    assert not {"WRK", "Jemalloc"} & result
-    result = names(service.search("Monitoring and alerting tools"))
-    assert "Prometheus" in result
-    assert not {"Cloud Hypervisor", "Harness CI", "Ubuntu Pro"} & result

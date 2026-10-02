@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import math
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -24,11 +24,14 @@ class RuntimeConfig:
     max_rate_clients: int = 4096
     kb_url: str = "https://knowledge.armdevtechapi.com/search"
     kb_token: str | None = field(default=None, repr=False)
+    kb_scope_confirmed: bool = False
     kb_deadline: float = 8.0
     kb_max_inflight: int = 4
 
     def __post_init__(self):
         object.__setattr__(self, "site_dir", Path(self.site_dir).resolve())
+        if type(self.kb_scope_confirmed) is not bool:
+            raise ValueError("kb_scope_confirmed must be an explicit boolean")
         for name, low, high in (
             ("max_body_bytes", 1024, 65536),
             ("max_inflight", 1, 64),
@@ -61,7 +64,7 @@ class RuntimeConfig:
                     "ARM_SEARCH_PUBLIC_ORIGIN must be an HTTPS origin without a path"
                 )
             # Accessing port also rejects malformed port strings.
-            parsed.port
+            _ = parsed.port
             object.__setattr__(self, "public_origin", self.public_origin.rstrip("/"))
         kb = urlsplit(self.kb_url)
         if (
@@ -117,6 +120,7 @@ class RuntimeConfig:
                 "ARM_KB_SEARCH_URL", "https://knowledge.armdevtechapi.com/search"
             ),
             kb_token=os.getenv("ARM_KB_API_TOKEN") or None,
+            kb_scope_confirmed=flag("ARM_KB_SCOPE_CONFIRMED", False),
             kb_deadline=float(os.getenv("ARM_SEARCH_KB_DEADLINE", "8")),
             kb_max_inflight=int(os.getenv("ARM_SEARCH_KB_MAX_INFLIGHT", "4")),
         )
