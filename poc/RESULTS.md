@@ -46,10 +46,12 @@ limits, origin/host/body boundaries, matching catalog digest and log privacy.
 Successful retrieval uses the separate real-HTTP fixture suite.
 
 The local Docker daemon could not start because the existing Colima VM disk was
-reported in use. No local container success is claimed. The PR's Arm64 CI job
-builds and exercises the exact candidate image and uploads its result with the
-revision metadata. Consult the current [PR checks](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/pull/1092/checks)
-for that outcome; prior green runs do not validate this revision.
+reported in use. The [Arm64 CI run for implementation commit `9f9077085`](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/actions/runs/36976597288)
+then passed all 207 Python tests, 15 UI tests and **16/16 container smoke checks**.
+Its artifact records PR head `9f9077085a77540bb23c48764fa44645e743b7f0` and tested
+merge `4499d1d1d77b8e7b284ab031f68db90865a80c87`. No local container success is
+claimed. Consult the current [PR checks](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/pull/1092/checks)
+for any subsequent revision; prior green runs do not validate changed code.
 
 The initial upstream test invocation hit the Mac Xcode license shim. Using the
 actual Command Line Tools Git binary first in PATH resolved it; no test or
