@@ -119,28 +119,53 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # original: actions/setup-node@v4
         with:
-          node-version: '20'
+          # https://backstage.io/docs/overview/versioning-policy/#nodejs-releases
+          node-version: '24'
       
       - name: Install Backstage CLI
         id: install
+        timeout-minutes: 10
+        env:
+          BACKSTAGE_PREFIX: ${{ runner.temp }}/backstage-cli
         run: |
+          set -euo pipefail
+          NPM_LOG_DIR="$RUNNER_TEMP/backstage-npm-logs"
+          mkdir -p "$NPM_LOG_DIR"
+          finish_install() {
+            local rc=$?
+            trap - EXIT
+            if [ "$rc" -ne 0 ]; then
+              echo "install_status=failed" >> "$GITHUB_OUTPUT"
+              for log in "$NPM_LOG_DIR"/*-debug-*.log; do
+                if [ -f "$log" ]; then
+                  # Diagnostics must not replace the original install failure.
+                  cat "$log" || true
+                fi
+              done
+            fi
+            exit "$rc"
+          }
+          trap finish_install EXIT
+          node --version
+          npm --version
           echo "Installing Backstage CLI..."
-          sudo npm install -g @backstage/cli
-          
-          if command -v backstage-cli &> /dev/null; then
-            echo "Backstage CLI installed successfully"
-            echo "install_status=success" >> $GITHUB_OUTPUT
-          else
-            echo "Backstage CLI installation failed"
-            echo "install_status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
+          npm install --global --prefix "$BACKSTAGE_PREFIX" \
+            --foreground-scripts --loglevel verbose --logs-dir "$NPM_LOG_DIR" @backstage/cli
+          test -x "$BACKSTAGE_PREFIX/bin/backstage-cli"
+          echo "$BACKSTAGE_PREFIX/bin" >> "$GITHUB_PATH"
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
       
       - name: Get Backstage version
         id: version
+        env:
+          BACKSTAGE_PREFIX: ${{ runner.temp }}/backstage-cli
         run: |
-          VERSION=$(backstage-cli --version 2>&1 | grep -oP '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          VERSION=$(backstage-cli --version)
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          INSTALLED_VERSION=$(node -p 'require(process.env.BACKSTAGE_PREFIX + "/lib/node_modules/@backstage/cli/package.json").version')
+          test "$VERSION" = "$INSTALLED_VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected Backstage version: $VERSION"
       
       - name: Test 1 - Check binary exists
@@ -167,9 +192,9 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if backstage-cli --version 2>&1 | grep -q "[0-9]"; then
+          if VERSION_OUTPUT=$(backstage-cli --version) && [[ "$VERSION_OUTPUT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "✓ version command works"
-            backstage-cli --version
+            printf '%s\n' "$VERSION_OUTPUT"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
             echo "✗ version command failed"
@@ -186,7 +211,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           
-          if backstage-cli --help 2>&1 | grep -qi "usage"; then
+          if HELP_OUTPUT=$(backstage-cli --help 2>&1) && grep -qi "usage" <<< "$HELP_OUTPUT"; then
             echo "✓ help command works"
             echo "status=passed" >> $GITHUB_OUTPUT
           else
@@ -205,17 +230,24 @@ jobs:
           START_TIME=$(date +%s)
           
           # 'info' command prints environment details
-          if backstage-cli info 2>&1 | grep -qi "OS"; then
+          # Upstream info reads yarn.lock; this repository is not a Yarn project.
+          INFO_PROJECT=$(mktemp -d "$RUNNER_TEMP/backstage-info.XXXXXX")
+          cd "$INFO_PROJECT"
+          yarn init --yes
+          yarn install --non-interactive
+          if INFO_OUTPUT=$(backstage-cli info 2>&1) && grep -qi "OS" <<< "$INFO_OUTPUT"; then
+             printf '%s\n' "$INFO_OUTPUT"
              echo "✓ info command works"
              echo "status=passed" >> $GITHUB_OUTPUT
           else
              echo "✗ info command failed"
-             backstage-cli info || true
+             printf '%s\n' "$INFO_OUTPUT" >&2
              echo "status=failed" >> $GITHUB_OUTPUT
              exit 1
             fi
           
           END_TIME=$(date +%s)
+          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
       - name: Test 5 - Architecture Verification
         id: test5
         continue-on-error: true
@@ -327,4 +359,3 @@ jobs:
           echo "3. Check help command: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "4. Check Info: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-

@@ -558,6 +558,7 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"; fi' EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           RESULT=""
 
@@ -649,15 +650,15 @@ jobs:
                   tar -xzf /tmp/helm.tgz -C /tmp
                   export PATH="/tmp/linux-arm64:$PATH"
                 fi
-                CHART="$(find . -path '*/Chart.yaml' -print -quit 2>/dev/null || true)"
-                if [ -n "$CHART" ]; then
-                  helm dependency build "$(dirname "$CHART")" >/tmp/nvsentinel-helm-deps.txt 2>&1 || true
-                  helm template nvsentinel-smoke "$(dirname "$CHART")" --include-crds >/tmp/nvsentinel-rendered.yaml
-                else
-                  find . -type f \( -name '*.yaml' -o -name '*.yml' \) -print0 | xargs -0 cat > /tmp/nvsentinel-rendered.yaml
-                fi
+                # The umbrella chart supplies global values to its vendored subcharts.
+                CHART="distros/kubernetes/nvsentinel"
+                test -f "$CHART/Chart.yaml"
+                helm template nvsentinel-smoke "$CHART" --include-crds >/tmp/nvsentinel-rendered.yaml
                 grep -Eq 'kind: (DaemonSet|Deployment|ServiceAccount|ClusterRole|CustomResourceDefinition)|NVSentinel|nvsentinel' /tmp/nvsentinel-rendered.yaml
-                ! grep -Eiq 'nodeSelector:.*amd64|kubernetes.io/arch:[[:space:]]*amd64' /tmp/nvsentinel-rendered.yaml
+                if grep -Eiq 'nodeSelector:.*amd64|kubernetes.io/arch:[[:space:]]*amd64' /tmp/nvsentinel-rendered.yaml; then
+                  echo "NVSentinel manifests require amd64 scheduling" >&2
+                  exit 1
+                fi
                 grep -Eio 'image:[[:space:]]*[^[:space:]]+' /tmp/nvsentinel-rendered.yaml | awk '{print $2}' | sort -u >/tmp/nvsentinel-images.txt || true
                 RESULT="Rendered or assembled NVSentinel Kubernetes manifests on Arm64, validated controller/resource content, and rejected amd64-only scheduling selectors. GPU fault detection, node remediation, and live Kubernetes reconciliation remain out of scope."
                 ;;
@@ -827,21 +828,14 @@ jobs:
               tar -xzf /tmp/helm.tgz -C /tmp
               export PATH="/tmp/linux-arm64:$PATH"
             fi
-            CHART="$(find . -path '*/Chart.yaml' -print -quit 2>/dev/null || true)"
-            if [ -n "$CHART" ]; then
-              helm dependency build "$(dirname "$CHART")" >/tmp/nvsentinel-next-helm-deps.txt 2>&1 || true
-              helm template nvsentinel-next-smoke "$(dirname "$CHART")" \
-                --include-crds \
-                --set-json 'global.imagePullSecrets=[]' \
-                --set-json 'global.nodeSelector={}' \
-                --set-json 'global.affinity={}' \
-                --set-json 'global.tolerations=[]' \
-                >/tmp/nvsentinel-next-rendered.yaml
-            else
-              find . -type f \( -name '*.yaml' -o -name '*.yml' \) -print0 | xargs -0 cat > /tmp/nvsentinel-next-rendered.yaml
-            fi
+            CHART="distros/kubernetes/nvsentinel"
+            test -f "$CHART/Chart.yaml"
+            helm template nvsentinel-next-smoke "$CHART" --include-crds >/tmp/nvsentinel-next-rendered.yaml
             grep -Eq 'kind: (DaemonSet|Deployment|ServiceAccount|ClusterRole|CustomResourceDefinition)|NVSentinel|nvsentinel' /tmp/nvsentinel-next-rendered.yaml
-            ! grep -Eiq 'nodeSelector:.*amd64|kubernetes.io/arch:[[:space:]]*amd64' /tmp/nvsentinel-next-rendered.yaml
+            if grep -Eiq 'nodeSelector:.*amd64|kubernetes.io/arch:[[:space:]]*amd64' /tmp/nvsentinel-next-rendered.yaml; then
+              echo "NVSentinel candidate manifests require amd64 scheduling" >&2
+              exit 1
+            fi
           limited_cpu_description: "Test 6 reran the scoped NVSentinel Arm preflight against the next stable source tag: chart/manifest rendering, controller/resource validation, and amd64-only scheduling guard. GPU fault detection, node remediation, and live Kubernetes reconciliation remain out of scope."
           next_version_override: "1.1.0"
           candidate_tag_override: "v1.1.0"
@@ -881,7 +875,7 @@ jobs:
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ $FAILED -eq 0 ] && [ $PASSED -eq 6 ]; then
             OVERALL_STATUS="success"
             BADGE_STATUS="passing"
           else
@@ -895,6 +889,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          [ "$OVERALL_STATUS" = "success" ]
 
       - name: Create test summary
         if: always()
