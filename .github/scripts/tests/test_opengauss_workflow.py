@@ -31,6 +31,7 @@ class OpenGaussWorkflowTests(unittest.TestCase):
         self.env = dict(os.environ | self.job["env"],
                         OPENGAUSS_ARCHIVE_SHA256=digest, OPENGAUSS_NEXT_ARCHIVE_SHA256=digest,
                         GITHUB_WORKSPACE=str(self.root), GITHUB_RUN_ID="unit",
+                        RUNNER_TEMP=str(self.root),
                         GITHUB_OUTPUT=str(self.root / "output"), TRACE=str(self.root / "trace"),
                         FIXTURE=str(fixture), PATH=str(self.bin) + os.pathsep + os.environ["PATH"])
         self.values = {"steps.install.outputs.install_status": "success",
@@ -148,6 +149,27 @@ elif args[0] == "exec":
             result, output = self.run_step("test6", **environment)
             self.assertNotEqual(0, result.returncode)
             self.assertNotEqual("passed", output.get("status"))
+
+    def test_optional_accelerator_is_excluded_without_replacing_sql_checks(self):
+        mount = f"type=bind,source={self.root}/opengauss-no-kvecturbo,target=/usr/local/sra_recall/lib,readonly"
+        for step in ("install", "test6"):
+            result, _ = self.run_step(step)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            calls = [json.loads(line) for line in Path(self.env["TRACE"]).read_text().splitlines()
+                     if line.startswith("[")]
+            starts = [call for call in calls if call[0] == "run"]
+            self.assertEqual(1, len(starts))
+            self.assertIn(mount, starts[0])
+            self.assertIn("OTHER_PG_CONF=logging_collector=off", starts[0])
+            self.assertEqual([], list((self.root / "opengauss-no-kvecturbo").iterdir()))
+            self.assertTrue(any("select version();" in " ".join(call) for call in calls))
+        self.assertIn("PQ functionality and default-image accelerator compatibility are not validated", self.steps["test6"]["run"])
+
+    def test_dead_baseline_fails_before_any_sql_success_can_be_reported(self):
+        result, output = self.run_step("install", STATE="exited")
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("failed", output["install_status"])
+        self.assertNotIn("select version();", Path(self.env["TRACE"]).read_text())
 
     def test_rc_same_release_and_failed_baseline_are_not_skips(self):
         for version in ("7.0.0-RC3", "7.0.0-RC2"):

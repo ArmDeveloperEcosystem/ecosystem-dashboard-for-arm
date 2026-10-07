@@ -171,13 +171,22 @@ jobs:
             exit 1
           fi
           sudo docker tag "$LOADED_IMAGE" "$IMAGE"
+          # Core-SQL coverage excludes optional PQ libraries. Upstream tolerates
+          # their absence; bundled KVecTurbo rejects the hosted runner CPU.
+          mkdir -p "$RUNNER_TEMP/opengauss-no-kvecturbo"
           sudo docker run -d --name "$CONTAINER" \
             --privileged=true \
+            --mount "type=bind,source=$RUNNER_TEMP/opengauss-no-kvecturbo,target=/usr/local/sra_recall/lib,readonly" \
+            -e OTHER_PG_CONF='logging_collector=off' \
             -e GS_PASSWORD="${OPENGAUSS_PASSWORD}" \
             "$IMAGE" >/tmp/opengauss-container-id.txt
 
           READY=0
           for _ in $(seq 1 120); do
+            STATE=$(sudo docker inspect -f '{{.State.Status}}' "$CONTAINER")
+            if [ "$STATE" = "exited" ] || [ "$STATE" = "dead" ]; then
+              break
+            fi
             if sudo docker exec "$CONTAINER" su - omm -c "gsql -d postgres -r -c 'select version();'" >/tmp/opengauss-baseline-version.txt 2>&1; then
               READY=1
               break
@@ -187,6 +196,8 @@ jobs:
 
           if [ "$READY" -ne 1 ]; then
             sudo docker logs "$CONTAINER" || true
+            sudo docker inspect -f '{{json .State}}' "$CONTAINER" || true
+            cat /tmp/opengauss-baseline-version.txt || true
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -410,8 +421,11 @@ jobs:
           fi
           sudo docker tag "$LOADED_NEXT_IMAGE" "$NEXT_IMAGE"
 
+          mkdir -p "$RUNNER_TEMP/opengauss-no-kvecturbo"
           sudo docker run -d --name "$NEXT_CONTAINER" \
             --privileged=true \
+            --mount "type=bind,source=$RUNNER_TEMP/opengauss-no-kvecturbo,target=/usr/local/sra_recall/lib,readonly" \
+            -e OTHER_PG_CONF='logging_collector=off' \
             -e GS_PASSWORD="${OPENGAUSS_PASSWORD}" \
             "$NEXT_IMAGE" >/tmp/opengauss-next-container-id.txt
 
@@ -453,7 +467,7 @@ jobs:
             echo "next_installed_version=$LATEST" >> "$GITHUB_OUTPUT"
             echo "decision=next_image_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next official public Arm64 image validated successfully" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned OpenGauss image tag ${CURRENT} completed the real Arm64 container validation path in this run. Regression validation loaded the checksum-verified official archive for ${LATEST}, verified the Arm64 image architecture and SQL-reported version, and confirmed SQL client and query functionality inside the container." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned OpenGauss image tag ${CURRENT} completed the real Arm64 container validation path in this run. Regression validation loaded the checksum-verified official archive for ${LATEST}, verified the Arm64 image architecture and SQL-reported version, and confirmed SQL client and query functionality inside the container. Both lanes mask optional PQ accelerator libraries using an empty read-only mount. PQ functionality and default-image accelerator compatibility are not validated." >> "$GITHUB_OUTPUT"
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/opengauss-next-version.txt || true
