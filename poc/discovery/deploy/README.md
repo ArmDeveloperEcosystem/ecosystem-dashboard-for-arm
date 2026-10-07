@@ -60,7 +60,7 @@ docker image inspect arm64-opportunity-report:review \
   --format '{{.Id}} {{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}}'
 ```
 
-The Python 3.12.14 Debian Trixie image is pinned to a verified multi-platform
+The Python 3.12.15 Debian Trixie image is pinned to a verified multi-platform
 index digest. `requirements.runtime.lock` pins all runtime dependency versions
 and approved Linux CPython 3.12 / pure-Python wheel hashes; installation uses
 `--require-hashes` and binary wheels only. It supports Linux Arm64 and x86_64.

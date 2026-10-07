@@ -86,6 +86,64 @@ def test_memory_refresh_and_catalog_are_orthogonal(tmp_path):
     assert third["retained_findings"] == []
 
 
+def test_evidence_change_tracks_coverage_without_changing_supported_verdict(tmp_path):
+    class ReleaseHTTP:
+        def __init__(self, companion_state):
+            self.requests_used = 0
+            self.companion_state = companion_state
+
+        def get(self, url, **kwargs):
+            self.requests_used += 1
+            if url.endswith("/repos/sample/tool"):
+                return {"full_name": "sample/tool", "private": False}, {}
+            if url.endswith("/releases/latest"):
+                return {"id": 1, "tag_name": "v1"}, {}
+            if url.endswith("/releases/1/assets"):
+                return [
+                    {
+                        "name": "tool-linux-arm64.tar.gz",
+                        "state": "uploaded",
+                        "size": 100,
+                    },
+                    {
+                        "name": "tool-linux-amd64.tar.gz",
+                        "state": self.companion_state,
+                        "size": 100,
+                    },
+                ], {}
+            if url.endswith("/readme"):
+                return {"encoding": "base64", "content": "", "sha": "a" * 40}, {}
+            raise AssertionError(f"Unexpected metadata endpoint: {url}")
+
+    path = config(
+        tmp_path,
+        seeds=[{"source": "github", "name": "sample/tool"}],
+        force_refresh=True,
+    )
+    now = datetime(2026, 9, 23, tzinfo=timezone.utc)
+    findings = [
+        run_pipeline(
+            path,
+            tmp_path / "out",
+            now=now + timedelta(days=day),
+            http=ReleaseHTTP(state),
+        )["findings"][0]
+        for day, state in enumerate(("new", "uploaded", "uploaded"))
+    ]
+    assert [finding["status"] for finding in findings] == ["supported"] * 3
+    assert [
+        finding["assessment_coverage"]["review_required"] for finding in findings
+    ] == [True, False, False]
+    assert [finding["evidence_changed"] for finding in findings] == [True, True, False]
+    assert (
+        findings[0]["assessment_coverage"]["remaining_inventory"][0]["state"] == "new"
+    )
+    assert (
+        findings[1]["assessment_coverage"]["remaining_inventory"][0]["state"]
+        == "uploaded"
+    )
+
+
 def test_repeat_run_retains_all_eight_prior_findings_without_new_counts(tmp_path):
     seeds = [{"source": "dockerhub", "name": f"sample/tool{i}"} for i in range(8)]
     path = config(tmp_path, seeds=seeds)

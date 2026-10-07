@@ -732,6 +732,13 @@ def _run(
                 {
                     "status": result["status"],
                     "scope": result["scope"],
+                    # Companion inventory can change the review requirement
+                    # without changing the support verdict or cited names.
+                    **(
+                        {"assessment_coverage": result["assessment_coverage"]}
+                        if "assessment_coverage" in result
+                        else {}
+                    ),
                     "evidence": [
                         {
                             key: value

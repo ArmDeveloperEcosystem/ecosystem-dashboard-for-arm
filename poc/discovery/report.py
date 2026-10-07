@@ -349,6 +349,12 @@ def add_coverage(doc, finding):
         "Other architectures or component names alone do not establish a missing Arm64 component.",
         "Evidence",
     )
+    for url in coverage.get("evidence_urls", []):
+        paragraph = doc.add_paragraph(style="Evidence")
+        hyperlink(paragraph, "Inventory evidence", url)
+        # Introduce the whole inventory with its source, avoiding a detached
+        # citation after a table that spans several pages.
+        paragraph.paragraph_format.keep_with_next = bool(remaining)
     if remaining:
         table(
             doc,
@@ -363,8 +369,6 @@ def add_coverage(doc, finding):
             ],
             [5100, 4260],
         )
-    for url in coverage.get("evidence_urls", []):
-        hyperlink(doc.add_paragraph(style="Evidence"), "Inventory evidence", url)
 
 
 def add_finding(doc, finding):
@@ -750,6 +754,9 @@ def write_reports(summary):
         p = doc.add_paragraph()
         p.add_run(label + ": ").bold = True
         p.add_run(meaning)
+    # The brief review caveat belongs with the last definition, not alone at
+    # the start of a page. Only this small pair needs to move together.
+    p.paragraph_format.keep_with_next = True
     doc.add_paragraph(
         "Human review is required before assigning follow-up or proposing catalog changes. "
         "No finding automatically changes the dashboard or contacts a maintainer.",

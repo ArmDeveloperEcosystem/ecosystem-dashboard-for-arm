@@ -5,7 +5,68 @@ remains open:** the measured hardened image retains eight distinct HIGH advisory
 need an operational security owner's disposition or further remediation. No
 findings were suppressed and no risk waiver was granted.
 
-## Exact measured images and scan
+## Current validation: October 7, 2026
+
+The runtime base is now the official
+[Python 3.12.15 security release](https://www.python.org/downloads/release/python-31215/),
+using the verified multi-platform index
+`sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f`.
+The Python ABI, hash-locked runtime wheels and deployment restrictions are
+unchanged. CI uses the same Python patch release.
+
+The October 7 Trivy database found three additional HIGH advisory IDs in a
+fresh build of the previous pinned base. The supported base refresh provides
+OpenSSL `3.5.7-1~deb13u3` and PCRE2 `10.46-1~deb13u3`, resolving those matches:
+[CVE-2026-75804](https://security-tracker.debian.org/tracker/CVE-2026-75804),
+[CVE-2026-84782](https://security-tracker.debian.org/tracker/CVE-2026-84782) and
+[CVE-2026-103111](https://security-tracker.debian.org/tracker/CVE-2026-103111).
+This also applies Python's September 30 security release; Python interpreter
+coverage must not be inferred from the third-party wheel inventory alone.
+
+Both images below were measured with the same fresh database, without
+suppression or inventory changes:
+
+| October 7 Debian result | Critical | High | Medium | Low | Unknown | Total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Previous base, source revision `6d8a263af` | 0 | 47 | 84 | 66 | 2 | 199 |
+| Updated base and reviewed working tree | 0 | 40 | 57 | 60 | 2 | 159 |
+
+- Previous-base image index: `sha256:aa5c65186d87f0a24068fc1716014b4e3dcc4e039f545f011bed1daf457b60eb`;
+  scanned config digest: `sha256:34744d11237efe56b242d530d14bba58cf8da70654610e37c2844c809224bc4a`.
+- Updated candidate image index: `sha256:f088a75c4975f0b6397583eb96dd6a8b438de3ca790ab3c62a4c86b6794b8866`;
+  scanned config digest: `sha256:5ee06a51519dbd1b3e87ac93dadc4fe9a068e573b1979ddc5dcc18f2ebd2f389`.
+  Its revision label explicitly identifies the reviewed working tree based on
+  `6d8a263af44bee27827c1a82850cb0a118319316`; it is not a committed release image.
+  The retained source-hash manifest records the exact copied inputs, including
+  the release-inventory coverage refresh fix. Rebuild the final release revision and
+  retain its own immutable image and scan before deployment.
+- Scanner: the same checksum-verified Trivy 0.74.0 release recorded below;
+  local executable bytes were also checked against the verified archive.
+- Database: `ghcr.io/aquasecurity/trivy-db:2`, updated
+  `2026-10-07T07:38:55.515026687Z`; candidate scan timestamp
+  `2026-10-07T16:44:20-05:00`.
+- Inventory: 86 Debian packages and nine Python packages. The candidate has
+  72 distinct advisory IDs overall, including the same eight HIGH IDs listed
+  below. None has a fixed Trixie version in this database. The complete JSON
+  retains every severity and package record; the scan exits 1 for findings.
+- No Python-package advisories were found. Fresh pip-audit 2.10.1 checks also
+  found no known advisories for the runtime lock or build-only pip pin.
+- Both images passed the existing native Arm64 default-command smoke with two
+  persistent runs, UID 10001, a read-only root, dropped capabilities,
+  `no-new-privileges` and network disabled. No source or model calls occurred.
+- All 347 PoC discovery tests passed in a separate native Arm64 Python 3.12.15
+  test image with network disabled. The production image's packaged Python
+  source hashes match both the frozen snapshot and reviewed working tree;
+  installer/test packages remain absent from the production image.
+
+Raw builds, immutable image exports, complete scans, dependency audits, smoke
+results and `final-context-hashes.json` are retained locally under ignored
+`.poc/completion-20261007/runtime/`. The available `ecosystem-search` Colima
+profile was used with an explicit Docker context. The default profile's
+disk-in-use error was left unchanged; no VM deletion or forced unlock was used.
+These measurements do not grant a residual-risk exception or production approval.
+
+## Historical validation: September 24, 2026
 
 - Baseline Linux Arm64 image at commit
   `ff2e0310983a03c48ec683d56019d94230aba701`:

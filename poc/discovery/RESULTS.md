@@ -1,4 +1,64 @@
-# PoC2 validation — 24–25 September 2026
+# PoC2 validation
+
+## Current validation — 7 October 2026
+
+The existing internal workflow was revalidated against current public metadata.
+It remains ready for technical review, with live AI, interactive demo, staging
+operations and security acceptance still open. PoC1 and the shared knowledge
+base are outside this change.
+
+- Corrected saved evidence comparison: a change in assessment coverage now
+  marks a finding as changed even when the support verdict and cited artifact
+  names remain the same. A three-refresh regression failed before the fix and
+  passes after it; an unchanged third refresh remains unchanged. Existing
+  GitHub observations may conservatively register their first refresh under
+  the expanded fingerprint as changed; their saved history is untouched.
+- **347 PoC Python tests** passed locally and on native Linux Arm64 Python
+  3.12.15; **11 UI tests** passed. The repository suite passed **113 tests plus
+  78 subtests** using its required Hugo and Command Line Tools Git. Independent
+  checks covered 14 local HTTP boundaries and ten synthetic AI-response cases.
+  These synthetic cases do not validate a live model's quality.
+- A fresh bounded run investigated **eight new scopes: seven supported, zero
+  identified gaps and one unclear**, with 27 source requests and no collection
+  errors. GitHub discovery fetched/examined 14 records, selected two candidates
+  and deferred 12 unseen results under its limit. Four findings retain coverage
+  questions. The read-only verifier passes metadata mode with eight findings;
+  AI was disabled and no production approval is inferred.
+- The unclear finding concerns Redis's selected GitHub release artifacts. Its
+  official Docker image separately advertises Linux Arm64. The report retains
+  each distribution's scope rather than turning that difference into a
+  project-wide unsupported claim. Current MySQL's official image also advertises
+  Arm64. Zero confirmed gaps is a valid outcome for this selected sample.
+- An isolated SQLite backup of this fresh run, rechecked with discovery
+  disabled to isolate refresh behavior, made **zero source requests**, kept all
+  eight dated findings and created no duplicate observations. Original reports
+  and state remained unchanged. HTTP downloads of Word, CSV and JSON matched
+  the saved files byte for byte.
+- Regenerated the same saved findings into an isolated **13-page Word report**
+  after keeping inventory citations with their tables and the review note with
+  its definition. All 13 pages passed visual inspection. The original live
+  exports are unchanged; report content and CSV bytes are preserved.
+- Updated the pinned runtime base and matching CI Python patch version to
+  official **Python 3.12.15**. The hardened image passed two persistent offline
+  runs. Using the same October 7 database, the update reduced HIGH occurrences
+  from 47 to 40 by resolving three additional advisory IDs. Zero CRITICAL or
+  Python-package findings were reported; **eight distinct HIGH IDs still need
+  security-owner disposition**. No findings were suppressed. See
+  [the dated security evidence](deploy/SECURITY.md).
+
+Live AI access is not configured. The optional adapter and its offline tests
+are present; completing the AI-assisted acceptance requires an approved service,
+model and representative live assessment. Browser automation again encountered
+`ERR_BLOCKED_BY_CLIENT`; passing HTTP and renderer tests is not interactive
+browser acceptance. No browser settings were changed.
+
+Fresh local source reports, acceptance assertions and test logs are under
+`.poc/current-work-20261007/`; native builds, complete scans and source manifests
+are under `.poc/completion-20261007/runtime/`. Reports remain local and uncommitted.
+Rebuild and retain the final commit's image and scan before deployment. The
+owner decisions in [ACCEPTANCE.md](deploy/ACCEPTANCE.md) remain required.
+
+## Historical validation — 24–25 September 2026
 
 The bounded internal implementation has passed local and native Linux Arm64
 validation and independent verification of the review corrections. It is ready
