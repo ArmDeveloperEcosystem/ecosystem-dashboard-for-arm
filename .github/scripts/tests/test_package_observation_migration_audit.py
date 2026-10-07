@@ -74,12 +74,13 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         remediation = self.report["remediation"]
         self.assertEqual(17, len(remediation["emitter_missing_slug"]))
         self.assertEqual(
-            {"test4": 4, "test5": 42, "test6": 6},
+            {"test4": 3, "test5": 42, "test6": 6},
             {
                 key: len(value)
                 for key, value in remediation["missing_test_duration"].items()
             },
         )
+        self.assertNotIn("backstage", remediation["missing_test_duration"]["test4"])
         self.assertEqual(
             {"test3": 1, "test4": 1, "test5": 2, "test6": 320},
             {
@@ -101,7 +102,11 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             len(remediation["package_manager_missing_explicit_skip_counter"]),
         )
         self.assertEqual(76, len(remediation["package_manager_non_skipped_status"]))
-        self.assertEqual(281, len(remediation["literal_pair_contradictions"]))
+        self.assertEqual(280, len(remediation["literal_pair_contradictions"]))
+        self.assertNotIn(
+            "repeatmasker",
+            [item["package_slug"] for item in remediation["literal_pair_contradictions"]],
+        )
         self.assertEqual(23, len(remediation["no_literal_decision"]))
         self.assertEqual(
             304, len(remediation["package_manager_summary_omits_test6"])
@@ -197,7 +202,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "67587c8cb54841dce5213974008c3c6e29d8cdd9ade53f116e2cc06733d4538d",
+            "c67dabe07aa1c06b7a05786be0660edf18eee5c6b878691d4aa7792e4674f918",
             digest,
         )
 
