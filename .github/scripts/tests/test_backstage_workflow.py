@@ -1,5 +1,6 @@
 """Exercise Backstage workflow shell with fault fixtures, not Arm product evidence."""
 
+import json
 import os
 from pathlib import Path
 import re
@@ -30,6 +31,7 @@ class BackstageWorkflowTests(unittest.TestCase):
             "RUNNER_TEMP": str(self.runner_temp),
             "BACKSTAGE_PREFIX": self.steps["install"]["env"]["BACKSTAGE_PREFIX"].replace(
                 "${{ runner.temp }}", str(self.runner_temp)),
+            "BACKSTAGE_INSTALL_MANIFEST": self.steps["install"]["env"]["BACKSTAGE_INSTALL_MANIFEST"],
             "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
             "GITHUB_OUTPUT": str(self.root / "output"),
             "GITHUB_PATH": str(self.root / "path"),
@@ -59,13 +61,14 @@ exit "$CLI_RC"
         self.tool("npm", '''
 if [ "$1" = --version ]; then echo 11.0.0; exit 0; fi
 printf '%s\\n' "$@" > "$HOME/npm-args"
+test -f "$BACKSTAGE_PREFIX/package.json"
 if [ "$NPM_LOG" = 1 ]; then
   printf '%s\\n' 'fixture npm failure details' > "$RUNNER_TEMP/backstage-npm-logs/unit-debug-0.log"
 fi
 if [ "$NPM_RC" != 0 ]; then exit "$NPM_RC"; fi
 if [ "$NPM_BINARY" = 1 ]; then
-  mkdir -p "$BACKSTAGE_PREFIX/bin"
-  cp "$HOME/bin/backstage-cli" "$BACKSTAGE_PREFIX/bin/backstage-cli"
+  mkdir -p "$BACKSTAGE_PREFIX/node_modules/.bin"
+  cp "$HOME/bin/backstage-cli" "$BACKSTAGE_PREFIX/node_modules/.bin/backstage-cli"
 fi
 ''')
 
@@ -105,7 +108,8 @@ fi
         self.assertEqual("24", setup["with"]["node-version"])
         self.assertEqual(10, self.steps["install"]["timeout-minutes"])
         self.assertEqual("ubuntu-24.04-arm", self.job["runs-on"])
-        self.assertEqual(self.steps["install"]["env"], self.steps["version"]["env"])
+        self.assertEqual(self.steps["install"]["env"]["BACKSTAGE_PREFIX"],
+                         self.steps["version"]["env"]["BACKSTAGE_PREFIX"])
         for number, command in enumerate(("command -v backstage-cli", "backstage-cli --version",
                                           "backstage-cli --help", "backstage-cli info", "uname -m"), 1):
             self.assertIn(command, self.steps[f"test{number}"]["run"])
@@ -116,15 +120,26 @@ fi
         result, outputs = self.run_step("install")
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual({"install_status": "success"}, outputs)
-        self.assertEqual(self.env["BACKSTAGE_PREFIX"] + "/bin\n",
+        self.assertEqual(self.env["BACKSTAGE_PREFIX"] + "/node_modules/.bin\n",
                          Path(self.env["GITHUB_PATH"]).read_text())
         arguments = (self.root / "npm-args").read_text().splitlines()
-        self.assertEqual(["install", "--global", "--prefix", self.env["BACKSTAGE_PREFIX"],
+        self.assertEqual(["install", "--prefix", self.env["BACKSTAGE_PREFIX"],
                           "--foreground-scripts", "--loglevel", "verbose", "--logs-dir",
-                          str(self.runner_temp / "backstage-npm-logs"), "@backstage/cli"], arguments)
+                          str(self.runner_temp / "backstage-npm-logs")], arguments)
         self.assertIn("v24.0.0", result.stdout)
         self.assertIn("11.0.0", result.stdout)
         self.assertNotIn("fixture npm failure details", result.stdout)
+
+    def test_local_manifest_limits_workaround_to_broken_yarn_core_and_satisfies_jsdom_peer(self):
+        result, outputs = self.run_step("install")
+        self.assertEqual(0, result.returncode, result.stderr)
+        manifest = json.loads((Path(self.env["BACKSTAGE_PREFIX"]) / "package.json").read_text())
+        self.assertEqual({"name": "backstage-cli-smoke", "private": True,
+                          "dependencies": {"@backstage/cli": "0.36.6", "jsdom": "^27.1.0"},
+                          "overrides": {"@yarnpkg/core@4.9.2": {"got": "11.8.6"}}}, manifest)
+        self.assertEqual("success", outputs["install_status"])
+        for flag in ("--global", "--force", "--legacy-peer-deps", "--ignore-scripts"):
+            self.assertNotIn(flag, (self.root / "npm-args").read_text().splitlines())
 
     def test_npm_failure_prints_debug_log_and_preserves_exit_code(self):
         for code in (1, 37, 127):
@@ -158,7 +173,7 @@ fi
         self.assertEqual({"version": "0.36.6"}, outputs)
         self.assertIn("upstream warning", result.stderr)
         self.assertEqual("--version\n", (self.root / "cli-calls").read_text())
-        self.assertIn('require(process.env.BACKSTAGE_PREFIX + "/lib/node_modules/@backstage/cli/package.json").version',
+        self.assertIn('require(process.env.BACKSTAGE_PREFIX + "/node_modules/@backstage/cli/package.json").version',
                       (self.root / "node-calls").read_text())
 
     def test_version_rejects_failure_malformed_or_mismatched_identity(self):

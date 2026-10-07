@@ -1034,7 +1034,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "aeb1112156778cefbf5a7e321c5ad3986bf53862888ecd34897370fd793c33e3",
+            "4cb5f0c029acebd6412f6ffb5f9517ae7e27a6a1bea8bd42d70cc7e127ad0649",
             result["workflow_sha256"],
         )
 
@@ -1280,8 +1280,8 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "unique_original_refs": 15,
                 "checkout_uses": 982,
                 "permission_exceptions": 4,
-                "topology_sha256": "fcad3454434e624282c6868f6485289f9751bd5d2dbbd59ece09f0964340d197",
-                "workflow_sha256": "aeb1112156778cefbf5a7e321c5ad3986bf53862888ecd34897370fd793c33e3",
+                "topology_sha256": "011d9a090d93e50c4573265d56bf1877e4421f2e3a7b17aebdc1fc6e04449cb3",
+                "workflow_sha256": "4cb5f0c029acebd6412f6ffb5f9517ae7e27a6a1bea8bd42d70cc7e127ad0649",
             },
             supply_chain.validate_hardening(
                 self.root,
