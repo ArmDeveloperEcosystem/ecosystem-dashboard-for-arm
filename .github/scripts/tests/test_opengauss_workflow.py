@@ -106,7 +106,7 @@ elif args[0] == "exec":
                          [step for step in self.steps if re.fullmatch(r"test\d", step)])
         for prefix, version, os_name, sha in [
             ("OPENGAUSS", "7.0.0-RC2", "openEuler22.03", "16a204e817263bce4b2c920da83ee509e3b54fbe274df1e081663a12804f1725"),
-            ("OPENGAUSS_NEXT", "7.0.0", "openEuler24.03", "93147e61b5793c29f21bb630fc263de9b7dd3f5490c05bcf21ae4964657e21c9"),
+            ("OPENGAUSS_NEXT", "7.0.0", "openEuler24.03", "fde4640f95ede2ee6fef254d43e3000fbb0f37ef61ef1a6ab43d16cbd43a10b9"),
         ]:
             self.assertEqual(version, self.job["env"][prefix + "_VERSION"])
             self.assertEqual(f"https://opengauss.obs.cn-south-1.myhuaweicloud.com/{version}/{os_name}/arm/openGauss-Docker-{version}-aarch64.tar",
