@@ -9,20 +9,34 @@ jobs:
   diagnose:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 7.0.0-RC2
+            os: openEuler22.03
+            sha256: 16a204e817263bce4b2c920da83ee509e3b54fbe274df1e081663a12804f1725
+          - version: 7.0.0
+            os: openEuler24.03
+            sha256: 93147e61b5793c29f21bb630fc263de9b7dd3f5490c05bcf21ae4964657e21c9
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
       - name: Reproduce official baseline startup
         shell: bash
+        env:
+          VERSION: ${{ matrix.version }}
+          OPENEULER: ${{ matrix.os }}
+          ARCHIVE_SHA256: ${{ matrix.sha256 }}
         run: |
           set -euo pipefail
           uname -m
           free -h
           archive="$RUNNER_TEMP/opengauss.tar"
           DOWNLOAD_MAX_TIME=600 DOWNLOAD_ATTEMPTS=1 bash .github/scripts/download-with-fallback.sh "$archive" \
-            'https://opengauss.obs.cn-south-1.myhuaweicloud.com/7.0.0-RC2/openEuler22.03/arm/openGauss-Docker-7.0.0-RC2-aarch64.tar'
-          printf '%s  %s\n' '16a204e817263bce4b2c920da83ee509e3b54fbe274df1e081663a12804f1725' "$archive" | sha256sum -c -
+            "https://opengauss.obs.cn-south-1.myhuaweicloud.com/$VERSION/$OPENEULER/arm/openGauss-Docker-$VERSION-aarch64.tar"
+          printf '%s  %s\n' "$ARCHIVE_SHA256" "$archive" | sha256sum -c -
           sudo docker load -i "$archive"
           diagnose() {
             rc=$?
@@ -32,6 +46,7 @@ jobs:
             logdir="$RUNNER_TEMP/opengauss-diagnostics"
             mkdir -p "$logdir"
             sudo docker cp opengauss-diagnostic:/var/lib/opengauss/data/pg_log "$logdir/pg_log" || true
+            sudo docker cp opengauss-diagnostic:/var/lib/opengauss/data/ffic_log "$logdir/ffic_log" || true
             sudo docker cp opengauss-diagnostic:/var/lib/opengauss/data/postgresql.conf "$logdir/postgresql.conf" || true
             sudo find "$logdir/pg_log" -type f -exec tail -n 100 {} \; || true
             sudo dmesg | grep -Ei 'gaussdb|out of memory|killed process|segfault' | tail -n 25 || true
@@ -42,15 +57,19 @@ jobs:
             exit "$rc"
           }
           trap diagnose EXIT
+          mkdir -p "$RUNNER_TEMP/no-kvecturbo"
           sudo docker run -d --name opengauss-diagnostic --privileged=true \
+            --mount "type=bind,source=$RUNNER_TEMP/no-kvecturbo,target=/usr/local/sra_recall/lib,readonly" \
             -e OTHER_PG_CONF='logging_collector=off' \
-            -e GS_PASSWORD='OpenGauss#2026!' opengauss:7.0.0-RC2
+            -e GS_PASSWORD='OpenGauss#2026!' "opengauss:$VERSION"
           for _ in $(seq 1 36); do
             state=$(sudo docker inspect -f '{{.State.Status}}' opengauss-diagnostic)
             if [ "$state" = exited ] || [ "$state" = dead ]; then
               exit 1
             fi
-            if sudo docker exec opengauss-diagnostic su - omm -c "gsql -d postgres -r -c 'select version();'"; then
+            if sudo docker exec opengauss-diagnostic su - omm -c "gsql -d postgres -r -c 'select version(); select 1;'" > "$RUNNER_TEMP/query.txt" 2>&1; then
+              cat "$RUNNER_TEMP/query.txt"
+              grep -Fi "openGauss $VERSION " "$RUNNER_TEMP/query.txt"
               exit 0
             fi
             sleep 5
