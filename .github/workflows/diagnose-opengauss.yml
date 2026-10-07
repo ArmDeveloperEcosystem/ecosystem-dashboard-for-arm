@@ -1,0 +1,54 @@
+name: Diagnose OpenGauss Arm startup
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Reproduce official baseline startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -m
+          free -h
+          archive="$RUNNER_TEMP/opengauss.tar"
+          DOWNLOAD_MAX_TIME=600 DOWNLOAD_ATTEMPTS=1 bash .github/scripts/download-with-fallback.sh "$archive" \
+            'https://opengauss.obs.cn-south-1.myhuaweicloud.com/7.0.0-RC2/openEuler22.03/arm/openGauss-Docker-7.0.0-RC2-aarch64.tar'
+          printf '%s  %s\n' '16a204e817263bce4b2c920da83ee509e3b54fbe274df1e081663a12804f1725' "$archive" | sha256sum -c -
+          sudo docker load -i "$archive"
+          diagnose() {
+            rc=$?
+            trap - EXIT
+            sudo docker logs opengauss-diagnostic || true
+            sudo docker inspect --format '{{json .State}}' opengauss-diagnostic || true
+            logdir="$RUNNER_TEMP/opengauss-diagnostics"
+            mkdir -p "$logdir"
+            sudo docker cp opengauss-diagnostic:/var/lib/opengauss/data/pg_log "$logdir/pg_log" || true
+            sudo docker cp opengauss-diagnostic:/var/lib/opengauss/data/postgresql.conf "$logdir/postgresql.conf" || true
+            sudo find "$logdir" -type f -name '*.log' -exec tail -n 100 {} \; || true
+            if [ -f "$logdir/postgresql.conf" ]; then
+              sudo grep -E 'max_process_memory|shared_buffers|log_directory|logging_collector|enable_thread_pool' "$logdir/postgresql.conf" || true
+            fi
+            sudo docker rm -f opengauss-diagnostic || true
+            exit "$rc"
+          }
+          trap diagnose EXIT
+          sudo docker run -d --name opengauss-diagnostic --privileged=true \
+            -e GS_PASSWORD='OpenGauss#2026!' opengauss:7.0.0-RC2
+          for _ in $(seq 1 36); do
+            state=$(sudo docker inspect -f '{{.State.Status}}' opengauss-diagnostic)
+            if [ "$state" = exited ] || [ "$state" = dead ]; then
+              exit 1
+            fi
+            if sudo docker exec opengauss-diagnostic su - omm -c "gsql -d postgres -r -c 'select version();'"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
