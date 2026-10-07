@@ -23,6 +23,8 @@ class OpenGaussWorkflowTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["test-opengauss"]
         self.steps = {step["id"]: step for step in self.job["steps"] if "id" in step}
+        self.steps["details"] = next(step for step in self.job["steps"]
+                                     if step["name"] == "Create test summary")
         self.bin = self.root / "bin"
         self.bin.mkdir()
         fixture = self.root / "fixture.tar"
@@ -33,6 +35,7 @@ class OpenGaussWorkflowTests(unittest.TestCase):
                         GITHUB_WORKSPACE=str(self.root), GITHUB_RUN_ID="unit",
                         RUNNER_TEMP=str(self.root),
                         GITHUB_OUTPUT=str(self.root / "output"), TRACE=str(self.root / "trace"),
+                        GITHUB_STEP_SUMMARY=str(self.root / "summary"),
                         FIXTURE=str(fixture), PATH=str(self.bin) + os.pathsep + os.environ["PATH"])
         self.values = {"steps.install.outputs.install_status": "success",
                        "steps.install.outputs.container_name": "baseline",
@@ -121,6 +124,12 @@ elif args[0] == "exec":
         self.assertIn("select version();", trace)
         self.assertIn("select 1;", trace)
         self.assertIn('"image", "inspect"', trace)
+        self.values.update({f"steps.test{i}.outputs.status": "passed" for i in range(1, 7)})
+        result, output = self.run_step("summary")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("6", output["passed"])
+        self.assertEqual("0", output["failed"])
+        self.assertEqual("success", output["overall_status"])
 
     def test_download_errors_and_checksums_block_docker_load_in_both_lanes(self):
         for step, checksum in [("install", "OPENGAUSS_ARCHIVE_SHA256"),
@@ -170,6 +179,49 @@ elif args[0] == "exec":
         self.assertNotEqual(0, result.returncode)
         self.assertEqual("failed", output["install_status"])
         self.assertNotIn("select version();", Path(self.env["TRACE"]).read_text())
+
+    def test_abrupt_core_command_failures_fail_summary_and_details(self):
+        for step in ("test2", "test3", "test5"):
+            with self.subTest(step=step):
+                result, output = self.run_step(step, SQL_RC="1")
+                self.assertEqual(1, result.returncode)
+                self.assertNotIn("status", output)
+                self.values.update({f"steps.test{i}.outputs.status": "passed" for i in range(1, 7)})
+                self.values.pop(f"steps.{step}.outputs.status")
+                self.values[f"steps.{step}.conclusion"] = "success"
+                self.values[f"steps.{step}.outcome"] = "failure"
+                result, output = self.run_step("summary")
+                self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+                self.assertEqual("5", output["passed"])
+                self.assertEqual("1", output["failed"])
+                self.assertEqual("1", output["core_failed"])
+                self.assertEqual("failure", output["overall_status"])
+                self.assertEqual("failing", output["badge_status"])
+                result, _ = self.run_step("details")
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertRegex(Path(self.env["GITHUB_STEP_SUMMARY"]).read_text(),
+                                 rf"(?m)^{step[-1]}\. Test {step[-1]} - .*: failure$")
+
+    def test_unhandled_regression_failure_is_not_skipped(self):
+        result, output = self.run_step("test6", OPENGAUSS_NEXT_ARCHIVE_SHA256="0" * 64)
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn("status", output)
+        self.values.update({f"steps.test{i}.outputs.status": "passed" for i in range(1, 6)})
+        self.values["steps.test6.conclusion"] = "failure"
+        self.values["steps.test6.outcome"] = "failure"
+        result, output = self.run_step("summary")
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("5", output["passed"])
+        self.assertEqual("1", output["failed"])
+        self.assertEqual("0", output["core_failed"])
+        self.assertEqual("failure", output["overall_status"])
+        self.assertEqual("failing", output["badge_status"])
+        result, _ = self.run_step("details")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("6. Test 6 - Regression Validation: failure",
+                      Path(self.env["GITHUB_STEP_SUMMARY"]).read_text())
+        self.assertEqual("${{ steps.test6.outputs.status || (steps.test6.outcome == 'failure' && 'failed') || 'skipped' }}",
+                         self.job["outputs"]["regression_status"])
 
     def test_rc_same_release_and_failed_baseline_are_not_skips(self):
         for version in ("7.0.0-RC3", "7.0.0-RC2"):
