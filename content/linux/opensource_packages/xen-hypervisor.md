@@ -1,7 +1,7 @@
 ---
 name: Xen Project Hypervisor
 category: Miscellaneous
-description: Xen Project Hypervisor is an open-source, bare-metal hypervisor that runs multiple operating systems as virtual machines on one host, distinct from Xen CI, the project's build and test automation.
+description: Xen Project Hypervisor is an open-source, bare-metal hypervisor that runs multiple operating systems as virtual machines on one host.
 download_url: https://xenproject.org/resources/downloads/
 works_on_arm: true
 supported_minimum_version:
@@ -10,13 +10,11 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://xenproject.org/projects/hypervisor/
-    support_caveats: |
-        - **Historical support:** [Xen 4.4.0](https://xenproject.org/blog/xen-4-4-released/) established a stable Arm ABI, and upstream [confirmed Arm was no longer Tech Preview](https://lists.xenproject.org/archives/html/xen-devel/2014-03/msg00748.html). Earlier [Xen 4.3.0](https://xenproject.org/blog/xen-4-3-0-released/) introduced experimental Arm support, with AArch64 demonstrated on simulation models. These historical milestones are not recommendations to deploy obsolete releases.
-        - **Release assessed:** [Xen 4.22](https://xenproject.org/blog/xen-4-22-release/), initially released on July 30, 2026, lists Xen on Armv8 in **AArch64 mode as supported**. The [4.22 support statement](https://xenbits.xen.org/docs/4.22-testing/SUPPORT.html#arm-v8) is the authority for this claim, not development-version documentation.
-        - **Feature maturity:** In 4.22, AArch32 mode is Tech Preview and Armv8-R is Experimental. Host ACPI on Arm and EFI Secure Boot on Arm64 are Experimental. Under [Xen's status definitions](https://xenbits.xen.org/docs/4.22-testing/SUPPORT.html#definition-of-status-labels), Experimental and Tech Preview features are not security-supported; Supported includes security support unless explicitly qualified.
-        - **Security exceptions:** Arm SMMUv1/SMMUv2 and non-PCI device passthrough are supported but not security-supported; SMMUv3 is Tech Preview. Architecture support does not guarantee support for every CPU revision or hardware configuration. Check the **4.22 column** and detailed caveats in the [versions and feature support matrix](https://xenbits.xen.org/docs/unstable/support-matrix.html).
-        - **Documentation:** Use the [Xen 4.22 documentation](https://xenbits.xen.org/docs/4.22-testing/) and [4.22 build requirements](https://wiki.xenproject.org/wiki/Xen_Project_4.22_Release_Notes#Build_Requirements) alongside the Arm setup guide below. The guide contains historical examples; use the requirements and source tag for the release being installed.
-        - **Separate projects:** This entry covers the upstream Xen Hypervisor, not Xen CI. It makes no Arm-support claim for XAPI or XCP-ng; separate assessments are tracked for [XAPI](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/issues/1100) and [XCP-ng](https://github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/issues/1101).
+    support_caveats: >-
+        [Xen 4.22 supports Armv8 AArch64](https://xenbits.xen.org/docs/4.22-testing/SUPPORT.html#arm-v8), with hardware and feature limitations listed in the **4.22 column** of the [support matrix](https://xenbits.xen.org/docs/unstable/support-matrix.html).
+        Supported features include security support unless explicitly excluded; Experimental and Tech Preview features do not.
+        Arm SMMUv1/SMMUv2 and non-PCI device passthrough are supported but not security-supported.
+        This entry covers Xen Hypervisor, not Xen CI, and makes no Arm-support claim for XAPI or XCP-ng, which require separate assessment.
     getting_started_resources:
         official_docs: https://wiki.xenproject.org/wiki/Xen_ARM_with_Virtualization_Extensions#Building_Xen_on_ARM
 
