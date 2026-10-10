@@ -17,6 +17,12 @@ optional_info:
         official_docs: https://github.com/gardener/gardener/blob/master/docs/README.md
         arm_content:
         partner_content:
+          - display_name: Gardener Extension for AWS Provider
+            url: https://github.com/gardener/gardener-extension-provider-aws#how-to-start-using-or-developing-this-extension-controller-locally
+          - display_name: Gardener Extension for AZURE Provider
+            url: https://github.com/gardener/gardener-extension-provider-azure#how-to-start-using-or-developing-this-extension-controller-locally
+          - display_name: Gardener Extension for GCP Provider
+            url: https://github.com/gardener/gardener-extension-provider-gcp#how-to-start-using-or-developing-this-extension-controller-locally
     arm_recommended_minimum_version:
         version_number: 1.52.0
         release_date: 2022/07/31
