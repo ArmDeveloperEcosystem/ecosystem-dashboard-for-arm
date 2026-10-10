@@ -91,6 +91,43 @@ jobs:
       HOMEPAGE_URL: "https://docs.datarhei.com/restreamer/"
       OFFICIAL_DOCS: "https://docs.datarhei.com/restreamer/installing/minimum-requirements"
       GITHUB_REPO: "datarhei/restreamer"
+      RESTREAMER_SMOKE_COMMAND: |
+        set -euo pipefail
+        IMAGE="datarhei/restreamer:$1"
+        SMOKE_DIR=$(mktemp -d)
+        CONTAINER="restreamer-smoke-$(basename "$SMOKE_DIR")"
+        STARTED=false
+        cleanup() {
+          if [ "$STARTED" = true ]; then
+            docker logs "$CONTAINER" || true
+            docker rm -f "$CONTAINER" >/dev/null || true
+          fi
+          rm -rf "$SMOKE_DIR"
+        }
+        trap cleanup EXIT
+        test "$(uname -m)" = aarch64
+        docker manifest inspect "$IMAGE" > "$SMOKE_DIR/manifest.json"
+        jq -e '.manifests | any(.platform.architecture == "arm64" and .platform.os == "linux")' "$SMOKE_DIR/manifest.json"
+        docker pull --platform linux/arm64 "$IMAGE"
+        test "$(docker image inspect --format '{{.Architecture}}' "$IMAGE")" = arm64
+        docker create --name "$CONTAINER" -p 127.0.0.1::8080 "$IMAGE"
+        STARTED=true
+        docker start "$CONTAINER"
+        ADDRESS=$(docker port "$CONTAINER" 8080/tcp)
+        test -n "$ADDRESS"
+        READY=false
+        for _ in {1..45}; do
+          if curl --fail --silent --show-error --location --connect-timeout 2 --max-time 5 \
+              "http://$ADDRESS/" --output "$SMOKE_DIR/http.out" && \
+              grep -Eiq 'restreamer' "$SMOKE_DIR/http.out"; then
+            READY=true
+            break
+          fi
+          sleep 2
+        done
+        test "$READY" = true
+        test "$(docker inspect --format '{{.State.Running}}' "$CONTAINER")" = true
+        printf 'Restreamer Arm64 HTTP smoke passed: %s\n' "$IMAGE"
 
     outputs:
       contract_version: "2.0"
@@ -414,8 +451,8 @@ jobs:
               echo "external_expect=resiliency|nvidia-resiliency-ext" >> "$GITHUB_OUTPUT"
               ;;
             restreamer)
-              echo "source_markers=docker-compose.yml|README.md|docs|restreamer-ui|restreamer-server" >> "$GITHUB_OUTPUT"
-              echo "doc_markers=README.md|docs|docker-compose.yml" >> "$GITHUB_OUTPUT"
+              echo "source_markers=README.md|src|conf|package.json|Dockerfile-arm64v8" >> "$GITHUB_OUTPUT"
+              echo "doc_markers=README.md|CHANGELOG.md|Dockerfile-arm64v8" >> "$GITHUB_OUTPUT"
               echo "identity_kind=grep_file" >> "$GITHUB_OUTPUT"
               echo "identity_target=README.md" >> "$GITHUB_OUTPUT"
               echo "identity_expect=restreamer" >> "$GITHUB_OUTPUT"
@@ -584,122 +621,47 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          IDENTITY_KIND="${{ steps.expectations.outputs.identity_kind }}"
-          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
-          IDENTITY_EXPECT="${{ steps.expectations.outputs.identity_expect }}"
-          EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
-          if [ "$PACKAGE_SLUG" = "restreamer" ]; then
-            IMAGE="datarhei/restreamer:${RESTREAMER_RUNTIME_VERSION}"
-            if docker manifest inspect "$IMAGE" >/tmp/restreamer-manifest.json 2>&1; then
-              grep -q '"architecture": "arm64"' /tmp/restreamer-manifest.json
-            else
-              cat /tmp/restreamer-manifest.json || true
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Could not inspect the Restreamer Docker manifest for $IMAGE." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-
-            docker pull "$IMAGE"
-            docker rm -f restreamer-smoke >/dev/null 2>&1 || true
-            docker run -d --name restreamer-smoke -p 18080:8080 "$IMAGE" >/tmp/restreamer-container.id
-            trap 'docker logs restreamer-smoke >/tmp/restreamer-container.log 2>&1 || true; docker rm -f restreamer-smoke >/dev/null 2>&1 || true' EXIT
-
-            for _ in {1..45}; do
-              if curl -fsS http://127.0.0.1:18080/ >/tmp/restreamer-http.out 2>&1; then
-                break
-              fi
-              sleep 2
-            done
-
-            if [ -s /tmp/restreamer-http.out ]; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Pulled and started Arm64 Restreamer image ${IMAGE}, then reached the HTTP service on the Arm64 runner. The checked-in 0.1.0 metadata is retained, but that historical tag does not expose an Arm64 image manifest." >> "$GITHUB_OUTPUT"
-            else
-              docker logs restreamer-smoke || true
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Restreamer Arm64 container did not expose an HTTP response during the bounded smoke window." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            case "$IDENTITY_KIND" in
-              go_module)
-                grep -Fx "module $IDENTITY_EXPECT" "$IDENTITY_TARGET" >/dev/null
-                RESULT="Verified go module identity in $IDENTITY_TARGET"
-                ;;
-              toml_name)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); name=(data.get('project') or {}).get('name') or ((data.get('tool') or {}).get('poetry') or {}).get('name'); assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified TOML package identity in $IDENTITY_TARGET"
-                ;;
-              package_json_name)
-                python3 -c "import json,sys; data=json.load(open(sys.argv[1], encoding='utf-8')); assert data.get('name') == sys.argv[2], (data.get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified package.json identity in $IDENTITY_TARGET"
-                ;;
-              cargo_package)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); assert (data.get('package') or {}).get('name') == sys.argv[2], ((data.get('package') or {}).get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified Cargo package identity in $IDENTITY_TARGET"
-                ;;
-              chart_name)
-                python3 -c "from pathlib import Path; import sys; lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(); matches=[line.split(':', 1)[1].strip() for line in lines if line.startswith('name:')]; name=matches[0] if matches else ''; assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified chart identity in $IDENTITY_TARGET"
-                ;;
-              grep_file)
-                grep -Eiq "$IDENTITY_EXPECT" "$IDENTITY_TARGET"
-                RESULT="Verified package-specific content in $IDENTITY_TARGET"
-                ;;
-              *)
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                echo "note=No bounded identity check was configured for this package." >> "$GITHUB_OUTPUT"
-                exit 1
-                ;;
-            esac
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=$RESULT" >> "$GITHUB_OUTPUT"
-          else
-            TEMP_PAGE=$(mktemp)
-            trap 'rm -f "$TEMP_PAGE"' EXIT
-            if curl -fsSL "$OFFICIAL_DOCS" -o "$TEMP_PAGE" || curl -fsSL "$HOMEPAGE_URL" -o "$TEMP_PAGE" || curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_PAGE"; then
-              grep -Eiq "$EXTERNAL_EXPECT" "$TEMP_PAGE"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Verified external package identity from published docs or homepage content using /$EXTERNAL_EXPECT/." >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Could not fetch published docs or homepage content for bounded external validation." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; fi; echo "duration=$(($(date +%s) - $START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
+          bash -euo pipefail -c "$RESTREAMER_SMOKE_COMMAND" -- "$RESTREAMER_RUNTIME_VERSION"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Pulled and started Arm64 Restreamer ${RESTREAMER_RUNTIME_VERSION}; verified successful HTTP delivery of the Restreamer UI. Historical source metadata remains ${BASELINE_VERSION}. Media transcoding is outside this smoke." >> "$GITHUB_OUTPUT"
 
       - name: Test 6 - Regression Validation
         id: test6
+        continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"; echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"; fi; echo "duration=$(($(date +%s) - $START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           CURRENT="${RESTREAMER_RUNTIME_VERSION}"
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           NEXT="$(python3 - <<'PY'
           import json
+          import os
           import re
           import urllib.request
 
-          current = tuple(int(part) for part in "2.12.0".split("."))
-          data = json.load(urllib.request.urlopen("https://hub.docker.com/v2/repositories/datarhei/restreamer/tags?page_size=100", timeout=20))
+          current = tuple(int(part) for part in os.environ["RESTREAMER_RUNTIME_VERSION"].split("."))
           candidates = []
-          for result in data.get("results", []):
-              name = result.get("name") or ""
-              if not re.fullmatch(r"\d+\.\d+\.\d+", name):
-                  continue
-              arches = {image.get("architecture") for image in result.get("images", [])}
-              if "arm64" not in arches:
-                  continue
-              version = tuple(int(part) for part in name.split("."))
-              if version > current:
-                  candidates.append((version, name))
+          url = "https://hub.docker.com/v2/repositories/datarhei/restreamer/tags?page_size=100"
+          seen = set()
+          while url:
+              assert url.startswith("https://hub.docker.com/v2/repositories/datarhei/restreamer/tags?"), url
+              assert url not in seen and len(seen) < 100, "Invalid Docker Hub pagination"
+              seen.add(url)
+              data = json.load(urllib.request.urlopen(url, timeout=20))
+              assert isinstance(data["results"], list), "Invalid Docker Hub tag response"
+              for result in data["results"]:
+                  name = result.get("name") or ""
+                  if not re.fullmatch(r"\d+\.\d+\.\d+", name):
+                      continue
+                  if not any(image.get("architecture") == "arm64" and image.get("os") == "linux"
+                             for image in result.get("images", [])):
+                      continue
+                  version = tuple(int(part) for part in name.split("."))
+                  if version > current:
+                      candidates.append((version, name))
+              url = data["next"]
           print(sorted(candidates)[0][1] if candidates else "")
           PY
           )"
@@ -710,29 +672,18 @@ jobs:
             echo "latest_version=$CURRENT" >> "$GITHUB_OUTPUT"
             echo "next_installed_version=n/a" >> "$GITHUB_OUTPUT"
             echo "regression_result=No newer stable Arm64 Restreamer image is available for Test 6" >> "$GITHUB_OUTPUT"
-            echo "comparison=Tests 1-5 run the current Arm64 Restreamer image ${CURRENT}. Docker Hub exposes no newer stable semver Arm64 image beyond ${CURRENT}; dev/nightly tags are intentionally excluded from Test 6." >> "$GITHUB_OUTPUT"
+            echo "comparison=Docker Hub exposes no newer stable semver Arm64 image beyond ${CURRENT}; dev/nightly tags are excluded. Baseline HTTP smoke status: ${{ steps.test5.outputs.status || 'failed' }}; Tests 1-4 check historical source and metadata separately." >> "$GITHUB_OUTPUT"
           else
-            IMAGE="datarhei/restreamer:${NEXT}"
-            docker pull "$IMAGE"
-            docker rm -f restreamer-next-smoke >/dev/null 2>&1 || true
-            docker run -d --name restreamer-next-smoke -p 18081:8080 "$IMAGE" >/tmp/restreamer-next-container.id
-            trap 'docker logs restreamer-next-smoke >/tmp/restreamer-next-container.log 2>&1 || true; docker rm -f restreamer-next-smoke >/dev/null 2>&1 || true' EXIT
-            for _ in {1..45}; do
-              if curl -fsS http://127.0.0.1:18081/ >/tmp/restreamer-next-http.out 2>&1; then
-                break
-              fi
-              sleep 2
-            done
-            if [ -s /tmp/restreamer-next-http.out ]; then
+            echo "latest_version=$NEXT" >> "$GITHUB_OUTPUT"
+            if bash -euo pipefail -c "$RESTREAMER_SMOKE_COMMAND" -- "$NEXT"; then
               echo "status=passed" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
               echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
               echo "latest_version=$NEXT" >> "$GITHUB_OUTPUT"
               echo "next_installed_version=$NEXT" >> "$GITHUB_OUTPUT"
               echo "regression_result=Next Restreamer Arm64 image started successfully" >> "$GITHUB_OUTPUT"
-              echo "comparison=Baseline Arm64 image ${CURRENT} passed Tests 1-5, and next Arm64 image ${NEXT} started and served HTTP on the Arm64 runner." >> "$GITHUB_OUTPUT"
+              echo "comparison=Baseline ${CURRENT} HTTP smoke status: ${{ steps.test5.outputs.status || 'failed' }}. Candidate ${NEXT} started and served the Restreamer UI on Arm64; media transcoding is outside this smoke." >> "$GITHUB_OUTPUT"
             else
-              docker logs restreamer-next-smoke || true
               echo "status=failed" >> "$GITHUB_OUTPUT"
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
               echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
@@ -743,19 +694,25 @@ jobs:
               exit 1
             fi
           fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -765,27 +722,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -795,6 +756,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
 
       - name: Create test summary
         if: always()

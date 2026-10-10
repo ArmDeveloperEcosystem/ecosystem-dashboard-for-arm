@@ -202,6 +202,55 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          ZK_SMOKE_ROOT=""
+          ZK_PID=""
+          VALIDATED=0
+          cleanup() {
+            local failed=0 stop_rc=0
+            if [ -n "$ZK_PID" ]; then
+              if kill -0 "$ZK_PID" >/dev/null 2>&1; then
+                kill "$ZK_PID" || failed=1
+                for _ in $(seq 1 50); do
+                  kill -0 "$ZK_PID" >/dev/null 2>&1 || break
+                  sleep 0.2
+                done
+                if kill -0 "$ZK_PID" >/dev/null 2>&1; then
+                  echo "Private ZooKeeper did not stop after SIGTERM" >&2
+                  kill -KILL "$ZK_PID" || return 1
+                  failed=1
+                fi
+              else
+                echo "Private ZooKeeper exited before cleanup" >&2
+                failed=1
+              fi
+              wait "$ZK_PID" || stop_rc=$?
+              case "$stop_rc" in
+                0|143) ;; # Normal exit or the SIGTERM requested above.
+                *) echo "Private ZooKeeper exit code: $stop_rc" >&2; failed=1 ;;
+              esac
+            fi
+            if [ -n "$ZK_SMOKE_ROOT" ]; then
+              rm -rf -- "$ZK_SMOKE_ROOT" || failed=1
+            fi
+            return "$failed"
+          }
+          finish() {
+            local rc=$1
+            trap - EXIT INT TERM
+            cleanup || rc=1
+            if [ "$rc" -eq 0 ] && [ "$VALIDATED" -eq 1 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              [ "$rc" -ne 0 ] || rc=1
+            fi
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap 'finish "$?"' EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           ZK_SMOKE_ROOT=$(mktemp -d)
           ZK_PORT=22181
           ZK_CFG="$ZK_SMOKE_ROOT/zoo.cfg"
@@ -209,46 +258,59 @@ jobs:
           tickTime=2000
           dataDir=$ZK_SMOKE_ROOT/data
           clientPort=$ZK_PORT
+          clientPortAddress=127.0.0.1
           admin.enableServer=false
           standaloneEnabled=true
           4lw.commands.whitelist=ruok,stat,mntr
           EOF_CFG
-          mkdir -p "$ZK_SMOKE_ROOT/data"
+          mkdir -p "$ZK_SMOKE_ROOT/data" "$ZK_SMOKE_ROOT/logs"
           ZK_LOG="$ZK_SMOKE_ROOT/zookeeper.log"
-          cleanup() {
-            if [ -n "${ZK_PID:-}" ] && kill -0 "$ZK_PID" >/dev/null 2>&1; then
-              kill "$ZK_PID" >/dev/null 2>&1 || true
-              wait "$ZK_PID" >/dev/null 2>&1 || true
-            fi
-            rm -rf "$ZK_SMOKE_ROOT"
+          LISTENER_LOG="$ZK_SMOKE_ROOT/listener.log"
+          ss -H -ltn "sport = :$ZK_PORT" > "$LISTENER_LOG"
+          if [ -s "$LISTENER_LOG" ]; then
+            echo "Private ZooKeeper port is already occupied" >&2
+            cat "$LISTENER_LOG"
+            exit 1
+          fi
+          owns_listener() {
+            kill -0 "$ZK_PID" 2>/dev/null &&
+              ss -H -4 -ltnp "sport = :$ZK_PORT" > "$LISTENER_LOG" &&
+              awk -v pid="$ZK_PID" -v address="127.0.0.1:$ZK_PORT" '
+                $4 == address && $0 ~ ("[(,]pid=" pid "[,)]") { owned = 1 }
+                END { exit !owned }
+              ' "$LISTENER_LOG" && kill -0 "$ZK_PID" 2>/dev/null
           }
-          trap cleanup EXIT
-          sudo /usr/share/zookeeper/bin/zkServer.sh start-foreground "$ZK_CFG" >"$ZK_LOG" 2>&1 &
+          export ZOO_LOG_DIR="$ZK_SMOKE_ROOT/logs" JMXDISABLE=true
+          # Ubuntu's packaged zkEnv.sh resets ZOO_LOG_DIR; the JVM override wins.
+          export SERVER_JVMFLAGS="-Dzookeeper.log.dir=$ZK_SMOKE_ROOT/logs -Djava.net.preferIPv4Stack=true"
+          /usr/share/zookeeper/bin/zkServer.sh start-foreground "$ZK_CFG" >"$ZK_LOG" 2>&1 &
           ZK_PID=$!
           READY=0
           for _ in $(seq 1 30); do
             if ! kill -0 "$ZK_PID" >/dev/null 2>&1; then
               break
             fi
-            if printf 'ruok\n' | nc 127.0.0.1 "$ZK_PORT" 2>/dev/null | grep -q '^imok$'; then
+            if owns_listener && printf 'ruok\n' | nc -w 2 127.0.0.1 "$ZK_PORT" 2>/dev/null | grep -q '^imok$'; then
               READY=1
               break
             fi
             sleep 2
           done
           if [ "$READY" -ne 1 ]; then
-            cat "$ZK_LOG" || true
-            echo "status=failed" >> "$GITHUB_OUTPUT"
+            cat "$ZK_LOG" "$LISTENER_LOG" || true
             exit 1
           fi
           if ! printf 'ls /\nquit\n' | /usr/share/zookeeper/bin/zkCli.sh -server "127.0.0.1:$ZK_PORT" 2>/dev/null | grep -q 'zookeeper'; then
             cat "$ZK_LOG" || true
-            echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          if ! owns_listener; then
+            cat "$ZK_LOG" "$LISTENER_LOG" || true
+            exit 1
+          fi
+          cat "$LISTENER_LOG"
+          VALIDATED=1
+          finish 0
 
 
       - name: Regression applicability - package manager installed
@@ -269,26 +331,48 @@ jobs:
         if: always()
         id: summary
         run: |
+          set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           TOTAL_DURATION=0
           check_test() {
             local status="$1"
-            local duration="$2"
-            TOTAL_DURATION=$((TOTAL_DURATION + duration))
-            if [ "$status" = "passed" ]; then
+            local outcome="$2"
+            local duration="$3"
+            if [[ "$duration" =~ ^[0-9]{1,6}$ ]]; then
+              TOTAL_DURATION=$((TOTAL_DURATION + 10#$duration))
+            else
+              status=failed
+            fi
+            if [ "$status" = "passed" ] && [ "$outcome" = "success" ]; then
               PASSED=$((PASSED + 1))
             else
               FAILED=$((FAILED + 1))
             fi
           }
-          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
+          check_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outcome }}" "${{ steps.test1.outputs.duration || 0 }}"
+          check_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outcome }}" "${{ steps.test2.outputs.duration || 0 }}"
+          check_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outcome }}" "${{ steps.test3.outputs.duration || 0 }}"
+          check_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outcome }}" "${{ steps.test4.outputs.duration || 0 }}"
+          check_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outcome }}" "${{ steps.test5.outputs.duration || 0 }}"
+          CORE_FAILED=$FAILED
+          if [ "${{ steps.install.outcome }}" = success ] &&
+             [ "${{ steps.install.outputs.install_status }}" = success ] &&
+             [ "${{ steps.version.outcome }}" = success ] &&
+             [ -n "${{ steps.version.outputs.version }}" ] &&
+             [ "${{ steps.version.outputs.version }}" != unknown ] &&
+             [ "${{ steps.test6.outcome }}" = success ] &&
+             [ "${{ steps.test6.outputs.status }}" = skipped ] &&
+             [ "${{ steps.test6.outputs.decision }}" = not_applicable_package_manager ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
           if [ "$FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"

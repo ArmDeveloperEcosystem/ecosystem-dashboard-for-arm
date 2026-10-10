@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
+import json
 import subprocess
 import unittest
 from pathlib import Path
@@ -134,6 +136,31 @@ def container_manifest_payload(
             },
         ],
     }
+
+
+def single_manifest_evidence(oci: bool = False):
+    entry = container_entry()
+    entry.update(
+        media_type=("application/vnd.oci.image.manifest.v1+json" if oci
+                    else "application/vnd.docker.distribution.manifest.v2+json"),
+        config_digest="sha256:" + "d" * 64,
+    )
+    manifest = {
+        "schemaVersion": 2,
+        "mediaType": entry["media_type"],
+        "config": {
+            "mediaType": ("application/vnd.oci.image.config.v1+json" if oci
+                          else "application/vnd.docker.container.image.v1+json"),
+            "digest": entry["config_digest"], "size": 200,
+        },
+        "layers": [{"digest": "sha256:" + "e" * 64, "size": 100}],
+    }
+    raw = json.dumps(manifest, separators=(",", ":"))
+    digest = "sha256:" + hashlib.sha256(raw.encode()).hexdigest()
+    entry.update(resolved_ref=f"example@{digest}", resolved_digest=digest, arm64_digest=digest)
+    config = {"architecture": "arm64", "os": "linux", "variant": "v8",
+              "rootfs": {"type": "layers", "diff_ids": ["sha256:" + "f" * 64]}}
+    return entry, manifest, config, raw
 
 
 class VerifyActionLockOnlineTests(unittest.TestCase):
@@ -291,6 +318,35 @@ class VerifyActionLockOnlineTests(unittest.TestCase):
             container_entry(), container_manifest_payload()
         )
 
+    def test_accepts_matching_docker_manifest_list_evidence(self) -> None:
+        entry = container_entry()
+        payload = container_manifest_payload()
+        entry["media_type"] = "application/vnd.docker.distribution.manifest.list.v2+json"
+        payload["mediaType"] = entry["media_type"]
+        for manifest in payload["manifests"]:
+            manifest["mediaType"] = "application/vnd.docker.distribution.manifest.v2+json"
+        online.validate_live_container_evidence(entry, payload)
+        for digest in ("sha256:" + "0" * 64, "not-a-digest"):
+            with self.subTest(digest=digest):
+                mutated = copy.deepcopy(payload)
+                mutated["manifests"][1]["digest"] = digest
+                with self.assertRaises(online.OnlineEvidenceError):
+                    online.validate_live_container_evidence(entry, mutated)
+
+    def test_single_image_and_unknown_media_types_are_not_indexes(self) -> None:
+        for media_type in (
+            "application/vnd.docker.distribution.manifest.v2+json",
+            "application/vnd.oci.image.manifest.v1+json",
+            "application/json", "", None,
+        ):
+            with self.subTest(media_type=media_type):
+                entry = container_entry()
+                payload = container_manifest_payload()
+                entry["media_type"] = media_type
+                payload["mediaType"] = media_type
+                with self.assertRaises(online.OnlineEvidenceError):
+                    online.validate_live_container_evidence(entry, payload)
+
     def test_container_media_type_mismatch_is_rejected(self) -> None:
         payload = container_manifest_payload()
         payload["mediaType"] = (
@@ -298,6 +354,102 @@ class VerifyActionLockOnlineTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(online.OnlineEvidenceError, "media type"):
             online.validate_live_container_evidence(container_entry(), payload)
+
+    def test_direct_manifest_requires_its_config_and_matching_manifest_digest(self):
+        for oci in (False, True):
+            entry, manifest, config, _ = single_manifest_evidence(oci)
+            online.validate_live_container_evidence(entry, manifest, config)
+            for mutation in (lambda item: item.pop("config_digest"),
+                             lambda item: item.update(config_digest="not-a-digest"),
+                             lambda item: item.update(arm64_digest=ARM64_DIGEST),
+                             lambda item: item.update(media_type=[])):
+                changed = copy.deepcopy(entry)
+                mutation(changed)
+                with self.assertRaises(online.OnlineEvidenceError):
+                    online.validate_live_container_evidence(changed, manifest, config)
+            with self.assertRaises(online.OnlineEvidenceError):
+                online.validate_live_container_evidence(entry, manifest)
+
+    def test_direct_manifest_rejects_wrong_or_missing_linux_arm64_config(self):
+        entry, manifest, config, _ = single_manifest_evidence()
+        for key, value in (("architecture", "amd64"), ("architecture", None),
+                           ("os", "windows"), ("os", None), ("variant", "v9")):
+            changed = copy.deepcopy(config)
+            changed[key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(online.OnlineEvidenceError):
+                online.validate_live_container_evidence(entry, manifest, changed)
+
+    def test_direct_manifest_rejects_config_descriptor_and_index_substitution(self):
+        entry, manifest, config, _ = single_manifest_evidence()
+        mutations = (
+            lambda item: item.update(schemaVersion=1),
+            lambda item: item.update(manifests=[]),
+            lambda item: item.update(config=None),
+            lambda item: item["config"].update(digest="sha256:" + "0" * 64),
+            lambda item: item["config"].update(mediaType="application/json"),
+            lambda item: item["config"].update(size=0),
+            lambda item: item["config"].update(size=True),
+        )
+        for mutation in mutations:
+            changed = copy.deepcopy(manifest)
+            mutation(changed)
+            with self.assertRaises(online.OnlineEvidenceError):
+                online.validate_live_container_evidence(entry, changed, config)
+
+    def test_direct_manifest_rejects_incomplete_or_malformed_filesystem_evidence(self):
+        entry, manifest, config, _ = single_manifest_evidence()
+        for layers in (None, [], [None], [{"digest": "bad", "size": 10}],
+                       [{"digest": "sha256:" + "e" * 64, "size": False}]):
+            changed = copy.deepcopy(manifest)
+            changed["layers"] = layers
+            with self.assertRaises(online.OnlineEvidenceError):
+                online.validate_live_container_evidence(entry, changed, config)
+        for rootfs in (None, {}, {"type": "layers", "diff_ids": []},
+                       {"type": "layers", "diff_ids": ["bad"]},
+                       {"type": "other", "diff_ids": ["sha256:" + "f" * 64]}):
+            changed = copy.deepcopy(config)
+            changed["rootfs"] = rootfs
+            with self.assertRaises(online.OnlineEvidenceError):
+                online.validate_live_container_evidence(entry, manifest, changed)
+
+    def test_direct_manifest_online_commands_bind_config_to_exact_pinned_reference(self):
+        entry, _, config, raw = single_manifest_evidence()
+        for suffix in ("", "\n"):
+            calls = []
+            def runner(command):
+                calls.append(command)
+                return raw + suffix if command[-1] == "--raw" else json.dumps(config)
+            online.verify_live_container(entry, runner)
+            self.assertEqual([
+                ["docker", "buildx", "imagetools", "inspect", entry["resolved_ref"], "--raw"],
+                ["docker", "buildx", "imagetools", "inspect", entry["resolved_ref"],
+                 "--format", "{{json .Image}}"],
+            ], calls)
+
+    def test_direct_manifest_online_rejects_raw_digest_mismatch_before_config_lookup(self):
+        entry, manifest, _, _ = single_manifest_evidence()
+        manifest["config"]["digest"] = "sha256:" + "0" * 64
+        calls = []
+        def runner(command):
+            calls.append(command)
+            return json.dumps(manifest)
+        with self.assertRaisesRegex(online.OnlineEvidenceError, "pinned digest"):
+            online.verify_live_container(entry, runner)
+        self.assertEqual(1, len(calls))
+
+    def test_direct_manifest_online_missing_malformed_or_failed_config_is_rejected(self):
+        entry, _, _, raw = single_manifest_evidence()
+        for config_result in ("null", "[]", "{", "{}"):
+            def runner(command):
+                return raw if command[-1] == "--raw" else config_result
+            with self.subTest(config_result=config_result), self.assertRaises(online.OnlineEvidenceError):
+                online.verify_live_container(entry, runner)
+        def failed_runner(command):
+            if command[-1] == "--raw":
+                return raw
+            raise online.OnlineEvidenceError("config fetch failed")
+        with self.assertRaisesRegex(online.OnlineEvidenceError, "config fetch failed"):
+            online.verify_live_container(entry, failed_runner)
 
     def test_missing_or_wrong_arm64_container_digest_is_rejected(self) -> None:
         missing = container_manifest_payload()

@@ -1,4 +1,3 @@
-
 ---
 name: Minimap2
 category: HPC
@@ -31,4 +30,3 @@ optional_hidden_info:
     other_info: Linux/ARM64 release notes are not available. Installation and testing are done via the [tar archive](https://github.com/lh3/minimap2/releases/tag/v2.12).
 
 ---
-

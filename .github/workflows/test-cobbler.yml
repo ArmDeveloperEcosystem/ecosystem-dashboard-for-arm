@@ -85,6 +85,122 @@ jobs:
     env:
       COBBLER_BASELINE_VERSION: "v3.3.6"
       COBBLER_NEXT_VERSION: "v3.3.7"
+      COBBLER_CLI_SMOKE: |
+        set -euo pipefail
+        : "${VENV:?}"
+        : "${EXPECTED_VERSION:?}"
+        WORKDIR=$(mktemp -d)
+        DAEMON_PID=
+        APACHE_PID=
+        CREATED=0
+        finish() {
+          RC=$?
+          trap - EXIT
+          for PID in "$APACHE_PID" "$DAEMON_PID"; do
+            if [ -n "$PID" ]; then kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; fi
+          done
+          for LOG in "$WORKDIR"/*.log; do if [ -f "$LOG" ]; then cat "$LOG"; fi; done
+          if [ "$CREATED" = 1 ]; then rm -rf /etc/cobbler /var/lib/cobbler /var/log/cobbler; fi
+          rm -rf "$WORKDIR"
+          exit "$RC"
+        }
+        trap finish EXIT
+        trap 'exit 143' TERM
+        trap 'exit 130' INT
+        for DIRECTORY in /etc/cobbler /var/lib/cobbler /var/log/cobbler; do
+          test ! -e "$DIRECTORY"
+          test ! -L "$DIRECTORY"
+        done
+        CREATED=1
+        export EXPECTED_VERSION
+        "$VENV/bin/python3" - <<'PY'
+        import importlib.metadata
+        from pathlib import Path
+        import os
+        import shutil
+        import socket
+        import yaml
+
+        d = importlib.metadata.distribution("cobbler")
+        assert d.version == os.environ["EXPECTED_VERSION"], d.version
+        site = Path(d.locate_file("."))
+        for relative in ("etc/cobbler", "var/lib/cobbler"):
+            source = site / relative
+            assert source.is_dir(), source
+            shutil.copytree(source, Path("/") / relative)
+        Path("/var/log/cobbler/tasks").mkdir(parents=True)
+        Path("/var/lib/cobbler/collections").mkdir(exist_ok=True)
+        settings = Path("/etc/cobbler/settings.yaml")
+        data = yaml.safe_load(settings.read_text())
+        with socket.socket() as http, socket.socket() as rpc:
+            http.bind(("127.0.0.1", 0))
+            rpc.bind(("127.0.0.1", 0))
+            data["http_port"] = http.getsockname()[1]
+            data["xmlrpc_port"] = rpc.getsockname()[1]
+        data.update(server="127.0.0.1", client_use_localhost=True, client_use_https=False)
+        for flag in ("manage_dhcp", "manage_dhcp_v4", "manage_dhcp_v6", "manage_dns", "manage_tftpd", "manage_rsync", "restart_dhcp", "restart_dns"):
+            if flag in data:
+                data[flag] = False
+        settings.write_text(yaml.safe_dump(data))
+        print("cobbler-installed-config version=%s path=%s" % (d.version, site))
+        PY
+        HTTP_PORT=$("$VENV/bin/python3" -c 'import yaml; print(yaml.safe_load(open("/etc/cobbler/settings.yaml"))["http_port"])')
+        XMLRPC_PORT=$("$VENV/bin/python3" -c 'import yaml; print(yaml.safe_load(open("/etc/cobbler/settings.yaml"))["xmlrpc_port"])')
+        cat > "$WORKDIR/httpd.conf" <<CONF
+        ServerRoot "$WORKDIR"
+        DefaultRuntimeDir "$WORKDIR"
+        PidFile "$WORKDIR/apache.pid"
+        ServerName localhost
+        Listen 127.0.0.1:$HTTP_PORT
+        LoadModule mpm_event_module /usr/lib/apache2/modules/mod_mpm_event.so
+        LoadModule authz_core_module /usr/lib/apache2/modules/mod_authz_core.so
+        LoadModule proxy_module /usr/lib/apache2/modules/mod_proxy.so
+        LoadModule proxy_http_module /usr/lib/apache2/modules/mod_proxy_http.so
+        User www-data
+        Group www-data
+        ErrorLog "$WORKDIR/apache-error.log"
+        ProxyPass /cobbler_api http://127.0.0.1:$XMLRPC_PORT/
+        <Location /cobbler_api>
+          Require all granted
+        </Location>
+        CONF
+        "$VENV/bin/cobblerd" -F > "$WORKDIR/daemon.log" 2>&1 &
+        DAEMON_PID=$!
+        /usr/sbin/apache2 -f "$WORKDIR/httpd.conf" -DFOREGROUND > "$WORKDIR/apache.log" 2>&1 &
+        APACHE_PID=$!
+        READY=0
+        for ATTEMPT in {1..30}; do
+          kill -0 "$DAEMON_PID"
+          kill -0 "$APACHE_PID"
+          if "$VENV/bin/cobbler" signature report --help > "$WORKDIR/signature-help.log" 2>&1; then READY=1; break; fi
+          sleep 1
+        done
+        test "$READY" = 1
+        "$VENV/bin/python3" - "$HTTP_PORT" "$XMLRPC_PORT" <<'PY'
+        from pathlib import Path
+        import sys
+
+        for role, port in zip(("http", "xmlrpc"), map(int, sys.argv[1:])):
+            listeners = []
+            for family in ("tcp", "tcp6"):
+                for row in Path("/proc/net", family).read_text().splitlines()[1:]:
+                    fields = row.split()
+                    address, local_port = fields[1].split(":")
+                    if fields[3] == "0A" and int(local_port, 16) == port:
+                        listeners.append((family, address))
+            assert listeners == [("tcp", "0100007F")], (role, port, listeners)
+            print("cobbler-listener role=%s address=127.0.0.1 port=%s" % (role, port))
+        PY
+        grep -Fq -- '--name' "$WORKDIR/signature-help.log"
+        "$VENV/bin/cobbler" --version > "$WORKDIR/version.log"
+        grep -Fxq "Cobbler $EXPECTED_VERSION" "$WORKDIR/version.log"
+        HELP_RC=0
+        "$VENV/bin/cobbler" signature --help > "$WORKDIR/signature-commands.log" 2>&1 || HELP_RC=$?
+        test "$HELP_RC" = 2
+        for COMMAND in reload report update; do
+          grep -Fxq "cobbler signature $COMMAND" "$WORKDIR/signature-commands.log"
+        done
+        echo "cobbler-signature-cli-ok version=$EXPECTED_VERSION commands=reload,report,update loopback-only"
     
     outputs:
       contract_version: "2.0"
@@ -160,319 +276,285 @@ jobs:
           echo "$GITHUB_WORKSPACE/venv/bin" >> "$GITHUB_PATH"
 
       
-      - name: Get Cobbler version
+      - name: Get installed Cobbler version
         id: version
-        run: |
-          RAW_VERSION=$("$GITHUB_WORKSPACE/venv/bin/cobbler" --version 2>&1 || true)
-          VERSION=$(printf '%s\n' "$RAW_VERSION" | grep -Eo '\b[0-9]+\.[0-9]+(\.[0-9]+)?\b' | head -1 || true)
-          if [ -z "$VERSION" ]; then
-            VERSION="${COBBLER_BASELINE_VERSION#v}"
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Cobbler version: $VERSION"
-      
-      - name: Test 1 - Check Binary
-        id: test1
-        continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
-          START_TIME=$(date +%s)
-          STATUS="failed"
-          
-          # We rely on GITHUB_PATH added in the install step
-          echo "Current PATH: $PATH"
-          
-          if [ -x "$GITHUB_WORKSPACE/venv/bin/cobbler" ]; then
-            echo "✓ cobbler binary found at $GITHUB_WORKSPACE/venv/bin/cobbler"
-            REPORTED_VERSION=$(source "$GITHUB_WORKSPACE/venv/bin/activate" && python3 - <<'PY'
-          import importlib.metadata
-          print(importlib.metadata.version("cobbler"))
-          PY
-            )
-            if [ -n "${REPORTED_VERSION:-}" ]; then
-              echo "✓ cobbler package metadata reports ${REPORTED_VERSION}"
-              STATUS="passed"
-            else
-              echo "✗ cobbler package metadata lookup failed"
-              STATUS="failed"
-            fi
-          else
-            echo "✗ cobbler binary not found at expected path"
-            ls -l "$GITHUB_WORKSPACE/venv/bin/" || true
-            find . -name cobbler -type f 
-            STATUS="failed"
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "status=$STATUS" >> $GITHUB_OUTPUT
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-          if [ "$STATUS" == "failed" ]; then exit 1; fi
+          VERSION=$("$GITHUB_WORKSPACE/venv/bin/python3" -c 'import importlib.metadata; print(importlib.metadata.version("cobbler"))')
+          test "$VERSION" = "${COBBLER_BASELINE_VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Installed Cobbler version: $VERSION"
 
-      
+      - name: Test 1 - Check installed binary
+        id: test1
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          START_TIME=$(date +%s)
+          STATUS=failed
+          finish() {
+            RC=$?
+            trap - EXIT
+            if [ "$RC" -ne 0 ]; then STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          test -x "$GITHUB_WORKSPACE/venv/bin/cobbler"
+          REPORTED_VERSION=$("$GITHUB_WORKSPACE/venv/bin/python3" -c 'import importlib.metadata; print(importlib.metadata.version("cobbler"))')
+          test -n "$REPORTED_VERSION"
+          echo "cobbler binary=$GITHUB_WORKSPACE/venv/bin/cobbler metadata=$REPORTED_VERSION"
+          STATUS=passed
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Test 2 - Check package version metadata
         id: test2
         continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
-          STATUS="failed"
-          source venv/bin/activate
+          STATUS=failed
+          finish() {
+            RC=$?
+            trap - EXIT
+            if [ "$RC" -ne 0 ]; then STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          REPORTED_VERSION=$("$GITHUB_WORKSPACE/venv/bin/python3" -c 'import importlib.metadata; print(importlib.metadata.version("cobbler"))')
+          test "$REPORTED_VERSION" = "${COBBLER_BASELINE_VERSION#v}"
+          echo "cobbler installed version=$REPORTED_VERSION"
+          STATUS=passed
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
-          REPORTED_VERSION=$(python3 - <<'PY'
-          import importlib.metadata
-          print(importlib.metadata.version("cobbler"))
-          PY
-          )
-
-          if [ -n "${REPORTED_VERSION}" ] && [ "${REPORTED_VERSION}" = "${COBBLER_BASELINE_VERSION#v}" ]; then
-             echo "✓ cobbler package metadata reports ${REPORTED_VERSION}"
-             STATUS="passed"
-          else
-             echo "✗ cobbler package metadata reported unexpected version: ${REPORTED_VERSION:-unknown}"
-             STATUS="failed"
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "status=$STATUS" >> $GITHUB_OUTPUT
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-          if [ "$STATUS" == "failed" ]; then exit 1; fi
-
-      - name: Test 3 - Check Configuration (Dry Run)
+      - name: Test 3 - Check installed Python module
         id: test3
         continue-on-error: true
-        run: |
-          START_TIME=$(date +%s)
-          STATUS="failed"
-          source venv/bin/activate
-          
-          # Cobbler check usually requires root and running service, but we can try
-          # or just check if we can import the module
-          if python3 -c "import cobbler; print('Import successful')"; then
-             echo "✓ cobbler module import successful"
-             STATUS="passed"
-          else
-             echo "✗ cobbler module import failed"
-             STATUS="failed"
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "status=$STATUS" >> $GITHUB_OUTPUT
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-          if [ "$STATUS" == "failed" ]; then exit 1; fi
-
-      - name: Test 4 - Check Signature Help (Optional)
-        id: test4
-        continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
-          STATUS="skipped"
-          source venv/bin/activate
-          
-          if [ -f "/etc/cobbler/settings.yaml" ]; then
-            if "$GITHUB_WORKSPACE/venv/bin/cobbler" signature report --help; then
-               echo "✓ cobbler signature command works"
-               STATUS="passed"
-            else
-               echo "⚠ cobbler signature command requires fuller service/runtime context in CI; keeping optional"
-               STATUS="skipped"
-            fi
-          else
-             echo "⚠ /etc/cobbler/settings.yaml not present; skipping optional signature command check"
-             STATUS="skipped"
-          fi
-          
-          END_TIME=$(date +%s)
-          echo "status=$STATUS" >> $GITHUB_OUTPUT
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-          exit 0
-      
+          STATUS=failed
+          finish() {
+            RC=$?
+            trap - EXIT
+            if [ "$RC" -ne 0 ]; then STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          "$GITHUB_WORKSPACE/venv/bin/python3" -c "import cobbler; print('Import successful:', cobbler.__file__)"
+          STATUS=passed
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+
+      - name: Test 4 - Check local signature CLI help
+        id: test4
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          START_TIME=$(date +%s)
+          STATUS=failed
+          finish() {
+            RC=$?
+            trap - EXIT
+            if [ "$RC" -ne 0 ]; then STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          timeout --signal=TERM --kill-after=15s 180s sudo env VENV="$GITHUB_WORKSPACE/venv" EXPECTED_VERSION="${COBBLER_BASELINE_VERSION#v}" bash -e -o pipefail -c "$COBBLER_CLI_SMOKE"
+          STATUS=passed
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+
       - name: Test 5 - Architecture Verification
         id: test5
         continue-on-error: true
+        shell: bash
         run: |
+          set -euo pipefail
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
-          # Functional Validation
-          ARCH=$(uname -m)
-
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          STATUS=failed
+          finish() {
+            RC=$?
+            trap - EXIT
+            if [ "$RC" -ne 0 ]; then STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          test "$(uname -m)" = "aarch64"
+          STATUS=passed
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 6 - Regression Validation
         id: test6
         if: always()
+        shell: bash
         run: |
           set -euo pipefail
+          {
+            echo "decision=next_install_failed"
+            echo "status=failed"
+            echo "duration=0"
+          } >> "$GITHUB_OUTPUT"
           START_TIME=$(date +%s)
-          CURRENT_VERSION="${{ steps.version.outputs.version || env.COBBLER_BASELINE_VERSION || 'unknown' }}"
+          STATUS=failed
+          WORKDIR=""
+          finish() {
+            RC=$?
+            trap - EXIT
+            if [ -n "$WORKDIR" ]; then rm -rf "$WORKDIR"; fi
+            if [ "$RC" -ne 0 ]; then STATUS=failed; fi
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RC"
+          }
+          trap finish EXIT
+          CURRENT_VERSION="${{ steps.version.outputs.version || 'unknown' }}"
           LATEST_VERSION="${COBBLER_NEXT_VERSION#v}"
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=not_validated" >> "$GITHUB_OUTPUT"
+          for RESULT in \
+            "${{ steps.test1.outputs.status || 'failed' }}:${{ steps.test1.outcome || 'failure' }}" \
+            "${{ steps.test2.outputs.status || 'failed' }}:${{ steps.test2.outcome || 'failure' }}" \
+            "${{ steps.test3.outputs.status || 'failed' }}:${{ steps.test3.outcome || 'failure' }}" \
+            "${{ steps.test4.outputs.status || 'failed' }}:${{ steps.test4.outcome || 'failure' }}" \
+            "${{ steps.test5.outputs.status || 'failed' }}:${{ steps.test5.outcome || 'failure' }}"; do
+            if [ "$RESULT" != "passed:success" ]; then
+              STATUS=skipped
+              {
+                echo "decision=baseline_failed"
+                echo "status=skipped"
+                echo "duration=$(($(date +%s) - START_TIME))"
+              } >> "$GITHUB_OUTPUT"
+              echo "regression_result=Baseline CPU checks failed; candidate was not validated." >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          python3 - "$CURRENT_VERSION" "$LATEST_VERSION" <<'PY'
+          import re
+          import sys
 
-          echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${CURRENT_VERSION}"
-          echo "Next version targeted for install validation: ${LATEST_VERSION}"
+          def numeric_version(value):
+              if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value) is None:
+                  raise SystemExit("Invalid configured Cobbler version: " + value)
+              return tuple(int(part) for part in value.split("."))
 
-          echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
-
-          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
-             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
-             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
-             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
-            echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=not_validated" >> "$GITHUB_OUTPUT"
-            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Regression validation skipped because one or more baseline tests (1-5) failed." >> "$GITHUB_OUTPUT"
-            echo "comparison=Baseline Cobbler validation did not pass in this run, so next-version install validation was not executed." >> "$GITHUB_OUTPUT"
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ -z "$LATEST_VERSION" ] || [ "${CURRENT_VERSION}" = "${LATEST_VERSION}" ]; then
-            echo "latest_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-            echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-            echo "regression_result=No newer stable public release is available" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current baseline ${CURRENT_VERSION} is already at the newest configured stable Cobbler tag for this workflow." >> "$GITHUB_OUTPUT"
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          WORKDIR=$(mktemp -d)
-          python3 -m venv "${WORKDIR}/next-venv"
-          source "${WORKDIR}/next-venv/bin/activate"
-          git clone --depth 1 --branch "${COBBLER_NEXT_VERSION}" https://github.com/cobbler/cobbler.git "${WORKDIR}/cobbler-next"
-          pushd "${WORKDIR}/cobbler-next" >/dev/null
-          pip install --upgrade pip setuptools wheel
-          pip install coverage
-          pip install --no-build-isolation .[cli]
-          popd >/dev/null
-
-          NEXT_VERSION_REPORTED=$(source "${WORKDIR}/next-venv/bin/activate" && python3 - <<'PY'
-          import importlib.metadata
-          try:
-              print(importlib.metadata.version("cobbler"))
-          except Exception:
-              print("")
+          current, candidate = map(numeric_version, sys.argv[1:])
+          if candidate <= current:
+              raise SystemExit("Configured Cobbler candidate must be newer than the baseline")
           PY
-          )
-          if [ -n "$NEXT_VERSION_REPORTED" ] && source "${WORKDIR}/next-venv/bin/activate" && python3 -c "import cobbler" >/dev/null 2>&1; then
-            echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=${NEXT_VERSION_REPORTED}" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current baseline Cobbler ${CURRENT_VERSION} passed Tests 1-5. Regression validation installed next stable tag ${COBBLER_NEXT_VERSION} in an isolated environment and verified Python package import plus version metadata on Arm64." >> "$GITHUB_OUTPUT"
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
-            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current baseline Cobbler ${CURRENT_VERSION} passed Tests 1-5, but candidate ${COBBLER_NEXT_VERSION} could not be installed/validated as an importable Python package with readable version metadata on Arm64." >> "$GITHUB_OUTPUT"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
-          if [ "$last_status" = "failed" ]; then
-            exit 1
-          fi
+          WORKDIR=$(mktemp -d)
+          python3 -m venv "$WORKDIR/next-venv"
+          source "$WORKDIR/next-venv/bin/activate"
+          git clone --depth 1 --branch "$COBBLER_NEXT_VERSION" https://github.com/cobbler/cobbler.git "$WORKDIR/cobbler-next"
+          git -C "$WORKDIR/cobbler-next" rev-parse HEAD
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install coverage
+          python -m pip install --no-build-isolation "$WORKDIR/cobbler-next[cli]"
+          NEXT_VERSION_REPORTED=$(python -c 'import importlib.metadata; print(importlib.metadata.version("cobbler"))')
+          echo "next_installed_version=$NEXT_VERSION_REPORTED" >> "$GITHUB_OUTPUT"
+          test "$NEXT_VERSION_REPORTED" = "$LATEST_VERSION"
+          python -c "import cobbler; print(cobbler.__file__)"
+          timeout --signal=TERM --kill-after=15s 180s sudo env VENV="$WORKDIR/next-venv" EXPECTED_VERSION="$LATEST_VERSION" bash -e -o pipefail -c "$COBBLER_CLI_SMOKE"
+          STATUS=passed
+          {
+            echo "decision=next_install_validated"
+            echo "status=passed"
+            echo "duration=$(($(date +%s) - START_TIME))"
+          } >> "$GITHUB_OUTPUT"
+          echo "regression_result=Exact candidate installed and local signature CLI help passed on Arm64." >> "$GITHUB_OUTPUT"
+          echo "comparison=Baseline $CURRENT_VERSION and candidate $LATEST_VERSION passed package version/import and real signature help against temporary loopback-only Cobbler services. No provisioning, DHCP, DNS, TFTP or external credentials were used." >> "$GITHUB_OUTPUT"
+
       - name: Calculate test summary
-        if: always()
         id: summary
+        if: always()
+        shell: bash
         run: |
           set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
+          D1="${{ steps.test1.outputs.duration || '0' }}"
+          D2="${{ steps.test2.outputs.duration || '0' }}"
+          D3="${{ steps.test3.outputs.duration || '0' }}"
+          D4="${{ steps.test4.outputs.duration || '0' }}"
+          D5="${{ steps.test5.outputs.duration || '0' }}"
+          D6="${{ steps.test6.outputs.duration || '0' }}"
           PASSED=0
           FAILED=0
           SKIPPED=0
           CORE_FAILED=0
-          TOTAL_DURATION=0
-
-          # Test 1 - Check Binary
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          done
+          if [ "$T6:$O6" = "passed:success" ]; then
             PASSED=$((PASSED + 1))
+          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "baseline_failed" ] && [ "$CORE_FAILED" -gt 0 ]; then
+            SKIPPED=1
           else
             FAILED=$((FAILED + 1))
-            CORE_FAILED=$((CORE_FAILED + 1))
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
-
-          # Test 2 - Run Help
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
+            OVERALL_STATUS="success"
           else
-            FAILED=$((FAILED + 1))
-            CORE_FAILED=$((CORE_FAILED + 1))
+            OVERALL_STATUS="failure"
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
-
-          # Test 3 - Check Configuration (Dry Run)
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
           else
-            FAILED=$((FAILED + 1))
-            CORE_FAILED=$((CORE_FAILED + 1))
+            BADGE_STATUS="failing"
           fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Test 4 - Check Signature (Optional)
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            SKIPPED=$((SKIPPED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Architecture Verification
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-            CORE_FAILED=$((CORE_FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-
-          # Regression Validation
-          if [ "${{ steps.test6.outputs.status || 'skipped' }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          elif [ "${{ steps.test6.outputs.status || 'skipped' }}" == "failed" ]; then
-            FAILED=$((FAILED + 1))
-          else
-            SKIPPED=$((SKIPPED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
-
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
-          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
-
-          if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
-          else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
-          fi
-
-          if [ "$CORE_FAILED" -ne 0 ]; then
-            exit 1
-          fi
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
+          echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
+          echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
       - name: Create test summary
         if: always()
         run: |
@@ -489,7 +571,7 @@ jobs:
           echo "1. Test 1 - Check Binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "2. Test 2 - Check package version metadata: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "3. Test 3 - Check Configuration (Dry Run): ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - Check Signature (Optional): ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "4. Test 4 - Check local signature CLI help: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "5. Test 5 - Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "6. Test 6 - Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "   - Current version: ${{ steps.test6.outputs.current_version || 'unknown' }}" >> $GITHUB_STEP_SUMMARY

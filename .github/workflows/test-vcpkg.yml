@@ -84,6 +84,10 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       BASELINE_VERSION: "25.04.09"
+      # The 2025.04.09 registry release pins this tool in scripts/vcpkg-tool-metadata.txt.
+      BASELINE_REGISTRY_TAG: "2025.04.09"
+      BASELINE_TOOL_TAG: "2025-04-07"
+      BASELINE_TOOL_COMMIT: "b8b513ba8778c918cff49c3e837aae5999d5d2aa"
       PACKAGE_SLUG: "vcpkg"
       LANE_KIND: "github release / source-build-or-tarball"
       DOWNLOAD_URL: "https://github.com/microsoft/vcpkg-tool/releases"
@@ -140,39 +144,30 @@ jobs:
         id: install
         run: |
           set -euo pipefail
+          test "$BASELINE_REGISTRY_TAG" = "20$BASELINE_VERSION"
           rm -rf baseline-src baseline-external
-          mkdir -p baseline-src baseline-external
-          if [ -n "$GITHUB_REPO" ]; then
-            RESOLVED_TAG=""
-            for CANDIDATE in "$BASELINE_VERSION" "v$BASELINE_VERSION"; do
-              if git ls-remote --tags --refs "https://github.com/$GITHUB_REPO.git" "refs/tags/$CANDIDATE" | grep -q .; then
-                RESOLVED_TAG="$CANDIDATE"
-                break
-              fi
-            done
-            if [ -n "$RESOLVED_TAG" ]; then
-              git clone --depth 1 --branch "$RESOLVED_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=$RESOLVED_TAG" >> "$GITHUB_OUTPUT"
-            else
-              git clone --depth 1 "https://github.com/$GITHUB_REPO.git" baseline-src >/dev/null 2>&1 || true
-              echo "resolved_tag=default_branch" >> "$GITHUB_OUTPUT"
-            fi
-            if [ -d baseline-src/.git ] || [ -f baseline-src/README.md ] || [ -n "$(find baseline-src -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]; then
-              echo "install_mode=github_source" >> "$GITHUB_OUTPUT"
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          if curl -fsLI "$DOWNLOAD_URL" >/dev/null 2>&1 || curl -fsLI "$HOMEPAGE_URL" >/dev/null 2>&1; then
-            printf 'download=%s\nhomepage=%s\ndocs=%s\n' "$DOWNLOAD_URL" "$HOMEPAGE_URL" "$OFFICIAL_DOCS" > baseline-external/metadata.txt
-            echo "resolved_tag=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_mode=external_artifact" >> "$GITHUB_OUTPUT"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "install_mode=unresolved" >> "$GITHUB_OUTPUT"
-          echo "install_status=failed" >> "$GITHUB_OUTPUT"
-          exit 1
+          mkdir -p baseline-external
+          curl -fsSL --connect-timeout 20 --max-time 60 \
+            "https://raw.githubusercontent.com/microsoft/vcpkg/$BASELINE_REGISTRY_TAG/scripts/vcpkg-tool-metadata.txt" \
+            -o baseline-external/tool-metadata.txt
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          metadata = dict(line.split('=', 1) for line in
+                          Path('baseline-external/tool-metadata.txt').read_text().splitlines() if '=' in line)
+          assert metadata.get('VCPKG_TOOL_RELEASE_TAG') == os.environ['BASELINE_TOOL_TAG'], metadata
+          PY
+          git clone --depth 1 --branch "$BASELINE_TOOL_TAG" "https://github.com/$GITHUB_REPO.git" baseline-src
+          SOURCE_COMMIT=$(git -C baseline-src rev-parse HEAD)
+          test "$SOURCE_COMMIT" = "$BASELINE_TOOL_COMMIT"
+          {
+            echo "resolved_tag=$BASELINE_TOOL_TAG"
+            echo "source_commit=$SOURCE_COMMIT"
+            echo "registry_release=$BASELINE_REGISTRY_TAG"
+            echo "install_mode=github_source"
+            echo "install_status=success"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Get baseline version
         id: version
@@ -354,6 +349,8 @@ jobs:
           EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
           if [ "$MODE" = "github_source" ]; then
             cd baseline-src
+            [ "$IDENTITY_KIND" = "package_json_name" ]
+            [ "$IDENTITY_TARGET" = "vcpkg-artifacts/package.json" ]
             case "$IDENTITY_KIND" in
               go_module)
                 grep -Fx "module $IDENTITY_EXPECT" "$IDENTITY_TARGET" >/dev/null
@@ -364,8 +361,23 @@ jobs:
                 RESULT="Verified TOML package identity in $IDENTITY_TARGET"
                 ;;
               package_json_name)
-                python3 -c "import json,sys; data=json.load(open(sys.argv[1], encoding='utf-8')); assert data.get('name') == sys.argv[2], (data.get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified package.json identity in $IDENTITY_TARGET"
+                python3 - "$IDENTITY_TARGET" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          data = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          assert data.get('name') == '@microsoft/vcpkg-ce', data.get('name')
+          assert data.get('author') == 'Microsoft', data.get('author')
+          assert data.get('description') == 'vcpkg-artifacts', data.get('description')
+          repository = data.get('repository')
+          assert isinstance(repository, dict), repository
+          assert repository.get('type') == 'git', repository
+          assert repository.get('url') == 'git+https://github.com/Microsoft/vcpkg-tool.git', repository
+          keywords = data.get('keywords')
+          assert isinstance(keywords, list) and {'vcpkg', 'vcpkg-artifacts'} <= set(keywords), keywords
+          PY
+                RESULT="Verified Microsoft vcpkg artifacts identity for registry $BASELINE_REGISTRY_TAG / tool $BASELINE_TOOL_TAG"
                 ;;
               cargo_package)
                 python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); assert (data.get('package') or {}).get('name') == sys.argv[2], ((data.get('package') or {}).get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
@@ -423,12 +435,20 @@ jobs:
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -438,27 +458,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ] && [ "$DECISION" = "not_applicable_package_manager" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -468,6 +492,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
 
       - name: Create test summary
         if: always()

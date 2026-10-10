@@ -961,7 +961,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         self.assertEqual([], lock["unresolved_references"])
         self.assertEqual(supply_chain.SOURCE_COMMIT, lock["source_commit"])
         self.assertEqual(1130, lock["external_uses"])
-        self.assertEqual(4, lock["container_uses"])
+        self.assertEqual(9, lock["container_uses"])
         self.assertEqual(15, len(lock["actions"]))
         self.assertRegex(
             lock["migration_parent_workflow_sha256"],
@@ -969,7 +969,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         transition = lock["hardened_workflow_transition"]
         self.assertEqual(
-            "b58214632e3208b42193347b53c98726581fae29d9191075e9591311c7133901",
+            "fe3d20a03b36e6865ce3efce767a3f005dabced11658ba0ef43561b4d6db3aad",
             transition["from_sha256"],
         )
         self.assertEqual(
@@ -977,7 +977,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             transition["to_sha256"],
         )
         self.assertTrue(transition["reason"].strip())
-        self.assertEqual(4, len(lock["containers"]))
+        self.assertEqual(9, len(lock["containers"]))
         for entry in lock["actions"]:
             self.assertTrue(entry["github_api_repository_confirmed"])
             self.assertTrue(entry["github_api_commit_confirmed"])
@@ -1034,7 +1034,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "a50191dbd1de97fd064a0d05660b196ca1c662e5514f472c1e6f7738800c215b",
+            "a48f9e0ba7e36f1a023e88aded6c4a441679e45ff67a3f427c89b70a95ce6c45",
             result["workflow_sha256"],
         )
 
@@ -1264,7 +1264,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
     def test_every_container_is_digest_pinned(self) -> None:
         lock = supply_chain.load_lock(self.root)
         containers = supply_chain.container_lock_by_workflow(lock)
-        self.assertEqual(4, len(containers))
+        self.assertEqual(9, len(containers))
         for relative, entry in containers.items():
             text = (self.root / relative).read_text(encoding="utf-8")
             self.assertIn(entry["resolved_ref"], text)
@@ -1276,12 +1276,12 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "registered_workflows": 960,
                 "batch_workflows": 22,
                 "external_uses": 1130,
-                "container_uses": 4,
+                "container_uses": 9,
                 "unique_original_refs": 15,
                 "checkout_uses": 982,
                 "permission_exceptions": 4,
-                "topology_sha256": "dd3b2c7547600d99769b0f8aabf4ca8057334a3ab70e473de59af21750adb69b",
-                "workflow_sha256": "a50191dbd1de97fd064a0d05660b196ca1c662e5514f472c1e6f7738800c215b",
+                "topology_sha256": "011d9a090d93e50c4573265d56bf1877e4421f2e3a7b17aebdc1fc6e04449cb3",
+                "workflow_sha256": "a48f9e0ba7e36f1a023e88aded6c4a441679e45ff67a3f427c89b70a95ce6c45",
             },
             supply_chain.validate_hardening(
                 self.root,

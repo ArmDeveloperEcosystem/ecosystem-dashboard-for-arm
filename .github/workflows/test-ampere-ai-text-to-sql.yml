@@ -109,7 +109,8 @@ jobs:
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
-      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      # Test 6 compiles candidate source without installing the application.
+      regression_next_installed_version: 'not_installed'
       regression_policy: "applicable"
       run_id: ${{ github.run_id }}
       run_attempt: ${{ github.run_attempt }}
@@ -133,7 +134,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates python3-yaml"
           quiet: "true"
 
       - name: Install baseline source or artifact
@@ -347,27 +348,62 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          if [ "$MODE" != "github_source" ]; then
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "note=Ampere AI Text-to-SQL preflight requires the source checkout for compile/import proof." >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
+          WORK_DIR="$(mktemp -d)"
+          CONTAINER="ampere-text2sql-smoke-$(basename "$WORK_DIR")"
+          finish() {
+            RESULT=$?
+            trap - EXIT
+            docker rm -fv "$CONTAINER" >/dev/null 2>&1 || true
+            rm -rf "$WORK_DIR"
+            if [ "$RESULT" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RESULT"
+          }
+          trap finish EXIT
+          test "$(uname -m)" = aarch64
+          test "${{ steps.install.outputs.install_mode || '' }}" = github_source
           cd baseline-src
           python3 -c 'from pathlib import Path; import compileall; roots=[Path("app"), Path("backend"), Path("src"), Path("server"), Path("text2sql")]; targets=[str(path) for path in roots if path.exists()] or ["."]; assert all(compileall.compile_dir(target, quiet=1, maxlevels=8) for target in targets); text="\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in Path(".").glob("README*")); assert "text" in text.lower() and "sql" in text.lower(), "README does not describe Text-to-SQL"'
-          IMAGE="ghcr.io/amperecomputingai/ampere-ai-text2sql:${BASELINE_VERSION}"
-          CONTAINER_NOTE="container image was not publicly inspectable, so source compile/import preflight was used"
-          if docker manifest inspect "$IMAGE" > /tmp/text2sql-manifest.json 2>/dev/null; then
-            jq -e '[.. | objects | select((.architecture? == "arm64") or ((.platform? // {}) | .architecture? == "arm64"))] | length > 0' /tmp/text2sql-manifest.json >/dev/null
-            docker pull --platform linux/arm64 "$IMAGE"
-            docker image inspect "$IMAGE" >/dev/null
-            docker run --rm --platform linux/arm64 --entrypoint sh "$IMAGE" -lc 'python3 --version || python --version || true'
-            CONTAINER_NOTE="validated the public GHCR image manifest and ran a bounded command in the Arm64 image"
-          fi
+          IMAGE="$(python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import yaml
+          compose = yaml.safe_load(Path('compose.yaml').read_text())
+          postgres = compose['services']['postgres']
+          image = postgres['image']
+          assert image == f"ghcr.io/amperecomputingai/ampere-ai-text2sql:pg_dvdrental_{os.environ['BASELINE_VERSION']}", 'unexpected database image for pinned source'
+          assert postgres['environment']['POSTGRES_DB'] == 'dvdrental'
+          print(image)
+          PY
+          )"
+          docker manifest inspect --verbose "$IMAGE" >"$WORK_DIR/manifest.json"
+          jq -e '[.. | objects | select(.architecture? == "arm64" and .os? == "linux")] | length > 0' "$WORK_DIR/manifest.json" >/dev/null
+          docker pull --platform linux/arm64 "$IMAGE"
+          docker image inspect "$IMAGE" >"$WORK_DIR/image.json"
+          jq -e 'length == 1 and .[0].Architecture == "arm64" and .[0].Os == "linux"' "$WORK_DIR/image.json" >/dev/null
+          POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
+          export POSTGRES_PASSWORD
+          docker run --detach --name "$CONTAINER" --platform linux/arm64 --network none \
+            --env POSTGRES_PASSWORD --env POSTGRES_DB=dvdrental "$IMAGE" >/dev/null
+          DEADLINE=$((SECONDS + 120))
+          for _ in $(seq 1 60); do
+            if [ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER")" != true ]; then
+              docker logs --tail 40 "$CONTAINER"
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$DEADLINE" ]; then break; fi
+            if timeout 10 docker exec --user postgres "$CONTAINER" psql --dbname dvdrental --no-psqlrc \
+              --tuples-only --no-align --no-password --set ON_ERROR_STOP=1 \
+              --command "SELECT CASE WHEN count(*) > 0 THEN 'dvdrental-ok' ELSE 'empty' END FROM public.actor;" >"$WORK_DIR/query.log" 2>&1 \
+              && grep -Fxq dvdrental-ok "$WORK_DIR/query.log"; then
+              break
+            fi
+            sleep 2
+          done
+          cat "$WORK_DIR/query.log"
+          grep -Fxq dvdrental-ok "$WORK_DIR/query.log"
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "note=Compiled Ampere AI Text-to-SQL source on the Arm64 runner and ${CONTAINER_NOTE}. Full runtime remains scoped because DB, model, and service configuration are required." >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "note=Compiled the pinned Text-to-SQL source, verified its identity and declared PostgreSQL image, validated Linux/Arm64 architecture, and queried seeded DVD-rental data in an isolated local container. No external database, model inference, or complete Text-to-SQL service runtime is claimed." >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
         id: test6
         uses: ./.github/actions/generic-source-regression-check
@@ -383,12 +419,20 @@ jobs:
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -398,27 +442,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -428,3 +476,4 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
