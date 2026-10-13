@@ -87,6 +87,11 @@ This field allows context for the level of Arm support this package enjoys. For 
 
 `- support_caveats: `
 
+Set `support_caveats_inline: true` inside `optional_info` to show a short caveat
+as an additional paragraph in the Works on Arm row. Omit it (or use `false`) to
+keep the separate Support Notes row. This changes presentation only, not the
+support claim or recommended version.
+
 ## alternative_options
 This field should be filled out if `works_on_arm: false`, but can be helpful context if set to true as well. List out alternative packages that address the same problem a developer is trying to solve. This will help route them to solve their problem on Arm even if the package they are looking up isn't currently supported.
 

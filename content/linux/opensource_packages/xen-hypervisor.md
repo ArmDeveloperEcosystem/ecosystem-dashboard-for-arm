@@ -10,9 +10,10 @@ supported_minimum_version:
 
 optional_info:
     homepage_url: https://xenproject.org/projects/hypervisor/
-    support_caveats: "For [Xen 4.22 Arm64](https://xenbits.xen.org/docs/4.22-testing/SUPPORT.html#arm-v8) hardware and feature limitations, see the [support matrix](https://xenbits.xen.org/docs/unstable/support-matrix.html).
+    support_caveats_inline: true
+    support_caveats: "For [Xen 4.22 Arm64](https://xenbits.xen.org/docs/4.22-testing/SUPPORT.html#arm-v8) hardware and feature limits, see the [support matrix](https://xenbits.xen.org/docs/unstable/support-matrix.html).
         Supported features may have security exceptions; Experimental/Tech Preview features generally lack security support.
-        Xen Hypervisor only; XAPI and XCP-ng require separate assessment."
+        This Arm-support claim excludes XAPI and XCP-ng."
     getting_started_resources:
         official_docs: https://wiki.xenproject.org/wiki/Xen_ARM_with_Virtualization_Extensions#Building_Xen_on_ARM
 
