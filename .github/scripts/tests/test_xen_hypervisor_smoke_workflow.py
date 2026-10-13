@@ -234,6 +234,14 @@ if not os.environ.get("NO_COMPILED_BINARY"):
             skipped=int(summary["skipped"]), core_failed=int(summary["core_failed"]),
             decision=decision)
 
+    def test_helper_and_test_changes_are_in_foundation_ci_scope(self):
+        path = ROOT / ".github/workflows/exact-run-aggregation-foundation-ci.yml"
+        foundation = yaml.safe_load(path.read_text())
+        scope = next(step for step in foundation["jobs"]["exact-run-contract"]["steps"]
+                     if step.get("id") == "scope")
+        for source in (SOURCE, Path(__file__)):
+            self.assertIn(source.relative_to(ROOT).as_posix(), scope["run"])
+
     def test_contract_is_free_arm_runner_and_explicit_userspace_only(self):
         self.assertEqual(self.job["runs-on"], "ubuntu-24.04-arm")
         self.assertIn("no hypervisor boot", self.document["name"])
