@@ -1,7 +1,7 @@
 ---
 name: EMQTT (Erlang Message Queue Telemetry Transport)
 category: Messaging/Comms
-description: EMQTT is an open-source, highly scalable, distributed MQTT message broker designed for the Internet of Things (IoT).  It implements the MQTT protocol, which is a lightweight messaging protocol.
+description: EMQTT provides an Erlang MQTT client library and command-line publishing and subscription tools. It supports MQTT versions 5.0, 3.1.1 and 3.1.
 download_url: https://github.com/emqx/emqtt/tags
 works_on_arm: true
 supported_minimum_version:
@@ -10,11 +10,11 @@ supported_minimum_version:
 
 
 optional_info:
-    homepage_url: https://emqtt.io/
+    homepage_url: https://github.com/emqx/emqtt
     support_caveats:
     alternative_options:
     getting_started_resources:
-        official_docs: https://emqtt.io/docs/v2/getstarted.html
+        official_docs: https://github.com/emqx/emqtt#readme
         arm_content:
         partner_content:
     arm_recommended_minimum_version:
@@ -29,4 +29,3 @@ optional_hidden_info:
     other_info: Linux/ARM64 release notes are not available. Installation and testing are done via the [tar archive](https://github.com/emqx/emqtt/releases/tag/1.4.4).
 
 ---
-
