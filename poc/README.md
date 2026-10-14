@@ -4,14 +4,14 @@ The KB selects relevant dashboard packages. The backend joins those results to t
 current Linux catalog, and the existing dashboard displays the matching rows in
 KB order. No additional LLM or local semantic ranking engine is used.
 
-**Current status: local integration candidate; live scoped retrieval is blocked.**
-Brian's [endpoint PR #41](https://github.com/arm/knowledge-base-endpoint/pull/41)
-matches the existing request adapter and adds the required response metadata.
-Checks on 14 October 2026 found both dev and production still ignoring the scope
-filters and omitting `platform` and `edition`. Deployment remains pending.
-`ARM_KB_SCOPE_CONFIRMED` defaults to `false`: the service makes no KB search call
-and reports search unavailable until the deployed contract is verified.
-Fixture tests do not establish live semantic quality or production readiness.
+**Current status: live integration verified; relevance acceptance is pending.**
+After Brian's [endpoint PR #41](https://github.com/arm/knowledge-base-endpoint/pull/41)
+deployed on 14 October 2026, dev and production passed the sampled scope and
+package-identity checks. The existing adapter required no code change. All eight
+live representative requests returned valid catalog records, but one missed its
+expected examples and other queries included weak matches. See [RESULTS.md](RESULTS.md).
+`ARM_KB_SCOPE_CONFIRMED` still defaults to `false`; it is enabled only in the
+local validation process. Live integration success is not production acceptance.
 
 ## Request flow
 
@@ -37,7 +37,7 @@ An example query means whatever the KB retrieves; the app does not locally infer
 extra constraints from the text. Use the explicit license control for a guaranteed
 license restriction.
 
-## KB contract — deployment validation required
+## KB contract
 
 The current adapter already uses the GET request shape in Brian's PR:
 
@@ -67,11 +67,10 @@ response; known slugs with conflicting editions are also rejected. Unknown
 catalog identities are omitted with a notice. Duplicates retain their first rank.
 
 The provider must apply scope and edition **before** selecting its top results.
-Client-side metadata checks cannot prove this happened; the KB owners must verify
-it, along with ingestion completeness and distinct edition preservation. Once
-the endpoint and matching metadata bundle are deployed, run live contract and
-relevance checks before enabling the flag in staging. Keep `k=50` until measured
-comparisons justify a smaller value; no additional `product` filter is required.
+The advertised deployed source revision confirms this ordering; live samples
+also verified Linux isolation and distinct editions. These checks do not establish
+complete ingestion or search relevance. Keep `k=50`: the live comparison found
+useful monitoring packages below rank 20. No additional `product` filter is required.
 
 ## Limits and unavailable search
 
@@ -105,6 +104,12 @@ Open `http://127.0.0.1:8765/linux/`. With default settings, scoped search is
 unavailable and name-based browsing remains available. The regular Hugo config
 leaves the search feature disabled; the local overlay opts into the UI.
 
+For local review against the verified production KB:
+
+```sh
+ARM_KB_SCOPE_CONFIRMED=true .venv/bin/python -m poc.dev --port 8765
+```
+
 For deterministic integration/demo testing with a **synthetic KB**:
 
 ```sh
@@ -134,9 +139,9 @@ Existing HTTP-boundary and client tests retain body, host/origin, concurrency,
 rate, timeout, response-size, credential and URL protections. Browser interaction
 checks are separate from these automated contract tests.
 
-After Brian's contract and ingestion changes are available, configure the actual
-endpoint and enable the scope flag only in the validation environment. Review the
-draft cases in `poc/evaluation/search_cases.json` with the product owner, then run:
+Configure the actual endpoint and enable the scope flag only in the validation
+environment. Review the draft cases in `poc/evaluation/search_cases.json` with
+the product owner, then run:
 
 ```sh
 .venv/bin/python -m poc.evaluate_search \

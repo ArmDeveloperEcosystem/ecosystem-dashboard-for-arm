@@ -4,18 +4,17 @@ Automated validation repeated on **14 October 2026**. This replaces the earlier 
 search implementation. Historical semantic test counts and latency measurements
 are not acceptance evidence for the new retrieval path.
 The automated suites and three Hugo builds were rerun on 14 October. Standalone
-HTTP-boundary, source-correction, dependency/lint and browser checks below retain
-their 2 October evidence.
+HTTP-boundary, source-correction, dependency/lint and browser checks in the
+completed-checks table retain their 2 October evidence.
 
-**Ready for code review with live integration explicitly blocked.** The adapter
-matches Brian's [endpoint PR #41](https://github.com/arm/knowledge-base-endpoint/pull/41),
-which is awaiting review/deployment. Four public requests on 14 October (two
-`/info` checks and two scoped searches) found dev still reporting API 1.1.0 /
-retrieval package 0.3.1, and both dev and production
-returning unscoped Ansible results without `platform` or `edition`. Production
-`/info` returned 404. The enriched dev snippets alone do not establish filtering.
-`ARM_KB_SCOPE_CONFIRMED` remains false; no search runtime code, result limit or deployment
-setting was changed. Fresh local evidence is under `.poc/kb-integration-20261014/`.
+**Live integration verified; semantic acceptance remains pending.** After Brian's
+[endpoint PR #41](https://github.com/arm/knowledge-base-endpoint/pull/41) deployed,
+both endpoints reported API 1.2.0 / retrieval package 0.5.1. The advertised source
+revision `f337da3e4864cb505e0149d2e4ed24e0b139e33f` applies scope before candidate
+limits and ranking. Earlier same-day failures are superseded by the live checks
+below. No search runtime code or result limit changed. `ARM_KB_SCOPE_CONFIRMED`
+remains false by default; only the local validation process enables it.
+Evidence is under `.poc/kb-integration-20261014/` and `.poc/kb-live-validation-20261014/`.
 Current `main` was merged to resolve a generated-catalog conflict; the combined
 catalog digest was validated without changing reviewed registry evidence.
 
@@ -40,9 +39,33 @@ unavailable-provider scenario displayed no semantic matches. Passing fixture
 checks establishes application integration, not live provider relevance, response
 time, complete coverage of every edge case or cross-browser certification.
 
-An independent reviewer checked scope validation, composite identities, caching,
+## Live validation after KB deployment — 14 October 2026
+
+| Check | Observed result |
+|---|---|
+| Deployed contract | Nine dev/production requests; all 112 returned hit instances had valid scope, URLs and exact catalog identities. Ansible excluded Windows/guides; Weaviate editions remained distinct |
+| Existing eight-query evaluator | All eight returned HTTP 200 and valid current catalog records; seven included the expected examples. All 214 displayed row occurrences were reviewed. This is not an accuracy percentage |
+| Refinements and boundaries | Cached category and recorded-test refinements preserved query and rank; positive/empty subsets, invalid requests, default-off and controlled provider failure behaved as expected |
+| Live browser | Headless Chrome displayed both Weaviate editions in provider order; open-source refinement selected the exact row and synchronized the sidebar. Clearing the query retained the license filter; no JavaScript exceptions |
+| Result-limit comparison | Nine requests across three queries at `k=10/20/50`. Smaller lists matched the top-50 prefixes; retain 50 because useful monitoring matches occur below rank 20 |
+
+**Relevance needs work:** “Databases for storing embeddings” returned neither
+Qdrant nor Milvus in the top 50. “Tools to serve language models locally” ranked
+Crystal Language above Ollama and included unrelated build/compiler tools.
+Direct “vector databases” found Qdrant at rank 7 but still omitted Milvus. These
+findings need KB retrieval/coverage investigation; they do not prove a specific
+ingestion or ranking defect. The dashboard preserves the returned KB order.
+
+The eight local HTTP requests took **0.180–2.717 seconds, median 0.252 seconds**.
+A separate service check ran six uncached searches plus six cached repeats.
+Uncached searches measured median 0.143 seconds inside the KB client and
+0.33 milliseconds of local overhead. KB client time includes
+network and provider processing; these small sequential samples have uncontrolled
+upstream cache state and are not a load test or server-side attribution.
+
+An earlier independent review checked scope validation, composite identities, caching,
 URL handling, UI behavior, deployment and documentation. Findings corrected during
-this review included encoded plus-sign identities, malformed URL path handling,
+that review included encoded plus-sign identities, malformed URL path handling,
 cache credential consistency, hidden refinement notices and a redundant deep
 link that could open another edition. The UI now opens the exact row's existing
 details; legacy copied package URLs still follow the dashboard's existing slug
@@ -80,10 +103,11 @@ reports, not local credentials or arbitrary workspace files.
 
 Before live rollout:
 
-1. Brian confirms deployment of the updated endpoint and matching metadata bundle.
-2. Verify scope and edition filtering before top-k, Linux/Windows isolation,
-   descriptive ingestion and duplicate-edition preservation using the actual KB.
-3. Run the agreed representative queries and inspect all returned rows. Measure
+1. Review the relevance failures with Brian, including expected package coverage
+   and weak matches ranked above relevant packages.
+2. Agree representative queries and acceptable results with the product owner;
+   the existing examples remain draft checks.
+3. Repeat live evaluation after retrieval updates and inspect all returned rows. Measure
    dashboard processing separately from the KB client round trip; KB server-stage
    attribution requires provider instrumentation.
 4. Validate the reviewed static/API revision pair behind the staging proxy,
