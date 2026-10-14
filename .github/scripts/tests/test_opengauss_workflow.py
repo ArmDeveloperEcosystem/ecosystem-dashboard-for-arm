@@ -54,6 +54,7 @@ cp "$FIXTURE" "$1"
         docker = self.bin / "docker"
         docker.write_text(f"#!{sys.executable}\n" + '''
 import json, os, sys
+from pathlib import Path
 args = sys.argv[1:]
 with open(os.environ["TRACE"], "a") as stream:
     stream.write(json.dumps(args) + "\\n")
@@ -66,6 +67,13 @@ elif args[:2] == ["image", "inspect"]:
     print(os.environ.get("IMAGE_ARCH", "arm64"))
 elif args[0] == "exec":
     command = " ".join(args)
+    if args[2:] == ["cat", "/proc/1/comm"]:
+        counter = Path(os.environ["RUNNER_TEMP"]) / "pid-reads"
+        reads = int(counter.read_text()) + 1 if counter.exists() else 1
+        counter.write_text(str(reads))
+        bootstrap_reads = int(os.environ.get("BOOTSTRAP_READS", "0"))
+        print("bash" if reads <= bootstrap_reads else os.environ.get("PID1", "gaussdb"))
+        sys.exit(int(os.environ.get("PID_RC", "0")))
     if "command -v su" in command:
         sys.exit(0)
     if "select version();" in command:
@@ -74,6 +82,9 @@ elif args[0] == "exec":
     elif "--help" in command:
         print("Usage: gsql")
     elif "select 1;" in command:
+        if os.environ.get("SMOKE_RC", "0") != "0":
+            print("fixture SQL connection failure", file=sys.stderr)
+            sys.exit(int(os.environ["SMOKE_RC"]))
         print("1")
     sys.exit(int(os.environ.get("SQL_RC", "0")))
 ''')
@@ -98,9 +109,10 @@ elif args[0] == "exec":
         output = Path(self.env["GITHUB_OUTPUT"])
         output.write_text("")
         Path(self.env["TRACE"]).write_text("")
+        (self.root / "pid-reads").unlink(missing_ok=True)
         result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script],
                                 cwd=self.root, env=dict(self.env, **environment),
-                                capture_output=True, text=True, timeout=15)
+                                capture_output=True, text=True, timeout=30)
         return result, dict(line.split("=", 1) for line in output.read_text().splitlines())
 
     def test_published_archives_keep_arm_runtime_and_six_checks(self):
@@ -179,6 +191,43 @@ elif args[0] == "exec":
         self.assertNotEqual(0, result.returncode)
         self.assertEqual("failed", output["install_status"])
         self.assertNotIn("select version();", Path(self.env["TRACE"]).read_text())
+
+    def test_readiness_waits_for_final_server_before_querying_in_both_lanes(self):
+        for step in ("install", "test6"):
+            with self.subTest(step=step):
+                result, output = self.run_step(step, BOOTSTRAP_READS="2")
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                calls = [json.loads(line) for line in Path(self.env["TRACE"]).read_text().splitlines()
+                         if line.startswith("[")]
+                pid_reads = [i for i, call in enumerate(calls) if call[-2:] == ["cat", "/proc/1/comm"]]
+                first_sql = next(i for i, call in enumerate(calls) if "select version();" in " ".join(call))
+                self.assertEqual(3, len(pid_reads))
+                self.assertLess(pid_reads[-1], first_sql)
+                self.assertEqual("success" if step == "install" else "passed",
+                                 output.get("install_status" if step == "install" else "status"))
+
+    def test_bootstrap_or_unreadable_pid_never_counts_as_ready(self):
+        for step in ("install", "test6"):
+            for environment in ({"PID1": "bash"}, {"PID_RC": "1"}):
+                with self.subTest(step=step, environment=environment):
+                    result, output = self.run_step(step, **environment)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertNotEqual("success", output.get("install_status"))
+                    self.assertNotEqual("passed", output.get("status"))
+                    trace = Path(self.env["TRACE"]).read_text()
+                    self.assertEqual(120, trace.count('"cat", "/proc/1/comm"'))
+                    self.assertNotIn("select version();", trace)
+
+    def test_candidate_query_error_keeps_exit_status_and_prints_diagnostics(self):
+        result, output = self.run_step("test6", SMOKE_RC="2")
+        self.assertEqual(2, result.returncode)
+        self.assertNotEqual("passed", output.get("status"))
+        self.assertIn("fixture SQL connection failure", result.stdout)
+        calls = [json.loads(line) for line in Path(self.env["TRACE"]).read_text().splitlines()
+                 if line.startswith("[")]
+        logs = next(i for i, call in enumerate(calls) if call[0] == "logs")
+        removal = next(i for i, call in enumerate(calls) if call[0] == "rm")
+        self.assertLess(logs, removal)
 
     def test_abrupt_core_command_failures_fail_summary_and_details(self):
         for step in ("test2", "test3", "test5"):
