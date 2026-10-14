@@ -39,7 +39,7 @@ class MaasWorkflowTests(unittest.TestCase):
             "steps.install.outcome": "success",
             "steps.install.outputs.installation_method": "deb",
             "steps.version.outcome": "success",
-            "steps.version.outputs.version": "3.6.5",
+            "steps.version.outputs.version": self.job["env"]["MAAS_VERSION"],
             "steps.version.outputs.installation_method": "deb",
             "steps.test6.outputs.decision": "not_applicable_package_manager",
             "steps.test6.outputs.installation_method": "deb",
@@ -232,6 +232,20 @@ fi
                           "maas-region-api=" + self.job["env"]["MAAS_DEB_VERSION"], "postgresql-16"], calls[3][6:])
         self.assertEqual(20, self.job["timeout-minutes"])
         self.assertIn("signed-by=/usr/share/keyrings/maas-smoke.gpg", self.steps["install"]["run"])
+
+    def test_release_pins_match_noble_ppa_and_canonical_366_tag(self):
+        # Official Noble arm64 Packages and canonical/maas tag 3.6.6,
+        # checked 2026-10-07. This fixture is not an online availability test.
+        self.assertEqual("3.6.6", self.job["env"]["MAAS_VERSION"])
+        self.assertEqual("1:3.6.6-17672-g.08d455f29-0ubuntu1~24.04.1",
+                         self.job["env"]["MAAS_DEB_VERSION"])
+        self.assertEqual("08d455f2997f79352d5fce86dea37995cbb0136b",
+                         self.job["env"]["MAAS_SOURCE_REVISION"])
+        result, outputs = self.run_step("version", DOCKER_STDOUT=self.identity())
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual({"version": "3.6.6", "installation_method": "deb",
+                          "package_version": self.job["env"]["MAAS_DEB_VERSION"],
+                          "source_revision": self.job["env"]["MAAS_SOURCE_REVISION"]}, outputs)
 
     def test_apt_failure_stops_before_subsequent_install_commands(self):
         for fail_at in range(1, 5):
@@ -520,13 +534,15 @@ esac
 
     def identity(self, fault=None):
         """Run the actual identity helper with explicitly isolated unit fixtures."""
-        version = types.SimpleNamespace(short_version="3.6.5", git_rev="474ecb517")
+        version = types.SimpleNamespace(short_version=self.job["env"]["MAAS_VERSION"],
+                                        git_rev=self.job["env"]["MAAS_SOURCE_REVISION"][:9])
         maas = types.ModuleType("maasserver")
         maas.__file__ = "/usr/lib/python3/dist-packages/maasserver/__init__.py"
-        maas.__version__ = "3.6.5"
+        maas.__version__ = self.job["env"]["MAAS_VERSION"]
         module = types.ModuleType("provisioningserver.utils.version")
         module.get_running_version = lambda: version
         if fault == "runtime": version.short_version = "0.6.8"
+        if fault == "superseded-runtime": version.short_version = "3.6.5"
         if fault == "source": version.git_rev = "deadbeef0"
         if fault == "module": maas.__version__ = "0.6.8"
         if fault == "path": maas.__file__ = "/tmp/maasserver/__init__.py"
@@ -547,14 +563,14 @@ esac
         with patch.dict(os.environ, self.job["env"]), patch.dict(sys.modules, {
                 "maasserver": maas, "provisioningserver.utils.version": module}), \
              patch("subprocess.run", side_effect=query), patch.object(Path, "is_file", return_value=fault != "missing"), \
-             patch("importlib.metadata.version", return_value="0.6.8" if fault == "distribution" else "3.6.5"), \
+             patch("importlib.metadata.version", return_value="0.6.8" if fault == "distribution" else self.job["env"]["MAAS_VERSION"]), \
              contextlib.redirect_stdout(io.StringIO()) as output:
             exec(compile(self.job["env"]["MAAS_IDENTITY"], "workflow:MAAS_IDENTITY", "exec"), {})
         return output.getvalue()
 
     def test_identity_helper_rejects_client_wrong_owner_version_arch_and_failed_queries(self):
-        self.assertIn("version=3.6.5\n", self.identity())
-        for fault in ("runtime", "source", "module", "path", "command", "arch", "status",
+        self.assertIn("version=" + self.job["env"]["MAAS_VERSION"] + "\n", self.identity())
+        for fault in ("runtime", "superseded-runtime", "source", "module", "path", "command", "arch", "status",
                       "package", "revision", "source-package", "duplicate", "owner", "stderr", "missing", "distribution"):
             with self.subTest(fault=fault), self.assertRaises((AssertionError, subprocess.CalledProcessError)):
                 self.identity(fault)
@@ -570,7 +586,7 @@ esac
             path = url.removeprefix("http://127.0.0.1:5240/MAAS/api/2.0/")
             status, data = 200, None
             if path == "version/":
-                data = {"version": "None" if fault == "version" else "3.6.5", "capabilities": ["authenticate-api"]}
+                data = {"version": "None" if fault == "version" else self.job["env"]["MAAS_VERSION"], "capabilities": ["authenticate-api"]}
             elif method == "POST" and not kwargs["headers"]:
                 status, data = (200 if fault == "unauthorized" else 401), "Forbidden"
             elif method == "POST":
@@ -617,7 +633,7 @@ esac
         oauth = types.ModuleType("oauthlib.oauth1")
         oauth.SIGNATURE_PLAINTEXT = "unit-fixture"
         oauth.Client = lambda *args, **kwargs: types.SimpleNamespace(sign=lambda url, **kw: (url, {"Authorization": "unit-fixture"}, None))
-        with patch.dict(os.environ, {"MAAS_VERSION": "3.6.5"}), \
+        with patch.dict(os.environ, {"MAAS_VERSION": self.job["env"]["MAAS_VERSION"]}), \
              patch.dict(sys.modules, {"requests": requests, "psycopg2": pg, "oauthlib.oauth1": oauth}), \
              patch.object(Path, "read_text", return_value="unit-consumer:unit-token:unit-secret"), \
              patch("uuid.uuid4", return_value=types.SimpleNamespace(hex="a" * 32)), \

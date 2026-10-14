@@ -31,12 +31,14 @@ RELEVANT_PATHS = (
     ".github/scripts/package_workflow_action_lock.json",
     ".github/scripts/verify_action_lock_online.py",
     ".github/scripts/package_workflow_supply_chain.py",
+    ".github/scripts/xen_toolstack_smoke.c",
     ".github/scripts/exact_run_aggregation.py",
     ".github/scripts/package_result_policy.py",
     ".github/scripts/package_observation.py",
     ".github/scripts/package_observation_migration_audit.py",
     ".github/scripts/promote_package_results.py",
     ".github/scripts/tests/test_package_workflow_supply_chain.py",
+    ".github/scripts/tests/test_xen_hypervisor_smoke_workflow.py",
     ".github/scripts/tests/test_verify_action_lock_online.py",
     ".github/scripts/tests/test_exact_run_aggregation.py",
     ".github/scripts/tests/test_package_observation.py",
@@ -49,6 +51,215 @@ RELEVANT_PATHS = (
     FOUNDATION_WORKFLOW,
     ".github/workflows/test-*.yml",
 )
+
+
+class AdditiveWorkflowTransitionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.added = ".github/workflows/test-xen-hypervisor.yml"
+        self.existing = ".github/workflows/test-alpha.yml"
+        self.base_commit = "f" * 40
+        self.source = {self.existing: b"reviewed existing workflow\n"}
+        self.current = {**self.source, self.added: b"reviewed Xen workflow\n"}
+        self.paths = [self.root / name for name in self.current]
+        for name, content in self.current.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        current_digest = supply_chain.workflow_snapshot_sha256(self.current)
+        self.lock = {
+            "hardened_workflow_sha256": current_digest,
+            "hardened_workflow_transition": {
+                "from_sha256": supply_chain.workflow_snapshot_sha256(self.source),
+                "to_sha256": current_digest,
+                "reason": "Review the exact Xen addition.",
+                "added_workflows": [self.added],
+            },
+        }
+        git_patch = mock.patch.object(
+            supply_chain.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 0, stdout=b""),
+        )
+        self.git_lookup = git_patch.start()
+        self.addCleanup(git_patch.stop)
+        snapshot_patch = mock.patch.object(
+            supply_chain, "source_snapshot", return_value=self.source
+        )
+        self.snapshot_read = snapshot_patch.start()
+        self.addCleanup(snapshot_patch.stop)
+
+    def validate(self) -> str:
+        return supply_chain.validate_authenticated_base(
+            self.root, self.paths, self.lock, self.base_commit
+        )
+
+    def test_only_proven_absent_xen_is_excluded_from_source_snapshot(self) -> None:
+        self.assertEqual("declared_hardened_transition_source", self.validate())
+        self.git_lookup.assert_called_once_with(
+            [
+                "git", "-C", str(self.root), "ls-tree", "-z",
+                "--name-only", "--full-tree", self.base_commit, "--", self.added,
+            ],
+            check=True, capture_output=True, timeout=10,
+        )
+        self.snapshot_read.assert_called_once_with(
+            self.root, [self.root / self.existing], self.base_commit
+        )
+
+    def test_after_merge_requires_the_complete_current_snapshot(self) -> None:
+        self.git_lookup.return_value.stdout = self.added.encode() + b"\0"
+        self.snapshot_read.return_value = self.current
+        self.assertEqual("current_hardened_snapshot", self.validate())
+        self.snapshot_read.assert_called_once_with(
+            self.root, self.paths, self.base_commit
+        )
+
+    def test_reduced_snapshot_cannot_satisfy_the_current_digest(self) -> None:
+        self.lock["hardened_workflow_sha256"] = (
+            supply_chain.workflow_snapshot_sha256(self.source)
+        )
+        self.lock["hardened_workflow_transition"]["to_sha256"] = (
+            self.lock["hardened_workflow_sha256"]
+        )
+        self.lock["hardened_workflow_transition"]["from_sha256"] = "a" * 64
+        with self.assertRaisesRegex(supply_chain.ContractError, "does not match"):
+            self.validate()
+
+    def test_unexpected_transition_fields_are_rejected(self) -> None:
+        self.lock["hardened_workflow_transition"]["removed_workflows"] = [self.existing]
+        with self.assertRaisesRegex(supply_chain.ContractError, "transition is malformed"):
+            self.validate()
+        self.git_lookup.assert_not_called()
+
+    def test_addition_list_rejects_duplicates_malformed_and_unreviewed_paths(self) -> None:
+        for additions in (
+            None, [], self.added, [self.added, self.added], [self.existing],
+            [self.added, self.existing], ["../test-xen-hypervisor.yml"],
+            [".github/workflows/./test-xen-hypervisor.yml"],
+            [self.added + " "], [True], {"workflow": self.added},
+        ):
+            with self.subTest(additions=additions):
+                self.lock["hardened_workflow_transition"]["added_workflows"] = additions
+                with self.assertRaisesRegex(supply_chain.ContractError, "reviewed Xen addition"):
+                    self.validate()
+        self.git_lookup.assert_not_called()
+        self.snapshot_read.assert_not_called()
+
+    def test_undeclared_addition_cannot_skip_a_missing_base_file(self) -> None:
+        del self.lock["hardened_workflow_transition"]["added_workflows"]
+        self.snapshot_read.side_effect = supply_chain.ContractError("missing workflows")
+        with self.assertRaisesRegex(supply_chain.ContractError, "authenticated advanced"):
+            self.validate()
+        self.git_lookup.assert_not_called()
+        self.snapshot_read.assert_called_once_with(
+            self.root, self.paths, self.base_commit
+        )
+
+    def test_absent_addition_without_a_transition_is_not_accepted(self) -> None:
+        del self.lock["hardened_workflow_transition"]
+        self.snapshot_read.return_value = self.source
+        with self.assertRaisesRegex(supply_chain.ContractError, "snapshot list"):
+            self.validate()
+        self.git_lookup.assert_not_called()
+
+    def test_present_addition_cannot_use_the_transition_source_digest(self) -> None:
+        self.git_lookup.return_value.stdout = self.added.encode() + b"\0"
+        self.snapshot_read.return_value = self.current
+        self.lock["hardened_workflow_transition"]["from_sha256"] = (
+            supply_chain.workflow_snapshot_sha256(self.current)
+        )
+        self.lock["hardened_workflow_sha256"] = "a" * 64
+        self.lock["hardened_workflow_transition"]["to_sha256"] = "a" * 64
+        with self.assertRaisesRegex(supply_chain.ContractError, "does not match"):
+            self.validate()
+        self.snapshot_read.assert_called_once_with(
+            self.root, self.paths, self.base_commit
+        )
+
+    def test_missing_candidate_registration_is_rejected(self) -> None:
+        self.paths.remove(self.root / self.added)
+        with self.assertRaisesRegex(supply_chain.ContractError, "missing from the candidate"):
+            self.validate()
+        self.git_lookup.assert_not_called()
+
+    def test_missing_or_symlinked_candidate_file_is_rejected(self) -> None:
+        added_path = self.root / self.added
+        added_path.unlink()
+        with self.assertRaisesRegex(supply_chain.ContractError, "missing from the candidate"):
+            self.validate()
+        added_path.symlink_to(self.root / self.existing)
+        with self.assertRaisesRegex(supply_chain.ContractError, "missing from the candidate"):
+            self.validate()
+        self.git_lookup.assert_not_called()
+
+    def test_duplicate_candidate_paths_are_rejected(self) -> None:
+        self.paths.append(self.root / self.added)
+        with self.assertRaisesRegex(supply_chain.ContractError, "snapshot list contains duplicates"):
+            self.validate()
+        self.git_lookup.assert_not_called()
+
+    def test_source_snapshot_must_match_the_exact_remaining_path_list(self) -> None:
+        for snapshot in ({}, self.current, {"unexpected.yml": b"workflow"}):
+            with self.subTest(snapshot=snapshot):
+                self.snapshot_read.return_value = snapshot
+                with self.assertRaisesRegex(supply_chain.ContractError, "snapshot list"):
+                    self.validate()
+
+    def test_present_addition_cannot_be_omitted_from_the_snapshot_list(self) -> None:
+        self.git_lookup.return_value.stdout = self.added.encode() + b"\0"
+        with self.assertRaisesRegex(supply_chain.ContractError, "snapshot list"):
+            self.validate()
+
+    def test_modified_source_or_current_snapshot_is_rejected(self) -> None:
+        for base_entry, snapshot in (
+            (b"", self.source), (self.added.encode() + b"\0", self.current),
+        ):
+            with self.subTest(base_entry=base_entry):
+                self.git_lookup.return_value.stdout = base_entry
+                changed = dict(snapshot)
+                changed[self.existing] += b"altered\n"
+                self.snapshot_read.return_value = changed
+                with self.assertRaisesRegex(supply_chain.ContractError, "does not match"):
+                    self.validate()
+
+    def test_missing_existing_base_workflow_is_not_ignored(self) -> None:
+        self.snapshot_read.side_effect = supply_chain.ContractError("missing existing workflow")
+        with self.assertRaisesRegex(supply_chain.ContractError, "authenticated advanced"):
+            self.validate()
+
+    def test_failed_git_lookup_is_not_treated_as_absence(self) -> None:
+        for error in (
+            OSError("git unavailable"),
+            subprocess.CalledProcessError(128, ["git", "ls-tree"]),
+            subprocess.TimeoutExpired(["git", "ls-tree"], 10),
+        ):
+            with self.subTest(error=error):
+                self.git_lookup.side_effect = error
+                with self.assertRaisesRegex(supply_chain.ContractError, "could not inspect addition"):
+                    self.validate()
+        self.snapshot_read.assert_not_called()
+
+    def test_malformed_git_tree_result_is_rejected(self) -> None:
+        for output in (
+            self.added.encode(), self.existing.encode() + b"\0",
+            (self.added + "/child").encode() + b"\0",
+            (self.added.encode() + b"\0") * 2,
+        ):
+            with self.subTest(output=output):
+                self.git_lookup.return_value.stdout = output
+                with self.assertRaisesRegex(supply_chain.ContractError, "tree entry is malformed"):
+                    self.validate()
+        self.snapshot_read.assert_not_called()
+
+    def test_invalid_base_identity_is_rejected_before_reading_git(self) -> None:
+        for base in ("HEAD", "0" * 40, "f" * 39):
+            with self.subTest(base=base):
+                self.base_commit = base
+                with self.assertRaisesRegex(supply_chain.ContractError, "canonical SHA"):
+                    self.validate()
+        self.git_lookup.assert_not_called()
 
 
 class PackageWorkflowSupplyChainTests(unittest.TestCase):
@@ -912,6 +1123,12 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         self.assertEqual(RELEVANT_PATHS, diff_paths)
 
         step_map = dict(steps)
+        live_verifier = step_map["Verify changed action lock against live GitHub evidence"]
+        self.assertIn(
+            'python3 .github/scripts/verify_action_lock_online.py \\\n'
+            '            --expected-base-commit "$AUTHENTICATED_BASE_COMMIT"',
+            live_verifier,
+        )
         source_fetch = step_map.get("Fetch reviewed package workflow source")
         self.assertIsNotNone(source_fetch)
         assert source_fetch is not None
@@ -949,8 +1166,9 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
 
     def test_registration_is_exact(self) -> None:
         relative = [path.relative_to(self.root).as_posix() for path in self.workflows]
-        self.assertEqual(960, len(relative))
-        self.assertEqual(960, len(set(relative)))
+        self.assertEqual(961, len(relative))
+        self.assertEqual(961, len(set(relative)))
+        self.assertIn(".github/workflows/test-xen-hypervisor.yml", relative)
         self.assertTrue(all(path.is_file() for path in self.workflows))
         self.assertFalse(
             any("test-all-packages-" in Path(path).name for path in relative)
@@ -960,7 +1178,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         lock = supply_chain.load_lock(self.root)
         self.assertEqual([], lock["unresolved_references"])
         self.assertEqual(supply_chain.SOURCE_COMMIT, lock["source_commit"])
-        self.assertEqual(1130, lock["external_uses"])
+        self.assertEqual(1131, lock["external_uses"])
         self.assertEqual(9, lock["container_uses"])
         self.assertEqual(15, len(lock["actions"]))
         self.assertRegex(
@@ -969,8 +1187,12 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         transition = lock["hardened_workflow_transition"]
         self.assertEqual(
-            "8233da56a25a0e681256560aab101c0202356981be05d2fd05dfa5cfc8e8ec9d",
+            "a48f9e0ba7e36f1a023e88aded6c4a441679e45ff67a3f427c89b70a95ce6c45",
             transition["from_sha256"],
+        )
+        self.assertEqual(
+            [".github/workflows/test-xen-hypervisor.yml"],
+            transition["added_workflows"],
         )
         self.assertEqual(
             lock["hardened_workflow_sha256"],
@@ -1034,7 +1256,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "9a2edbba9005a2a4e5b9564c901d6624892f8efad435cd99b3ec93b031e721a1",
+            "ed9031df98fdbb7b08145b34729c4f7cfcb975aa5a9daba5965a75d44292bdb5",
             result["workflow_sha256"],
         )
 
@@ -1076,7 +1298,10 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
     def test_declared_hardened_transition_source_is_accepted(self) -> None:
         lock = copy.deepcopy(supply_chain.load_lock(self.root))
         paths = [*self.workflows, *self.batches]
-        snapshot = {"synthetic-reviewed-workflows": b"prior reviewed snapshot"}
+        snapshot = {
+            path.relative_to(self.root).as_posix(): b"prior reviewed snapshot"
+            for path in paths
+        }
         transition_source = supply_chain.workflow_snapshot_sha256(snapshot)
         lock["hardened_workflow_transition"] = {
             "from_sha256": transition_source,
@@ -1104,6 +1329,11 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         snapshot[first] += b"\n"
         with mock.patch.object(
             supply_chain, "source_snapshot", return_value=snapshot
+        ), mock.patch.object(
+            supply_chain.subprocess, "run",
+            return_value=subprocess.CompletedProcess(
+                [], 0, stdout=b".github/workflows/test-xen-hypervisor.yml\0"
+            ),
         ):
             with self.assertRaisesRegex(
                 supply_chain.ContractError,
@@ -1194,7 +1424,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                     continue
                 _, _, _, ref = supply_chain.split_github_action(spec)
                 self.assertRegex(ref, r"^[0-9a-f]{40}$")
-        self.assertEqual(1130, external)
+        self.assertEqual(1131, external)
 
     def test_every_checkout_disables_persisted_credentials(self) -> None:
         checkouts = 0
@@ -1217,7 +1447,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                     ),
                     path.relative_to(self.root).as_posix(),
                 )
-        self.assertEqual(982, checkouts)
+        self.assertEqual(983, checkouts)
 
     def test_permissions_are_read_only(self) -> None:
         exceptions = supply_chain.permission_exceptions(
@@ -1273,15 +1503,15 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
     def test_complete_offline_contract(self) -> None:
         self.assertEqual(
             {
-                "registered_workflows": 960,
+                "registered_workflows": 961,
                 "batch_workflows": 22,
-                "external_uses": 1130,
+                "external_uses": 1131,
                 "container_uses": 9,
                 "unique_original_refs": 15,
-                "checkout_uses": 982,
+                "checkout_uses": 983,
                 "permission_exceptions": 4,
-                "topology_sha256": "fcad3454434e624282c6868f6485289f9751bd5d2dbbd59ece09f0964340d197",
-                "workflow_sha256": "9a2edbba9005a2a4e5b9564c901d6624892f8efad435cd99b3ec93b031e721a1",
+                "topology_sha256": "2934204313856f857817d1885ecc51919e085b79ec3f1ad00617be9a7a432a16",
+                "workflow_sha256": "ed9031df98fdbb7b08145b34729c4f7cfcb975aa5a9daba5965a75d44292bdb5",
             },
             supply_chain.validate_hardening(
                 self.root,

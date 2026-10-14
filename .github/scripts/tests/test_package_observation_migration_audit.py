@@ -23,8 +23,8 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(
             {
                 "batches": 22,
-                "packages": 960,
-                "custom_summary_workflows": 924,
+                "packages": 961,
+                "custom_summary_workflows": 925,
                 "emitter_workflows": 36,
                 "shared_smoke_workflows": 13,
                 "package_manager_workflows": 428,
@@ -32,7 +32,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             self.report["totals"],
         )
         self.assertEqual(
-            {"not_applicable_package_manager": 8, "not_configured": 952},
+            {"not_applicable_package_manager": 8, "not_configured": 953},
             self.report["fallback_counts"],
         )
         self.assertEqual(
@@ -40,7 +40,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
                 "shared_smoke": 13,
                 "emitter_only": 23,
                 "generic_source": 91,
-                "fully_custom": 833,
+                "fully_custom": 834,
             },
             {
                 key: len(value)
@@ -52,13 +52,18 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             for cohort in self.report["migration_cohorts"].values()
             for slug in cohort
         ]
-        self.assertEqual(960, len(cohort_members))
-        self.assertEqual(960, len(set(cohort_members)))
+        self.assertEqual(961, len(cohort_members))
+        self.assertEqual(961, len(set(cohort_members)))
 
     def test_structural_observation_inputs_are_present(self) -> None:
         remediation = self.report["remediation"]
         self.assertEqual({}, remediation["missing_test_steps"])
-        self.assertEqual({}, remediation["missing_test_status"])
+        # The advisory static scan cannot follow Xen's EXIT traps. Runtime smoke
+        # tests exercise these writes; retain the exact Xen-only scan findings.
+        self.assertEqual(
+            {f"test{number}": ["xen-hypervisor"] for number in range(1, 6)},
+            remediation["missing_test_status"],
+        )
         self.assertEqual({}, remediation["invalid_test_names"])
         self.assertEqual([], remediation["missing_summary_step"])
         self.assertEqual([], remediation["unapproved_decision_tokens"])
@@ -74,12 +79,18 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         remediation = self.report["remediation"]
         self.assertEqual(17, len(remediation["emitter_missing_slug"]))
         self.assertEqual(
-            {"test4": 4, "test5": 42, "test6": 6},
+            {"test1": 1, "test2": 1, "test3": 1, "test4": 4, "test5": 43, "test6": 6},
             {
                 key: len(value)
                 for key, value in remediation["missing_test_duration"].items()
             },
         )
+        # Duration writes share the same EXIT-trap reachability limitation.
+        for number in range(1, 6):
+            self.assertIn(
+                "xen-hypervisor", remediation["missing_test_duration"][f"test{number}"]
+            )
+        self.assertNotIn("backstage", remediation["missing_test_duration"]["test4"])
         self.assertEqual(
             {"test3": 1, "test4": 1, "test5": 2, "test6": 320},
             {
@@ -101,8 +112,15 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             len(remediation["package_manager_missing_explicit_skip_counter"]),
         )
         self.assertEqual(76, len(remediation["package_manager_non_skipped_status"]))
-        self.assertEqual(281, len(remediation["literal_pair_contradictions"]))
-        self.assertEqual(23, len(remediation["no_literal_decision"]))
+        self.assertEqual(280, len(remediation["literal_pair_contradictions"]))
+        self.assertNotIn(
+            "repeatmasker",
+            [item["package_slug"] for item in remediation["literal_pair_contradictions"]],
+        )
+        # Xen writes a runtime-selected $DECISION; the advisory scan does not
+        # infer its baseline-failure branches from literal output records.
+        self.assertEqual(24, len(remediation["no_literal_decision"]))
+        self.assertIn("xen-hypervisor", remediation["no_literal_decision"])
         self.assertEqual(
             304, len(remediation["package_manager_summary_omits_test6"])
         )
@@ -132,32 +150,35 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             406, len(remediation["package_manager_missing_baseline_guard"])
         )
         self.assertEqual(
-            960, len(remediation["missing_package_observation_output"])
+            961, len(remediation["missing_package_observation_output"])
         )
         self.assertEqual(
-            960, len(remediation["missing_package_observation_step"])
+            961, len(remediation["missing_package_observation_step"])
         )
         self.assertEqual([], remediation["invalid_package_observation_contract"])
         self.assertEqual(
             [], remediation["invalid_package_observation_input_bindings"]
         )
         self.assertEqual(
-            960,
+            961,
             len(remediation["missing_workflow_call_observation_output"]),
         )
         self.assertEqual(
             [], remediation["invalid_workflow_call_observation_output"]
         )
         self.assertEqual(
-            370,
+            371,
             len(remediation["non_package_manager_missing_baseline_guard"]),
+        )
+        self.assertIn(
+            "xen-hypervisor", remediation["non_package_manager_missing_baseline_guard"]
         )
         self.assertEqual(320, len(remediation["summary_omits_test6_status"]))
         self.assertEqual(
-            952, len(remediation["unsafe_package_version_fallback"])
+            953, len(remediation["unsafe_package_version_fallback"])
         )
         self.assertEqual(
-            960, len(remediation["unsafe_regression_narrative_fallback"])
+            961, len(remediation["unsafe_regression_narrative_fallback"])
         )
         self.assertEqual(
             22, len(remediation["legacy_batch_collector_workflows"])
@@ -197,7 +218,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "67587c8cb54841dce5213974008c3c6e29d8cdd9ade53f116e2cc06733d4538d",
+            "0d959bc67a7f35b7a69be003d7d8dea6ba5e0fe6c0232a07b025fad028f77947",
             digest,
         )
 

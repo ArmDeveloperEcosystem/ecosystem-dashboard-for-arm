@@ -16,8 +16,8 @@ import yaml
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows/test-milvus.yml"
 UPSTREAM = "minio/minio:RELEASE.2023-03-20T20-16-18Z"
 REPLACEMENT = (
-    "quay.io/" + UPSTREAM
-    + "@sha256:d6b74c01202ef9366bb88c304777e8d5d96c6b443e5dc8ac8e31f34469c495e7"
+    "milvusdb/minio:RELEASE.2024-12-18T13-15-44Z"
+    "@sha256:dca4c608031e569387ebb9dbc5738542a4ddd68f57464c1f7ad5a2d31cefcb8d"
 )
 HELP_TEXT = """milvus run [server type] [flags]
 \tStart a Milvus Server.
@@ -99,6 +99,7 @@ if args[0] == "compose":
     if command == "up":
         data = yaml.safe_load(config.read_text())
         assert data["services"]["minio"]["image"] == os.environ["PINNED_MINIO"]
+        assert data["services"]["minio"]["healthcheck"]["test"] == ["CMD", "mc", "ready", "local"]
         print("compose startup diagnostic", flush=True)
         sys.exit(int(os.environ.get("UP_RC", "0")))
     if command == "config":
@@ -172,7 +173,7 @@ elif args[0] == "exec":
         self.assertEqual([f"test{i}" for i in range(1, 7)], [s for s in self.steps if re.fullmatch(r"test\d", s)])
         self.assertIn('--packages "curl python3-yaml"', self.steps["install"]["run"])
 
-    def test_rewrite_changes_only_minio_image_for_both_releases_and_is_idempotent(self):
+    def test_rewrite_changes_only_minio_image_and_probe_for_both_releases_and_is_idempotent(self):
         for version in ("2.5.6", "2.5.7"):
             for flow_style in (False, True):
                 with self.subTest(version=version, flow_style=flow_style):
@@ -180,6 +181,7 @@ elif args[0] == "exec":
                     self.compose.write_text(yaml.safe_dump(original, default_flow_style=flow_style))
                     expected = copy.deepcopy(original)
                     expected["services"]["minio"]["image"] = REPLACEMENT
+                    expected["services"]["minio"]["healthcheck"]["test"] = ["CMD", "mc", "ready", "local"]
                     for _ in range(2):
                         result = self.rewrite()
                         self.assertEqual(0, result.returncode, result.stderr)
@@ -187,7 +189,8 @@ elif args[0] == "exec":
 
     def test_unknown_or_missing_dependency_and_invalid_yaml_fail_without_writing(self):
         fixtures = ["services: [", "null", "services: {}", "services: {minio: {}}"]
-        for image in ("minio/minio:latest", "quay.io/" + UPSTREAM, UPSTREAM + "@sha256:bad", None):
+        for image in ("minio/minio:latest", "quay.io/" + UPSTREAM, UPSTREAM + "@sha256:bad",
+                      REPLACEMENT.split("@")[0], REPLACEMENT.replace("dca4c608", "00000000"), None):
             data = compose_fixture("2.5.6")
             data["services"]["minio"]["image"] = image
             fixtures.append(yaml.safe_dump(data))
@@ -197,6 +200,15 @@ elif args[0] == "exec":
                 result = self.rewrite()
                 self.assertNotEqual(0, result.returncode)
                 self.assertEqual(source, self.compose.read_text())
+
+    def test_missing_healthcheck_is_not_silently_replaced_or_written(self):
+        data = compose_fixture("2.5.6")
+        del data["services"]["minio"]["healthcheck"]
+        source = yaml.safe_dump(data)
+        self.compose.write_text(source)
+        result = self.rewrite()
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(source, self.compose.read_text())
 
     def test_baseline_and_candidate_success_reach_original_smoke_checks(self):
         for step in ("test4", "test6"):

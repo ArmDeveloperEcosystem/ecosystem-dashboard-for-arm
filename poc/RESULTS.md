@@ -14,8 +14,10 @@ which is awaiting review/deployment. Four public requests on 14 October (two
 retrieval package 0.3.1, and both dev and production
 returning unscoped Ansible results without `platform` or `edition`. Production
 `/info` returned 404. The enriched dev snippets alone do not establish filtering.
-`ARM_KB_SCOPE_CONFIRMED` remains false; no runtime code, result limit or deployment
+`ARM_KB_SCOPE_CONFIRMED` remains false; no search runtime code, result limit or deployment
 setting was changed. Fresh local evidence is under `.poc/kb-integration-20261014/`.
+Current `main` was merged to resolve a generated-catalog conflict; the combined
+catalog digest was validated without changing reviewed registry evidence.
 
 ## Completed checks
 
@@ -27,7 +29,7 @@ setting was changed. Fresh local evidence is under `.poc/kb-integration-20261014
 | Existing repository tests | 113 passed, 78 subtests passed |
 | HTTP boundaries | 17/17 expected statuses against a local service |
 | Hugo builds | Local overlay, production-path overlay and normal feature-disabled build passed |
-| Catalog identity | All 1,177 records agree with generated DOM identities. An offline replay with deterministic candidates also verified compatibility with the pinned MCP v3.3.0 serializer; this does not validate deployed ingestion or retrieval quality. Plus-sign URLs and same-slug editions covered |
+| Catalog identity | All 1,178 records agree with generated DOM identities. An offline replay with deterministic candidates also verified compatibility with the pinned MCP v3.3.0 serializer; this does not validate deployed ingestion or retrieval quality. Plus-sign URLs and same-slug editions covered |
 | Source corrections | Flask, Perl and Porting Advisor partner links parse and render; Windows Rust/SQLite optional guide fields now render from the normal schema |
 | Dependencies and changed Python lint | `pip check` and Ruff passed |
 | Browser checks | Actual Chrome interactions verified rank order, open-source refinement without rewriting the query, correct edition details, browse reset and labelled outage/name fallback |

@@ -21,6 +21,8 @@ import package_workflow_supply_chain as supply_chain  # noqa: E402
 
 
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+LOCK_RELATIVE_PATH = f".github/scripts/{supply_chain.LOCK_NAME}"
+MAX_LOCK_BYTES = 2_097_152
 CommandRunner = Callable[[Sequence[str]], str]
 
 
@@ -94,15 +96,13 @@ def ref_query_names(requested_ref: str) -> tuple[str, str, str]:
     return head_name, tag_name, f"{tag_name}^{{}}"
 
 
-def validate_live_action_evidence(
+def validate_immutable_action_evidence(
     entry: object,
     repository_payload: object,
     commit_payload: object,
     contents_payload: object,
-    ls_remote_output: str,
-    tag_payload: object | None = None,
 ) -> None:
-    """Validate one lock entry using supplied live-evidence payloads only."""
+    """Verify the pinned repository, commit and action file without resolving a ref."""
     try:
         _, commit_sha = supply_chain.validate_action_lock_entry(entry)
     except supply_chain.ContractError as error:
@@ -140,6 +140,22 @@ def validate_live_action_evidence(
     ):
         raise OnlineEvidenceError(f"live action file evidence contradicts {original_ref}")
 
+
+def validate_live_action_evidence(
+    entry: object,
+    repository_payload: object,
+    commit_payload: object,
+    contents_payload: object,
+    ls_remote_output: str,
+    tag_payload: object | None = None,
+) -> None:
+    """Validate the immutable pin and its current mutable-ref resolution."""
+    validate_immutable_action_evidence(
+        entry, repository_payload, commit_payload, contents_payload
+    )
+    assert isinstance(entry, dict)
+    original_ref = entry["original_ref"]
+    commit_sha = entry["resolved_commit"]
     refs = parse_ls_remote(ls_remote_output)
     head_name, tag_name, peeled_name = ref_query_names(entry["requested_ref"])
     ref_type = entry["ref_type"]
@@ -341,17 +357,123 @@ def verify_live_container(entry: dict[str, Any], runner: CommandRunner) -> None:
     validate_live_container_evidence(entry, manifest_payload, config_payload)
 
 
-def verify_lock(
-    lock_path: Path, runner: CommandRunner = run_command
-) -> tuple[int, int]:
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise OnlineEvidenceError(f"action lock contains duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> None:
+    raise OnlineEvidenceError(f"action lock contains non-finite JSON value: {value}")
+
+
+def _parse_lock(raw: str, label: str) -> Mapping[str, Any]:
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_LOCK_BYTES:
+        raise OnlineEvidenceError(f"{label} exceeds the lock size bound or is not text")
     try:
-        lock = json.loads(lock_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise OnlineEvidenceError(f"could not load action lock: {lock_path}") from error
-    lock_data = _require_object(lock, "action lock")
+        lock = json.loads(
+            raw, object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (ValueError, RecursionError) as error:
+        raise OnlineEvidenceError(f"{label} is malformed JSON") from error
+    lock_data = _require_object(lock, label)
+    if type(lock_data.get("schema_version")) is not int or lock_data["schema_version"] != 3:
+        raise OnlineEvidenceError(f"{label} has an unsupported schema")
+    if lock_data.get("source_commit") != supply_chain.SOURCE_COMMIT:
+        raise OnlineEvidenceError(f"{label} has an unreviewed source commit")
+    for key in ("registered_workflows", "external_uses", "container_uses"):
+        if type(lock_data.get(key)) is not int or lock_data[key] < 1:
+            raise OnlineEvidenceError(f"{label} has an invalid {key}")
+    if lock_data.get("unresolved_references") != []:
+        raise OnlineEvidenceError(f"{label} contains unresolved references")
+    for key in (
+        "migration_parent_workflow_sha256", "hardened_topology_sha256",
+        "hardened_workflow_sha256",
+    ):
+        value = lock_data.get(key)
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise OnlineEvidenceError(f"{label} has an invalid {key}")
     actions = lock_data.get("actions")
     if not isinstance(actions, list) or not actions:
-        raise OnlineEvidenceError("action lock has no action entries")
+        raise OnlineEvidenceError(f"{label} has no action entries")
+    containers = lock_data.get("containers")
+    if (
+        not isinstance(containers, list)
+        or len(containers) != supply_chain.EXPECTED_CONTAINER_USES
+        or lock_data["container_uses"] != len(containers)
+    ):
+        raise OnlineEvidenceError(f"{label} has an invalid container inventory")
+    try:
+        supply_chain.validate_hardened_workflow_transition(lock_data)
+        supply_chain.permission_exceptions(lock_data)
+        originals: set[str] = set()
+        for entry in actions:
+            supply_chain.validate_action_lock_entry(entry)
+            if (
+                type(entry["occurrences"]) is not int
+                or type(entry["repository_id"]) is not int
+                or not _is_object_id(entry["resolved_commit"])
+                or not _is_object_id(entry["git_ls_remote"]["ref_object"])
+                or entry["original_ref"] in originals
+            ):
+                raise OnlineEvidenceError(f"{label} has invalid or duplicate action evidence")
+            originals.add(entry["original_ref"])
+        if sum(entry["occurrences"] for entry in actions) != lock_data["external_uses"]:
+            raise OnlineEvidenceError(f"{label} has an inconsistent occurrence total")
+        locations: set[str] = set()
+        for entry in containers:
+            workflow = supply_chain.validate_container_lock_entry(entry)
+            if workflow in locations:
+                raise OnlineEvidenceError(f"{label} has duplicate container evidence")
+            locations.add(workflow)
+    except supply_chain.ContractError as error:
+        raise OnlineEvidenceError(f"{label}: {error}") from error
+    return lock_data
+
+
+def _authenticated_base_lock(
+    lock_path: Path, base_commit: str, runner: CommandRunner
+) -> Mapping[str, Any]:
+    if not _is_object_id(base_commit):
+        raise OnlineEvidenceError("authenticated PR base must be one nonzero full commit SHA")
+    resolved = lock_path.resolve()
+    if (
+        len(resolved.parents) < 3
+        or resolved.relative_to(resolved.parents[2]).as_posix() != LOCK_RELATIVE_PATH
+        or lock_path.is_symlink()
+    ):
+        raise OnlineEvidenceError("authenticated base requires the canonical repository lock path")
+    git = ["git", "--no-replace-objects", "-C", str(resolved.parents[2])]
+    if runner([*git, "cat-file", "-t", base_commit]).strip() != "commit":
+        raise OnlineEvidenceError("authenticated PR base is not a commit object")
+    return _parse_lock(
+        runner([*git, "show", f"{base_commit}:{LOCK_RELATIVE_PATH}"]),
+        "authenticated base action lock",
+    )
+
+
+def _pin_evidence(entry: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in entry.items() if key != "occurrences"}
+
+
+def verify_lock(
+    lock_path: Path, runner: CommandRunner = run_command,
+    *, expected_base_commit: str | None = None,
+) -> tuple[int, int]:
+    try:
+        raw = lock_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise OnlineEvidenceError(f"could not load action lock: {lock_path}") from error
+    lock_data = _parse_lock(raw, "candidate action lock")
+    previous_actions: dict[str, Any] = {}
+    if expected_base_commit is not None:
+        base = _authenticated_base_lock(lock_path, expected_base_commit, runner)
+        previous_actions = {entry["original_ref"]: entry for entry in base["actions"]}
+    actions = lock_data["actions"]
 
     for entry in actions:
         try:
@@ -376,6 +498,12 @@ def verify_lock(
             ],
             runner,
         )
+        previous = previous_actions.get(entry["original_ref"])
+        if previous is not None and _pin_evidence(entry) == _pin_evidence(previous):
+            validate_immutable_action_evidence(
+                entry, repository_payload, commit_payload, contents_payload
+            )
+            continue
         head_name, tag_name, peeled_name = ref_query_names(requested_ref)
         ls_remote_output = runner(
             [
@@ -418,9 +546,15 @@ def main() -> int:
         default=SCRIPT_DIRECTORY / supply_chain.LOCK_NAME,
         help="path to the reviewed action lock",
     )
+    parser.add_argument(
+        "--expected-base-commit",
+        help="authenticated PR base SHA; retain identical reviewed mutable-ref evidence",
+    )
     arguments = parser.parse_args()
     try:
-        action_count, container_count = verify_lock(arguments.lock)
+        action_count, container_count = verify_lock(
+            arguments.lock, expected_base_commit=arguments.expected_base_commit
+        )
     except OnlineEvidenceError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

@@ -82,6 +82,7 @@ on:
 jobs:
   test-librecad:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
     env:
       BASELINE_VERSION: "2.2.1.1"
       PACKAGE_SLUG: "librecad"
@@ -99,19 +100,41 @@ jobs:
         sudo apt-get update -qq
         sudo apt-get install -y --no-install-recommends xvfb xauth xdotool x11-utils file ca-certificates dbus-x11 \
           libqt5widgets5t64 libqt5printsupport5t64 libqt5svg5 libxcb-xinerama0 > "$SMOKE_LOG_DIR/apt.log" 2>&1
+        SOURCE_DIR="$PWD"
         RUNTIME_DIR="$RUNNER_TEMP/librecad-appimage-${BASELINE_VERSION}"
         rm -rf "$RUNTIME_DIR"
         mkdir -p "$RUNTIME_DIR"
         cd "$RUNTIME_DIR"
         APPIMAGE="$RUNTIME_DIR/LibreCAD-${BASELINE_VERSION}-aarch64.AppImage"
-        curl -fsSL "https://github.com/LibreCAD/LibreCAD/releases/download/v${BASELINE_VERSION}/LibreCAD-v${BASELINE_VERSION}-aarch64.AppImage" -o "$APPIMAGE"
-        chmod +x "$APPIMAGE"
-        file "$APPIMAGE" | tee "$SMOKE_LOG_DIR/appimage-file.txt"
-        grep -Eiq 'ELF 64-bit.*(aarch64|ARM aarch64)' "$SMOKE_LOG_DIR/appimage-file.txt"
-        "$APPIMAGE" --appimage-extract > "$SMOKE_LOG_DIR/extract.log" 2>&1
-        APPDIR="$RUNTIME_DIR/squashfs-root"
-        LIBRECAD_BIN="$(find "$APPDIR" -type f -name librecad -perm -111 -print -quit)"
+        if HTTP_STATUS="$(curl -fsSL -w '%{http_code}' "https://github.com/LibreCAD/LibreCAD/releases/download/v${BASELINE_VERSION}/LibreCAD-v${BASELINE_VERSION}-aarch64.AppImage" -o "$APPIMAGE")"; then
+          chmod +x "$APPIMAGE"
+          file "$APPIMAGE" | tee "$SMOKE_LOG_DIR/appimage-file.txt"
+          grep -Eiq 'ELF 64-bit.*(aarch64|ARM aarch64)' "$SMOKE_LOG_DIR/appimage-file.txt"
+          "$APPIMAGE" --appimage-extract > "$SMOKE_LOG_DIR/extract.log" 2>&1
+          APPDIR="$RUNTIME_DIR/squashfs-root"
+          LIBRECAD_BIN="$(find "$APPDIR" -type f -name librecad -perm -111 -print -quit)"
+          LIBRECAD_RUN="$APPDIR/AppRun"
+          RUNTIME_PROVENANCE="Downloaded the official aarch64 AppImage"
+        else
+          DOWNLOAD_RC=$?
+          test "$DOWNLOAD_RC" -eq 22
+          test "$HTTP_STATUS" = 404
+          # Upstream removed v2.2.1.1 binaries; build that exact official tag on Arm.
+          # https://github.com/LibreCAD/LibreCAD/blob/v2.2.1.1/.github/workflows/build-all.yml
+          cd "$SOURCE_DIR"
+          test "$(git remote get-url origin)" = "https://github.com/LibreCAD/LibreCAD.git"
+          test "$(git describe --tags --exact-match HEAD)" = "v$BASELINE_VERSION"
+          test "$(git rev-parse HEAD)" = 75b62b52f53c7823742d5be1e794aed48cad9e2b
+          sudo apt-get install -y --no-install-recommends build-essential qt5-qmake qtbase5-dev qttools5-dev-tools \
+            libqt5svg5-dev libboost-dev libmuparser-dev libfreetype6-dev libicu-dev libgl-dev pkg-config > "$SMOKE_LOG_DIR/build-apt.log" 2>&1
+          timeout --kill-after=60s 5m env QT_SELECT=qt5 qmake -r librecad.pro CONFIG+=debug_and_release PREFIX=/usr > "$SMOKE_LOG_DIR/qmake.log" 2>&1
+          timeout --kill-after=60s 30m make release -j2 > "$SMOKE_LOG_DIR/build.log" 2>&1
+          LIBRECAD_BIN="$SOURCE_DIR/unix/librecad"
+          LIBRECAD_RUN="$LIBRECAD_BIN"
+          RUNTIME_PROVENANCE="Built the pinned official tag natively on Arm after its AppImage returned HTTP 404; AppImage packaging was not validated"
+        fi
         test -n "$LIBRECAD_BIN"
+        test -x "$LIBRECAD_BIN"
         file "$LIBRECAD_BIN" | tee "$SMOKE_LOG_DIR/bin-file.txt"
         grep -Eiq 'ELF 64-bit.*(aarch64|ARM aarch64)' "$SMOKE_LOG_DIR/bin-file.txt"
         export HOME="$RUNNER_TEMP/librecad-home-${BASELINE_VERSION}"
@@ -122,10 +145,10 @@ jobs:
         mkdir -p "$XDG_RUNTIME_DIR"
         chmod 700 "$XDG_RUNTIME_DIR"
         timeout --kill-after=3s 30s xvfb-run -a -s '-screen 0 1280x1024x24 -nolisten tcp' \
-          dbus-run-session -- "$APPDIR/AppRun" --help > "$SMOKE_LOG_DIR/help.txt" 2>&1
+          dbus-run-session -- "$LIBRECAD_RUN" --help > "$SMOKE_LOG_DIR/help.txt" 2>&1
         grep -Eiq 'Usage: librecad|dxf2pdf|dxf2png|dxf2svg' "$SMOKE_LOG_DIR/help.txt"
         timeout --kill-after=3s 30s xvfb-run -a -s '-screen 0 1280x1024x24 -nolisten tcp' \
-          dbus-run-session -- "$APPDIR/AppRun" dxf2svg --version > "$SMOKE_LOG_DIR/version.txt" 2>&1
+          dbus-run-session -- "$LIBRECAD_RUN" dxf2svg --version > "$SMOKE_LOG_DIR/version.txt" 2>&1
         grep -Fx "LibreCAD v$BASELINE_VERSION" "$SMOKE_LOG_DIR/version.txt"
         if timeout --kill-after=5s 15s xvfb-run -a -s '-screen 0 1280x1024x24 -nolisten tcp' \
           dbus-run-session -- bash -eu -o pipefail -c '
@@ -154,7 +177,7 @@ jobs:
               sleep 0.2
             done
             exit 1
-          ' gui-window "$APPDIR/AppRun" "$SMOKE_LOG_DIR/window.txt" > "$SMOKE_LOG_DIR/gui-launch.log" 2>&1; then
+          ' gui-window "$LIBRECAD_RUN" "$SMOKE_LOG_DIR/window.txt" > "$SMOKE_LOG_DIR/gui-launch.log" 2>&1; then
           LAUNCH_RC=0
         else
           LAUNCH_RC=$?
@@ -162,7 +185,7 @@ jobs:
         test "$LAUNCH_RC" -eq 124
         grep -Eq '^window_verified pid=[0-9]+ id=[0-9]+ title=.*LibreCAD' "$SMOKE_LOG_DIR/window.txt"
         echo "installed_version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
-        echo "note=Downloaded the LibreCAD ${BASELINE_VERSION} aarch64 AppImage, verified Arm64 ELF contents, ran CLI help under Xvfb, and held the GUI launch under Xvfb. No drawing workflow is claimed." >> "$GITHUB_OUTPUT"
+        echo "note=$RUNTIME_PROVENANCE for LibreCAD ${BASELINE_VERSION}; verified the Arm64 ELF, exact CLI version, help, and owned GUI window under Xvfb. No drawing workflow is claimed." >> "$GITHUB_OUTPUT"
 
     outputs:
       contract_version: "2.0"
