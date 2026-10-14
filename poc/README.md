@@ -5,10 +5,12 @@ current Linux catalog, and the existing dashboard displays the matching rows in
 KB order. No additional LLM or local semantic ranking engine is used.
 
 **Current status: local integration candidate; live scoped retrieval is blocked.**
-Brian has not yet supplied the updated endpoint/filter contract. The public API
-last checked on 2 October 2026 ignored the proposed scope filters. Therefore
+Brian's [endpoint PR #41](https://github.com/arm/knowledge-base-endpoint/pull/41)
+matches the existing request adapter and adds the required response metadata.
+Checks on 14 October 2026 found both dev and production still ignoring the scope
+filters and omitting `platform` and `edition`. Deployment remains pending.
 `ARM_KB_SCOPE_CONFIRMED` defaults to `false`: the service makes no KB search call
-and reports search unavailable until the contract is confirmed and verified.
+and reports search unavailable until the deployed contract is verified.
 Fixture tests do not establish live semantic quality or production readiness.
 
 ## Request flow
@@ -35,9 +37,9 @@ An example query means whatever the KB retrieves; the app does not locally infer
 extra constraints from the text. Use the explicit license control for a guaranteed
 license restriction.
 
-## Proposed KB contract — confirmation required
+## KB contract — deployment validation required
 
-The current adapter uses this **provisional** request shape in fixture tests:
+The current adapter already uses the GET request shape in Brian's PR:
 
 ```text
 GET /search?q=<unchanged query>&k=50
@@ -66,14 +68,15 @@ catalog identities are omitted with a notice. Duplicates retain their first rank
 
 The provider must apply scope and edition **before** selecting its top results.
 Client-side metadata checks cannot prove this happened; the KB owners must verify
-it, along with ingestion completeness and distinct edition preservation. Confirm
-the actual syntax with Brian, adapt the small request adapter if necessary, then
-run live contract and relevance checks before enabling the flag in staging.
+it, along with ingestion completeness and distinct edition preservation. Once
+the endpoint and matching metadata bundle are deployed, run live contract and
+relevance checks before enabling the flag in staging. Keep `k=50` until measured
+comparisons justify a smaller value; no additional `product` filter is required.
 
 ## Limits and unavailable search
 
 - At most 50 KB hits are considered. Results are not an exhaustive catalog scan.
-- License uses the proposed provider edition filter. Category and recorded-test
+- License uses the provider edition filter. Category and recorded-test
   filters apply locally to those candidates; matching packages outside that set
   can be missed. The UI explicitly states this limitation.
 - Recorded tests mean evidence exists, not that all tests passed. Open the package

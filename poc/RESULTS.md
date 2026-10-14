@@ -1,13 +1,21 @@
 # Scoped KB search — validation status
 
-Local validation completed on **2 October 2026**. This replaces the earlier hybrid
+Automated validation repeated on **14 October 2026**. This replaces the earlier hybrid
 search implementation. Historical semantic test counts and latency measurements
 are not acceptance evidence for the new retrieval path.
+The automated suites and three Hugo builds were rerun on 14 October. Standalone
+HTTP-boundary, source-correction, dependency/lint and browser checks below retain
+their 2 October evidence.
 
-**Ready for code review with live integration explicitly blocked.** The current
-public KB contract has not been confirmed to provide dashboard/Linux filters
-before top-k or the required platform/edition metadata. `ARM_KB_SCOPE_CONFIRMED`
-is false by default; do not enable public search based on fixture success.
+**Ready for code review with live integration explicitly blocked.** The adapter
+matches Brian's [endpoint PR #41](https://github.com/arm/knowledge-base-endpoint/pull/41),
+which is awaiting review/deployment. Four public requests on 14 October (two
+`/info` checks and two scoped searches) found dev still reporting API 1.1.0 /
+retrieval package 0.3.1, and both dev and production
+returning unscoped Ansible results without `platform` or `edition`. Production
+`/info` returned 404. The enriched dev snippets alone do not establish filtering.
+`ARM_KB_SCOPE_CONFIRMED` remains false; no runtime code, result limit or deployment
+setting was changed. Fresh local evidence is under `.poc/kb-integration-20261014/`.
 
 ## Completed checks
 
@@ -19,7 +27,7 @@ is false by default; do not enable public search based on fixture success.
 | Existing repository tests | 113 passed, 78 subtests passed |
 | HTTP boundaries | 17/17 expected statuses against a local service |
 | Hugo builds | Local overlay, production-path overlay and normal feature-disabled build passed |
-| Catalog identity | All 1,177 records agree with generated DOM identities; plus-sign URLs and same-slug editions covered |
+| Catalog identity | All 1,177 records agree with generated DOM identities. An offline replay with deterministic candidates also verified compatibility with the pinned MCP v3.3.0 serializer; this does not validate deployed ingestion or retrieval quality. Plus-sign URLs and same-slug editions covered |
 | Source corrections | Flask, Perl and Porting Advisor partner links parse and render; Windows Rust/SQLite optional guide fields now render from the normal schema |
 | Dependencies and changed Python lint | `pip check` and Ruff passed |
 | Browser checks | Actual Chrome interactions verified rank order, open-source refinement without rewriting the query, correct edition details, browse reset and labelled outage/name fallback |
@@ -70,7 +78,7 @@ reports, not local credentials or arbitrary workspace files.
 
 Before live rollout:
 
-1. Brian confirms the updated endpoint and exact request/response contract.
+1. Brian confirms deployment of the updated endpoint and matching metadata bundle.
 2. Verify scope and edition filtering before top-k, Linux/Windows isolation,
    descriptive ingestion and duplicate-edition preservation using the actual KB.
 3. Run the agreed representative queries and inspect all returned rows. Measure
