@@ -79,6 +79,9 @@
                 tables.get(table).push({ row, details: row.nextElementSibling });
             }
             for (const [table, pairs] of tables) {
+                const firstRow = pairs[0].row;
+                const lastPair = pairs[pairs.length - 1];
+                const afterRows = (lastPair.details || lastPair.row).nextElementSibling;
                 pairs.sort((a, b) => {
                     const aPinned = a.row.classList.contains('js-pinned');
                     const bPinned = b.row.classList.contains('js-pinned');
@@ -89,15 +92,27 @@
                     return (rank.get(aID) ?? Infinity) - (rank.get(bID) ?? Infinity) ||
                         (browseOrder.get(aID) ?? Infinity) - (browseOrder.get(bID) ?? Infinity);
                 });
-                for (const { row, details } of pairs) {
-                    table.appendChild(row);
-                    if (details) table.appendChild(details);
+                const searching = state.matches !== null;
+                // Promote only result/pinned pairs; hidden rows need no reordering.
+                // Restore browse order from the end so promoted pairs move back
+                // without reconnecting every intervening row's custom elements.
+                const ordered = searching ? pairs.filter(({ row }) =>
+                    row.classList.contains('js-pinned') || rank.has(row.getAttribute('data-catalog-id'))
+                ) : pairs.reverse();
+                let cursor = searching ? firstRow : afterRows;
+                for (const { row, details } of ordered) {
+                    const inPlace = searching ? row === cursor : (details || row).nextElementSibling === cursor;
+                    if (!inPlace) {
+                        table.insertBefore(row, cursor);
+                        if (details) table.insertBefore(details, cursor);
+                    }
+                    cursor = searching ? (details || row).nextElementSibling : row;
                 }
             }
         }
 
         function renderRows() {
-            orderRows();
+            if (!state.pending) orderRows();
             const rows = allRows();
             hideElements(rows, rowsToHide(rows));
             return updateCount();

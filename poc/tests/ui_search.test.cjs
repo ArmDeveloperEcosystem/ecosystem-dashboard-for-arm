@@ -11,6 +11,7 @@ class Element {
     constructor() {
         this.attributes = {};
         this.children = [];
+        this.insertedChildren = [];
         this.listeners = {};
         this.hidden = false;
         this.checked = false;
@@ -42,9 +43,15 @@ class Element {
         return this.parent ? this.parent.children[this.parent.children.indexOf(this) + 1] || null : null;
     }
     appendChild(child) {
+        return this.insertBefore(child, null);
+    }
+    insertBefore(child, reference) {
+        if (reference !== null && reference.parentNode !== this) throw new Error('Reference is not a child');
+        if (child === reference) return child;
         if (child.parent) child.remove();
         child.parent = this;
-        this.children.push(child);
+        this.children.splice(reference === null ? this.children.length : this.children.indexOf(reference), 0, child);
+        this.insertedChildren.push(child);
         return child;
     }
     replaceChildren() { this.children = []; }
@@ -278,6 +285,54 @@ test('Backend rank moves existing main/detail pairs together and clear restores 
     assert.deepEqual(f.table.children.map(row => row.id), ['row-0', 'details-0', 'row-1', 'details-1']);
 });
 
+test('Already ordered searches and repeated results do not detach catalog rows', async () => {
+    let movesBeforeFetch;
+    const f = fixture(async () => {
+        movesBeforeFetch = f.table.insertedChildren.length;
+        return response([{ id: 'postgresql', reason: 'Database' }, { id: 'nginx', reason: 'Web server' }]);
+    });
+    const originalNodes = [...f.table.children];
+    f.table.insertedChildren.length = 0;
+    await f.app.search('software');
+    assert.equal(movesBeforeFetch, 0, 'Starting a request must not move an already ordered table');
+    assert.equal(f.table.insertedChildren.length, 0, 'Unchanged result order requires no row moves');
+    await f.app.search('software');
+    assert.equal(f.table.insertedChildren.length, 0, 'Reapplying results must be idempotent');
+    assert.ok(f.table.children.every((node, index) => node === originalNodes[index]));
+    assert.equal(f.table.children.length, originalNodes.length);
+    assert.equal(f.calls.length, 1);
+});
+
+test('Changing rank moves only the needed pair and preserves static rows through clear', async () => {
+    const f = fixture(async () => response([
+        { id: 'nginx', reason: 'Web server' }, { id: 'postgresql', reason: 'Database' }
+    ]));
+    const header = new Element();
+    const footer = new Element();
+    header.id = 'static-header';
+    footer.id = 'static-footer';
+    f.table.insertBefore(header, f.rows[0]);
+    f.table.appendChild(footer);
+    const originalNodes = [...f.table.children];
+    f.rows[1].details.hidden = false;
+    f.table.insertedChildren.length = 0;
+    await f.app.search('software');
+    assert.deepEqual(f.table.children.map(node => node.id), [
+        'static-header', 'row-1', 'details-1', 'row-0', 'details-0', 'static-footer'
+    ]);
+    assert.equal(f.table.insertedChildren.length, 2, 'Swapping two pairs only needs one pair to move');
+    assert.ok(f.table.insertedChildren.every(node => node === f.rows[1] || node === f.rows[1].details));
+    assert.equal(f.rows[1].details.hidden, false);
+    f.table.insertedChildren.length = 0;
+    await f.app.search('');
+    assert.ok(f.table.children.every((node, index) => node === originalNodes[index]));
+    assert.equal(f.table.children.length, originalNodes.length);
+    assert.equal(f.table.insertedChildren.length, 2, 'Clear restores browse order with one pair move');
+    f.table.insertedChildren.length = 0;
+    await f.app.search('');
+    assert.equal(f.table.insertedChildren.length, 0, 'Clearing an already restored table does not detach rows');
+});
+
 test('Pinned packages retain their section and placeholder pairs stay intact through rank and clear', async () => {
     const f = fixture(async () => response([
         { id: 'nginx', reason: 'Web server' }, { id: 'postgresql', reason: 'Database' }
@@ -296,6 +351,7 @@ test('Pinned packages retain their section and placeholder pairs stay intact thr
     details.hidden = true;
     f.table.appendChild(placeholder);
     f.table.appendChild(details);
+    f.table.insertedChildren.length = 0;
     await f.app.search('software');
     assert.deepEqual(f.table.children.map(row => row.id), [
         'row-0', 'details-0', 'row-1', 'details-1', 'row-0-placeholder', 'details-0-placeholder'
@@ -304,6 +360,11 @@ test('Pinned packages retain their section and placeholder pairs stay intact thr
     assert.equal(placeholder.title.children.length, 0);
     assert.match(f.nodes['nl-search-notice'].textContent, /Pinned packages/);
     assert.equal(f.nodes['currently-shown-number'].textContent, '2');
+    assert.ok(!f.table.insertedChildren.includes(pinned), 'An already positioned pinned row stays attached');
+    assert.ok(!f.table.insertedChildren.includes(pinned.details), 'Pinned details stay attached');
+    f.table.insertedChildren.length = 0;
+    await f.app.search('software');
+    assert.equal(f.table.insertedChildren.length, 0, 'Reapplying pinned results does not move rows or placeholders');
     await f.app.search('');
     assert.deepEqual(f.table.children.map(row => row.id), [
         'row-0', 'details-0', 'row-0-placeholder', 'details-0-placeholder', 'row-1', 'details-1'

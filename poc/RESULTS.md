@@ -12,7 +12,7 @@ completed-checks table retain their 2 October evidence.
 both endpoints reported API 1.2.0 / retrieval package 0.5.1. The advertised source
 revision `f337da3e4864cb505e0149d2e4ed24e0b139e33f` applies scope before candidate
 limits and ranking. Earlier same-day failures are superseded by the live checks
-below. No search runtime code or result limit changed. `ARM_KB_SCOPE_CONFIRMED`
+below. No backend retrieval code or result limit changed. `ARM_KB_SCOPE_CONFIRMED`
 remains false by default; only the local validation process enables it.
 Evidence is under `.poc/kb-integration-20261014/` and `.poc/kb-live-validation-20261014/`.
 Current `main` was merged to resolve a generated-catalog conflict; the combined
@@ -24,7 +24,7 @@ catalog digest was validated without changing reviewed registry evidence.
 |---|---|
 | Python search/API/client suite | 207 passed; two upstream dependency deprecation warnings |
 | Actual HTTP integration | 31 of the 207 tests exercise FastAPI → KBClient → loopback KB fixture |
-| JavaScript interaction suite | 15 passed, including ordering, refinements, cancellation, pin/unpin and edition-specific expansion |
+| JavaScript interaction suite | 17 passed, including ordering, refinements, cancellation, pin/unpin, edition-specific expansion and unnecessary-row-movement regressions |
 | Existing repository tests | 113 passed, 78 subtests passed |
 | HTTP boundaries | 17/17 expected statuses against a local service |
 | Hugo builds | Local overlay, production-path overlay and normal feature-disabled build passed |
@@ -52,9 +52,11 @@ time, complete coverage of every edge case or cross-browser certification.
 **Relevance needs work:** “Databases for storing embeddings” returned neither
 Qdrant nor Milvus in the top 50. “Tools to serve language models locally” ranked
 Crystal Language above Ollama and included unrelated build/compiler tools.
-Direct “vector databases” found Qdrant at rank 7 but still omitted Milvus. These
-findings need KB retrieval/coverage investigation; they do not prove a specific
-ingestion or ranking defect. The dashboard preserves the returned KB order.
+Follow-up exact-name queries found Qdrant and Milvus at rank 1, confirming both
+are indexed. “vector database” found them at ranks 5 and 7; the original embeddings
+phrase missed both even at `k=100`. The upstream retrieval is sensitive to wording;
+the exact candidate-selection/ranking cause still needs a provider trace. These
+packages were absent from the raw response, not removed by the dashboard.
 
 The eight local HTTP requests took **0.180–2.717 seconds, median 0.252 seconds**.
 A separate service check ran six uncached searches plus six cached repeats.
@@ -62,6 +64,23 @@ Uncached searches measured median 0.143 seconds inside the KB client and
 0.33 milliseconds of local overhead. KB client time includes
 network and provider processing; these small sequential samples have uncontrolled
 upstream cache state and are not a load test or server-side attribution.
+
+### Browser display-delay investigation
+
+The API measurements above excluded rendering. A subsequent Chrome trace
+reproduced **3.87–4.75 seconds from submit to displayed results**, including
+4.30/4.72 seconds when the API responded in just 19/23 milliseconds. The UI
+unconditionally moved all 1,178 main/detail row pairs before and after retrieval;
+`appendChild` dominated the CPU profile.
+
+The minimal fix skips reordering while a request is pending, moves only displaced
+result/pinned pairs, and restores browse order on clear. With updated code and
+tooltip components ready, the same repeated queries displayed in **78/88 milliseconds**;
+initial searches took 0.85/1.71 seconds, mostly API waiting. Browser work outside
+the API took approximately 56–65 milliseconds. These are local samples, not a
+latency guarantee. Live rank and all 1,178 rows' browse order were preserved.
+The 17-test UI suite includes regressions that fail on the previous implementation.
+Traces and query contrasts are saved under `.poc/kb-diagnosis-20261014/`.
 
 An earlier independent review checked scope validation, composite identities, caching,
 URL handling, UI behavior, deployment and documentation. Findings corrected during
