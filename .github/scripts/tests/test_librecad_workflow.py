@@ -130,7 +130,8 @@ case "$1" in
   getwindowpid) echo "${FIXTURE_WINDOW_PID:-$(cat "$FIXTURE_WINDOW_PID_FILE")}" ;;
   key)
     test "$*" = 'key --window 42 Return'
-    if [ "${FIXTURE_STUCK_WELCOME:-0}" != 1 ]; then touch "$FIXTURE_WELCOME_DONE"; fi ;;
+    if [ "${FIXTURE_STUCK_WELCOME:-0}" != 1 ]; then touch "$FIXTURE_WELCOME_DONE"; fi
+    exit "${FIXTURE_WELCOME_KEY_RC:-0}" ;;
   *) exit 99 ;;
 esac
 ''')
@@ -233,7 +234,8 @@ ln -s usr/bin/librecad squashfs-root/AppRun
                  {"FIXTURE_APT_RC": "100"}, {"FIXTURE_NO_WINDOW": "1"},
                  {"FIXTURE_WINDOW_PID": "99999999"}, {"FIXTURE_WINDOW_TITLE": "unrelated"},
                  {"FIXTURE_XPROP_RC": "1"}, {"FIXTURE_WINDOW_CLASS": "unrelated"},
-                 {"FIXTURE_WELCOME": "1", "FIXTURE_STUCK_WELCOME": "1"})
+                 {"FIXTURE_WELCOME": "1", "FIXTURE_STUCK_WELCOME": "1"},
+                 {"FIXTURE_WELCOME": "1", "FIXTURE_STUCK_WELCOME": "1", "FIXTURE_WELCOME_KEY_RC": "1"})
         for env in cases:
             with self.subTest(env=env):
                 result, output = self.run_step("test5", **env)
@@ -263,6 +265,23 @@ ln -s usr/bin/librecad squashfs-root/AppRun
                 result, _ = self.run_step("test5", FIXTURE_WELCOME="1")
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
             self.assertTrue(Path(self.env["FIXTURE_WELCOME_DONE"]).exists())
+
+    def test_closed_welcome_dialog_key_error_requires_fresh_main_window_proof(self):
+        self.runtime_fixture()
+        for candidate in (False, True):
+            Path(self.env["FIXTURE_WELCOME_DONE"]).unlink(missing_ok=True)
+            environment = {"FIXTURE_WELCOME": "1", "FIXTURE_WELCOME_KEY_RC": "1"}
+            if candidate:
+                result, _ = self.run_script(self.steps["test6"]["with"]["limited_cpu_probe"],
+                                            LATEST_VERSION="2.2.1.5", CANDIDATE_TAG="v2.2.1.5", **environment)
+            else:
+                result, output = self.run_step("test5", **environment)
+                self.assertEqual("passed", output.get("status"), result.stdout + result.stderr)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        proofs = list(self.root.rglob("window.txt"))
+        self.assertEqual(2, len(proofs))
+        for proof in proofs:
+            self.assertRegex(proof.read_text(), r"(?m)^window_verified pid=\d+ id=42 title=LibreCAD$")
 
     def test_late_failure_overrides_an_earlier_pass_output(self):
         result, output = self.run_step("test5", TEST5_COMMAND='echo status=passed >> "$GITHUB_OUTPUT"; exit 23')
