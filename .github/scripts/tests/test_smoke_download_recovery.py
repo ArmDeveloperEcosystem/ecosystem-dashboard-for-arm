@@ -3,7 +3,9 @@
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -126,6 +128,109 @@ fi
                 result, output, _ = self.run_step("dolphinscheduler", **environment)
                 self.assertNotEqual(0, result.returncode)
                 self.assertEqual("failed", output["status"])
+
+    def dolphinscheduler_download_fixture(self):
+        version = subprocess.check_output(
+            ["bash", "-c", 'printf "%s %s" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"'],
+            text=True)
+        if tuple(map(int, version.split())) < (4, 4):
+            self.skipTest("The shared downloader requires Bash 4.4+ for empty arrays under nounset")
+
+        # Exercise the unchanged helper and real tar; only network commands and waits are fixtures.
+        helper = self.root / ".github/scripts/download-with-fallback.sh"
+        helper.unlink()
+        helper.symlink_to(ROOT / ".github/scripts/download-with-fallback.sh")
+        (self.bin / "tar").unlink()
+        archive = self.root / "candidate.tar.gz"
+        with tarfile.open(archive, "w:gz") as package:
+            for name in ("master-server/bin/start.sh", "master-server/conf/application.yaml",
+                         "libs/dolphinscheduler-service-3.4.3.jar"):
+                package.addfile(tarfile.TarInfo(f"apache-dolphinscheduler-3.4.3-bin/{name}"))
+        self.env["FIXTURE_ARCHIVE"] = str(archive)
+        self.dolphinscheduler_mirrors = [
+            f"{base}/3.4.3/apache-dolphinscheduler-3.4.3-bin.tar.gz"
+            for base in ("https://downloads.apache.org/dolphinscheduler",
+                         "https://archive.apache.org/dist/dolphinscheduler",
+                         "http://archive.apache.org/dist/dolphinscheduler")]
+        log_environment = '''
+printf 'download_env %s %s %s %s %s %s\\n' "$DOWNLOAD_ATTEMPTS" "$DOWNLOAD_CONNECT_TIMEOUT" \\
+  "$DOWNLOAD_MAX_TIME" "$DOWNLOAD_RETRY_DELAY" "$DOWNLOAD_WGET_TIMEOUT" "$DOWNLOAD_WGET_WAITRETRY" >> "$CALLS"
+'''
+        self.stub("curl", log_environment + '''
+printf 'curl %s\\n' "$*" >> "$CALLS"
+while [ "$1" != -o ]; do shift; done
+output="$2"
+url="$3"
+if [ "${ALL_MIRRORS_FAIL:-0}" = 1 ] || [[ "$url" == https://downloads.apache.org/* ]]; then
+  printf 'partial archive' > "$output"
+  exit 28
+fi
+test ! -s "$output"
+cp "$FIXTURE_ARCHIVE" "$output"
+''')
+        self.stub("wget", log_environment + '''
+printf 'wget %s\\n' "$*" >> "$CALLS"
+exit 8
+''')
+        self.stub("sleep", '''printf 'sleep %s\\n' "$*" >> "$CALLS"''')
+
+    def download_calls(self, calls, command):
+        return [shlex.split(line) for line in calls.splitlines() if line.startswith(command + " ")]
+
+    def test_dolphinscheduler_real_helper_recovers_from_stalled_primary(self):
+        self.dolphinscheduler_download_fixture()
+        result, output, calls = self.run_step("dolphinscheduler")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("passed", output["status"])
+        self.assertEqual("3.2.1", output["current_version"])
+        self.assertEqual("3.4.3", output["next_installed_version"])
+        curl_calls = self.download_calls(calls, "curl")
+        self.assertEqual(self.dolphinscheduler_mirrors[:2], [call[-1] for call in curl_calls])
+        for call in curl_calls:
+            self.assertEqual("30", call[call.index("--connect-timeout") + 1])
+            self.assertEqual("300", call[call.index("--max-time") + 1])
+            self.assertEqual("0", call[call.index("--retry") + 1])
+        self.assertEqual([["download_env", "1", "30", "300", "5", "60", "5"]] * 2,
+                         self.download_calls(calls, "download_env"))
+        self.assertEqual([["sleep", "5"]], self.download_calls(calls, "sleep"))
+        self.assertFalse(self.download_calls(calls, "wget"))
+        self.assertIn("timeout --kill-after=10s 20m bash .github/scripts/download-with-fallback.sh", calls)
+
+    def test_dolphinscheduler_real_helper_exhausts_mirrors_within_curl_budget(self):
+        self.dolphinscheduler_download_fixture()
+        result, output, calls = self.run_step("dolphinscheduler", ALL_MIRRORS_FAIL="1")
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("failed", output["status"])
+        self.assertEqual("next_install_failed", output["decision"])
+        curl_calls = self.download_calls(calls, "curl")
+        wget_calls = self.download_calls(calls, "wget")
+        self.assertEqual(self.dolphinscheduler_mirrors, [call[-1] for call in curl_calls])
+        self.assertEqual(self.dolphinscheduler_mirrors, [call[-1] for call in wget_calls])
+        self.assertEqual([["download_env", "1", "30", "300", "5", "60", "5"]] * 6,
+                         self.download_calls(calls, "download_env"))
+        for call in wget_calls:
+            self.assertIn("--tries=1", call)
+            self.assertIn("--timeout=60", call)
+            self.assertIn("--waitretry=5", call)
+        curl_budget = sum(int(call[call.index("--max-time") + 1]) for call in curl_calls)
+        retry_budget = sum(int(call[1]) for call in self.download_calls(calls, "sleep"))
+        self.assertEqual(915, curl_budget + retry_budget)
+        self.assertLess(curl_budget + retry_budget, 16 * 60)
+        self.assertEqual(285, 20 * 60 - curl_budget - retry_budget)
+        self.assertNotIn("timeout 15m tar", calls)
+
+    def test_dolphinscheduler_real_helper_rejects_malformed_archive(self):
+        self.dolphinscheduler_download_fixture()
+        Path(self.env["FIXTURE_ARCHIVE"]).write_text("not a gzip archive")
+        result, output, calls = self.run_step("dolphinscheduler")
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("failed", output["status"])
+        self.assertEqual("next_install_failed", output["decision"])
+        self.assertIn("could not be extracted cleanly", output["comparison"])
+        self.assertEqual(self.dolphinscheduler_mirrors[:2],
+                         [call[-1] for call in self.download_calls(calls, "curl")])
+        self.assertIn("timeout 15m tar", calls)
+        self.assertFalse(self.download_calls(calls, "wget"))
 
     def cni_fixture(self):
         source = self.root / "next-src"
