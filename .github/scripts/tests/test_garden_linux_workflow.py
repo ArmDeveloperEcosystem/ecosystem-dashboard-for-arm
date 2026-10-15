@@ -14,6 +14,11 @@ import yaml
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows/test-garden-linux.yml"
+ROOT = WORKFLOW.parents[2]
+sys.path.insert(0, str(ROOT / ".github/scripts"))
+import package_result_policy as policy  # noqa: E402
+
+
 BASH = os.environ.get("GARDEN_LINUX_WORKFLOW_BASH", shutil.which("bash"))
 BASH_MAJOR = int(subprocess.check_output(
     [BASH, "-c", 'printf "%s" "${BASH_VERSINFO[0]}"'], text=True))
@@ -45,7 +50,17 @@ class GardenLinuxWorkflowTests(unittest.TestCase):
         if "DEVELOPER_DIR" in os.environ:
             self.env["DEVELOPER_DIR"] = os.environ["DEVELOPER_DIR"]
         self.values = {"github.token": TOKEN, "steps.install.outputs.install_mode": "github_source",
-                       "steps.test6.outputs.decision": "limited_cpu_smoke_validated"}
+                       "steps.metadata.outputs.package_slug": "garden-linux",
+                       "steps.metadata.outputs.dashboard_link": "/linux/opensource_packages/garden-linux",
+                       "steps.metadata.outputs.timestamp": "2026-10-15T00:00:00Z",
+                       "steps.version.outputs.version": BASELINE,
+                       "github.run_id": "123", "github.run_attempt": "1", "github.job": "test-garden-linux",
+                       "steps.test6.outputs.decision": "limited_cpu_smoke_validated",
+                       "steps.test6.outputs.current_version": BASELINE,
+                       "steps.test6.outputs.latest_version": CANDIDATE,
+                       "steps.test6.outputs.next_installed_version": CANDIDATE,
+                       "steps.test6.outputs.regression_result": "Arm preflight proof passed on Arm64",
+                       "steps.test6.outputs.comparison": self.steps["test6"]["with"]["limited_cpu_description"]}
         for number in range(1, 7):
             self.values[f"steps.test{number}.outputs.status"] = "passed"
             self.values[f"steps.test{number}.outputs.duration"] = str(number)
@@ -159,6 +174,56 @@ os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
         self.assertRegex(outputs["duration"], r"^[0-9]+$")
         self.publish("test5", result, outputs)
         self.assert_summary(passed=5, failed=1, core=1)
+
+    def candidate_gate(self, step):
+        condition = step.get("if", "").strip()
+        if condition.startswith("${{") and condition.endswith("}}"):
+            condition = condition[3:-2].strip()
+        clauses = [clause.strip() for clause in condition.split("&&")]
+        expected = {f"steps.test{number}.{field} == '{value}'": (f"steps.test{number}.{field}", value)
+                    for number in range(1, 6)
+                    for field, value in (("outputs.status", "passed"), ("outcome", "success"))}
+        self.assertCountEqual(expected, clauses, step["name"])
+        return all(self.values.get(key, "") == value for key, value in expected.values())
+
+    def skip_candidate(self, outcome="skipped"):
+        self.values = {key: value for key, value in self.values.items() if not key.startswith("steps.test6.")}
+        self.values["steps.test6.outcome"] = outcome
+
+    def collect_summary(self, summary, api_conclusions=None):
+        action = yaml.safe_load((ROOT / ".github/actions/collect-batch-results/action.yml").read_text())
+        source = action["runs"]["steps"][0]["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        self.values.update({f"steps.summary.outputs.{key}": value for key, value in summary.items()})
+        outputs = {key: self.render(value) for key, value in self.job["outputs"].items()}
+        if api_conclusions is None:
+            api_conclusions = [self.values.get(f"steps.test{number}.outcome") or "skipped"
+                               for number in range(1, 7)]
+        self.assertEqual(6, len(api_conclusions))
+        step_numbers = {step.get("id"): number for number, step in enumerate(self.job["steps"], 1)}
+        api_steps = [{"name": self.steps[f"test{number}"]["name"],
+                      "number": step_numbers[f"test{number}"], "conclusion": conclusion}
+                     for number, conclusion in enumerate(api_conclusions, 1)]
+        api_steps.append({"name": self.steps["summary"]["name"], "number": step_numbers["summary"],
+                          "conclusion": summary["overall_status"]})
+        job = {"id": 456, "name": "test-garden-linux / test-garden-linux",
+               "html_url": "https://github.com/example/project/actions/runs/123/job/456",
+               "conclusion": summary["overall_status"], "steps": api_steps}
+        with tempfile.TemporaryDirectory(prefix="collector-", dir=self.root) as temporary:
+            root = Path(temporary)
+            (root / ".github").mkdir()
+            (root / ".github/scripts").symlink_to(ROOT / ".github/scripts")
+            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "GH_TOKEN": "", "GITHUB_TOKEN": "",
+                   "NEEDS_JSON": json.dumps({"test-garden-linux": {
+                       "result": summary["overall_status"], "outputs": outputs}}),
+                   "RUN_JOBS_JSON": json.dumps({"jobs": [job]}),
+                   "BATCH_NUMBER": "1", "BATCH_TITLE": "Batch 1",
+                   "GITHUB_SERVER_URL": "https://github.com", "GITHUB_API_URL": "https://api.github.com",
+                   "GITHUB_REPOSITORY": "example/project", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+                   "GITHUB_OUTPUT": str(root / "outputs"), "GITHUB_STEP_SUMMARY": str(root / "summary")}
+            result = subprocess.run([sys.executable, "-B", "-c", source], cwd=root, env=env,
+                                    capture_output=True, text=True, timeout=30)
+            artifact = root / "test-results/garden-linux-test-results/garden-linux.json"
+            return result, json.loads(artifact.read_text()) if artifact.exists() else None
 
     def test_token_is_confined_to_trusted_fetch_before_source_execution(self):
         steps = self.job["steps"]
@@ -384,9 +449,116 @@ os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
                          tuple(emitted[key] for key in ("run_status", "badge_status", "core_failed", "tests_failed",
                                                         "tests_skipped", "regression_status", "regression_decision")))
 
+    def test_python_setup_and_candidate_require_all_five_core_statuses_and_outcomes(self):
+        setup = next(step for step in self.job["steps"] if step.get("uses", "").startswith("actions/setup-python@"))
+        for step in (setup, self.steps["test6"]):
+            self.assertTrue(self.candidate_gate(step))
+            for number in range(1, 6):
+                for field, bad_values in (("outputs.status", ("", "failed", "skipped")),
+                                          ("outcome", ("", "failure", "cancelled", "skipped"))):
+                    key = f"steps.test{number}.{field}"
+                    original = self.values[key]
+                    for value in bad_values:
+                        with self.subTest(step=step["name"], number=number, field=field, value=value):
+                            self.values[key] = value
+                            self.assertFalse(self.candidate_gate(step))
+                    self.values[key] = original
+
+    def test_real_baseline_failure_skips_candidate_and_publishes_failed_result(self):
+        (self.root / "baseline-src/Makefile").write_text("all: missing-required-target\n")
+        result, outputs = self.run_step("test5")
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("failed", outputs["status"])
+        self.publish("test5", result, outputs)
+        setup = next(step for step in self.job["steps"] if step.get("uses", "").startswith("actions/setup-python@"))
+        self.assertFalse(self.candidate_gate(setup))
+        self.assertFalse(self.candidate_gate(self.steps["test6"]))
+        self.skip_candidate()
+        summary = self.assert_summary(passed=4, failed=1, skipped=1, core=1)
+        self.assertEqual(("skipped", "baseline_failed"),
+                         (summary["regression_status"], summary["regression_decision"]))
+        collected, payload = self.collect_summary(summary)
+        self.assertEqual(0, collected.returncode, collected.stderr)
+        self.assertEqual("2.0", payload["schema_version"])
+        self.assertEqual({"name": "Garden Linux", "version": BASELINE}, payload["package"])
+        self.assertEqual(["passed"] * 4 + ["failed", "skipped"],
+                         [detail["status"] for detail in payload["tests"]["details"]])
+        self.assertEqual((4, 1, 1), tuple(payload["tests"][key] for key in ("passed", "failed", "skipped")))
+        self.assertEqual(1, payload["metadata"]["core_failed"])
+        self.assertEqual("baseline_failed", payload["tests"]["details"][5]["decision"])
+        self.assertEqual("failure", policy.validate_publishable_result(payload))
+
+        collected, payload = self.collect_summary(summary, ["success"] * 4 + ["failure", "failure"])
+        self.assertNotEqual(0, collected.returncode)
+        self.assertIn("emitted skipped count contradicts test details", collected.stderr)
+        self.assertIsNone(payload)
+
+    def test_each_core_failure_with_unrun_candidate_has_publishable_baseline_skip(self):
+        for number in range(1, 6):
+            for candidate_outcome in ("skipped", ""):
+                with self.subTest(number=number, candidate_outcome=candidate_outcome):
+                    self.values[f"steps.test{number}.outputs.status"] = "failed"
+                    self.values[f"steps.test{number}.outcome"] = "failure"
+                    self.skip_candidate(candidate_outcome)
+                    summary = self.assert_summary(passed=4, failed=1, skipped=1, core=1)
+                    self.assertEqual(("skipped", "baseline_failed"),
+                                     (summary["regression_status"], summary["regression_decision"]))
+                    collected, payload = self.collect_summary(summary)
+                    self.assertEqual(0, collected.returncode, collected.stderr)
+                    self.assertEqual("failed", payload["tests"]["details"][number - 1]["status"])
+                    self.assertEqual("skipped", payload["tests"]["details"][5]["status"])
+                    self.assertEqual("failure", policy.validate_publishable_result(payload))
+                    self.values[f"steps.test{number}.outputs.status"] = "passed"
+                    self.values[f"steps.test{number}.outcome"] = "success"
+
+    def test_unrun_candidate_without_core_failure_cannot_become_baseline_skip(self):
+        for outcome in ("skipped", ""):
+            with self.subTest(outcome=outcome):
+                self.skip_candidate(outcome)
+                summary = self.assert_summary(passed=5, failed=1)
+                self.assertEqual(("failed", "next_install_failed"),
+                                 (summary["regression_status"], summary["regression_decision"]))
+                collected, payload = self.collect_summary(summary)
+                self.assertEqual(0, collected.returncode, collected.stderr)
+                self.assertEqual("failure", policy.validate_publishable_result(payload))
+
+    def test_actually_run_candidate_with_core_failure_is_not_rewritten_or_publishable(self):
+        self.values.update({"steps.test5.outputs.status": "failed", "steps.test5.outcome": "failure"})
+        for status, decision, outcome in (("passed", "limited_cpu_smoke_validated", "success"),
+                                         ("failed", "limited_cpu_smoke_failed", "success"),
+                                         ("failed", "next_install_failed", "failure"),
+                                         ("failed", "next_install_failed", "cancelled"),
+                                         ("skipped", "no_newer_stable_available", "success")):
+            with self.subTest(status=status, decision=decision, outcome=outcome):
+                self.values.update({"steps.test6.outputs.status": status, "steps.test6.outputs.decision": decision,
+                                    "steps.test6.outcome": outcome})
+                summary = self.assert_summary(passed=4 + int(status == "passed"),
+                                              failed=1 + int(status == "failed"),
+                                              skipped=int(status == "skipped"), core=1)
+                self.assertEqual((status, decision), (summary["regression_status"], summary["regression_decision"]))
+                collected, payload = self.collect_summary(summary)
+                self.assertEqual(0, collected.returncode, collected.stderr)
+                self.assertEqual((status, decision), (payload["tests"]["details"][5]["status"],
+                                                     payload["tests"]["details"][5]["decision"]))
+                with self.assertRaisesRegex(ValueError, "baseline failures require an approved baseline decision"):
+                    policy.validate_publishable_result(payload)
+
+    def test_candidate_only_failure_remains_publishable(self):
+        self.values.update({"steps.test6.outputs.status": "failed", "steps.test6.outcome": "success",
+                            "steps.test6.outputs.decision": "limited_cpu_smoke_failed"})
+        summary = self.assert_summary(passed=5, failed=1)
+        collected, payload = self.collect_summary(summary)
+        self.assertEqual(0, collected.returncode, collected.stderr)
+        self.assertEqual(["passed"] * 5 + ["failed"],
+                         [detail["status"] for detail in payload["tests"]["details"]])
+        self.assertEqual("limited_cpu_smoke_failed", payload["tests"]["details"][5]["decision"])
+        self.assertEqual("failure", policy.validate_publishable_result(payload))
+
     def test_all_missing_results_and_output_defaults_are_fail_closed(self):
         self.values = {}
-        self.assert_summary(passed=0, failed=6, core=5)
+        summary = self.assert_summary(passed=0, failed=5, skipped=1, core=5)
+        self.assertEqual(("skipped", "baseline_failed"),
+                         (summary["regression_status"], summary["regression_decision"]))
         for key, expected in (("core_failed", "5"), ("tests_failed", "6"), ("regression_status", "failed"),
                               ("run_status", "failure"), ("tests_skipped", "0")):
             self.assertEqual(expected, self.render(self.job["outputs"][key]))
