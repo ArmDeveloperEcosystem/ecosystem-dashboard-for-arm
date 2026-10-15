@@ -32,7 +32,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             self.report["totals"],
         )
         self.assertEqual(
-            {"not_applicable_package_manager": 8, "not_configured": 953},
+            {"next_install_failed": 1, "not_applicable_package_manager": 8, "not_configured": 952},
             self.report["fallback_counts"],
         )
         self.assertEqual(
@@ -58,10 +58,11 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
     def test_structural_observation_inputs_are_present(self) -> None:
         remediation = self.report["remediation"]
         self.assertEqual({}, remediation["missing_test_steps"])
-        # The advisory static scan cannot follow Xen's EXIT traps. Runtime smoke
-        # tests exercise these writes; retain the exact Xen-only scan findings.
+        # The advisory scan cannot follow EXIT traps. Executable workflow tests
+        # verify Xen's outputs and Garden Linux's Test 5 finalizer separately.
         self.assertEqual(
-            {f"test{number}": ["xen-hypervisor"] for number in range(1, 6)},
+            {**{f"test{number}": ["xen-hypervisor"] for number in range(1, 5)},
+             "test5": ["garden-linux", "xen-hypervisor"]},
             remediation["missing_test_status"],
         )
         self.assertEqual({}, remediation["invalid_test_names"])
@@ -79,7 +80,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         remediation = self.report["remediation"]
         self.assertEqual(17, len(remediation["emitter_missing_slug"]))
         self.assertEqual(
-            {"test1": 1, "test2": 1, "test3": 1, "test4": 4, "test5": 43, "test6": 6},
+            {"test1": 1, "test2": 1, "test3": 1, "test4": 4, "test5": 44, "test6": 6},
             {
                 key: len(value)
                 for key, value in remediation["missing_test_duration"].items()
@@ -91,8 +92,11 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
                 "xen-hypervisor", remediation["missing_test_duration"][f"test{number}"]
             )
         self.assertNotIn("backstage", remediation["missing_test_duration"]["test4"])
+        self.assertIn("garden-linux", remediation["missing_test_duration"]["test5"])
+        # Garden Linux binds status/duration through step env, outside this
+        # advisory scan's literal run-script reference analysis.
         self.assertEqual(
-            {"test3": 1, "test4": 1, "test5": 2, "test6": 320},
+            {"test1": 1, "test2": 1, "test3": 2, "test4": 2, "test5": 3, "test6": 321},
             {
                 key: len(value)
                 for key, value in remediation[
@@ -124,7 +128,10 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(
             304, len(remediation["package_manager_summary_omits_test6"])
         )
-        self.assertEqual(8, len(remediation["unsafe_fallback_workflows"]))
+        # The audit flags every default except not_configured, including Garden's
+        # explicit failure default; runtime tests prove that it stays red.
+        self.assertEqual(9, len(remediation["unsafe_fallback_workflows"]))
+        self.assertIn("garden-linux", remediation["unsafe_fallback_workflows"])
         self.assertEqual(["freecad"], remediation["package_manager_missing_decision"])
         self.assertEqual(
             {"test1": 25, "test2": 32, "test3": 33, "test4": 26, "test5": 29},
@@ -173,7 +180,8 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertIn(
             "xen-hypervisor", remediation["non_package_manager_missing_baseline_guard"]
         )
-        self.assertEqual(320, len(remediation["summary_omits_test6_status"]))
+        self.assertEqual(321, len(remediation["summary_omits_test6_status"]))
+        self.assertIn("garden-linux", remediation["summary_omits_test6_status"])
         self.assertEqual(
             953, len(remediation["unsafe_package_version_fallback"])
         )
@@ -218,7 +226,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "0d959bc67a7f35b7a69be003d7d8dea6ba5e0fe6c0232a07b025fad028f77947",
+            "24f3b15b042c263111ba609695baf98545141399e6f94715c34cb18008d86fd7",
             digest,
         )
 
