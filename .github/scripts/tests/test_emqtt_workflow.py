@@ -1,4 +1,4 @@
-"""Exercise step-scoped Git transport in the actual EMQTT build scripts."""
+"""Exercise EMQTT Git transport and failure reporting in the actual workflow scripts."""
 
 import os
 from pathlib import Path
@@ -48,7 +48,7 @@ class EmqttWorkflowTests(unittest.TestCase):
                         RUNNER_TEMP=str(self.root), TMPDIR=str(self.root),
                         CALLS=str(self.root / "calls"), FIXTURE_BIN=str(self.bin),
                         FIXTURE_OPENSSL_PATH=OPENSSL_PATH, FIXTURE_BORINGSSL_COMMIT=BORINGSSL_COMMIT,
-                        FIXTURE_SOURCE=SOURCE, NESTED_GIT_RC="0", MAKE_RC="0")
+                        FIXTURE_SOURCE=SOURCE, CLONE_RC="0", NESTED_GIT_RC="0", MAKE_RC="0")
         for command in ("bash", "rm", "mkdir", "cp", "chmod", "find", "head", "date",
                         "mktemp", "grep", "tail", "cut", "cat"):
             executable = "/bin/bash" if command == "bash" else shutil.which(command)
@@ -65,6 +65,7 @@ case "$1" in
     ;;
   clone)
     test "$#" = 7
+    if [ "$CLONE_RC" -ne 0 ]; then echo 'source clone failed' >&2; exit "$CLONE_RC"; fi
     mkdir -p "$7/$FIXTURE_OPENSSL_PATH"
     cd "$7/$FIXTURE_OPENSSL_PATH"
     "$REAL_GIT" init --quiet
@@ -128,14 +129,18 @@ esac
                                        env={**self.env, **(environment or {})},
                                        text=True, stderr=subprocess.PIPE, timeout=10).strip()
 
-    def run_step(self, step_id, **environment):
+    def run_step(self, step_id, *, step_outputs=None, **environment):
         step = self.steps[step_id]
         values = {"steps.version.outputs.version": "1.4.4"}
+        for source_step, outputs in (step_outputs or {}).items():
+            values.update({f"steps.{source_step}.outputs.{key}": value
+                           for key, value in outputs.items()})
 
         def expression(match):
             for term in match[1].split("||"):
                 key = term.strip()
                 value = (key[1:-1] if key.startswith("'") else
+                         key if key.isdigit() else
                          self.env.get(key[4:]) if key.startswith("env.") else values.get(key))
                 if value:
                     return str(value)
@@ -154,6 +159,17 @@ esac
                       Path(self.env["GITHUB_OUTPUT"]).read_text().splitlines())
         calls = [shlex.split(line) for line in Path(self.env["CALLS"]).read_text().splitlines()]
         return result, output, calls
+
+    def assert_summary_with_passing_baseline(self, candidate_output, *, passed, failed, skipped):
+        step_outputs = {f"test{i}": {"status": "passed", "duration": str(i)}
+                        for i in range(1, 6)}
+        step_outputs["test6"] = candidate_output
+        result, output, _ = self.run_step("summary", step_outputs=step_outputs)
+        self.assertEqual({"passed": str(passed), "failed": str(failed), "skipped": str(skipped),
+                          "duration": str(15 + int(candidate_output.get("duration", "0"))),
+                          "core_failed": "0", "overall_status": "failure" if failed else "success",
+                          "badge_status": "failing" if failed else "passing"}, output)
+        self.assertEqual(1 if failed else 0, result.returncode, result.stdout + result.stderr)
 
     def assert_transport_and_pins(self, step_id, calls):
         self.assertEqual([["transport", "1", GIT_ENV["GIT_CONFIG_KEY_0"], SOURCE, MIRROR]],
@@ -229,8 +245,41 @@ esac
                     self.assert_transport_and_pins(step_id, calls)
                     self.assertNotEqual("success", output.get("install_status"))
                     self.assertNotEqual("passed", output.get("status"))
+                    if step_id == "test6":
+                        self.assertEqual("failed", output.get("status"))
                     self.assertNotIn("next_installed_version", output)
                     self.assertFalse(any(call[0] in ("sudo", "fixture-emqtt-cli") for call in calls))
+
+    def test_summary_fails_when_candidate_build_aborts_after_five_baseline_passes(self):
+        for failure, status in (("CLONE_RC", "128"), ("NESTED_GIT_RC", "128"), ("MAKE_RC", "2")):
+            with self.subTest(failure=failure):
+                result, output, calls = self.run_step("test6", **{failure: status})
+                self.assertEqual(int(status), result.returncode, result.stdout + result.stderr)
+                self.assertNotIn("next_installed_version", output)
+                self.assertFalse(any(call[0] == "fixture-emqtt-cli" for call in calls))
+                self.assert_summary_with_passing_baseline(output, passed=5, failed=1, skipped=0)
+                self.assertEqual("failed", output.get("status"))
+
+    def test_summary_passes_for_six_passing_tests(self):
+        result, output, _ = self.run_step("test6")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("passed", output.get("status"))
+        self.assertEqual("next_install_validated", output.get("decision"))
+        self.assert_summary_with_passing_baseline(output, passed=6, failed=0, skipped=0)
+
+    def test_summary_allows_no_newer_stable_skip_after_five_baseline_passes(self):
+        self.stub("git", r'''
+test "$*" = 'ls-remote --tags https://github.com/emqx/emqtt.git'
+printf '%s\trefs/tags/1.4.4\n' "$FIXTURE_BORINGSSL_COMMIT"
+''')
+        result, output, calls = self.run_step("test6")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("skipped", output.get("status"))
+        self.assertEqual("no_newer_stable_available", output.get("decision"))
+        self.assertEqual("1.4.4", output.get("current_version"))
+        self.assertEqual("1.4.4", output.get("latest_version"))
+        self.assertEqual([["git", "ls-remote", "--tags", "https://github.com/emqx/emqtt.git"]], calls)
+        self.assert_summary_with_passing_baseline(output, passed=5, failed=0, skipped=1)
 
 
 if __name__ == "__main__":
