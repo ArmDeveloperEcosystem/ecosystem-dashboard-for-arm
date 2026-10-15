@@ -6,7 +6,7 @@ download_url: https://github.com/GitbookIO/gitbook.git
 works_on_arm: true
 supported_minimum_version:
     version_number: 
-    release_date:  2024/11/05 (Main branch)
+    release_date: 2024/11/05 
 
 
 optional_info:

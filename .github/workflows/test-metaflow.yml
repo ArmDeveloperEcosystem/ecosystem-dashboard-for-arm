@@ -128,7 +128,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # original: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          # Metaflow 2.0 uses collections.Sequence, removed in Python 3.10.
+          python-version: '3.9.25'
 
       - name: Install baseline package
         id: install
@@ -136,7 +137,8 @@ jobs:
           set -euo pipefail
           python -m venv .venv-current
           . .venv-current/bin/activate
-          python -m pip install --upgrade "pip<24.1" packaging >/dev/null
+          # Metaflow 2.0 also imports the legacy pkg_resources API.
+          python -m pip install --upgrade "pip<24.1" packaging "setuptools==80.9.0"
           python -m pip install "$DIST_NAME==$BASELINE_VERSION"
           python - <<'PY2'
           import importlib.metadata as im, json, os
@@ -241,27 +243,17 @@ jobs:
       - name: Test 5 - Functional Validation
         id: test5
         continue-on-error: true
-        env:
-          TOP_LEVELS_JSON: ${{ steps.install.outputs.top_levels_json || '[]' }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           . .venv-current/bin/activate
           if python - <<'PY2'
-          import json, os, importlib, importlib.metadata as im
-          top_levels = json.loads(os.environ.get('TOP_LEVELS_JSON', '[]'))
-          if top_levels:
-              imported = False
-              for mod in top_levels:
-                  try:
-                      importlib.import_module(mod)
-                      imported = True
-                      break
-                  except Exception:
-                      continue
-              raise SystemExit(0 if imported else 1)
-          files = list(im.files(os.environ['DIST_NAME']) or [])
-          raise SystemExit(0 if files else 1)
+          import os
+          import metaflow
+          from metaflow import FlowSpec, Parameter, step
+          assert metaflow.__version__ == os.environ['BASELINE_VERSION']
+          assert callable(FlowSpec) and callable(Parameter) and callable(step)
+          print(f"Metaflow {metaflow.__version__}: public flow API import passed")
           PY2
           then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -318,7 +310,7 @@ jobs:
             echo "next_installed_version=lookup_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version lookup failed" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned package version $CURRENT passed smoke tests in this run, but the next PyPI regression candidate could not be resolved automatically." >> "$GITHUB_OUTPUT"
+            echo "comparison=The next PyPI regression candidate after baseline $CURRENT could not be resolved automatically." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -338,19 +330,19 @@ jobs:
           echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
           python -m venv .venv-next
           . .venv-next/bin/activate
-          python -m pip install --upgrade "pip<24.1" packaging >/dev/null
-          if python -m pip install "$DIST_NAME==$LATEST" >/dev/null 2>&1; then
+          python -m pip install --upgrade "pip<24.1" packaging "setuptools==80.9.0"
+          if python -m pip install "$DIST_NAME==$LATEST"; then
             NEXT_VERSION=$(python -c 'import importlib.metadata as im, os; print(im.version(os.environ["DIST_NAME"]))')
             echo "next_installed_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
-            if [ "$NEXT_VERSION" = "$LATEST" ]; then
+            if [ "$NEXT_VERSION" = "$LATEST" ] && python -c 'from metaflow import FlowSpec, Parameter, step'; then
               echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned package version $CURRENT passed smoke tests in this run, and the newer stable PyPI candidate $LATEST installed successfully on Arm64." >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version installed and public flow API imported on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=The newer stable PyPI candidate $LATEST installed at the expected version and imported FlowSpec, Parameter and step on Arm64 using Python 3.9.25, the runtime used for baseline $CURRENT." >> "$GITHUB_OUTPUT"
               echo "status=passed" >> "$GITHUB_OUTPUT"
             else
               echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned package version $CURRENT passed smoke tests in this run, but the regression candidate $LATEST did not report the expected installed version on Arm64." >> "$GITHUB_OUTPUT"
+              echo "regression_result=Next version or public flow API validation failed on Arm64" >> "$GITHUB_OUTPUT"
+              echo "comparison=The regression candidate $LATEST did not report the expected installed version or failed to import its public flow API on Arm64." >> "$GITHUB_OUTPUT"
               echo "status=failed" >> "$GITHUB_OUTPUT"
               END_TIME=$(date +%s)
               echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -360,7 +352,7 @@ jobs:
             echo "next_installed_version=install_failed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned package version $CURRENT passed smoke tests in this run, but the regression candidate $LATEST could not be installed on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=The regression candidate $LATEST after baseline $CURRENT could not be installed on Arm64." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -373,43 +365,41 @@ jobs:
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
-          D1="${{ steps.test1.outputs.duration || '0' }}"
-          D2="${{ steps.test2.outputs.duration || '0' }}"
-          D3="${{ steps.test3.outputs.duration || '0' }}"
-          D4="${{ steps.test4.outputs.duration || '0' }}"
-          D5="${{ steps.test5.outputs.duration || '0' }}"
-          D6="${{ steps.test6.outputs.duration || '0' }}"
+          set -euo pipefail
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          DURATION=0
+          check_core_test() {
+            if [ "$1" = "passed" ] && [ "$3" = "success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
-          done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
-            OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
+            DURATION=$((DURATION + $2))
+          }
+          check_core_test "${{ steps.test1.outputs.status || 'failed' }}" "${{ steps.test1.outputs.duration || '0' }}" "${{ steps.test1.outcome }}"
+          check_core_test "${{ steps.test2.outputs.status || 'failed' }}" "${{ steps.test2.outputs.duration || '0' }}" "${{ steps.test2.outcome }}"
+          check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || '0' }}" "${{ steps.test3.outcome }}"
+          check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || '0' }}" "${{ steps.test4.outcome }}"
+          check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || '0' }}" "${{ steps.test5.outcome }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O6="${{ steps.test6.outcome }}"
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ]; then
+            SKIPPED=$((SKIPPED + 1))
           else
-            OVERALL_STATUS="failure"
-            BADGE_STATUS="failing"
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((DURATION + ${{ steps.test6.outputs.duration || '0' }}))
+          OVERALL_STATUS=failure
+          BADGE_STATUS=failing
+          if [ "$FAILED" -eq 0 ]; then
+            OVERALL_STATUS=success
+            BADGE_STATUS=passing
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
@@ -418,6 +408,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
 
       - name: Cleanup
         if: always()

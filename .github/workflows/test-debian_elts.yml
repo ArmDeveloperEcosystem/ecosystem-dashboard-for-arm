@@ -190,10 +190,15 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
 
-          if sudo docker run --rm "docker.io/library/debian:${{ steps.install.outputs.baseline_tag }}" sh -lc 'apt-get update >/tmp/pkg.log 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates >/tmp/pkg.log 2>&1 && dpkg -s ca-certificates | grep -q "^Status: install ok installed"'; then
+          # Bullseye LTS ended on 2026-08-31; use its signed release archive for this baseline smoke.
+          if sudo docker run --rm "docker.io/library/debian:${{ steps.install.outputs.baseline_tag }}" sh -ec '
+            printf "%s\n" "deb http://archive.debian.org/debian bullseye main" > /etc/apt/sources.list
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates
+            dpkg -s ca-certificates | grep -q "^Status: install ok installed"
+          '; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            sudo docker run --rm "docker.io/library/debian:${{ steps.install.outputs.baseline_tag }}" sh -lc 'cat /tmp/pkg.log 2>/dev/null || true' || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -246,6 +251,13 @@ jobs:
           LATEST="${DEBIAN_ELTS_NEXT_TAG}"
           EXPECTED_NEXT_MAJOR="${DEBIAN_ELTS_NEXT_TAG%%.*}"
           NEXT_INSTALLED="not_installed"
+          BASELINE_RESULT="passed the Arm64 container smoke in this run"
+          for baseline_status in "${{ steps.test1.outputs.status }}" "${{ steps.test2.outputs.status }}" "${{ steps.test3.outputs.status }}" "${{ steps.test4.outputs.status }}" "${{ steps.test5.outputs.status }}"; do
+            if [ "${baseline_status}" != "passed" ]; then
+              BASELINE_RESULT="did not pass all Arm64 container smoke checks in this run"
+              break
+            fi
+          done
 
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
           echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
@@ -259,25 +271,25 @@ jobs:
           if sudo docker inspect "docker.io/library/debian:${LATEST}" --format '{{.Architecture}}' | grep -qx 'arm64' \
             && [ "${NEXT_INSTALLED}" = "${EXPECTED_NEXT_MAJOR}" ] \
             && sudo docker run --rm "docker.io/library/debian:${LATEST}" sh -lc "grep -q 'Debian GNU/Linux' /etc/os-release" \
-            && sudo docker run --rm "docker.io/library/debian:${LATEST}" sh -lc 'apt-get update >/tmp/pkg.log 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates >/tmp/pkg.log 2>&1 && dpkg -s ca-certificates | grep -q "^Status: install ok installed"' \
+            && sudo docker run --rm "docker.io/library/debian:${LATEST}" sh -ec 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates && dpkg -s ca-certificates | grep -q "^Status: install ok installed"' \
             && [ "$(sudo docker run --rm "docker.io/library/debian:${LATEST}" uname -m)" = "aarch64" ] \
             && [ "$(sudo docker run --rm "docker.io/library/debian:${LATEST}" echo "Hello Arm64")" = "Hello Arm64" ]; then
             echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Baseline Debian ${CURRENT} passed the Arm64 container smoke in this run, and candidate image tag ${LATEST} also pulled successfully, reported VERSION_ID ${NEXT_INSTALLED}, completed in-container apt smoke, and passed architecture plus command validation on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Debian ${CURRENT} ${BASELINE_RESULT}; candidate image tag ${LATEST} pulled successfully, reported VERSION_ID ${NEXT_INSTALLED}, completed in-container apt smoke, and passed architecture plus command validation on Arm64." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: ${NEXT_INSTALLED}"
             echo "Regression install result: Next version installed successfully on Arm64"
-            echo "Details: Baseline Debian ${CURRENT} passed the Arm64 container smoke in this run, and candidate image tag ${LATEST} also pulled successfully, reported VERSION_ID ${NEXT_INSTALLED}, completed in-container apt smoke, and passed architecture plus command validation on Arm64."
+            echo "Details: Baseline Debian ${CURRENT} ${BASELINE_RESULT}; candidate image tag ${LATEST} pulled successfully, reported VERSION_ID ${NEXT_INSTALLED}, completed in-container apt smoke, and passed architecture plus command validation on Arm64."
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Baseline Debian ${CURRENT} passed the Arm64 container smoke in this run, but candidate image tag ${LATEST} did not complete equivalent version, architecture, or in-container apt validation on Arm64." >> "$GITHUB_OUTPUT"
+            echo "comparison=Baseline Debian ${CURRENT} ${BASELINE_RESULT}; candidate image tag ${LATEST} did not complete equivalent version, architecture, or in-container apt validation on Arm64." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: ${NEXT_INSTALLED}"
             echo "Regression install result: Next version install failed on Arm64"
-            echo "Details: Baseline Debian ${CURRENT} passed the Arm64 container smoke in this run, but candidate image tag ${LATEST} did not complete equivalent version, architecture, or in-container apt validation on Arm64."
+            echo "Details: Baseline Debian ${CURRENT} ${BASELINE_RESULT}; candidate image tag ${LATEST} did not complete equivalent version, architecture, or in-container apt validation on Arm64."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -336,6 +348,7 @@ jobs:
 
           echo "passed=${PASSED}" >> "$GITHUB_OUTPUT"
           echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+          echo "core_failed=${CORE_FAILED}" >> "$GITHUB_OUTPUT"
           echo "duration=${TOTAL_DURATION}" >> "$GITHUB_OUTPUT"
 
           if [ "${CORE_FAILED}" -eq 0 ]; then

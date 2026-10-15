@@ -36,9 +36,14 @@ EXACT_RUN_SPEC.loader.exec_module(exact_run)
 
 
 EXPECTED_BATCHES = 22
-EXPECTED_WORKFLOWS = 960
-EXPECTED_EXTERNAL_USES = 1130
-EXPECTED_CONTAINER_USES = 4
+EXPECTED_WORKFLOWS = 961
+EXPECTED_EXTERNAL_USES = 1131
+EXPECTED_CONTAINER_USES = 9
+REVIEWED_ADDED_WORKFLOWS = (".github/workflows/test-xen-hypervisor.yml",)
+SINGLE_MANIFEST_MEDIA_TYPES = frozenset({
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+})
 SOURCE_COMMIT = "73155d0d3a3dc73da08c62bc2bb7eccf281c6008"
 LOCK_NAME = "package_workflow_action_lock.json"
 MAX_SOURCE_ARCHIVE_BYTES = 67_108_864
@@ -193,7 +198,7 @@ def validate_action_lock_entry(entry: object) -> tuple[str, str]:
 
 
 def validate_container_lock_entry(entry: object) -> str:
-    if not isinstance(entry, dict) or set(entry) != {
+    expected_keys = {
         "workflow",
         "original_ref",
         "repository",
@@ -204,7 +209,15 @@ def validate_container_lock_entry(entry: object) -> str:
         "linux_arm64_confirmed",
         "observed_at_utc",
         "arm64_runtime_validation",
-    }:
+    }
+    single_manifest = (
+        isinstance(entry, dict)
+        and isinstance(entry.get("media_type"), str)
+        and entry.get("media_type") in SINGLE_MANIFEST_MEDIA_TYPES
+    )
+    if single_manifest:
+        expected_keys.add("config_digest")
+    if not isinstance(entry, dict) or set(entry) != expected_keys:
         raise ContractError("container lock entry has missing or unexpected evidence")
     workflow = entry.get("workflow")
     original = entry.get("original_ref")
@@ -225,7 +238,11 @@ def validate_container_lock_entry(entry: object) -> str:
         or entry.get("resolved_ref") != f"{original_repository}@{digest}"
         or not isinstance(arm64_digest, str)
         or not re.fullmatch(r"sha256:[0-9a-f]{64}", arm64_digest)
-        or entry.get("media_type") != "application/vnd.oci.image.index.v1+json"
+        or entry.get("media_type") not in (
+            "application/vnd.oci.image.index.v1+json",
+            "application/vnd.docker.distribution.manifest.list.v2+json",
+            *SINGLE_MANIFEST_MEDIA_TYPES,
+        )
         or entry.get("linux_arm64_confirmed") is not True
         or not isinstance(entry.get("observed_at_utc"), str)
         or not re.fullmatch(
@@ -239,16 +256,28 @@ def validate_container_lock_entry(entry: object) -> str:
         or runtime.get("result") != "passed"
     ):
         raise ContractError(f"invalid container lock entry: {entry!r}")
+    if single_manifest and (
+        arm64_digest != digest
+        or not isinstance(entry.get("config_digest"), str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", entry["config_digest"])
+    ):
+        raise ContractError("single-platform container requires its exact manifest and config digests")
     return workflow
 
 
 def validate_hardened_workflow_transition(
     lock: dict[str, object],
-) -> dict[str, str] | None:
+) -> dict[str, object] | None:
     transition = lock.get("hardened_workflow_transition")
     if transition is None:
         return None
     expected_keys = {"from_sha256", "to_sha256", "reason"}
+    if isinstance(transition, dict) and "added_workflows" in transition:
+        expected_keys.add("added_workflows")
+        if transition["added_workflows"] != list(REVIEWED_ADDED_WORKFLOWS):
+            raise ContractError(
+                "hardened workflow additions are not the reviewed Xen addition"
+            )
     if not isinstance(transition, dict) or set(transition) != expected_keys:
         raise ContractError("hardened workflow transition is malformed")
     transition_from = transition.get("from_sha256")
@@ -266,11 +295,7 @@ def validate_hardened_workflow_transition(
         or len(transition_reason) > 512
     ):
         raise ContractError("hardened workflow transition is invalid")
-    return {
-        "from_sha256": transition_from,
-        "to_sha256": transition_to,
-        "reason": transition_reason,
-    }
+    return dict(transition)
 
 
 def repository_root() -> Path:
@@ -1117,17 +1142,60 @@ def validate_authenticated_base(
         or expected_base_commit == "0" * 40
     ):
         raise ContractError("authenticated pull-request base is not a canonical SHA")
+    transition = validate_hardened_workflow_transition(lock)
+    relative_paths = [path.relative_to(root).as_posix() for path in hardened_paths]
+    if len(set(relative_paths)) != len(relative_paths):
+        raise ContractError("candidate workflow snapshot list contains duplicates")
+    snapshot_paths = hardened_paths
+    addition_absent = False
+    if transition is not None and "added_workflows" in transition:
+        added_workflow = REVIEWED_ADDED_WORKFLOWS[0]
+        added_path = root / added_workflow
+        if (
+            added_workflow not in relative_paths
+            or not added_path.is_file()
+            or added_path.is_symlink()
+        ):
+            raise ContractError(
+                "reviewed addition is missing from the candidate workflow set"
+            )
+        # Only a successful exact Git tree lookup may prove the addition absent.
+        try:
+            base_entry = subprocess.run(
+                [
+                    "git", "-C", str(root), "ls-tree", "-z",
+                    "--name-only", "--full-tree", expected_base_commit,
+                    "--", added_workflow,
+                ],
+                check=True,
+                capture_output=True,
+                timeout=10,
+            ).stdout
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ContractError(
+                "could not inspect addition at the authenticated base"
+            ) from error
+        if base_entry == b"":
+            addition_absent = True
+            snapshot_paths = [path for path in hardened_paths if path != added_path]
+        elif base_entry != added_workflow.encode("utf-8") + b"\0":
+            raise ContractError("authenticated base addition tree entry is malformed")
     try:
-        snapshot = source_snapshot(root, hardened_paths, expected_base_commit)
+        snapshot = source_snapshot(root, snapshot_paths, expected_base_commit)
     except ContractError as error:
         raise ContractError(
             "could not read the authenticated advanced pull-request base"
         ) from error
+    if set(snapshot) != {path.relative_to(root).as_posix() for path in snapshot_paths}:
+        raise ContractError("authenticated base workflow snapshot list does not match")
     digest = workflow_snapshot_sha256(snapshot)
-    if digest == lock["hardened_workflow_sha256"]:
+    if not addition_absent and digest == lock["hardened_workflow_sha256"]:
         return "current_hardened_snapshot"
-    transition = validate_hardened_workflow_transition(lock)
-    if transition is not None and digest == transition["from_sha256"]:
+    if (
+        transition is not None
+        and digest == transition["from_sha256"]
+        and ("added_workflows" not in transition or addition_absent)
+    ):
         return "declared_hardened_transition_source"
     raise ContractError(
         "advanced pull-request base does not match the current or declared "

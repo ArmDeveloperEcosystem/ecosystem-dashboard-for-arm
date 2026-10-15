@@ -348,79 +348,32 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          IDENTITY_KIND="${{ steps.expectations.outputs.identity_kind }}"
-          IDENTITY_TARGET="${{ steps.expectations.outputs.identity_target }}"
-          IDENTITY_EXPECT="${{ steps.expectations.outputs.identity_expect }}"
-          EXTERNAL_EXPECT="${{ steps.expectations.outputs.external_expect }}"
-          if [ "$PACKAGE_SLUG" = "ampere-optimised-ollama" ]; then
-            docker manifest inspect "$OLLAMA_IMAGE" >/tmp/ampere-ollama-manifest.json
-            grep -q '"architecture": "arm64"' /tmp/ampere-ollama-manifest.json
-            docker pull "$OLLAMA_IMAGE"
-            if docker run --rm "$OLLAMA_IMAGE" --version >/tmp/ampere-ollama-version.log 2>&1 && \
-               grep -Eiq 'ollama|version|[0-9]+\.[0-9]+' /tmp/ampere-ollama-version.log; then
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Pulled the Ampere Optimized Ollama Arm64 image and executed the Ollama version command on the Arm64 runner." >> "$GITHUB_OUTPUT"
-            else
-              cat /tmp/ampere-ollama-version.log || true
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=The Ampere Optimized Ollama image did not execute the version command on Arm64." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 0
+          WORK_DIR="$(mktemp -d)"
+          CONTAINER="ampere-ollama-smoke-$(basename "$WORK_DIR")"
+          finish() {
+            RESULT=$?
+            trap - EXIT
+            docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+            rm -rf "$WORK_DIR"
+            if [ "$RESULT" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; fi
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$RESULT"
+          }
+          trap finish EXIT
+          test "$(uname -m)" = aarch64
+          docker manifest inspect --verbose "$OLLAMA_IMAGE" >"$WORK_DIR/manifest.json"
+          jq -e '[.. | objects | select(.architecture? == "arm64" and .os? == "linux")] | length > 0' "$WORK_DIR/manifest.json" >/dev/null
+          docker pull --platform linux/arm64 "$OLLAMA_IMAGE"
+          docker image inspect "$OLLAMA_IMAGE" >"$WORK_DIR/image.json"
+          jq -e 'length == 1 and .[0].Architecture == "arm64" and .[0].Os == "linux"' "$WORK_DIR/image.json" >/dev/null
+          if ! timeout 180 docker run --rm --name "$CONTAINER" --platform linux/arm64 "$OLLAMA_IMAGE" --version >"$WORK_DIR/version.log" 2>&1; then
+            cat "$WORK_DIR/version.log"
+            exit 1
           fi
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-            case "$IDENTITY_KIND" in
-              go_module)
-                grep -Fx "module $IDENTITY_EXPECT" "$IDENTITY_TARGET" >/dev/null
-                RESULT="Verified go module identity in $IDENTITY_TARGET"
-                ;;
-              toml_name)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); name=(data.get('project') or {}).get('name') or ((data.get('tool') or {}).get('poetry') or {}).get('name'); assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified TOML package identity in $IDENTITY_TARGET"
-                ;;
-              package_json_name)
-                python3 -c "import json,sys; data=json.load(open(sys.argv[1], encoding='utf-8')); assert data.get('name') == sys.argv[2], (data.get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified package.json identity in $IDENTITY_TARGET"
-                ;;
-              cargo_package)
-                python3 -c "import sys,tomllib; data=tomllib.load(open(sys.argv[1],'rb')); assert (data.get('package') or {}).get('name') == sys.argv[2], ((data.get('package') or {}).get('name'), sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified Cargo package identity in $IDENTITY_TARGET"
-                ;;
-              chart_name)
-                python3 -c "from pathlib import Path; import sys; lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(); matches=[line.split(':', 1)[1].strip() for line in lines if line.startswith('name:')]; name=matches[0] if matches else ''; assert name == sys.argv[2], (name, sys.argv[2])" "$IDENTITY_TARGET" "$IDENTITY_EXPECT"
-                RESULT="Verified chart identity in $IDENTITY_TARGET"
-                ;;
-              grep_file)
-                grep -Eiq "$IDENTITY_EXPECT" "$IDENTITY_TARGET"
-                RESULT="Verified package-specific content in $IDENTITY_TARGET"
-                ;;
-              *)
-                echo "status=failed" >> "$GITHUB_OUTPUT"
-                echo "note=No bounded identity check was configured for this package." >> "$GITHUB_OUTPUT"
-                exit 1
-                ;;
-            esac
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=$RESULT" >> "$GITHUB_OUTPUT"
-          else
-            TEMP_PAGE=$(mktemp)
-            trap 'rm -f "$TEMP_PAGE"' EXIT
-            if curl -fsSL "$OFFICIAL_DOCS" -o "$TEMP_PAGE" || curl -fsSL "$HOMEPAGE_URL" -o "$TEMP_PAGE" || curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_PAGE"; then
-              grep -Eiq "$EXTERNAL_EXPECT" "$TEMP_PAGE"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              echo "note=Verified external package identity from published docs or homepage content using /$EXTERNAL_EXPECT/." >> "$GITHUB_OUTPUT"
-            else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "note=Could not fetch published docs or homepage content for bounded external validation." >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          cat "$WORK_DIR/version.log"
+          grep -Eiq 'ollama|version|[0-9]+\.[0-9]+' "$WORK_DIR/version.log"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+          echo "note=Verified the pinned Ampere Optimised Ollama Linux/Arm64 manifest and pulled image architecture, then executed its version command on Arm64. No model inference is claimed." >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
         id: test6
         run: |
@@ -441,12 +394,20 @@ jobs:
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -456,27 +417,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -486,3 +451,4 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0

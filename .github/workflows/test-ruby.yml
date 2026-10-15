@@ -157,10 +157,38 @@ jobs:
           CURRENT="$("${{ steps.install.outputs.ruby_bin }}" -e 'print RUBY_VERSION')"
           LATEST="$(
             python3 - <<'PY'
-          import re, urllib.request
-          html = urllib.request.urlopen("https://www.ruby-lang.org/en/downloads/releases/", timeout=30).read().decode()
-          versions = set(tuple(map(int, m.groups())) for m in re.finditer(r"Ruby\s+(\d+)\.(\d+)\.(\d+)", html))
-          latest = sorted(versions)[-1]
+          from html.parser import HTMLParser
+          import re
+          import urllib.request
+          from urllib.parse import urlsplit
+
+          class Releases(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.versions = set()
+
+              def handle_starttag(self, tag, attrs):
+                  hrefs = [value for key, value in attrs if key == "href"]
+                  if tag != "a" or len(hrefs) != 1 or not hrefs[0]:
+                      return
+                  url = urlsplit(hrefs[0])
+                  if (url.scheme, url.netloc) != ("https", "cache.ruby-lang.org") or url.query or url.fragment:
+                      return
+                  # Match complete stable archive names, never a preview/RC prefix.
+                  match = re.fullmatch(r"/pub/ruby/(\d+\.\d+)/ruby-(\d+\.\d+\.\d+)\.tar\.gz", url.path)
+                  if match and match[1] == match[2].rsplit(".", 1)[0]:
+                      self.versions.add(tuple(map(int, match[2].split("."))))
+
+          with urllib.request.urlopen("https://www.ruby-lang.org/en/downloads/releases/", timeout=30) as response:
+              html = response.read(2_000_001)
+          if len(html) > 2_000_000:
+              raise SystemExit("Ruby release index exceeds the size limit")
+          releases = Releases()
+          releases.feed(html.decode("utf-8"))
+          releases.close()
+          if not releases.versions:
+              raise SystemExit("No stable Ruby source archives found in the official release index")
+          latest = max(releases.versions)
           print("{}.{}.{}".format(*latest))
           PY
           )"

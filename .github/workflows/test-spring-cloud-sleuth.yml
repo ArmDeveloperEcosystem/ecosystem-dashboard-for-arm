@@ -197,6 +197,14 @@ jobs:
                     <release>17</release>
                   </configuration>
                 </plugin>
+                <plugin>
+                  <groupId>org.apache.maven.plugins</groupId>
+                  <artifactId>maven-surefire-plugin</artifactId>
+                  <version>3.2.5</version>
+                  <configuration>
+                    <failIfNoTests>true</failIfNoTests>
+                  </configuration>
+                </plugin>
               </plugins>
             </build>
           </project>
@@ -259,8 +267,45 @@ jobs:
             }
           }
           EOF
+          cat >/tmp/sleuth-smoke/run-smoke.py <<'PY'
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import time
+          import xml.etree.ElementTree as ET
+
+          # Remove compiled classes and reports even if Maven does not clean them.
+          target = Path("target")
+          if target.exists():
+              shutil.rmtree(target)
+          started = time.time_ns()
+          subprocess.run([
+              "mvn", "-B", "-q", "clean", "test",
+              "-Dtest=smoke.SleuthSmokeTest#createsSpanAndServesLocalRoute",
+          ], check=True)
+          report = target / "surefire-reports/TEST-smoke.SleuthSmokeTest.xml"
+          if (list(report.parent.glob("*.xml")) != [report]
+                  or report.is_symlink() or report.stat().st_mtime_ns < started):
+              raise SystemExit("Missing, unexpected, or stale Surefire XML report")
+          suite = ET.parse(report).getroot()
+          counts = {key: suite.get(key) for key in ("tests", "failures", "errors", "skipped")}
+          cases = suite.findall("testcase")
+          if (suite.tag != "testsuite" or suite.get("name") != "smoke.SleuthSmokeTest"
+                  or counts != {"tests": "1", "failures": "0", "errors": "0", "skipped": "0"}
+                  or len(cases) != 1 or len(list(suite.iter("testcase"))) != 1
+                  or len(list(suite.iter("testsuite"))) != 1
+                  or cases[0].get("classname") != "smoke.SleuthSmokeTest"
+                  or cases[0].get("name") != "createsSpanAndServesLocalRoute"
+                  or any(node.tag in {"failure", "error", "skipped", "flakyFailure",
+                                      "flakyError", "rerunFailure", "rerunError"}
+                         for node in suite.iter())):
+              raise SystemExit("Surefire XML did not prove the exact successful Sleuth smoke test")
+          print("Verified smoke.SleuthSmokeTest#createsSpanAndServesLocalRoute: "
+                "tests=1 failures=0 errors=0 skipped=0")
+          PY
           test -f /tmp/sleuth-smoke/pom.xml
           test -f /tmp/sleuth-smoke/src/test/java/smoke/SleuthSmokeTest.java
+          test -f /tmp/sleuth-smoke/run-smoke.py
           echo "status=passed" >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -320,10 +365,12 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           cd /tmp/sleuth-smoke
-          if mvn -B -q test; then
+          if python3 run-smoke.py; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           END_TIME=$(date +%s)
@@ -351,7 +398,7 @@ jobs:
           NEXT_PROJECT=$(mktemp -d)
           cp -R /tmp/sleuth-smoke/. "$NEXT_PROJECT/"
           SLEUTH_VERSION="${SLEUTH_VERSION}" LATEST="${LATEST}" perl -0pi -e 'BEGIN { $from = "<version>$ENV{SLEUTH_VERSION}</version>"; $to = "<version>$ENV{LATEST}</version>"; } s/\Q$from\E/$to/ or die "starter version not replaced\n";' "$NEXT_PROJECT/pom.xml"
-          if (cd "$NEXT_PROJECT" && mvn -B -q test); then
+          if (cd "$NEXT_PROJECT" && python3 run-smoke.py); then
             echo "next_installed_version=$LATEST" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed and ran successfully on Arm64" >> "$GITHUB_OUTPUT"
@@ -411,23 +458,37 @@ jobs:
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
 
           # Functional Validation
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
+          if [ "${{ steps.test5.outputs.status }}" == "passed" ] && [ "${{ steps.test5.outcome }}" == "success" ]; then
             PASSED=$((PASSED + 1))
           else
             FAILED=$((FAILED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
 
+          echo "core_failed=$FAILED" >> "$GITHUB_OUTPUT"
+          if [ $FAILED -eq 0 ]; then
+            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+          else
+            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Regression Validation
+          if [ "${{ steps.test6.outputs.status }}" == "passed" ] && [ "${{ steps.test6.outcome }}" == "success" ]; then
+            PASSED=$((PASSED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "skipped=0" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
 
           if [ $FAILED -eq 0 ]; then
             echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
           else
             echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
             exit 1
           fi
       - name: Create test summary

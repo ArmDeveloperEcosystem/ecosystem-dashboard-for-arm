@@ -23,24 +23,24 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(
             {
                 "batches": 22,
-                "packages": 960,
-                "custom_summary_workflows": 924,
+                "packages": 961,
+                "custom_summary_workflows": 925,
                 "emitter_workflows": 36,
                 "shared_smoke_workflows": 13,
-                "package_manager_workflows": 431,
+                "package_manager_workflows": 428,
             },
             self.report["totals"],
         )
         self.assertEqual(
-            {"not_applicable_package_manager": 8, "not_configured": 952},
+            {"next_install_failed": 1, "not_applicable_package_manager": 8, "not_configured": 952},
             self.report["fallback_counts"],
         )
         self.assertEqual(
             {
                 "shared_smoke": 13,
                 "emitter_only": 23,
-                "generic_source": 97,
-                "fully_custom": 827,
+                "generic_source": 91,
+                "fully_custom": 834,
             },
             {
                 key: len(value)
@@ -52,13 +52,19 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             for cohort in self.report["migration_cohorts"].values()
             for slug in cohort
         ]
-        self.assertEqual(960, len(cohort_members))
-        self.assertEqual(960, len(set(cohort_members)))
+        self.assertEqual(961, len(cohort_members))
+        self.assertEqual(961, len(set(cohort_members)))
 
     def test_structural_observation_inputs_are_present(self) -> None:
         remediation = self.report["remediation"]
         self.assertEqual({}, remediation["missing_test_steps"])
-        self.assertEqual({}, remediation["missing_test_status"])
+        # The advisory scan cannot follow EXIT traps. Executable workflow tests
+        # verify Xen's outputs and Garden Linux's Test 5 finalizer separately.
+        self.assertEqual(
+            {**{f"test{number}": ["xen-hypervisor"] for number in range(1, 5)},
+             "test5": ["garden-linux", "xen-hypervisor"]},
+            remediation["missing_test_status"],
+        )
         self.assertEqual({}, remediation["invalid_test_names"])
         self.assertEqual([], remediation["missing_summary_step"])
         self.assertEqual([], remediation["unapproved_decision_tokens"])
@@ -68,22 +74,29 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(
             [], remediation["shared_smoke_literal_pair_contradictions"]
         )
-        self.assertEqual(
-            {"test4": ["cobbler"]}, remediation["baseline_dynamic_skip"]
-        )
+        self.assertEqual({}, remediation["baseline_dynamic_skip"])
 
     def test_remediation_counts_are_explicit_and_reproducible(self) -> None:
         remediation = self.report["remediation"]
         self.assertEqual(17, len(remediation["emitter_missing_slug"]))
         self.assertEqual(
-            {"test4": 4, "test5": 35, "test6": 4},
+            {"test1": 1, "test2": 1, "test3": 1, "test4": 4, "test5": 44, "test6": 6},
             {
                 key: len(value)
                 for key, value in remediation["missing_test_duration"].items()
             },
         )
+        # Duration writes share the same EXIT-trap reachability limitation.
+        for number in range(1, 6):
+            self.assertIn(
+                "xen-hypervisor", remediation["missing_test_duration"][f"test{number}"]
+            )
+        self.assertNotIn("backstage", remediation["missing_test_duration"]["test4"])
+        self.assertIn("garden-linux", remediation["missing_test_duration"]["test5"])
+        # Garden Linux binds status/duration through step env, outside this
+        # advisory scan's literal run-script reference analysis.
         self.assertEqual(
-            {"test3": 1, "test4": 1, "test5": 2, "test6": 341},
+            {"test1": 1, "test2": 1, "test3": 2, "test4": 2, "test5": 3, "test6": 321},
             {
                 key: len(value)
                 for key, value in remediation[
@@ -92,58 +105,69 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"core_failed": 402, "duration": 3, "skipped": 725},
+            {"core_failed": 375, "duration": 3, "skipped": 697},
             {
                 key: len(value)
                 for key, value in remediation["missing_summary_outputs"].items()
             },
         )
         self.assertEqual(
-            400,
+            398,
             len(remediation["package_manager_missing_explicit_skip_counter"]),
         )
-        self.assertEqual(79, len(remediation["package_manager_non_skipped_status"]))
-        self.assertEqual(286, len(remediation["literal_pair_contradictions"]))
-        self.assertEqual(21, len(remediation["no_literal_decision"]))
-        self.assertEqual(
-            326, len(remediation["package_manager_summary_omits_test6"])
+        self.assertEqual(76, len(remediation["package_manager_non_skipped_status"]))
+        self.assertEqual(280, len(remediation["literal_pair_contradictions"]))
+        self.assertNotIn(
+            "repeatmasker",
+            [item["package_slug"] for item in remediation["literal_pair_contradictions"]],
         )
-        self.assertEqual(8, len(remediation["unsafe_fallback_workflows"]))
+        # Xen writes a runtime-selected $DECISION; the advisory scan does not
+        # infer its baseline-failure branches from literal output records.
+        self.assertEqual(24, len(remediation["no_literal_decision"]))
+        self.assertIn("xen-hypervisor", remediation["no_literal_decision"])
+        self.assertEqual(
+            304, len(remediation["package_manager_summary_omits_test6"])
+        )
+        # The audit flags every default except not_configured, including Garden's
+        # explicit failure default; runtime tests prove that it stays red.
+        self.assertEqual(9, len(remediation["unsafe_fallback_workflows"]))
+        self.assertIn("garden-linux", remediation["unsafe_fallback_workflows"])
         self.assertEqual(["freecad"], remediation["package_manager_missing_decision"])
         self.assertEqual(
-            {"test1": 27, "test2": 34, "test3": 34, "test4": 27, "test5": 31},
+            {"test1": 25, "test2": 32, "test3": 33, "test4": 26, "test5": 29},
             {
                 key: len(value)
                 for key, value in remediation["baseline_literal_skip"].items()
             },
         )
+        self.assertNotIn("signalfx-agent", remediation["baseline_literal_skip"]["test2"])
         baseline_skip_workflows = {
             slug
             for workflows in remediation["baseline_literal_skip"].values()
             for slug in workflows
         }
-        self.assertEqual(37, len(baseline_skip_workflows))
+        self.assertEqual(35, len(baseline_skip_workflows))
         self.assertEqual(
             13, len(remediation["shared_smoke_baseline_skip_callers"])
         )
         self.assertEqual(
-            97, len(remediation["generic_source_missing_baseline_facts"])
+            91, len(remediation["generic_source_missing_baseline_facts"])
         )
         self.assertEqual(
-            427, len(remediation["package_manager_missing_baseline_guard"])
+            406, len(remediation["package_manager_missing_baseline_guard"])
         )
         self.assertEqual(
-            960, len(remediation["missing_package_observation_output"])
+            961, len(remediation["missing_package_observation_output"])
         )
         self.assertEqual(
-            960, len(remediation["missing_package_observation_step"])
+            961, len(remediation["missing_package_observation_step"])
         )
         self.assertEqual([], remediation["invalid_package_observation_contract"])
         self.assertEqual(
             [], remediation["invalid_package_observation_input_bindings"]
         )
         self.assertEqual(
-            960,
+            961,
             len(remediation["missing_workflow_call_observation_output"]),
         )
         self.assertEqual(
@@ -153,12 +177,16 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             371,
             len(remediation["non_package_manager_missing_baseline_guard"]),
         )
-        self.assertEqual(344, len(remediation["summary_omits_test6_status"]))
+        self.assertIn(
+            "xen-hypervisor", remediation["non_package_manager_missing_baseline_guard"]
+        )
+        self.assertEqual(321, len(remediation["summary_omits_test6_status"]))
+        self.assertIn("garden-linux", remediation["summary_omits_test6_status"])
         self.assertEqual(
-            952, len(remediation["unsafe_package_version_fallback"])
+            953, len(remediation["unsafe_package_version_fallback"])
         )
         self.assertEqual(
-            960, len(remediation["unsafe_regression_narrative_fallback"])
+            961, len(remediation["unsafe_regression_narrative_fallback"])
         )
         self.assertEqual(
             22, len(remediation["legacy_batch_collector_workflows"])
@@ -198,7 +226,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "5270bf8cf86bbd6bb9d0420de8d420777b695db4d080563fab380d88977e42b5",
+            "24f3b15b042c263111ba609695baf98545141399e6f94715c34cb18008d86fd7",
             digest,
         )
 

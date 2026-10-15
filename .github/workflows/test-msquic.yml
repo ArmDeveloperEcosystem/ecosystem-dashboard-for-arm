@@ -96,8 +96,81 @@ jobs:
         test "$RESOLVED_TAG" = "v2.1.1" && grep -Fq "MsQuic" README.md
       TEST3_COMMAND: >-
         test -d docs && test -f src/tools/sample/sample.c && grep -Fq 'Build docs' README.md
-      TEST5_COMMAND: >-
-        echo "status=failed" >> "$GITHUB_OUTPUT"; echo "note=Runtime smoke deferred: README/sample source marker checks are not an MsQuic build or loopback handshake on Arm64." >> "$GITHUB_OUTPUT"; END_TIME=$(date +%s); echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"; exit 1
+
+      MSQUIC_SMOKE_COMMAND: |
+        SOURCE_DIR="${1:?Missing MsQuic source directory}"
+        SMOKE_VERSION="${2:?Missing MsQuic version}"
+        SMOKE_TAG="${3:?Missing MsQuic tag}"
+        test "$(uname -m)" = aarch64
+        cd "$SOURCE_DIR"
+        test "$(git describe --tags --exact-match)" = "$SMOKE_TAG"
+        test "${SMOKE_TAG#v}" = "$SMOKE_VERSION"
+        printf 'MsQuic source: %s; version: %s; commit: %s\n' "$PWD" "$SMOKE_VERSION" "$(git rev-parse HEAD)"
+        git submodule update --init --depth 1 submodules/openssl
+        cmake --version
+        cc --version
+        TLS_OPTION="-DQUIC_TLS=openssl"
+        if grep -Fq 'set(QUIC_TLS_LIB ' CMakeLists.txt; then
+          TLS_OPTION="-DQUIC_TLS_LIB=openssl"
+        fi
+        cmake -S . -B smoke-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          -DQUIC_BUILD_TOOLS=ON -DQUIC_ENABLE_LOGGING=OFF "$TLS_OPTION"
+        cmake --build smoke-build --target quicsample --parallel 2
+        SAMPLE="$PWD/smoke-build/bin/Release/quicsample"
+        LIBRARY="$PWD/smoke-build/bin/Release/libmsquic.so.$SMOKE_VERSION"
+        test -f "$LIBRARY"
+        test "$(readlink -f smoke-build/bin/Release/libmsquic.so.2)" = "$LIBRARY"
+        export LD_LIBRARY_PATH="$PWD/smoke-build/bin/Release"
+        ldd "$SAMPLE" | tee smoke-build/linkage.log
+        grep -F "libmsquic.so.2 => $PWD/smoke-build/bin/Release/libmsquic.so.2 " smoke-build/linkage.log
+        file "$SAMPLE" "$LIBRARY"
+        file "$SAMPLE" | grep -q 'ARM aarch64'
+        openssl req -x509 -newkey rsa:2048 -nodes -keyout smoke-build/server.key \
+          -out smoke-build/server.crt -subj /CN=localhost -days 1
+        export SAMPLE
+        python3 - <<'PY'
+        import os
+        from pathlib import Path
+        import subprocess
+        import time
+
+        sample = os.environ["SAMPLE"]
+        server_log = Path("smoke-build/server.log")
+        client_log = Path("smoke-build/client.log")
+        with server_log.open("w") as log:
+            server = subprocess.Popen(
+                ["stdbuf", "-oL", sample, "-server",
+                 "-cert_file:smoke-build/server.crt", "-key_file:smoke-build/server.key"],
+                stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT, text=True,
+            )
+            try:
+                deadline = time.monotonic() + 15
+                while "Press Enter to exit" not in server_log.read_text():
+                    assert server.poll() is None, "QUIC server exited before listening"
+                    assert time.monotonic() < deadline, "QUIC server did not listen"
+                    time.sleep(0.1)
+                client = subprocess.run(
+                    [sample, "-client", "-target:127.0.0.1", "-unsecure"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                client_log.write_text(client.stdout + client.stderr)
+                assert client.returncode == 0, "QUIC client failed"
+                server.communicate("\n", timeout=10)
+                assert server.returncode == 0, "QUIC server failed"
+                for path in (client_log, server_log):
+                    output = path.read_text()
+                    for marker in ("Connected", "Data sent", "Data received"):
+                        assert marker in output, f"{path}: missing {marker}"
+                    assert "failed" not in output.lower(), f"{path}: reported failure"
+                    assert "Shut down by transport" not in output, f"{path}: transport error"
+            finally:
+                if server.poll() is None:
+                    server.kill()
+                    server.communicate()
+                for path in (server_log, client_log):
+                    if path.exists():
+                        print(f"--- {path} ---\n{path.read_text()}")
+        PY
 
     outputs:
       contract_version: "2.0"
@@ -142,7 +215,7 @@ jobs:
         uses: ./.github/actions/apt-bootstrap
         with:
           packages: "git curl jq tar unzip file ca-certificates"
-          extra_packages: "${{ env.EXTRA_APT_PACKAGES }}"
+          extra_packages: "build-essential cmake ninja-build libssl-dev perl"
           quiet: "true"
 
       - name: Install baseline source or artifact
@@ -281,15 +354,10 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-          fi
-          eval "$TEST5_COMMAND"
+          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "status=failed" >> "$GITHUB_OUTPUT"; fi; echo "duration=$(($(date +%s) - $START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
+          bash -euo pipefail -c "$MSQUIC_SMOKE_COMMAND" -- baseline-src "$BASELINE_VERSION" "v$BASELINE_VERSION"
           echo "status=passed" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          echo "note=Built MsQuic ${BASELINE_VERSION} and its upstream sample natively on Arm64; verified a local QUIC handshake and bidirectional stream receipt using an ephemeral self-signed certificate. Public PKI and external network interoperability are outside this smoke." >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
         id: test6
         uses: ./.github/actions/generic-source-regression-check
@@ -297,7 +365,12 @@ jobs:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
+          defer_on_limited_cpu_probe_failure: "false"
           limited_cpu_probe: |
+            test "$CURRENT_VERSION" = "$BASELINE_VERSION"
+            test "$LATEST_VERSION" != "$BASELINE_VERSION"
+            test "${CANDIDATE_TAG#v}" = "$LATEST_VERSION"
+            test "$(git -C next-src describe --tags --exact-match)" = "$CANDIDATE_TAG"
             test -f next-src/CMakeLists.txt
             test -d next-src/src
             python3 - <<'PY'
@@ -307,17 +380,26 @@ jobs:
             assert "MsQuic" in readme
             assert "MsQuicOpen2" in sample
             PY
-          limited_cpu_description: "A bounded Arm64 CPU-side source probe validated the next MsQuic candidate checkout and sample entrypoint identity. This does not build or run QUIC traffic."
+            bash -euo pipefail -c "$MSQUIC_SMOKE_COMMAND" -- next-src "$LATEST_VERSION" "$CANDIDATE_TAG"
+          limited_cpu_description: "Built and loaded the exact resolved MsQuic candidate library and upstream sample on Arm64; verified a local QUIC handshake and bidirectional stream receipt with an ephemeral self-signed certificate. Public PKI and external network interoperability are outside this bounded smoke."
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -327,27 +409,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6" = "passed" ] && [ "$O6" = "success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6" = "skipped" ] && [ "$O6" = "success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -357,6 +443,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
 
       - name: Create test summary
         if: always()

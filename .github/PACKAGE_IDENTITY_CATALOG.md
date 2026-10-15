@@ -287,19 +287,20 @@ must fail, while the isolated invocation must complete validation. Manual-review
 evidence is rejected until external authentication and repository governance
 exist.
 
-The bootstrap-only
-`.github/workflows/package-identity-bootstrap-unit-tests.yml` workflow downloads
-the exact Arm64 Hugo release, verifies its pinned SHA-256 before extraction, and
-runs the isolated trust-boundary suite. It intentionally does not run the live
-validator while the reviewed catalog is absent, and it is not the future required
-trust-root check described below.
+The `.github/workflows/package-identity-bootstrap-unit-tests.yml` workflow binds
+itself to GitHub's authenticated pull-request merge SHA, downloads the exact
+Arm64 Hugo release, verifies its pinned SHA-256 before extraction, and runs the
+isolated trust-boundary suite. Before bootstrap it confirms that the catalog is
+absent and production remains fail-closed. Once a proposed merge tree contains
+the catalog, the workflow validates that exact immutable tree. After bootstrap,
+catalog deletion fails the same check.
 
 The safeguard slice contains:
 
 | Path | Purpose |
 |---|---|
 | `.github/PACKAGE_IDENTITY_CATALOG.md` | Contract and bootstrap trust boundary |
-| `.github/workflows/package-identity-bootstrap-unit-tests.yml` | Isolated bootstrap unit-test CI |
+| `.github/workflows/package-identity-bootstrap-unit-tests.yml` | Merge-tree catalog validation and isolated unit-test CI |
 | `build_steps/validate_package_identity_catalog.py` | Read-only fail-closed validator |
 | `tests/test_package_identity_catalog.py` | Synthetic validator unit tests |
 
@@ -335,30 +336,14 @@ an unapproved URL, frontmatter, or generated shell commands.
 Until that bootstrap and required check are independently reviewed, a missing
 catalog must remain a fail-closed condition.
 
-## Unresolved Ownership Mapping
+## Ownership Mapping
 
-No `.github/CODEOWNERS`, `OWNERS`, or `MAINTAINERS` file currently identifies an
-accountable catalog steward or workflow-security owner. The existing test
-documentation refers only to generic maintainer roles, and commit frequency is
-not ownership evidence. Therefore this change does not invent GitHub users or
-teams and does not add CODEOWNERS entries.
+The repository's `.github/CODEOWNERS` file assigns the catalog trust root,
+validator, tests, documentation, generated package pages, and generated package
+workflows to named dashboard maintainers. The protected `main` branch requires
+CODEOWNER review, one approval, approval of the latest push, stale-review
+dismissal, resolved conversations, and the exact-run contract check.
 
-The repository teams endpoint was empty when audited. Direct repository access
-showed `zachlasiuk` (admin), `chrismoroney` (maintain), and `ranimandepudi`
-(admin), but permission level does not establish responsibility for this
-catalog. Those accounts are therefore not used as inferred CODEOWNERS.
-
-The following exact path mapping remains unresolved:
-
-| Protected path | Required accountable role | GitHub owner |
-|---|---|---|
-| `.github/package-identity-catalog.json` | Dashboard identity-catalog steward | Unresolved |
-| `.github/workflows/package-identity-bootstrap-unit-tests.yml` | Workflow-security reviewer | Unresolved |
-| `build_steps/validate_package_identity_catalog.py` | Identity-catalog steward and workflow-security reviewer | Unresolved |
-| `tests/test_package_identity_catalog.py` | Identity-catalog validator maintainer | Unresolved |
-| `.github/PACKAGE_IDENTITY_CATALOG.md` | Identity-catalog steward | Unresolved |
-
-An authorized repository owner must provide the exact GitHub team or user for
-each role before path-specific CODEOWNERS protection is added. The catalog
-bootstrap must not proceed on the assumption that a frequent contributor is
-the owner.
+The catalog bootstrap must still receive independent human review. CODEOWNERS
+identifies who is accountable for that decision; it does not turn generated
+metadata, registry candidates, or an AI response into trusted identity evidence.

@@ -143,12 +143,80 @@ class GeneratedSiteDataReviewContractTests(unittest.TestCase):
             self.assertEqual(separator, "@")
             self.assertRegex(revision, r"^[0-9a-f]{40}$")
 
-    def test_current_main_workflow_is_not_wired_to_the_dormant_path(self) -> None:
+    def test_main_deploy_rejects_generated_data_drift_without_writes(self) -> None:
         main = MAIN_WORKFLOW.read_text(encoding="utf-8")
 
         self.assertNotIn("generated-site-data-review", main)
         self.assertNotIn("publish-generated-data-pr", main)
         self.assertIn("hugo deploy", main)
+        self.assertIn("permissions:\n      contents: read", main)
+        self.assertNotIn("contents: write", main)
+        self.assertIn("persist-credentials: false", main)
+        self.assertNotIn("git config user", main)
+        self.assertNotIn("git commit", main)
+        self.assertNotIn("git push", main)
+        self.assertNotIn("git add", main)
+        for command in (
+            "python3 ./build_steps/update_category_mappings.py",
+            "python3 ./build_steps/update_recently_added_json.py",
+            "python3 ./build_steps/validate_package_catagories.py",
+        ):
+            self.assertEqual(main.count(command), 1)
+        for path in (
+            "data/category_data.yml",
+            "data/category_data_windows.yml",
+            "data/recently_added_packages.yaml",
+        ):
+            self.assertEqual(main.count(path), 1)
+        self.assertIn('git diff --quiet HEAD -- "${generated_paths[@]}"', main)
+        self.assertIn("git diff --quiet HEAD --", main)
+        self.assertIn("git ls-files --others --exclude-standard", main)
+        self.assertLess(main.index("git diff --quiet HEAD --"), main.index("hugo --minify"))
+        self.assertLess(main.index("git diff --quiet HEAD --"), main.index("hugo deploy"))
+        self.assertIn("--require-hashes", main)
+        self.assertIn("generated-site-data-requirements.txt", main)
+
+    def test_main_deploy_is_manual_only_fail_closed_and_protected(self) -> None:
+        main = MAIN_WORKFLOW.read_text(encoding="utf-8")
+        trigger = main.split("permissions:", maxsplit=1)[0]
+
+        self.assertIn("  workflow_dispatch:\n", trigger)
+        self.assertNotIn("pull_request", trigger)
+        self.assertNotIn("push:", trigger)
+        self.assertIn("PRODUCTION_DEPLOYMENT_ENABLED", main)
+        self.assertIn('== "true"', main)
+        self.assertIn("vars.PRODUCTION_DEPLOYMENT_ENABLED == 'true'", main)
+        self.assertIn("Production deployment is disabled", main)
+        self.assertIn("environment: production", main)
+        self.assertIn("group: production-deployment", main)
+        self.assertIn("cancel-in-progress: false", main)
+        self.assertIn("needs: activation", main)
+        self.assertIn("fetch-depth: 0", main)
+        self.assertIn("ref: ${{ needs.activation.outputs.base_sha }}", main)
+        self.assertIn("git rev-parse --verify 'HEAD^{commit}'", main)
+        self.assertIn('[[ "$GITHUB_REF_NAME" == "$DEFAULT_BRANCH" ]]', main)
+        self.assertIn("git ls-remote --exit-code origin", main)
+        self.assertIn("refusing to deploy stale content", main)
+        self.assertLess(main.index("git ls-remote --exit-code origin"), main.index("hugo deploy"))
+
+    def test_main_deploy_external_actions_are_exactly_sha_pinned(self) -> None:
+        main = MAIN_WORKFLOW.read_text(encoding="utf-8")
+
+        external = []
+        for line in main.splitlines():
+            if "uses:" not in line:
+                continue
+            reference = (
+                line.split("uses:", maxsplit=1)[1].split("#", maxsplit=1)[0].strip()
+            )
+            if reference.startswith("./"):
+                continue
+            external.append(reference)
+        self.assertEqual(len(external), 3)
+        for reference in external:
+            _name, separator, revision = reference.rpartition("@")
+            self.assertEqual(separator, "@")
+            self.assertRegex(revision, r"^[0-9a-f]{40}$")
 
     def test_ci_is_read_only_arm64_and_covers_all_new_files(self) -> None:
         ci = CI_WORKFLOW.read_text(encoding="utf-8")
@@ -178,6 +246,15 @@ class GeneratedSiteDataReviewContractTests(unittest.TestCase):
         self.assertIn("downscopes its token", operations)
         self.assertIn("separately", operations)
         self.assertIn("Do not substitute a PAT", operations)
+        self.assertIn("PRODUCTION_DEPLOYMENT_ENABLED=false", operations)
+        self.assertIn("environment `production`", operations)
+        self.assertIn("manual-only, fail-closed", operations)
+        self.assertIn("prevent self-review", operations)
+        self.assertIn("disable administrator\nbypass", operations)
+        self.assertIn(
+            "stale run fails instead of rolling\nproduction backward", operations
+        )
+        self.assertIn("complete Git history", operations)
 
 
 if __name__ == "__main__":

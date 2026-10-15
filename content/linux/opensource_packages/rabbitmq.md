@@ -27,5 +27,5 @@ optional_info:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
-    other_info:	RabbitMQ is not architecture-specific and has common binaries released. Hence the minimum version is the first released version(3.0).
+    other_info: RabbitMQ is not architecture-specific and has common binaries released. Hence the minimum version is the first released version(3.0).
 ---

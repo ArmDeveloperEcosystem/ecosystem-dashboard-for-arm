@@ -81,6 +81,9 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       REPEATMASKER_VERSION: "4.1.0"
+      # Upstream's 2019-10-30 "Setting release version" commit for 4.1.0.
+      REPEATMASKER_REVISION: "ee4929ebdb832bfadca66a6708dbd1d65792e6ca"
+      REPEATMASKER_SHA256: "f48abbb2d55e956fc29a926ed096e0f5711f01fc603c8b6d2a9a375126b4f81d"
       REPEATMASKER_WORKDIR: "/tmp/repeatmasker-smoke"
 
     outputs:
@@ -125,11 +128,13 @@ jobs:
           set -euo pipefail
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "perl wget file libtext-soundex-perl"
           rm -rf "${REPEATMASKER_WORKDIR}"
-          mkdir -p "${REPEATMASKER_WORKDIR}/baseline"
-          wget -q "https://www.repeatmasker.org/RepeatMasker/RepeatMasker-${REPEATMASKER_VERSION}.tar.gz" \
-            -O "${REPEATMASKER_WORKDIR}/baseline/RepeatMasker.tar.gz"
-          tar -xzf "${REPEATMASKER_WORKDIR}/baseline/RepeatMasker.tar.gz" -C "${REPEATMASKER_WORKDIR}/baseline"
           BASE_DIR="${REPEATMASKER_WORKDIR}/baseline/RepeatMasker"
+          mkdir -p "${BASE_DIR}"
+          bash .github/scripts/download-with-fallback.sh \
+            "${REPEATMASKER_WORKDIR}/baseline/RepeatMasker.tar.gz" \
+            "https://codeload.github.com/Dfam-consortium/RepeatMasker/tar.gz/${REPEATMASKER_REVISION}"
+          printf '%s  %s\n' "$REPEATMASKER_SHA256" "${REPEATMASKER_WORKDIR}/baseline/RepeatMasker.tar.gz" | sha256sum -c -
+          tar -xzf "${REPEATMASKER_WORKDIR}/baseline/RepeatMasker.tar.gz" --strip-components=1 -C "${BASE_DIR}"
           test -f "${BASE_DIR}/RepeatMasker"
           test -f "${BASE_DIR}/ProcessRepeats"
 
@@ -138,31 +143,30 @@ jobs:
 
       - name: Get RepeatMasker version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           BASE_DIR="${{ steps.install.outputs.base_dir }}"
-          OUTPUT=$(perl -I"${BASE_DIR}" "${BASE_DIR}/RepeatMasker" 2>&1 || true)
-          VERSION=$(echo "$OUTPUT" | sed -n 's/.*RepeatMasker version \([0-9.]\+\(-p[0-9]\+\)\?\).*/\1/p' | head -n 1)
-          if [ -z "$VERSION" ]; then
-            VERSION="${REPEATMASKER_VERSION}"
-          fi
+          OUTPUT=$(perl -I"${BASE_DIR}" "${BASE_DIR}/RepeatMasker" -v)
+          VERSION=$(printf '%s\n' "$OUTPUT" | sed -nE 's/^RepeatMasker version ([0-9]+\.[0-9]+\.[0-9]+(-p[0-9]+)?)$/\1/p')
+          test "$VERSION" = "$REPEATMASKER_VERSION"
           LATEST=$(python3 - <<'PY'
+          import json
+          import os
           import re
           import urllib.request
 
-          def key(version):
-              m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-p(\d+))?", version)
-              if not m:
-                  return (-1, -1, -1, -1)
-              a, b, c, p = m.groups()
-              return (int(a), int(b), int(c), int(p or 0))
-
-          html = urllib.request.urlopen("https://www.repeatmasker.org/RepeatMasker/", timeout=20).read().decode("utf-8", "ignore")
-          versions = set(re.findall(r"RepeatMasker-(\d+\.\d+\.\d+(?:-p\d+)?)\.tar\.gz", html))
-          if versions:
-              print(sorted(versions, key=key)[-1])
-          else:
-              print("unknown")
+          request = urllib.request.Request(
+              "https://api.github.com/repos/Dfam-consortium/RepeatMasker/releases/latest",
+              headers={"Accept": "application/vnd.github+json", "Authorization": f"Bearer {os.environ['GH_TOKEN']}"},
+          )
+          with urllib.request.urlopen(request, timeout=20) as response:
+              release = json.load(response)
+          match = re.fullmatch(r"v(\d+\.\d+\.\d+(?:-p\d+)?)", release["tag_name"])
+          if not match or release["draft"] or release["prerelease"]:
+              raise SystemExit("Upstream did not return a stable RepeatMasker release")
+          print(match.group(1))
           PY
           )
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -193,9 +197,9 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           BASE_DIR="${{ steps.install.outputs.base_dir }}"
-          OUTPUT=$(perl -I"${BASE_DIR}" "${BASE_DIR}/RepeatMasker" 2>&1 || true)
+          OUTPUT=$(perl -I"${BASE_DIR}" "${BASE_DIR}/RepeatMasker" -v)
           echo "$OUTPUT"
-          if echo "$OUTPUT" | grep -q "RepeatMasker version ${{ steps.version.outputs.version }}"; then
+          if grep -Fxq "RepeatMasker version ${{ steps.version.outputs.version }}" <<< "$OUTPUT"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -211,7 +215,7 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           BASE_DIR="${{ steps.install.outputs.base_dir }}"
-          OUTPUT=$(perl -I"${BASE_DIR}" "${BASE_DIR}/RepeatMasker" -help 2>&1 || true)
+          OUTPUT=$(perl -I"${BASE_DIR}" "${BASE_DIR}/RepeatMasker" -help 2>&1)
           if grep -Eqi 'RepeatMasker version|RepeatMasker - Mask repetitive DNA|RepeatMasker is a program|This help file discusses the following topics|SYNOPSIS' <<< "$OUTPUT"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -246,7 +250,7 @@ jobs:
           BASE_DIR="${{ steps.install.outputs.base_dir }}"
           cd "${BASE_DIR}"
           perl -I"${BASE_DIR}" -c ./RepeatMasker >/tmp/repeatmasker_syntax.txt 2>&1
-          HELP_OUTPUT=$(perl -I"${BASE_DIR}" ./RepeatMasker -help 2>&1 || true)
+          HELP_OUTPUT=$(perl -I"${BASE_DIR}" ./RepeatMasker -help 2>&1)
           if grep -q "syntax OK" /tmp/repeatmasker_syntax.txt && grep -Eqi 'RepeatMasker version|RepeatMasker - Mask repetitive DNA|RepeatMasker is a program|This help file discusses the following topics|SYNOPSIS' <<< "$HELP_OUTPUT"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
@@ -290,29 +294,30 @@ jobs:
           fi
 
           rm -rf "${REGRESSION_WORKDIR}"
-          mkdir -p "${REGRESSION_WORKDIR}/candidate"
-          wget -q "https://www.repeatmasker.org/RepeatMasker/RepeatMasker-${LATEST}.tar.gz" \
-            -O "${REGRESSION_WORKDIR}/candidate/RepeatMasker.tar.gz"
-          tar -xzf "${REGRESSION_WORKDIR}/candidate/RepeatMasker.tar.gz" -C "${REGRESSION_WORKDIR}/candidate"
           NEXT_DIR="${REGRESSION_WORKDIR}/candidate/RepeatMasker"
+          mkdir -p "${NEXT_DIR}"
+          bash .github/scripts/download-with-fallback.sh \
+            "${REGRESSION_WORKDIR}/candidate/RepeatMasker.tar.gz" \
+            "https://codeload.github.com/Dfam-consortium/RepeatMasker/tar.gz/refs/tags/v${LATEST}"
+          tar -xzf "${REGRESSION_WORKDIR}/candidate/RepeatMasker.tar.gz" --strip-components=1 -C "${NEXT_DIR}"
 
-          OUTPUT=$(perl -I"${NEXT_DIR}" "${NEXT_DIR}/RepeatMasker" 2>&1 || true)
-          NEXT_INSTALLED=$(echo "$OUTPUT" | sed -n 's/.*RepeatMasker version \([0-9.]\+\(-p[0-9]\+\)\?\).*/\1/p' | head -n 1)
+          OUTPUT=$(perl -I"${NEXT_DIR}" "${NEXT_DIR}/RepeatMasker" -v)
+          NEXT_INSTALLED=$(printf '%s\n' "$OUTPUT" | sed -nE 's/^RepeatMasker version ([0-9]+\.[0-9]+\.[0-9]+(-p[0-9]+)?)$/\1/p')
           if [ -z "$NEXT_INSTALLED" ]; then
             NEXT_INSTALLED="not_installed"
           fi
 
           cd "${NEXT_DIR}"
           perl -I"${NEXT_DIR}" -c ./RepeatMasker >/tmp/repeatmasker_candidate_syntax.txt 2>&1
-          HELP_OUTPUT=$(perl -I"${NEXT_DIR}" ./RepeatMasker -help 2>&1 || true)
+          HELP_OUTPUT=$(perl -I"${NEXT_DIR}" ./RepeatMasker -help 2>&1)
 
           if [ -f "${NEXT_DIR}/RepeatMasker" ] && [ -f "${NEXT_DIR}/ProcessRepeats" ] && [ -d "${NEXT_DIR}/Libraries" ] && \
-             grep -q "RepeatMasker version ${LATEST}" <<< "$OUTPUT" && \
+             [ "$NEXT_INSTALLED" = "$LATEST" ] && \
              grep -q "syntax OK" /tmp/repeatmasker_candidate_syntax.txt && \
              grep -Eqi 'RepeatMasker version|RepeatMasker - Mask repetitive DNA|RepeatMasker is a program|This help file discusses the following topics|SYNOPSIS' <<< "$HELP_OUTPUT"; then
             echo "next_installed_version=${NEXT_INSTALLED}" >> "$GITHUB_OUTPUT"
             if [ "$CURRENT" = "$LATEST" ]; then
-              echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
+              echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
               echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
               echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
               echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
@@ -367,7 +372,6 @@ jobs:
         id: summary
         run: |
           set -euo pipefail
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
           PASSED=0
           FAILED=0
           CORE_FAILED=0
@@ -403,9 +407,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
-
-          if [ "$CORE_FAILED" -eq 0 ]; then
+          if [ "$FAILED" -eq 0 ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"

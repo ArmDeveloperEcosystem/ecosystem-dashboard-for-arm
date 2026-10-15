@@ -122,14 +122,17 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ steps.metadata.outputs.current_version }}"
-          URL="https://dl.min.io/server/minio/release/linux-arm64/archive/minio.${VERSION}"
+          URL="https://github.com/minio/minio/releases/download/${VERSION}/minio.linux-arm64.${VERSION}"
+          SHA256="5c83cd2cf151717ba0243f73e1c7802ff36e272b67144bdd7f1f7d684fd6f03d"
 
-          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "wget curl file"
-          wget -q -O /tmp/minio "$URL"
-          chmod +x /tmp/minio
-          sudo install /tmp/minio /usr/local/bin/minio
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "wget curl file iproute2"
+          INSTALL_DIR=$(mktemp -d "${RUNNER_TEMP}/minio-os.XXXXXX")
+          bash .github/scripts/download-with-fallback.sh "$INSTALL_DIR/minio" "$URL"
+          printf '%s  %s\n' "$SHA256" "$INSTALL_DIR/minio" | sha256sum --check --strict
+          chmod +x "$INSTALL_DIR/minio"
 
-          if [ -x /usr/local/bin/minio ]; then
+          if [ -x "$INSTALL_DIR/minio" ]; then
+            echo "$INSTALL_DIR" >> "$GITHUB_PATH"
             echo "install_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "install_status=failed" >> "$GITHUB_OUTPUT"
@@ -187,8 +190,10 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          minio --help >/tmp/minio-help.log 2>&1 || true
-          if grep -qiE "usage|USAGE|NAME:|COMMANDS:|MinIO|Object Storage" /tmp/minio-help.log; then
+          if minio --help >/tmp/minio-help.log 2>&1 &&
+            grep -qE '^NAME:[[:space:]]*$' /tmp/minio-help.log &&
+            grep -qE '^USAGE:[[:space:]]*$' /tmp/minio-help.log &&
+            grep -qE '^COMMANDS:[[:space:]]*$' /tmp/minio-help.log; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/minio-help.log || true
@@ -206,7 +211,7 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          if minio server --help 2>&1 | tee /tmp/minio-server-help.log | grep -qiE "usage:|name:|flags:|minio object storage server|object storage"; then
+          if minio server --help 2>&1 | tee /tmp/minio-server-help.log | grep -iE "usage:|name:|flags:|minio object storage server|object storage" >/dev/null; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/minio-server-help.log || true
@@ -226,27 +231,37 @@ jobs:
           START_TIME=$(date +%s)
           DATA_DIR=$(mktemp -d)
           LOG_FILE=$(mktemp)
-          MINIO_ROOT_USER=admin MINIO_ROOT_PASSWORD=password minio server "$DATA_DIR" --address :9001 --console-address :9002 >"$LOG_FILE" 2>&1 &
+          LISTENER_LOG=$(mktemp)
+          MINIO_ROOT_USER=admin MINIO_ROOT_PASSWORD=password minio server "$DATA_DIR" --address 127.0.0.1:9001 --console-address 127.0.0.1:9002 >"$LOG_FILE" 2>&1 &
           MINIO_PID=$!
           cleanup() {
             kill "$MINIO_PID" >/dev/null 2>&1 || true
-            rm -rf "$DATA_DIR" "$LOG_FILE"
+            wait "$MINIO_PID" 2>/dev/null || true
+            rm -rf "$DATA_DIR" "$LOG_FILE" "$LISTENER_LOG"
           }
           trap cleanup EXIT
 
           HTTP_CODE=""
           for _ in $(seq 1 30); do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9001/minio/health/live || true)
-            if [ "$HTTP_CODE" = "200" ]; then
+            HTTP_CODE=$(curl --max-time 2 -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9001/minio/health/live || true)
+            if [ "$HTTP_CODE" = "200" ] || ! kill -0 "$MINIO_PID" 2>/dev/null; then
               break
             fi
             sleep 1
           done
 
-          if [ "$HTTP_CODE" = "200" ]; then
+          # Accept health only from the baseline process that owns this loopback listener.
+          if [ "$HTTP_CODE" = "200" ] && kill -0 "$MINIO_PID" 2>/dev/null &&
+            ss -H -4 -ltnp 'sport = :9001' >"$LISTENER_LOG" 2>&1 &&
+            awk -v pid="$MINIO_PID" '
+              $4 == "127.0.0.1:9001" && $0 ~ ("[(,]pid=" pid "[,)]") { owned = 1 }
+              END { exit !owned }
+            ' "$LISTENER_LOG" && kill -0 "$MINIO_PID" 2>/dev/null; then
+            cat "$LISTENER_LOG"
+            echo "Baseline PID $MINIO_PID owns 127.0.0.1:9001; health endpoint returned HTTP $HTTP_CODE on native Arm64."
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            cat "$LOG_FILE" || true
+            cat "$LOG_FILE" "$LISTENER_LOG" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -255,19 +270,119 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Regression applicability - package manager installed
+      - name: Test 6 - Build and validate next stable source release
         id: test6
+        if: always()
         run: |
           set -euo pipefail
+          unset GH_TOKEN GITHUB_TOKEN
+          START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
-          echo "status=passed" >> "$GITHUB_OUTPUT"
-          echo "duration=0" >> "$GITHUB_OUTPUT"
+          export NEXT_VERSION="RELEASE.2025-10-15T17-29-55Z"
+          export NEXT_COMMIT="9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a"
+          WORK_DIR=$(mktemp -d "${RUNNER_TEMP}/minio-os-next.XXXXXX")
+          STATUS=failed
+          DECISION=next_install_failed
+          NEXT_INSTALLED=not_installed
+          DETAILS="Candidate ${NEXT_VERSION} source build or native validation failed."
+          MINIO_PID=""
+          finish() {
+            local EXIT_CODE=$?
+            if [ -n "$MINIO_PID" ]; then
+              kill "$MINIO_PID" >/dev/null 2>&1 || true
+              wait "$MINIO_PID" 2>/dev/null || true
+            fi
+            # Go makes module-cache directories read-only; this workspace is private to this step.
+            if ! chmod -R u+w "$WORK_DIR" || ! rm -rf "$WORK_DIR"; then
+              STATUS=failed
+              DECISION=next_install_failed
+              DETAILS="Candidate validation could not clean up its private source-build workspace."
+              EXIT_CODE=1
+            fi
+            echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "latest_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "next_installed_version=$NEXT_INSTALLED" >> "$GITHUB_OUTPUT"
+            echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
+            echo "regression_result=$DETAILS" >> "$GITHUB_OUTPUT"
+            echo "comparison=$DETAILS" >> "$GITHUB_OUTPUT"
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
+            return "$EXIT_CODE"
+          }
+          trap finish EXIT
+
+          for BASELINE_STATUS in "${{ steps.test1.outputs.status }}" "${{ steps.test2.outputs.status }}" "${{ steps.test3.outputs.status }}" "${{ steps.test4.outputs.status }}" "${{ steps.test5.outputs.status }}"; do
+            if [ "$BASELINE_STATUS" != "passed" ]; then
+              STATUS=skipped
+              DECISION=baseline_failed
+              DETAILS="Candidate validation was not attempted because baseline Tests 1-5 did not all pass."
+              exit 0
+            fi
+          done
+          [[ "$NEXT_VERSION" > "$CURRENT" ]] || exit 1
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "git golang-go iproute2"
+          export HOME="$WORK_DIR/home" GOPATH="$WORK_DIR/gopath" GOCACHE="$WORK_DIR/go-cache"
+          export GOMODCACHE="$WORK_DIR/go-mod" GOTOOLCHAIN=go1.24.8 GOENV=off GOMAXPROCS=2 GOFLAGS=-p=2
+          export SOURCE_DIR="$WORK_DIR/source"
+          mkdir -p "$HOME"
+          # Expand build variables inside the bounded child shell, not this shell.
+          # shellcheck disable=SC2016
+          if ! timeout 1200 bash -euo pipefail -c '
+            test "$(uname -m)" = aarch64
+            test "$(go env GOVERSION)" = go1.24.8
+            test "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = linux/arm64
+            git clone --depth 1 --branch "$NEXT_VERSION" https://github.com/minio/minio.git "$SOURCE_DIR"
+            cd "$SOURCE_DIR"
+            test "$(git rev-parse HEAD)" = "$NEXT_COMMIT"
+            # Use the upstream Makefile flags and release generator, whose version comes from the verified commit timestamp.
+            LDFLAGS=$(MINIO_RELEASE=RELEASE go run buildscripts/gen-ldflags.go)
+            CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=readonly -tags kqueue -trimpath --ldflags "$LDFLAGS" -o minio .
+          ' >"$WORK_DIR/build.log" 2>&1; then
+            cat "$WORK_DIR/build.log"
+            exit 1
+          fi
+          NEXT_BIN="$SOURCE_DIR/minio"
+          file "$NEXT_BIN"
+          file "$NEXT_BIN" | grep -iE 'arm aarch64|aarch64' >/dev/null
+          VERSION_OUTPUT=$("$NEXT_BIN" --version 2>&1)
+          printf '%s\n' "$VERSION_OUTPUT"
+          REPORTED=$(printf '%s\n' "$VERSION_OUTPUT" | awk 'NR == 1 {print $3}')
+          [ "$REPORTED" = "$NEXT_VERSION" ]
+          [[ "$VERSION_OUTPUT" = *"commit-id=${NEXT_COMMIT})"* ]] || exit 1
+          [[ "$VERSION_OUTPUT" = *"linux/arm64"* ]] || exit 1
+          timeout 30 "$NEXT_BIN" server --help >"$WORK_DIR/help.log" 2>&1
+          grep -qiE 'usage:|name:|flags:|minio object storage server|object storage' "$WORK_DIR/help.log"
+          MINIO_ROOT_USER=admin MINIO_ROOT_PASSWORD=password "$NEXT_BIN" server "$WORK_DIR/data" --address 127.0.0.1:19300 --console-address 127.0.0.1:19301 >"$WORK_DIR/server.log" 2>&1 &
+          MINIO_PID=$!
+          HTTP_CODE=""
+          for _ in $(seq 1 30); do
+            HTTP_CODE=$(curl --max-time 2 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19300/minio/health/live || true)
+            if [ "$HTTP_CODE" = 200 ] || ! kill -0 "$MINIO_PID" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if [ "$HTTP_CODE" != 200 ] || ! kill -0 "$MINIO_PID" 2>/dev/null; then
+            cat "$WORK_DIR/server.log"
+            exit 1
+          fi
+          # An unrelated healthy server must not mask the candidate failing to bind.
+          if ! ss -H -4 -ltnp 'sport = :19300' >"$WORK_DIR/listener.log" 2>&1 ||
+            ! awk -v pid="$MINIO_PID" '
+              $4 == "127.0.0.1:19300" && $0 ~ ("[(,]pid=" pid "[,)]") { owned = 1 }
+              END { exit !owned }
+            ' "$WORK_DIR/listener.log" || ! kill -0 "$MINIO_PID" 2>/dev/null; then
+            cat "$WORK_DIR/listener.log" "$WORK_DIR/server.log"
+            exit 1
+          fi
+          cat "$WORK_DIR/listener.log"
+          echo "Candidate PID $MINIO_PID owns 127.0.0.1:19300; health endpoint returned HTTP $HTTP_CODE on native Arm64."
+          NEXT_INSTALLED="$REPORTED"
+          STATUS=passed
+          DECISION=next_install_validated
+          DETAILS="Baseline ${CURRENT} passed Tests 1-5. Candidate ${NEXT_VERSION} was built natively from verified upstream commit ${NEXT_COMMIT} using upstream release flags; exact release and commit, AArch64 ELF, server help, and live HTTP health with exact listener PID ownership were validated."
+          trap - EXIT
+          finish
 
       - name: Calculate test summary
         if: always()
@@ -306,12 +421,13 @@ jobs:
           check_core "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
           check_core "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
           check_core "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
-          if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
+          if [ "$TEST6_STATUS" = "passed" ]; then
             check_test "passed" "${{ steps.test6.outputs.duration || 0 }}"
-          elif [ "${{ steps.test6.outputs.status || 'skipped' }}" = "failed" ]; then
-            check_test "failed" "${{ steps.test6.outputs.duration || 0 }}"
+          elif [ "$TEST6_STATUS" = "skipped" ] && [ "${{ steps.test6.outputs.decision }}" = "baseline_failed" ] && [ "$CORE_FAILED" -ne 0 ]; then
+            check_test "skipped" "${{ steps.test6.outputs.duration || 0 }}"
           else
-            TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
+            check_test "failed" "${{ steps.test6.outputs.duration || 0 }}"
           fi
 
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
@@ -320,9 +436,7 @@ jobs:
           echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
           echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
 
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
-
-          if [ "$CORE_FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
+          if [ "$CORE_FAILED" -eq 0 ] && [ "$FAILED" -eq 0 ] && [ "$TEST6_STATUS" != "failed" ]; then
             echo "overall_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "overall_status=failure" >> "$GITHUB_OUTPUT"
@@ -357,5 +471,7 @@ jobs:
           echo "3. Test 3 - Check help output: ${{ steps.test3.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "4. Test 4 - Check server subcommand help: ${{ steps.test4.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "5. Test 5 - Functional validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "6. Regression applicability: package-manager installed (not applicable)" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Test 6 - Build and validate next stable source release: ${{ steps.test6.outputs.status || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Regression decision: ${{ steps.test6.outputs.decision || 'not_configured' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Regression evidence: ${{ steps.test6.outputs.comparison || 'Regression validation did not complete.' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"

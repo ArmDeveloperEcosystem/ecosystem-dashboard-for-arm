@@ -195,19 +195,17 @@ jobs:
         id: version
         if: always()
         run: |
-          # Kafka doesn't have a simple --version command on the main scripts usually,
-          # but we can check the jar or just use the version we downloaded.
-          # Or use kafka-topics.sh --version in newer versions
-          
-          if kafka/bin/kafka-topics.sh --version &> /dev/null; then
-             VERSION=$(kafka/bin/kafka-topics.sh --version | awk '{print $1}' || echo "unknown")
+          set -euo pipefail
+          if VERSION_OUTPUT=$(kafka/bin/kafka-topics.sh --version 2>/dev/null) && \
+             VERSION=$(printf '%s\n' "$VERSION_OUTPUT" | awk 'NR == 1 {print $1}') && \
+             [ -n "$VERSION" ] && [ "$VERSION" = "$KAFKA_VERSION" ]; then
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "Detected Kafka version: $VERSION"
           else
-             # Fallback
-             VERSION="${KAFKA_VERSION}"
+            echo "version=unknown" >> "$GITHUB_OUTPUT"
+            echo "Kafka version validation failed" >&2
+            exit 1
           fi
-          
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected Kafka version: $VERSION"
 
       # ============================================================
       # ADD YOUR TESTS BELOW
@@ -443,6 +441,8 @@ jobs:
           START_TIME=$(date +%s)
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || \
+             [ "${{ steps.version.outcome || 'skipped' }}" != "success" ] || \
+             [ "$CURRENT" != "$KAFKA_VERSION" ] || \
              [ "${{ steps.test1.outputs.status || 'skipped' }}" != "passed" ] || \
              [ "${{ steps.test2.outputs.status || 'skipped' }}" != "passed" ] || \
              [ "${{ steps.test3.outputs.status || 'skipped' }}" != "passed" ] || \
@@ -478,11 +478,10 @@ jobs:
             NEXT_ROOT="$NEXT_DIR/kafka_${SCALA_VERSION}-${LATEST}"
             NEXT_BIN="$NEXT_ROOT/bin/kafka-topics.sh"
             if [ -x "$NEXT_BIN" ]; then
-              NEXT_INSTALLED_VERSION=$("$NEXT_BIN" --version 2>/dev/null | awk '{print $1}' | head -n 1 || true)
-              if [ -z "$NEXT_INSTALLED_VERSION" ]; then
-                NEXT_INSTALLED_VERSION="$LATEST"
-              fi
-              if [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
+              NEXT_INSTALLED_VERSION=unknown
+              if NEXT_VERSION_OUTPUT=$("$NEXT_BIN" --version 2>/dev/null) && \
+                 NEXT_INSTALLED_VERSION=$(printf '%s\n' "$NEXT_VERSION_OUTPUT" | awk 'NR == 1 {print $1}') && \
+                 [ -n "$NEXT_INSTALLED_VERSION" ] && [ "$NEXT_INSTALLED_VERSION" = "$LATEST" ]; then
                 echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
                 echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
@@ -493,10 +492,10 @@ jobs:
               else
                 echo "next_installed_version=$NEXT_INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
                 echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-                echo "regression_result=Next version installed but reported a version mismatch on Arm64" >> "$GITHUB_OUTPUT"
-                echo "comparison=Current pinned Kafka version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} extracted on Arm64 and reported version ${NEXT_INSTALLED_VERSION}, which does not match the requested upgrade target." >> "$GITHUB_OUTPUT"
+                echo "regression_result=Next version CLI failed or did not report the expected version on Arm64" >> "$GITHUB_OUTPUT"
+                echo "comparison=Current pinned Kafka version ${CURRENT} passed smoke tests in this run, but the regression candidate ${LATEST} CLI failed or did not report the expected version on Arm64 (reported: ${NEXT_INSTALLED_VERSION:-unknown})." >> "$GITHUB_OUTPUT"
                 echo "Next version installed on Arm64: $NEXT_INSTALLED_VERSION"
-                echo "Regression install result: Next version installed but reported a version mismatch on Arm64"
+                echo "Regression install result: Next version CLI failed or did not report the expected version on Arm64"
                 echo "status=failed" >> "$GITHUB_OUTPUT"
                 exit 1
               fi
@@ -591,7 +590,9 @@ jobs:
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
           }
 
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ] || \
+             [ "${{ steps.version.outcome || 'skipped' }}" != "success" ] || \
+             [ "${{ steps.version.outputs.version || 'unknown' }}" != "$KAFKA_VERSION" ]; then
             CORE_FAILED=1
           fi
 

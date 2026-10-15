@@ -93,11 +93,96 @@ jobs:
       TEST1_COMMAND: >-
         test -f README.rst && test -f pyproject.toml && test -f mlflow/__init__.py && test -d examples && test "$RESOLVED_TAG" = "v2.4.0"
       TEST2_COMMAND: >-
-        test "$RESOLVED_TAG" = "v2.4.0" && grep -Fq "__version__" mlflow/version.py
+        test "$RESOLVED_TAG" = "v$BASELINE_VERSION" &&
+        test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RESOLVED_TAG^{commit}")" &&
+        python3 -c 'import ast, os; from pathlib import Path; tree=ast.parse(Path("mlflow/version.py").read_text()); values=[ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "VERSION" for target in node.targets)]; assert values == [os.environ["BASELINE_VERSION"]], values; print("Verified MLflow source version:", values[0])'
       TEST3_COMMAND: >-
         test -d docs && test -d examples && grep -Fq 'MlflowClient' mlflow/client.py
       TEST5_COMMAND: >-
         python3 -m py_compile mlflow/__init__.py mlflow/client.py examples/statsmodels/train.py
+      MLFLOW_SMOKE_COMMAND: |
+        test "$(uname -m)" = aarch64
+        WORKDIR=$(mktemp -d "$PWD/mlflow-smoke.XXXXXX")
+        export WORKDIR
+        python -m venv "$WORKDIR/venv"
+        . "$WORKDIR/venv/bin/activate"
+        # MLflow 2.4 needs pkg_resources from the interpreter's bundled setuptools.
+        python -m pip install --upgrade pip
+        timeout 360 python -m pip install "mlflow==$SMOKE_VERSION"
+        python -m pip check
+        python -m pip freeze > "$WORKDIR/pip-freeze.txt"
+        cd "$WORKDIR"
+        python - <<'PY'
+        from contextlib import closing
+        from importlib.metadata import version
+        import json
+        import os
+        from pathlib import Path
+        import re
+        import signal
+        import socket
+        import sqlite3
+        import subprocess
+        import time
+        import urllib.error
+        import urllib.request
+        import mlflow
+        root = Path(os.environ["WORKDIR"])
+        expected = os.environ["SMOKE_VERSION"]
+        assert version("mlflow") == expected == mlflow.__version__
+        assert Path(mlflow.__file__).resolve().is_relative_to(root / "venv")
+        cli = subprocess.check_output(["mlflow", "--version"], text=True, timeout=30)
+        match = re.search(r"\bversion\s+(\S+)", cli)
+        assert match and match[1] == expected, cli
+        print(cli, end="", flush=True)
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+        database = root / "tracking.db"
+        command = ["mlflow", "server", "--backend-store-uri", f"sqlite:///{database}",
+                   "--default-artifact-root", str(root / "mlruns"), "--host", "127.0.0.1",
+                   "--port", str(port), "--workers", "1"]
+        log_path = root / "server.log"
+        process = None
+        try:
+            with log_path.open("w") as log:
+                process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                url = f"http://127.0.0.1:{port}/health"
+                for _ in range(60):
+                    assert process.poll() is None, f"MLflow exited early: {process.returncode}"
+                    try:
+                        with urllib.request.urlopen(url, timeout=2) as response:
+                            body = response.read().decode()
+                            assert response.status == 200 and body.strip() == "OK", body
+                        break
+                    except (urllib.error.URLError, TimeoutError):
+                        time.sleep(1)
+                else:
+                    raise AssertionError("MLflow health endpoint never became ready")
+                assert process.poll() is None, "MLflow exited after health response"
+                assert database.is_file() and database.stat().st_size > 0
+                with closing(sqlite3.connect(database)) as connection:
+                    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                assert {"experiments", "runs"}.issubset(tables), tables
+                proof = {"version": expected, "module": mlflow.__file__, "cli": cli.strip(),
+                         "command": command, "health_url": url, "health_body": body,
+                         "database": str(database), "tables": sorted(tables)}
+                (root / "runtime-proof.json").write_text(json.dumps(proof, indent=2))
+                print(json.dumps(proof), flush=True)
+        finally:
+            if process is not None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=10)
+            if log_path.exists():
+                print(log_path.read_text(), flush=True)
+        PY
 
     outputs:
       contract_version: "2.0"
@@ -211,6 +296,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           RESOLVED_TAG="${{ steps.install.outputs.resolved_tag || '' }}"
           INSTALL_STATUS="${{ steps.install.outputs.install_status || 'failed' }}"
@@ -235,6 +323,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           RESOLVED_TAG="${{ steps.install.outputs.resolved_tag || '' }}"
           DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
@@ -256,6 +347,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           MODE="${{ steps.install.outputs.install_mode || '' }}"
           DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
           if [ "$MODE" = "github_source" ]; then
@@ -271,6 +365,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
           DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
           test "$(uname -m)" = "aarch64"
           grep -Fq "works_on_arm: true" "$DOC_PATH"
@@ -286,26 +383,10 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          MODE="${{ steps.install.outputs.install_mode || '' }}"
-          DOC_PATH="content/linux/opensource_packages/${PACKAGE_SLUG}.md"
-          if [ "$MODE" = "github_source" ]; then
-            cd baseline-src
-          fi
-          python -m venv ../mlflow-smoke-venv
-          . ../mlflow-smoke-venv/bin/activate
-          python -m pip install --upgrade pip setuptools wheel
-          timeout 360 python -m pip install "mlflow==$BASELINE_VERSION"
-          mkdir -p ../mlruns
-          mlflow server --backend-store-uri sqlite:///../mlflow-smoke.db --default-artifact-root ../mlruns --host 127.0.0.1 --port 5051 >/tmp/mlflow-smoke.log 2>&1 &
-          PID=$!
-          trap 'kill "$PID" 2>/dev/null || true' EXIT
-          for _ in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:5051/health >/tmp/mlflow-health.txt; then
-              break
-            fi
-            sleep 1
-          done
-          curl -fsS http://127.0.0.1:5051/health >/tmp/mlflow-health.txt
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
+          trap 'echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"' EXIT
+          SMOKE_VERSION="$BASELINE_VERSION" bash -euo pipefail -c "$MLFLOW_SMOKE_COMMAND"
           echo "status=passed" >> "$GITHUB_OUTPUT"
           echo "note=Installed MLflow $BASELINE_VERSION, started a local SQLite-backed tracking server, and verified its health endpoint." >> "$GITHUB_OUTPUT"
           END_TIME=$(date +%s)
@@ -318,32 +399,30 @@ jobs:
           github_repo: ${{ env.GITHUB_REPO }}
           lane_kind: ${{ env.LANE_KIND }}
           limited_cpu_probe: |
-            python -m venv mlflow-next-venv
-            . mlflow-next-venv/bin/activate
-            python -m pip install --upgrade pip setuptools wheel
-            timeout 360 python -m pip install "mlflow==$LATEST_VERSION"
-            mkdir -p mlruns-next
-            mlflow server --backend-store-uri sqlite:///mlflow-next-smoke.db --default-artifact-root mlruns-next --host 127.0.0.1 --port 5052 >/tmp/mlflow-next-smoke.log 2>&1 &
-            PID=$!
-            trap 'kill "$PID" 2>/dev/null || true' EXIT
-            for _ in $(seq 1 60); do
-              if curl -fsS http://127.0.0.1:5052/health >/tmp/mlflow-next-health.txt; then
-                break
-              fi
-              sleep 1
-            done
-            curl -fsS http://127.0.0.1:5052/health >/tmp/mlflow-next-health.txt
+            test "$LATEST_VERSION" != "$BASELINE_VERSION"
+            test "${CANDIDATE_TAG#v}" = "$LATEST_VERSION"
+            test "$(git -C next-src rev-parse HEAD)" = "$(git -C next-src rev-parse "refs/tags/$CANDIDATE_TAG^{commit}")"
+            SMOKE_VERSION="$LATEST_VERSION" bash -euo pipefail -c "$MLFLOW_SMOKE_COMMAND"
           limited_cpu_description: "Installed the next MLflow candidate, started a local SQLite-backed tracking server, and verified its health endpoint on Arm64."
+          defer_on_limited_cpu_probe_failure: "false"
       - name: Calculate test summary
         id: summary
         if: always()
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
+          O1="${{ steps.test1.outcome || 'failure' }}"
+          O2="${{ steps.test2.outcome || 'failure' }}"
+          O3="${{ steps.test3.outcome || 'failure' }}"
+          O4="${{ steps.test4.outcome || 'failure' }}"
+          O5="${{ steps.test5.outcome || 'failure' }}"
+          O6="${{ steps.test6.outcome || 'failure' }}"
+          DECISION="${{ steps.test6.outputs.decision || '' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
@@ -353,27 +432,31 @@ jobs:
           PASSED=0
           FAILED=0
           SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
-              PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
-            else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
           CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+          for RESULT in "$T1:$O1" "$T2:$O2" "$T3:$O3" "$T4:$O4" "$T5:$O5"; do
+            if [ "$RESULT" = "passed:success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
+          if [ "$T6:$O6" = "passed:success" ]; then
+            PASSED=$((PASSED + 1))
+          elif [ "$T6:$O6" = "skipped:success" ] && [ "$DECISION" = "no_newer_stable_available" ]; then
+            SKIPPED=1
+          else
+            FAILED=$((FAILED + 1))
+          fi
+          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
+          if [ "$FAILED" -eq 0 ]; then
             OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
           else
             OVERALL_STATUS="failure"
+          fi
+          if [ "$CORE_FAILED" -eq 0 ]; then
+            BADGE_STATUS="passing"
+          else
             BADGE_STATUS="failing"
           fi
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
@@ -383,6 +466,7 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          test "$FAILED" -eq 0
 
       - name: Create test summary
         if: always()
@@ -395,12 +479,12 @@ jobs:
           tests_failed: ${{ steps.summary.outputs.failed || '0' }}
           tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
           duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
-          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
-          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
-          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
-          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
-          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_status: ${{ steps.test1.outcome == 'success' && steps.test1.outputs.status || 'failed' }}
+          test2_status: ${{ steps.test2.outcome == 'success' && steps.test2.outputs.status || 'failed' }}
+          test3_status: ${{ steps.test3.outcome == 'success' && steps.test3.outputs.status || 'failed' }}
+          test4_status: ${{ steps.test4.outcome == 'success' && steps.test4.outputs.status || 'failed' }}
+          test5_status: ${{ steps.test5.outcome == 'success' && steps.test5.outputs.status || 'failed' }}
+          test6_status: ${{ steps.test6.outcome == 'success' && steps.test6.outputs.status || 'failed' }}
           test6_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
           regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
           regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
