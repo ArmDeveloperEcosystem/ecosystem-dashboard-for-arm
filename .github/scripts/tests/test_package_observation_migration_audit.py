@@ -128,7 +128,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(
             304, len(remediation["package_manager_summary_omits_test6"])
         )
-        # The audit flags every non-legacy default, including Garden Linux's
+        # The audit flags every default except not_configured, including Garden's
         # explicit failure default; runtime tests prove that it stays red.
         self.assertEqual(9, len(remediation["unsafe_fallback_workflows"]))
         self.assertIn("garden-linux", remediation["unsafe_fallback_workflows"])
