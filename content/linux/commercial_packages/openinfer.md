@@ -1,5 +1,5 @@
 ---
-name: OpenInfer Inference OS
+name: Loom
 vendor: OpenInfer
 category: AI/ML
 description: OpenInfer builds an Inference Operating System (Inference OS) and runtime platform designed to optimize, schedule, and route artificial intelligence workloads across heterogeneous hardware including GPUs, CPUs, NPUs, edge devices, and cloud data centers.
