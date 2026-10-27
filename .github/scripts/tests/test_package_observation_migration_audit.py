@@ -23,8 +23,8 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(
             {
                 "batches": 22,
-                "packages": 961,
-                "custom_summary_workflows": 925,
+                "packages": 962,
+                "custom_summary_workflows": 926,
                 "emitter_workflows": 36,
                 "shared_smoke_workflows": 13,
                 "package_manager_workflows": 428,
@@ -32,7 +32,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             self.report["totals"],
         )
         self.assertEqual(
-            {"next_install_failed": 1, "not_applicable_package_manager": 8, "not_configured": 952},
+            {"next_install_failed": 1, "not_applicable_package_manager": 8, "not_configured": 953},
             self.report["fallback_counts"],
         )
         self.assertEqual(
@@ -40,7 +40,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
                 "shared_smoke": 13,
                 "emitter_only": 23,
                 "generic_source": 91,
-                "fully_custom": 834,
+                "fully_custom": 835,
             },
             {
                 key: len(value)
@@ -52,8 +52,14 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             for cohort in self.report["migration_cohorts"].values()
             for slug in cohort
         ]
-        self.assertEqual(961, len(cohort_members))
-        self.assertEqual(961, len(set(cohort_members)))
+        self.assertEqual(962, len(cohort_members))
+        self.assertEqual(962, len(set(cohort_members)))
+
+        self.assertEqual(
+            {"fully_custom"},
+            {key for key, members in self.report["migration_cohorts"].items()
+             if "libkrun" in members},
+        )
 
     def test_structural_observation_inputs_are_present(self) -> None:
         remediation = self.report["remediation"]
@@ -61,8 +67,8 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         # The advisory scan cannot follow EXIT traps. Executable workflow tests
         # verify Xen's outputs and Garden Linux's Test 5 finalizer separately.
         self.assertEqual(
-            {**{f"test{number}": ["xen-hypervisor"] for number in range(1, 5)},
-             "test5": ["garden-linux", "xen-hypervisor"]},
+            {**{f"test{number}": ["libkrun", "xen-hypervisor"] for number in range(1, 5)},
+             "test5": ["garden-linux", "libkrun", "xen-hypervisor"]},
             remediation["missing_test_status"],
         )
         self.assertEqual({}, remediation["invalid_test_names"])
@@ -80,7 +86,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         remediation = self.report["remediation"]
         self.assertEqual(17, len(remediation["emitter_missing_slug"]))
         self.assertEqual(
-            {"test1": 1, "test2": 1, "test3": 1, "test4": 4, "test5": 44, "test6": 6},
+            {"test1": 2, "test2": 2, "test3": 2, "test4": 5, "test5": 45, "test6": 6},
             {
                 key: len(value)
                 for key, value in remediation["missing_test_duration"].items()
@@ -123,7 +129,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         )
         # Xen writes a runtime-selected $DECISION; the advisory scan does not
         # infer its baseline-failure branches from literal output records.
-        self.assertEqual(24, len(remediation["no_literal_decision"]))
+        self.assertEqual(25, len(remediation["no_literal_decision"]))
         self.assertIn("xen-hypervisor", remediation["no_literal_decision"])
         self.assertEqual(
             304, len(remediation["package_manager_summary_omits_test6"])
@@ -157,24 +163,24 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             406, len(remediation["package_manager_missing_baseline_guard"])
         )
         self.assertEqual(
-            961, len(remediation["missing_package_observation_output"])
+            962, len(remediation["missing_package_observation_output"])
         )
         self.assertEqual(
-            961, len(remediation["missing_package_observation_step"])
+            962, len(remediation["missing_package_observation_step"])
         )
         self.assertEqual([], remediation["invalid_package_observation_contract"])
         self.assertEqual(
             [], remediation["invalid_package_observation_input_bindings"]
         )
         self.assertEqual(
-            961,
+            962,
             len(remediation["missing_workflow_call_observation_output"]),
         )
         self.assertEqual(
             [], remediation["invalid_workflow_call_observation_output"]
         )
         self.assertEqual(
-            371,
+            372,
             len(remediation["non_package_manager_missing_baseline_guard"]),
         )
         self.assertIn(
@@ -183,10 +189,10 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(321, len(remediation["summary_omits_test6_status"]))
         self.assertIn("garden-linux", remediation["summary_omits_test6_status"])
         self.assertEqual(
-            953, len(remediation["unsafe_package_version_fallback"])
+            954, len(remediation["unsafe_package_version_fallback"])
         )
         self.assertEqual(
-            961, len(remediation["unsafe_regression_narrative_fallback"])
+            962, len(remediation["unsafe_regression_narrative_fallback"])
         )
         self.assertEqual(
             22, len(remediation["legacy_batch_collector_workflows"])
@@ -226,9 +232,46 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "24f3b15b042c263111ba609695baf98545141399e6f94715c34cb18008d86fd7",
+            "38ea31deea833bd506730e933d35938897b18b9e5c0f8ddee9a31704220e3e69",
             digest,
         )
+
+    def test_libkrun_advisory_classifications_are_exact(self) -> None:
+        # Keep these advisory findings recorded, not waived or activation-ready.
+        # The scan cannot follow EXIT traps or dynamic decisions. Package-owned
+        # test_libkrun_workflow.py executes the real summary and fault traps;
+        # it also proves missing KVM fails before package execution. Those shell
+        # fixtures do not constitute native guest validation.
+        expected = {
+            "missing_package_observation_output",
+            "missing_package_observation_step",
+            "missing_test_duration.test1",
+            "missing_test_duration.test2",
+            "missing_test_duration.test3",
+            "missing_test_duration.test4",
+            "missing_test_duration.test5",
+            "missing_test_status.test1",
+            "missing_test_status.test2",
+            "missing_test_status.test3",
+            "missing_test_status.test4",
+            "missing_test_status.test5",
+            "missing_workflow_call_observation_output",
+            "no_literal_decision",
+            "non_package_manager_missing_baseline_guard",
+            "unsafe_package_version_fallback",
+            "unsafe_regression_narrative_fallback",
+        }
+        actual = set()
+        for key, entries in self.report["remediation"].items():
+            if isinstance(entries, dict):
+                actual.update(f"{key}.{field}" for field, members in entries.items()
+                              if "libkrun" in members)
+            elif "libkrun" in entries or any(
+                isinstance(entry, dict) and entry.get("package_slug") == "libkrun"
+                for entry in entries
+            ):
+                actual.add(key)
+        self.assertEqual(expected, actual)
 
     def test_shell_output_detection_requires_a_real_github_output_write(self) -> None:
         step = {
