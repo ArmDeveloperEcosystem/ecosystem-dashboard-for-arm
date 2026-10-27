@@ -58,7 +58,7 @@ class AdditiveWorkflowTransitionTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.added = ".github/workflows/test-xen-hypervisor.yml"
+        self.added = supply_chain.REVIEWED_ADDED_WORKFLOWS[0]
         self.existing = ".github/workflows/test-alpha.yml"
         self.base_commit = "f" * 40
         self.source = {self.existing: b"reviewed existing workflow\n"}
@@ -142,7 +142,7 @@ class AdditiveWorkflowTransitionTests(unittest.TestCase):
         ):
             with self.subTest(additions=additions):
                 self.lock["hardened_workflow_transition"]["added_workflows"] = additions
-                with self.assertRaisesRegex(supply_chain.ContractError, "reviewed Xen addition"):
+                with self.assertRaisesRegex(supply_chain.ContractError, "reviewed package addition"):
                     self.validate()
         self.git_lookup.assert_not_called()
         self.snapshot_read.assert_not_called()
@@ -1329,7 +1329,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         ), mock.patch.object(
             supply_chain.subprocess, "run",
             return_value=subprocess.CompletedProcess(
-                [], 0, stdout=b".github/workflows/test-xen-hypervisor.yml\0"
+                [], 0, stdout=supply_chain.REVIEWED_ADDED_WORKFLOWS[0].encode("utf-8") + b"\0"
             ),
         ):
             with self.assertRaisesRegex(
