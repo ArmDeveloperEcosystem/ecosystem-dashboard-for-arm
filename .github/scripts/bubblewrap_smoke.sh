@@ -59,7 +59,7 @@ readonly_probe() {
   test "$(cat "$work/protected")" = protected
 }
 
-namespace_probe() {
+namespaces_probe() {
   local binary=$1 work host_pid host_net
   work=$(mktemp -d "${RUNNER_TEMP:?}/bwrap-namespaces.XXXXXX")
   host_pid=$(readlink /proc/self/ns/pid)
@@ -103,7 +103,7 @@ case "${1:-}" in
     readelf -h "$2/build/bwrap" | grep -Eq 'Machine:[[:space:]]+AArch64'
     execution_probe "$2/build/bwrap"
     readonly_probe "$2/build/bwrap"
-    namespace_probe "$2/build/bwrap"
+    namespaces_probe "$2/build/bwrap"
     suite_probe "$2"
     ;;
   *)

@@ -93,6 +93,11 @@ class BubblewrapWorkflowTests(unittest.TestCase):
         self.assertIn('test "$("$BWRAP_BINARY" --version)"', self.steps['version']['run'])
         self.assertNotIn('|| true', self.steps['version']['run'])
 
+    def test_every_dispatched_probe_function_exists(self):
+        source = HELPER.read_text()
+        for mode in ('execution', 'readonly', 'namespaces'):
+            self.assertIn(f'{mode}_probe() {{', source)
+
     def test_bad_archive_hash_is_rejected_before_extraction(self):
         with tempfile.TemporaryDirectory(prefix='bubblewrap-download-') as directory:
             root = Path(directory)
