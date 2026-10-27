@@ -174,6 +174,10 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
         self.candidate = json.loads(
             (SCRIPT.parent / online.supply_chain.LOCK_NAME).read_text()
         )
+        # This fixture replaces the live actions with one synthetic entry.
+        # Keep its totals synthetic too, independent of repository additions.
+        self.candidate["registered_workflows"] = 961
+        self.candidate["external_uses"] = 1131
         entry = action_entry("branch")
         entry["occurrences"] = 1131
         self.candidate["actions"] = [entry]
@@ -233,6 +237,18 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
 
     def mutable_calls(self):
         return [command for command in self.commands if command[:2] == ["git", "ls-remote"]]
+
+    def test_synthetic_inventory_totals_match_occurrences(self) -> None:
+        for lock in (self.candidate, self.base):
+            self.assertEqual(
+                lock["external_uses"],
+                sum(entry["occurrences"] for entry in lock["actions"]),
+            )
+        self.assertEqual(
+            self.base["registered_workflows"] + 1,
+            self.candidate["registered_workflows"],
+        )
+        self.assertEqual(self.base["external_uses"] + 1, self.candidate["external_uses"])
 
     def test_unchanged_pin_allows_occurrence_change_and_moving_ref(self) -> None:
         self.assertEqual((1, 9), self.verify(expected_base_commit=self.base_commit))
