@@ -10,6 +10,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
+import yaml
+
 SCRIPT_ROOT = Path(__file__).resolve().parents[3] / "scripts"
 sys.path.insert(0, str(SCRIPT_ROOT))
 
@@ -1109,7 +1111,10 @@ class WorkflowExactRunBindingTests(unittest.TestCase):
                     "'none' || 'present' }}]"
                 )
             with self.subTest(batch=batch):
-                self.assertIn(expected, text)
+                self.assertEqual(
+                    expected.removeprefix("run-name: "),
+                    yaml.safe_load(text)["run-name"],
+                )
                 dispatch_section = text.split("  workflow_dispatch:", 1)[1].split(
                     "  workflow_call:", 1
                 )[0]
@@ -1848,7 +1853,7 @@ class WorkflowExactRunBindingTests(unittest.TestCase):
                     called_job,
                 )
 
-    def test_all_961_package_workflows_are_registered_exactly_once(self) -> None:
+    def test_all_962_package_workflows_are_registered_exactly_once(self) -> None:
         registrations: list[str] = []
         for wrapper in self.workflow_root.glob("test-all-packages-batch*.yml"):
             registrations.extend(
@@ -1857,8 +1862,23 @@ class WorkflowExactRunBindingTests(unittest.TestCase):
                     wrapper.read_text(encoding="utf-8"),
                 )
             )
-        self.assertEqual(len(registrations), 961)
-        self.assertEqual(len(set(registrations)), 961)
+        self.assertEqual(len(registrations), 962)
+        self.assertEqual(len(set(registrations)), 962)
+        self.assertEqual(
+            {"test-ampere-optimized-pytorch.yml", "test-azurecli.yml",
+             "test-bionemo-framework.yml", "test-catboost.yml", "test-cuda-gdb.yml",
+             "test-cuda-python.yml", "test-cutile-python.yml", "test-dali.yml",
+             "test-caffe.yml", "test-freecad.yml", "test-gdspy.yml", "test-gnucap.yml",
+             "test-horizon-eda.yml", "test-wireshark.yml", "test-xml2.yml",
+             "test-gnutls.yml", "test-vue.yml", "test-microcloud.yml", "test-rmm.yml",
+             "test-xen-hypervisor.yml", "test-openshell.yml"},
+            set(re.findall(
+                r"uses:\s+\./\.github/workflows/(test-[A-Za-z0-9._-]+\.yml)",
+                (self.workflow_root / "test-all-packages-batch22.yml").read_text(
+                    encoding="utf-8"
+                ),
+            )),
+        )
         package_workflow_inventory = {
             path.name
             for path in self.workflow_root.glob("test-*.yml")
