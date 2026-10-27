@@ -384,6 +384,57 @@ end
         self.assertEqual("baseline_failed", payload["tests"]["details"][5]["decision"])
         self.assertEqual("failure", policy.validate_publishable_result(payload))
 
+    def test_failure_before_identity_retains_unknown_and_previous_published_bytes(self):
+        from test_promote_package_results import PromotePackageResultsTests, published_payload
+        import promote_package_results as promoter
+
+        values = {"steps.install.outcome": "failure", "steps.test1.outputs.version": "",
+                  "steps.metadata.outputs.timestamp": "2026-08-18T03:59:00Z"}
+        for number in range(1, 6):
+            result, fields = self.run_step(f"test{number}", values)
+            self.assertNotEqual(0, result.returncode)
+            self.assertNotIn("version", fields)
+            values[f"steps.test{number}.outcome"] = "failure"
+            values.update({f"steps.test{number}.outputs.{key}": value for key, value in fields.items()})
+        result, regression = self.run_step("test6", values)
+        self.assertEqual(0, result.returncode)
+        self.assertEqual("unknown", regression["current_version"])
+        values.update({f"steps.test6.outputs.{key}": value for key, value in regression.items()})
+        result, summary = self.run_step("summary", values)
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(("0", "5", "1", "5"),
+                         tuple(summary[key] for key in ("passed", "failed", "skipped", "core_failed")))
+        process, payload = self.collect(summary, values, ["failure"] * 5 + ["success"])
+        self.assertEqual(0, process.returncode, process.stdout + process.stderr)
+        self.assertEqual("unknown", payload["package"]["version"])
+        self.assertNotEqual(self.job["env"]["CHEF_VERSION"], payload["package"]["version"])
+        self.assertEqual("failure", payload["run"]["status"])
+        self.assertEqual("failure", policy.validate_publishable_result(payload))
+
+        fixture = PromotePackageResultsTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        previous_bytes = json.dumps(published_payload("chef-infra"), separators=(",", ":")) + "\n"
+        fixture.write_raw(fixture.previous, "chef-infra", previous_bytes)
+        candidate_path = fixture.write_json(fixture.candidate, "chef-infra", payload)
+        candidate_bytes = candidate_path.read_bytes()
+        fixture.write_trusted_registrations()
+        manifest_path = fixture.stage / "trusted-registrations.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["registrations"]["chef-infra"]["job_conclusion"] = "failure"
+        manifest_path.write_text(json.dumps(manifest))
+        report = promoter.promote_package_results(fixture.stage, validation_policy="strict", repository="example/project")
+        decision = report["decisions"]["chef-infra"]
+        self.assertEqual("retained_previous", decision["state"])
+        self.assertIn("candidate_contract_violation", decision["reason"])
+        self.assertIn("package version must not be a placeholder", decision["reason"])
+        self.assertEqual(0, report["promoted_count"])
+        self.assertEqual(1, report["warning_count"])
+        retained = fixture.stage / "publish-data-test-results/chef-infra.json"
+        self.assertEqual(previous_bytes.encode(), retained.read_bytes())
+        self.assertEqual(candidate_bytes, candidate_path.read_bytes())
+        self.assertEqual("unknown", json.loads(candidate_path.read_text())["package"]["version"])
+
     def test_shell_and_ruby_syntax(self):
         for step in self.job["steps"]:
             if "run" in step:
