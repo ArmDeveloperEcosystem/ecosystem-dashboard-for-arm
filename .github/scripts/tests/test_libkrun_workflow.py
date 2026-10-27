@@ -278,6 +278,7 @@ class PackageWorkflowTests(unittest.TestCase):
             root = Path(directory)
             tools = root / "bin"
             tools.mkdir()
+            (tools / "python3").symlink_to(sys.executable)
             log = root / "calls"
             script = root / "probe.sh"
             source = re.sub(
@@ -303,7 +304,7 @@ if tool == "timeout":
         args = args[2:]
     os.execvp(args[1], args[1:])
 elif tool == "pkg-config":
-    print("")
+    print("-Ifixture -Lfixture -lkrun")
 elif tool == "cc":
     if os.environ.get("COMPILE_RC"):
         sys.exit(int(os.environ["COMPILE_RC"]))
@@ -311,20 +312,58 @@ elif tool == "cc":
     target.write_text(
         "#!" + sys.executable + "\n"
         "import os, sys\n"
-        "if sys.argv[2] == 'exit 23':\n"
+        "from pathlib import Path\n"
+        "assert sys.argv[2] in ('/probe.sh', '/exit23.sh'), 'Only simple guest script paths are allowed'\n"
+        "script = (Path(sys.argv[1]) / sys.argv[2].lstrip('/')).read_text()\n"
+        "if sys.argv[2] == '/exit23.sh':\n"
+        "    assert script == 'exit 23\\n'\n"
         "    sys.exit(int(os.environ.get('NEGATIVE_RC', '23')))\n"
+        "assert 'test \\\"$(uname -m)\\\" = aarch64' in script\n"
+        "assert 'printf libkrun-guest > /tmp/probe' in script\n"
+        "assert 'test \\\"$(cat /tmp/probe)\\\" = libkrun-guest' in script\n"
+        "assert 'echo LIBKRUN_GUEST_OK' in script\n"
         "if not os.environ.get('MISSING_SENTINEL'):\n"
         "    print('LIBKRUN_GUEST_OK')\n"
         "sys.exit(int(os.environ.get('GUEST_RC', '0')))\n"
     )
     target.chmod(0o755)
 elif tool == "docker":
+    state_file = Path(os.environ["FIXTURE_CALLS"]).with_name("container.json")
     if args[0] == "create":
+        name = args[args.index("--name") + 1]
+        key, owner = args[args.index("--label") + 1].split("=", 1)
+        collision = os.environ.get("CREATE_COLLISION")
+        state = {"id": ("b" if collision else "a") * 64,
+                 "name": name, "key": key,
+                 "owner": "not-ours" if collision else owner}
+        state_file.write_text(json.dumps(state))
+        if collision:
+            sys.exit(125)
+        if not os.environ.get("CREATE_RC"):
+            print(state["id"])
         sys.exit(int(os.environ.get("CREATE_RC", "0")))
+    if args[0] == "inspect":
+        if os.environ.get("INSPECT_RC"):
+            sys.exit(int(os.environ["INSPECT_RC"]))
+        if os.environ.get("INSPECT_BAD_JSON"):
+            print("{malformed")
+            sys.exit(0)
+        if not state_file.exists():
+            sys.exit(1)
+        state = json.loads(state_file.read_text())
+        assert args[-1] in (state["id"], state["name"])
+        identifier = "c" * 64 if os.environ.get("INSPECT_WRONG_ID") else state["id"]
+        owner = "not-ours" if os.environ.get("INSPECT_UNOWNED") else state["owner"]
+        print(json.dumps([{"Id": identifier,
+                          "Config": {"Labels": {state["key"]: owner}}}]))
     if args[0] == "export":
+        assert args[-1] == "a" * 64, "Export must use the verified ID"
         with tarfile.open(fileobj=sys.stdout.buffer, mode="w|"):
             pass
     if args[0] == "rm":
+        assert args[-1] == "a" * 64, "Removal must use the verified owned ID"
+        if not os.environ.get("CLEANUP_RC"):
+            state_file.unlink()
         sys.exit(int(os.environ.get("CLEANUP_RC", "0")))
 elif tool == "msb":
     if args[0] == "run":
@@ -363,6 +402,7 @@ else:
                 ["/bin/bash", str(script), mode], env=env,
                 capture_output=True, text=True, timeout=15,
             )
+            self.assertTrue(log.exists(), result.stdout + result.stderr)
             calls = [json.loads(line) for line in log.read_text().splitlines()]
             leftovers = list(root.glob("*-guest.*"))
             self.assertEqual(leftovers, [], "Owned scratch directory was not removed")
@@ -385,7 +425,9 @@ else:
                             self.assertEqual(call[call.index("--name") + 1], removed[-1][-1])
                 else:
                     created = next(c for c in calls if c[:2] == ["docker", "create"])
-                    self.assertEqual(created[created.index("--name") + 1], removed[-1][-1])
+                    self.assertIn("--label", created)
+                    self.assertEqual(removed[-1][-1], "a" * 64)
+                    self.assertNotEqual(created[created.index("--name") + 1], removed[-1][-1])
 
     def test_helper_faults_cannot_be_hidden_by_sentinels_or_cleanup(self):
         cases = [
@@ -460,6 +502,47 @@ int32_t krun_start_enter(uint32_t);
                     self.assertEqual(result.returncode == 0, accepted, result.stderr)
                     if not accepted:
                         self.assertIn("uid_t", result.stderr)
+
+    def test_guest_scripts_avoid_inline_argv_quotes_and_keep_real_exit_23(self):
+        source = HELPER.read_text()
+        self.assertIn('const char *args[] = {"-e", argv[2], NULL};', source)
+        self.assertNotIn('{"-ec", argv[2]', source)
+        self.assertIn('"$WORK/guest" "$WORK/rootfs" /probe.sh', source)
+        self.assertIn('"$WORK/guest" "$WORK/rootfs" /exit23.sh', source)
+        probe = re.search(r'rootfs/probe.sh" <<\x27SH\x27\n(.*?)\nSH', source, re.S).group(1)
+        negative = re.search(r'rootfs/exit23.sh" <<\x27SH\x27\n(.*?)\nSH', source, re.S).group(1)
+        self.assertEqual(negative, "exit 23")
+        for code in (probe, negative):
+            subprocess.run(["/bin/sh", "-n"], input=code, text=True, check=True)
+        # This local script fixture verifies failure propagation, not a guest run.
+        result = subprocess.run(["/bin/sh", "-e", "-s"], input=negative, text=True)
+        self.assertEqual(result.returncode, 23)
+
+    def test_unowned_name_collision_is_never_removed(self):
+        result, calls = self.helper_fixture(CREATE_COLLISION=1)
+        self.assertEqual(result.returncode, 125)
+        self.assertIn("refusing removal without verified ownership", result.stderr)
+        self.assertFalse(any(c[:2] == ["docker", "rm"] for c in calls))
+        self.assertFalse(any(c[:2] == ["docker", "export"] for c in calls))
+
+    def test_partial_owned_creation_is_removed_only_by_verified_id(self):
+        result, calls = self.helper_fixture(CREATE_RC=124)
+        self.assertEqual(result.returncode, 124)
+        inspect = next(c for c in calls if c[:2] == ["docker", "inspect"])
+        created = next(c for c in calls if c[:2] == ["docker", "create"])
+        self.assertEqual(inspect[-1], created[created.index("--name") + 1])
+        removed = [c for c in calls if c[:2] == ["docker", "rm"]]
+        self.assertEqual(removed, [["docker", "rm", "-f", "a" * 64]])
+
+    def test_uncertain_inspection_never_authorizes_removal(self):
+        for fault in ({"INSPECT_RC": 49}, {"INSPECT_BAD_JSON": 1},
+                      {"INSPECT_WRONG_ID": 1}, {"INSPECT_UNOWNED": 1}):
+            with self.subTest(fault=fault):
+                result, calls = self.helper_fixture(**fault)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("refusing removal without verified ownership", result.stderr)
+                self.assertFalse(any(c[:2] == ["docker", "rm"] for c in calls))
+                self.assertFalse(any(c[:2] == ["docker", "export"] for c in calls))
 
 
 if __name__ == "__main__":
