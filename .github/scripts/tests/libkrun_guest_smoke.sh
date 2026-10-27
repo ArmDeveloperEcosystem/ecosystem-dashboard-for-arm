@@ -66,6 +66,7 @@ timeout -k 5s 15s docker rm "$CONTAINER"
 CONTAINER_CREATED=0
 
 cat > "$WORK/guest.c" <<'C'
+#include <sys/types.h>
 #include <libkrun.h>
 #include <stdint.h>
 #include <stdio.h>

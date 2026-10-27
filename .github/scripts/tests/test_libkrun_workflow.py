@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -415,6 +416,51 @@ else:
         for implementation_word in ("dashboard", "workflow", "GitHub", "runner", "smoke"):
             self.assertNotIn(implementation_word, caveat)
         self.assertIn("Implementation status:", page["optional_hidden_info"]["other_info"])
+
+    def test_guest_c_consumer_defines_uid_gid_types_before_libkrun_header(self):
+        clt = Path("/Library/Developer/CommandLineTools/usr/bin/clang")
+        compiler = str(clt) if clt.is_file() else shutil.which("cc")
+        self.assertIsNotNone(compiler, "A C compiler is required for this compile-only fixture")
+        compile_command = [compiler]
+        if clt.is_file():
+            compile_command += ["-isysroot", "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"]
+        source = re.search(r"<<'C'\n(.*?)\nC\n", HELPER.read_text(), re.S).group(1)
+        self.assertLess(source.index("#include <sys/types.h>"), source.index("#include <libkrun.h>"))
+        # Match upstream's requirement that the consumer supplies uid_t/gid_t.
+        # This synthetic header is compile evidence only, not native libkrun/KVM evidence.
+        header = """#include <stdint.h>
+int32_t krun_setuid(uint32_t, uid_t);
+int32_t krun_setgid(uint32_t, gid_t);
+int32_t krun_create_ctx(void);
+int32_t krun_set_vm_config(uint32_t, uint8_t, uint32_t);
+int32_t krun_set_root(uint32_t, const char *);
+int32_t krun_set_workdir(uint32_t, const char *);
+int32_t krun_set_exec(uint32_t, const char *, const char *const[], const char *const[]);
+int32_t krun_start_enter(uint32_t);
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "libkrun.h").write_text(header)
+            consumer = root / "guest.c"
+            for label, text, accepted in [
+                ("correct order", source, True),
+                ("missing types", source.replace("#include <sys/types.h>\n", ""), False),
+                ("types too late", source.replace(
+                    "#include <sys/types.h>\n#include <libkrun.h>",
+                    "#include <libkrun.h>\n#include <sys/types.h>",
+                ), False),
+            ]:
+                with self.subTest(case=label):
+                    consumer.write_text(text)
+                    result = subprocess.run(
+                        [*compile_command, "-std=c11", "-Wall", "-Wextra", "-Werror",
+                         "-fsyntax-only", "-I", str(root), str(consumer)],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                    if not accepted:
+                        self.assertIn("uid_t", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
