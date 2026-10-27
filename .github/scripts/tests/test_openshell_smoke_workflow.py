@@ -212,6 +212,33 @@ class SmokeWorkflowTests(unittest.TestCase):
             self.assertRegex(process.stdout, r"^arm-[a-f0-9]{12}$")
         self.assertIn('test "${#SANDBOX}" -le 19', script)
 
+    def test_immutable_image_refs_and_architecture_gate(self):
+        expected = {
+            "OPENSHELL_SANDBOX_IMAGE": "ghcr.io/nvidia/openshell/sandbox@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63",
+            "OPENSHELL_SUPERVISOR_IMAGE": "ghcr.io/nvidia/openshell/supervisor@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
+            "OPENSHELL_WORKLOAD_IMAGE": "nvcr.io/nvidia/base/ubuntu@sha256:d9461f428eea54e553add3a5158a0f245c6e1ea73efc59fff8e98e3d4a38e378",
+        }
+        for key, reference in expected.items():
+            self.assertEqual(self.job["env"][key], reference)
+        self.assertIn('IMAGE="$OPENSHELL_WORKLOAD_IMAGE"', self.steps["test5"]["run"])
+        script = self.steps["test2"]["run"]
+        gate = script[script.index("for image in "):script.index("\npython3 -")]
+        with tempfile.TemporaryDirectory(prefix="openshell-image-fixture-") as temporary:
+            tools = Path(temporary)
+            (tools / "docker").write_text('#!/bin/sh\ncase "$1" in pull) exit 0;; image) printf "%s" "$FIXTURE_ARCH";; *) exit 90;; esac\n')
+            (tools / "timeout").write_text('#!/bin/sh\nshift\nexec "$@"\n')
+            for tool in tools.iterdir():
+                tool.chmod(0o755)
+            env = dict(os.environ, **expected, PATH=temporary + os.pathsep + os.environ["PATH"])
+            for arch in ("arm64", "amd64", ""):
+                process = subprocess.run(["/bin/bash", "-e", "-o", "pipefail", "-c", gate],
+                                         env=dict(env, FIXTURE_ARCH=arch), text=True, capture_output=True)
+                self.assertEqual(process.returncode == 0, arch == "arm64", process.stderr)
+            env["OPENSHELL_WORKLOAD_IMAGE"] = "nvcr.io/nvidia/base/ubuntu:24.04"
+            process = subprocess.run(["/bin/bash", "-e", "-o", "pipefail", "-c", gate],
+                                     env=dict(env, FIXTURE_ARCH="arm64"), text=True, capture_output=True)
+            self.assertNotEqual(process.returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

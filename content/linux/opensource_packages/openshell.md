@@ -33,8 +33,11 @@ optional_hidden_info:
         https://github.com/NVIDIA/OpenShell/releases/tag/v0.0.6 .
         v0.1.6 publication 2026-10-27T17:56:58Z; baseline, not historical minimum.
         Debian SHA256 2f6e2b7b09399d91443fc8e25bd5db360dfee562db17bb2778ac0d0067969f85.
-        Runtime images resolve versioned tags to immutable digests per run; the
-        resulting digests are logged, not claimed historically immutable tag mappings.
+        All three runtime images are digest pinned to the Arm64 images validated in
+        https://github.com/ranimandepudi/ecosystem-dashboard-for-arm/actions/runs/40568555877/job/122416256327 .
+        Sandbox sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63;
+        supervisor sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b;
+        Ubuntu workload and same-UID DAC control sha256:d9461f428eea54e553add3a5158a0f245c6e1ea73efc59fff8e98e3d4a38e378.
         The smoke uses Docker without KVM and requires sandbox create, native exec,
         a filesystem deny with a same-UID writable control, and confirmed deletion.
         Missing prerequisites fail the baseline; newer-version regression is explicitly

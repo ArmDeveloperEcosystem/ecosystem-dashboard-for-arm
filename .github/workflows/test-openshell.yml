@@ -91,6 +91,9 @@ jobs:
         shell: bash
     env:
       LC_ALL: C
+      OPENSHELL_SANDBOX_IMAGE: ghcr.io/nvidia/openshell/sandbox@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63
+      OPENSHELL_SUPERVISOR_IMAGE: ghcr.io/nvidia/openshell/supervisor@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b
+      OPENSHELL_WORKLOAD_IMAGE: nvcr.io/nvidia/base/ubuntu@sha256:d9461f428eea54e553add3a5158a0f245c6e1ea73efc59fff8e98e3d4a38e378
     outputs:
       contract_version: "2.0"
       package_slug: ${{ steps.metadata.outputs.package_slug }}
@@ -190,7 +193,7 @@ jobs:
             readelf -h "$binary" | grep -Eq 'Machine: +AArch64'
           done
 
-      - name: Test 2 - Docker runtime, pinned image resolution and live local gateway
+      - name: Test 2 - Docker runtime, immutable Arm64 images and live local gateway
         id: test2
         if: always()
         continue-on-error: true
@@ -215,23 +218,18 @@ jobs:
           dpkg --compare-versions "$DOCKER_VERSION" ge 28.0
           docker info --format '{{.OSType}} {{.Architecture}}'
           # No KVM or VM backend: the published Docker driver qualifies the kernel.
-          for image in ghcr.io/nvidia/openshell/sandbox:0.1.6 ghcr.io/nvidia/openshell/supervisor:0.1.6 nvcr.io/nvidia/base/ubuntu:24.04; do
+          for image in "$OPENSHELL_SANDBOX_IMAGE" "$OPENSHELL_SUPERVISOR_IMAGE" "$OPENSHELL_WORKLOAD_IMAGE"; do
+            printf '%s\n' "$image" | grep -Eq '@sha256:[a-f0-9]{64}$'
             timeout 240s docker pull --platform linux/arm64 "$image"
             test "$(docker image inspect --format '{{.Architecture}}' "$image")" = arm64
           done
           python3 - <<'PY'
-          import json, os, pathlib, subprocess
-          def digest(image):
-              info = json.loads(subprocess.check_output(["docker", "image", "inspect", image]))[0]
-              result = info["RepoDigests"][0]
-              if "@sha256:" not in result:
-                  raise ValueError("OCI digest missing")
-              return result
+          import json, os, pathlib
           config = pathlib.Path.home() / ".config/openshell"
           config.mkdir(parents=True, exist_ok=True)
-          values = {"sandbox_runtime_image": digest("ghcr.io/nvidia/openshell/sandbox:0.1.6"),
-                    "supervisor_image": digest("ghcr.io/nvidia/openshell/supervisor:0.1.6"),
-                    "default_image": digest("nvcr.io/nvidia/base/ubuntu:24.04")}
+          values = {"sandbox_runtime_image": os.environ["OPENSHELL_SANDBOX_IMAGE"],
+                    "supervisor_image": os.environ["OPENSHELL_SUPERVISOR_IMAGE"],
+                    "default_image": os.environ["OPENSHELL_WORKLOAD_IMAGE"]}
           text = '[openshell]\nversion = 2\n[openshell.gateway]\ncompute_driver = "docker"\n[openshell.drivers.docker]\n'
           text += "".join(f"{key} = {json.dumps(value)}\n" for key, value in values.items())
           # Documented Docker runtime profile; no global kernel-security changes.
@@ -352,7 +350,7 @@ jobs:
           # Prove ordinary DAC permits this write for the workload's own UID.
           UID_IN_SANDBOX=$(timeout 30s openshell sandbox exec --name "$OPENSHELL_SMOKE_SANDBOX" --no-tty -- id -u)
           [[ "$UID_IN_SANDBOX" =~ ^[0-9]+$ ]]
-          IMAGE=$(docker image inspect --format '{{index .RepoDigests 0}}' nvcr.io/nvidia/base/ubuntu:24.04)
+          IMAGE="$OPENSHELL_WORKLOAD_IMAGE"
           # Command substitution belongs to the control container shell.
           # shellcheck disable=SC2016
           timeout 30s docker run --rm --network none --user "$UID_IN_SANDBOX" --entrypoint /bin/bash "$IMAGE" -c \
