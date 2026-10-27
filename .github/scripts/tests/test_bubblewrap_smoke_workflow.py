@@ -134,12 +134,32 @@ class BubblewrapWorkflowTests(unittest.TestCase):
             curl = tools / 'curl'
             curl.write_text('#!/bin/sh\nwhile test "$#" -gt 0; do\nif test "$1" = --output; then shift; printf corrupt > "$1"; exit 0; fi\nshift\ndone\nexit 2\n')
             curl.chmod(0o755)
+            sentinel = root / 'extraction-started'
+            tar = tools / 'tar'
+            tar.write_text('#!/bin/sh\nprintf started > "$EXTRACTION_SENTINEL"\nexit 97\n')
+            tar.chmod(0o755)
+            # Exercise ordering portably; macOS sha256sum lacks GNU --strict.
+            checksum = tools / 'sha256sum'
+            checksum.write_text('''#!/usr/bin/env python3
+import hashlib
+from pathlib import Path
+import sys
+assert sys.argv[1:] == ["--check", "--strict"]
+expected, filename = sys.stdin.read().strip().split(None, 1)
+valid = hashlib.sha256(Path(filename).read_bytes()).hexdigest() == expected
+print(filename + (": OK" if valid else ": FAILED"))
+sys.exit(0 if valid else 1)
+''')
+            checksum.chmod(0o755)
             process = subprocess.run(
                 ['/bin/bash', str(HELPER), 'build', '0.13.0', 'a' * 64, str(root / 'release')],
-                env={**os.environ, 'PATH': str(tools) + os.pathsep + os.environ['PATH']},
+                env={**os.environ, 'PATH': str(tools) + os.pathsep + os.environ['PATH'],
+                     'EXTRACTION_SENTINEL': str(sentinel)},
                 capture_output=True, text=True, timeout=10,
             )
             self.assertNotEqual(process.returncode, 0)
+            self.assertIn('FAILED', process.stdout + process.stderr)
+            self.assertFalse(sentinel.exists(), 'Unverified archive reached extraction')
             self.assertFalse((root / 'release/build').exists())
 
 
