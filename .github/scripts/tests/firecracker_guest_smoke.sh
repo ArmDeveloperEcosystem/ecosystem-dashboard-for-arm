@@ -36,7 +36,7 @@ try:
 finally:
     os.close(fd)
 PY
-  [ "$(timeout --kill-after=2s 10s "$binary" --version)" = "Firecracker $tag" ]
+  [ "$(bash "$(dirname "${BASH_SOURCE[0]}")/firecracker_version.sh" "$binary" Firecracker "$tag")" = "$tag" ]
   WORK=$(mktemp -d /tmp/dashboard-firecracker-guest.XXXXXX)
   cleanup_guest() {
     rc=$?

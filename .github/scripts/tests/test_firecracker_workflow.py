@@ -1,6 +1,7 @@
 """Synthetic shell fixtures only; these are not native Arm/KVM execution evidence."""
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -124,11 +125,15 @@ class WorkflowFixtures(unittest.TestCase):
             self.assertNotIn(narration, caveats)
 
     def test_version_failure_has_no_invented_version(self):
-        for output, rc in [("", 1), ("unparseable", 0), ("WRONG_VERSION", 0)]:
+        tag = JOB["env"]["BASELINE_TAG"]
+        for output, rc in [("", 1), ("unparseable", 0), ("WRONG_VERSION", 0),
+                           ("Firecracker v9.9.9", 0), ("Firecracker " + tag, 1),
+                           (f"Firecracker {tag}\nFirecracker v9.9.9", 0),
+                           (f"Firecracker {tag}\nFirecracker {tag}", 0)]:
             with self.subTest(output=output, rc=rc):
                 commands = {
                     "timeout": "#!/bin/bash\nshift; shift\nexec \"$@\"\n",
-                    "binary": "#!/bin/bash\nprintf '%s\\n' " + repr(output) + "\nexit " + str(rc) + "\n",
+                    "binary": "#!/bin/bash\nprintf '%s\\n' " + shlex.quote(output) + "\nexit " + str(rc) + "\n",
                 }
                 with tempfile.TemporaryDirectory() as tmp:
                     binary = Path(tmp) / "binary"
@@ -142,16 +147,18 @@ class WorkflowFixtures(unittest.TestCase):
 
     def test_exact_version_is_read_from_actual_output(self):
         tag = JOB["env"]["BASELINE_TAG"]
-        output = "Firecracker " + tag
-        with tempfile.TemporaryDirectory() as tmp:
-            binary = Path(tmp) / "binary"
-            binary.write_text("#!/bin/bash\nprintf '%s\\n' " + repr(output) + "\n")
-            binary.chmod(0o755)
-            result, values = self.shell(STEPS["version"]["run"],
-                {"BINARY": str(binary), "BASELINE_TAG": tag},
-                {"timeout": "#!/bin/bash\nshift; shift\nexec \"$@\"\n"})
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        self.assertEqual(tag, values["version"])
+        for output in ("Firecracker " + tag,
+                       f"Firecracker {tag}\n\n2026-10-27 [instance:main] Firecracker exiting successfully. exit_code=0",
+                       f"diagnostic before version\nFirecracker {tag}\nnormal exit log"):
+            with self.subTest(output=output), tempfile.TemporaryDirectory() as tmp:
+                binary = Path(tmp) / "binary"
+                binary.write_text("#!/bin/bash\nprintf '%s\\n' " + shlex.quote(output) + "\n")
+                binary.chmod(0o755)
+                result, values = self.shell(STEPS["version"]["run"],
+                    {"BINARY": str(binary), "BASELINE_TAG": tag},
+                    {"timeout": "#!/bin/bash\nshift; shift\nexec \"$@\"\n"})
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertEqual(tag, values["version"])
 
     def test_checksum_mismatch_reports_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
