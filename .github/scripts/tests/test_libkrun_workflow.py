@@ -230,7 +230,17 @@ class PackageWorkflowTests(unittest.TestCase):
         self.assertIn("Apache-2.0", page["optional_hidden_info"]["other_info"])
         self.assertIn("release_notes__supported_minimum", page["optional_hidden_info"])
         if SLUG == "libkrun":
-            self.assertIn("corrective commit", page["optional_info"]["support_caveats"])
+            self.assertIn(
+                "first numbered upstream tag containing the functional KVM/AArch64 fix",
+                page["optional_info"]["support_caveats"],
+            )
+            self.assertIn("inference", page["optional_info"]["support_caveats"])
+            for tag in ("v0.1.1", "v0.1.2", "v0.1.3"):
+                self.assertIn(
+                    "https://api.github.com/repos/libkrun/libkrun/compare/"
+                    "66d16b58f3300de84900751a5a8a704a981e7291..." + tag,
+                    page["optional_hidden_info"]["other_info"],
+                )
         else:
             self.assertIn("Monocore", page["optional_info"]["support_caveats"])
         for key, value in self.job["env"].items():
