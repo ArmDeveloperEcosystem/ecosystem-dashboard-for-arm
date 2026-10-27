@@ -164,9 +164,27 @@ class WorkflowFixtures(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             archive = Path(tmp) / "archive"
             archive.write_bytes(b"corrupted artifact")
+            sentinel = Path(tmp) / "jailer-started"
+            jailer = Path(tmp) / "jailer"
+            jailer.write_text('#!/bin/sh\nprintf started > "$JAILER_SENTINEL"\necho "Jailer $BASELINE_TAG"\n')
+            jailer.chmod(0o755)
             result, values = self.shell(STEPS["test3"]["run"],
-                {"ARCHIVE": str(archive), "BASELINE_SHA256": "0" * 64})
+                {"ARCHIVE": str(archive), "BASELINE_SHA256": "0" * 64,
+                 "BASELINE_TAG": JOB["env"]["BASELINE_TAG"],
+                 "JAILER": str(jailer), "JAILER_SENTINEL": str(sentinel)},
+                {"sha256sum": '''#!/usr/bin/env python3
+import hashlib
+from pathlib import Path
+import sys
+assert sys.argv[1:] == ["-c", "-"]
+expected, filename = sys.stdin.read().strip().split(None, 1)
+valid = hashlib.sha256(Path(filename).read_bytes()).hexdigest() == expected
+print(filename + (": OK" if valid else ": FAILED"))
+sys.exit(0 if valid else 1)
+'''})
+            self.assertFalse(sentinel.exists(), "Unverified bundle reached jailer execution")
         self.assertNotEqual(0, result.returncode)
+        self.assertIn("FAILED", result.stdout + result.stderr)
         self.assertEqual("failed", values["status"])
 
 
