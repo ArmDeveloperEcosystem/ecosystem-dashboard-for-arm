@@ -97,6 +97,7 @@ config = {
         "initrd_path": str(work / "smoke-initramfs.cpio"),
         "boot_args": "console=ttyS0 keep_bootcon reboot=k panic=1 pci=off rdinit=/init",
     },
+    "drives": [],
     "machine-config": {"vcpu_count": 1, "mem_size_mib": 256, "smt": False},
 }
 (work / "vm.json").write_text(json.dumps(config))

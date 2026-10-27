@@ -1,8 +1,10 @@
 """Synthetic shell fixtures only; these are not native Arm/KVM execution evidence."""
+import json
 import os
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -190,6 +192,22 @@ sys.exit(0 if valid else 1)
 
 class GuestEvidenceFixtures(unittest.TestCase):
     shell = WorkflowFixtures.shell
+
+    def test_generated_initramfs_config_requires_empty_drives(self):
+        body = (ROOT / ".github/scripts/tests/firecracker_guest_smoke.sh").read_text()
+        generator = body.split('python3 - "$WORK" <<\'PY\'\n', 1)[1].split("\nPY\n", 1)[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            (work / "rootfs/bin").mkdir(parents=True)
+            (work / "rootfs/bin/sh").write_bytes(b"fixture shell, never executed")
+            subprocess.run([sys.executable, "-B", "-c", generator, str(work)], check=True)
+            config = json.loads((work / "vm.json").read_text())
+            self.assertIn("drives", config)
+            self.assertEqual([], config["drives"])
+            self.assertEqual(str(work / "smoke-initramfs.cpio"),
+                             config["boot-source"]["initrd_path"])
+            self.assertEqual(str(work / "vmlinux-6.1.188"),
+                             config["boot-source"]["kernel_image_path"])
 
     def test_guest_log_requires_all_evidence_and_clean_exit(self):
         helper = ROOT / ".github/scripts/tests/firecracker_guest_smoke.sh"
