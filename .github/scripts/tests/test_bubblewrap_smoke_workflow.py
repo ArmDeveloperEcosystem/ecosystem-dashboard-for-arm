@@ -98,6 +98,31 @@ class BubblewrapWorkflowTests(unittest.TestCase):
         for mode in ('execution', 'readonly', 'namespaces'):
             self.assertIn(f'{mode}_probe() {{', source)
 
+    def test_namespace_reads_must_succeed_and_show_distinct_namespaces(self):
+        with tempfile.TemporaryDirectory(prefix='bubblewrap-namespace-fixture-') as directory:
+            root = Path(directory)
+            tools = root / 'bin'
+            tools.mkdir()
+            fixtures = {
+                'uname': '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo aarch64;; *) exit 2;; esac\n',
+                'timeout': '#!/bin/sh\nshift 2\nexec "$@"\n',
+                'bwrap': '#!/bin/sh\nwhile test "$#" -gt 0; do\nif test "$1" = /bin/sh; then export INSIDE_SANDBOX=1; exec "$@"; fi\nshift\ndone\nexit 2\n',
+                'readlink': '#!/bin/sh\nif test "${INSIDE_SANDBOX:-}" = 1; then\ncase "$FIXTURE_MODE" in failed) exit 1;; empty) exit 0;; distinct) echo "$1-distinct"; exit 0;; esac\nfi\nprintf "%s-host\\n" "$1"\n',
+            }
+            for name, content in fixtures.items():
+                path = tools / name
+                path.write_text(content)
+                path.chmod(0o755)
+            for mode in ('failed', 'empty', 'unchanged', 'distinct'):
+                with self.subTest(mode=mode):
+                    process = subprocess.run(
+                        ['/bin/bash', str(HELPER), 'namespaces', str(tools / 'bwrap')],
+                        env={**os.environ, 'PATH': str(tools) + os.pathsep + os.environ['PATH'],
+                             'FIXTURE_MODE': mode, 'RUNNER_TEMP': str(root)},
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    self.assertEqual(process.returncode == 0, mode == 'distinct', process.stderr)
+
     def test_bad_archive_hash_is_rejected_before_extraction(self):
         with tempfile.TemporaryDirectory(prefix='bubblewrap-download-') as directory:
             root = Path(directory)

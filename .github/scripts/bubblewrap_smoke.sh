@@ -64,10 +64,12 @@ namespaces_probe() {
   work=$(mktemp -d "${RUNNER_TEMP:?}/bwrap-namespaces.XXXXXX")
   host_pid=$(readlink /proc/self/ns/pid)
   host_net=$(readlink /proc/self/ns/net)
+  test -n "$host_pid"
+  test -n "$host_net"
   # Read namespace identifiers inside the sandbox.
   # shellcheck disable=SC2016
   sandbox "$binary" /bin/sh -ec \
-    'test "$(readlink /proc/self/ns/pid)" != "$1"; test "$(readlink /proc/self/ns/net)" != "$2"; echo BWRAP_NAMESPACES_OK' \
+    'inner_pid=$(readlink /proc/self/ns/pid) || exit 1; inner_net=$(readlink /proc/self/ns/net) || exit 1; test -n "$inner_pid"; test -n "$inner_net"; test "$inner_pid" != "$1"; test "$inner_net" != "$2"; echo BWRAP_NAMESPACES_OK' \
     sh "$host_pid" "$host_net" > "$work/output"
   grep -Fxq BWRAP_NAMESPACES_OK "$work/output"
 }
