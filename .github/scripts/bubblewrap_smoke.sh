@@ -35,7 +35,8 @@ sandbox() {
 execution_probe() {
   local binary=$1 work
   work=$(mktemp -d "${RUNNER_TEMP:?}/bwrap-execution.XXXXXX")
-  # shellcheck disable=SC2016 -- Commands expand inside the sandbox shell.
+  # Commands expand inside the sandbox shell.
+  # shellcheck disable=SC2016
   sandbox "$binary" /bin/sh -ec \
     'test "$(uname -m)" = aarch64; printf arm64-probe > /tmp/probe; test "$(cat /tmp/probe)" = arm64-probe; echo BWRAP_EXECUTION_OK' \
     > "$work/output"
@@ -49,7 +50,8 @@ readonly_probe() {
   local binary=$1 work
   work=$(mktemp -d "${RUNNER_TEMP:?}/bwrap-readonly.XXXXXX")
   printf protected > "$work/protected"
-  # shellcheck disable=SC2016 -- Positional arguments belong to the sandbox shell.
+  # Positional arguments belong to the sandbox shell.
+  # shellcheck disable=SC2016
   sandbox "$binary" /bin/sh -ec \
     'test "$(cat "$1")" = protected; if printf changed > "$1"; then exit 1; fi; test "$(cat "$1")" = protected; echo BWRAP_READONLY_OK' \
     sh "$work/protected" > "$work/output" 2> "$work/denial.log"
@@ -62,7 +64,8 @@ namespace_probe() {
   work=$(mktemp -d "${RUNNER_TEMP:?}/bwrap-namespaces.XXXXXX")
   host_pid=$(readlink /proc/self/ns/pid)
   host_net=$(readlink /proc/self/ns/net)
-  # shellcheck disable=SC2016 -- Read namespace identifiers inside the sandbox.
+  # Read namespace identifiers inside the sandbox.
+  # shellcheck disable=SC2016
   sandbox "$binary" /bin/sh -ec \
     'test "$(readlink /proc/self/ns/pid)" != "$1"; test "$(readlink /proc/self/ns/net)" != "$2"; echo BWRAP_NAMESPACES_OK' \
     sh "$host_pid" "$host_net" > "$work/output"
