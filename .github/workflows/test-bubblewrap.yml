@@ -1,0 +1,220 @@
+name: Test bubblewrap sandbox execution on Arm64
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      contract_version: {description: Output contract version, value: '${{ jobs.test-bubblewrap.outputs.contract_version }}'}
+      package_slug: {description: Canonical package slug, value: '${{ jobs.test-bubblewrap.outputs.package_slug }}'}
+      package_name: {description: Display package name, value: '${{ jobs.test-bubblewrap.outputs.package_name }}'}
+      package_version: {description: Baseline version tested, value: '${{ jobs.test-bubblewrap.outputs.package_version }}'}
+      run_status: {description: Overall run status, value: '${{ jobs.test-bubblewrap.outputs.run_status }}'}
+      badge_status: {description: Baseline badge status, value: '${{ jobs.test-bubblewrap.outputs.badge_status }}'}
+      core_failed: {description: Failed baseline tests, value: '${{ jobs.test-bubblewrap.outputs.core_failed }}'}
+      tests_passed: {description: Passed tests, value: '${{ jobs.test-bubblewrap.outputs.tests_passed }}'}
+      tests_failed: {description: Failed tests, value: '${{ jobs.test-bubblewrap.outputs.tests_failed }}'}
+      tests_skipped: {description: Skipped tests, value: '${{ jobs.test-bubblewrap.outputs.tests_skipped }}'}
+      duration_seconds: {description: Test duration, value: '${{ jobs.test-bubblewrap.outputs.duration_seconds }}'}
+      regression_status: {description: Regression status, value: '${{ jobs.test-bubblewrap.outputs.regression_status }}'}
+      regression_decision: {description: Regression decision, value: '${{ jobs.test-bubblewrap.outputs.regression_decision }}'}
+      regression_result: {description: Regression result, value: '${{ jobs.test-bubblewrap.outputs.regression_result }}'}
+      regression_comparison: {description: Regression comparison, value: '${{ jobs.test-bubblewrap.outputs.regression_comparison }}'}
+      regression_current_version: {description: Baseline version, value: '${{ jobs.test-bubblewrap.outputs.regression_current_version }}'}
+      regression_latest_version: {description: Pinned newer candidate, value: '${{ jobs.test-bubblewrap.outputs.regression_latest_version }}'}
+      regression_next_installed_version: {description: Installed candidate version, value: '${{ jobs.test-bubblewrap.outputs.regression_next_installed_version }}'}
+      run_id: {description: GitHub run ID, value: '${{ jobs.test-bubblewrap.outputs.run_id }}'}
+      run_attempt: {description: GitHub run attempt, value: '${{ jobs.test-bubblewrap.outputs.run_attempt }}'}
+      job_name: {description: Job identifier, value: '${{ jobs.test-bubblewrap.outputs.job_name }}'}
+      dashboard_link: {description: Dashboard route, value: '${{ jobs.test-bubblewrap.outputs.dashboard_link }}'}
+      timestamp: {description: UTC observation timestamp, value: '${{ jobs.test-bubblewrap.outputs.timestamp }}'}
+
+permissions:
+  contents: read
+
+jobs:
+  test-bubblewrap:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    env:
+      LC_ALL: C.UTF-8
+      BASELINE_VERSION: 0.13.0
+      BASELINE_SHA256: 4734237473c0e5d695e4e9034a34e43b2dbf5164655bd13fa59ae376b2b7a765
+      CANDIDATE_VERSION: 0.13.1
+      CANDIDATE_SHA256: 0e85c8702248b8dd64144f594147553650cdd0e4c951690345faace79c217c4d
+    outputs:
+      contract_version: '2.0'
+      package_slug: bubblewrap
+      package_name: bubblewrap
+      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
+      badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '5' }}
+      tests_passed: ${{ steps.summary.outputs.passed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '5' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
+      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'baseline_failed' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || 'Baseline or candidate validation did not complete.' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'No upgrade recommendation was produced.' }}
+      regression_current_version: ${{ steps.version.outputs.version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
+      job_name: ${{ github.job }}
+      dashboard_link: ${{ steps.metadata.outputs.dashboard_link }}
+      timestamp: ${{ steps.metadata.outputs.timestamp }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # original: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set test metadata
+        id: metadata
+        run: |
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo 'dashboard_link=/opensource_packages/bubblewrap' >> "$GITHUB_OUTPUT"
+      - name: Build checksum-pinned bubblewrap on native Arm64
+        id: install
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          bash .github/actions/apt-bootstrap/bootstrap.sh \
+            --packages 'meson ninja-build libcap-dev libcap2-bin pkg-config gcc libc6-dev python3' \
+            --no-install-recommends true
+          # Upstream CI requires user namespaces; this changes only this disposable runner.
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --user --map-root-user --mount true
+          prefix="$RUNNER_TEMP/bubblewrap-$BASELINE_VERSION"
+          bash .github/scripts/bubblewrap_smoke.sh build "$BASELINE_VERSION" "$BASELINE_SHA256" "$prefix"
+          echo "BWRAP_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "BWRAP_BINARY=$prefix/build/bwrap" >> "$GITHUB_ENV"
+          echo install_status=success >> "$GITHUB_OUTPUT"
+      - name: Record exact installed version
+        id: version
+        run: |
+          set -euo pipefail
+          test "$("$BWRAP_BINARY" --version)" = "bubblewrap $BASELINE_VERSION"
+          echo "version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+      - name: Test 1 - Native binary and exact version
+        id: test1
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          start=$SECONDS; status=failed
+          trap 'code=$?; echo "status=$status" >> "$GITHUB_OUTPUT"; echo "duration=$((SECONDS-start))" >> "$GITHUB_OUTPUT"; exit "$code"' EXIT
+          bash .github/scripts/bubblewrap_smoke.sh identity "$BWRAP_BINARY" "$BASELINE_VERSION"
+          status=passed
+      - name: Test 2 - Sandbox file IO and exit propagation
+        id: test2
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          start=$SECONDS; status=failed
+          trap 'code=$?; echo "status=$status" >> "$GITHUB_OUTPUT"; echo "duration=$((SECONDS-start))" >> "$GITHUB_OUTPUT"; exit "$code"' EXIT
+          bash .github/scripts/bubblewrap_smoke.sh execution "$BWRAP_BINARY"
+          status=passed
+      - name: Test 3 - Read-only host filesystem enforcement
+        id: test3
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          start=$SECONDS; status=failed
+          trap 'code=$?; echo "status=$status" >> "$GITHUB_OUTPUT"; echo "duration=$((SECONDS-start))" >> "$GITHUB_OUTPUT"; exit "$code"' EXIT
+          bash .github/scripts/bubblewrap_smoke.sh readonly "$BWRAP_BINARY"
+          status=passed
+      - name: Test 4 - Distinct PID and network namespaces
+        id: test4
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          start=$SECONDS; status=failed
+          trap 'code=$?; echo "status=$status" >> "$GITHUB_OUTPUT"; echo "duration=$((SECONDS-start))" >> "$GITHUB_OUTPUT"; exit "$code"' EXIT
+          bash .github/scripts/bubblewrap_smoke.sh namespaces "$BWRAP_BINARY"
+          status=passed
+      - name: Test 5 - Mandatory upstream sandbox tests
+        id: test5
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          start=$SECONDS; status=failed
+          trap 'code=$?; echo "status=$status" >> "$GITHUB_OUTPUT"; echo "duration=$((SECONDS-start))" >> "$GITHUB_OUTPUT"; exit "$code"' EXIT
+          bash .github/scripts/bubblewrap_smoke.sh suite "$BWRAP_PREFIX"
+          status=passed
+      - name: Test 6 - Validate pinned newer release with the same sandbox probes
+        id: test6
+        if: always()
+        continue-on-error: true
+        env:
+          CORE_OUTCOMES: ${{ toJSON(steps) }}
+        run: |
+          set -euo pipefail
+          echo "current_version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$CANDIDATE_VERSION" >> "$GITHUB_OUTPUT"
+          if ! python3 -c 'import json,os; s=json.loads(os.environ["CORE_OUTCOMES"]); assert all(s.get("test"+str(i),{}).get("outcome")=="success" and s["test"+str(i)]["outputs"].get("status")=="passed" for i in range(1,6))'; then
+            echo status=skipped >> "$GITHUB_OUTPUT"
+            echo decision=baseline_failed >> "$GITHUB_OUTPUT"
+            echo duration=0 >> "$GITHUB_OUTPUT"
+            echo regression_result='Baseline failed; candidate was not tested.' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          start=$SECONDS; status=failed; decision=next_install_failed
+          trap 'code=$?; echo "status=$status" >> "$GITHUB_OUTPUT"; echo "decision=$decision" >> "$GITHUB_OUTPUT"; echo "duration=$((SECONDS-start))" >> "$GITHUB_OUTPUT"; exit "$code"' EXIT
+          prefix="$RUNNER_TEMP/bubblewrap-$CANDIDATE_VERSION"
+          bash .github/scripts/bubblewrap_smoke.sh build "$CANDIDATE_VERSION" "$CANDIDATE_SHA256" "$prefix"
+          bash .github/scripts/bubblewrap_smoke.sh complete "$prefix" "$CANDIDATE_VERSION"
+          echo "next_installed_version=$CANDIDATE_VERSION" >> "$GITHUB_OUTPUT"
+          echo regression_result='Pinned newer release passed native sandbox execution and isolation probes.' >> "$GITHUB_OUTPUT"
+          echo comparison='Both releases passed the same version, ELF, execution, filesystem, namespace and upstream-suite checks; this is not an assertion that the candidate remains the latest release.' >> "$GITHUB_OUTPUT"
+          status=passed; decision=next_install_validated
+      - name: Enforce six-test result
+        id: summary
+        if: always()
+        env:
+          STEP_RESULTS: ${{ toJSON(steps) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          sys.path.insert(0, '.github/scripts')
+          from package_result_policy import validate_six_test_result
+          steps = json.loads(os.environ['STEP_RESULTS'])
+          details = []
+          duration = 0
+          for number in range(1, 7):
+              step = steps.get(f'test{number}', {})
+              output = step.get('outputs', {})
+              state = output.get('status', 'failed')
+              if step.get('outcome') != 'success' or state not in {'passed', 'failed', 'skipped'}:
+                  state = 'failed'
+              details.append({'name': f'Test {number}', 'status': state})
+              value = output.get('duration', '0')
+              if str(value).isdigit():
+                  duration += int(value)
+          passed = sum(item['status'] == 'passed' for item in details)
+          failed = sum(item['status'] == 'failed' for item in details)
+          skipped = sum(item['status'] == 'skipped' for item in details)
+          core_failed = sum(item['status'] != 'passed' for item in details[:5])
+          decision = steps.get('test6', {}).get('outputs', {}).get('decision', 'baseline_failed')
+          details[5]['decision'] = decision
+          status = 'failure'
+          try:
+              status = validate_six_test_result(details=details, passed=passed, failed=failed,
+                  skipped=skipped, core_failed=core_failed, decision=decision)
+          except ValueError as error:
+              print(f'Invalid test contract: {error}', file=sys.stderr)
+          if steps.get('install', {}).get('outputs', {}).get('install_status') != 'success' or steps.get('version', {}).get('outcome') != 'success':
+              status = 'failure'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for key, value in {'passed': passed, 'failed': failed, 'skipped': skipped,
+                  'core_failed': core_failed, 'duration': duration, 'overall_status': status,
+                  'badge_status': 'passing' if core_failed == 0 and steps.get('install', {}).get('outcome') == 'success' and steps.get('version', {}).get('outcome') == 'success' else 'failing'}.items():
+                  print(f'{key}={value}', file=output)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              print('## bubblewrap native Arm64 sandbox validation', file=summary)
+              print(f'Passed: {passed}; failed: {failed}; skipped: {skipped}.', file=summary)
+              print('Scope: real sandbox execution, exit propagation, read-only mounts, PID/network namespaces and upstream tests. No general security certification is implied.', file=summary)
+          sys.exit(0 if status == 'success' else 1)
+          PY
