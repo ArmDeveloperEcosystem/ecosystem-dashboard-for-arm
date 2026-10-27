@@ -174,13 +174,15 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
         self.candidate = json.loads(
             (SCRIPT.parent / online.supply_chain.LOCK_NAME).read_text()
         )
+        # Collapse live action occurrences into one synthetic entry while
+        # retaining consistent totals as repository registration grows.
         entry = action_entry("branch")
-        entry["occurrences"] = 1131
+        entry["occurrences"] = self.candidate["external_uses"]
         self.candidate["actions"] = [entry]
         self.base = copy.deepcopy(self.candidate)
-        self.base["registered_workflows"] = 960
-        self.base["external_uses"] = 1130
-        self.base["actions"][0]["occurrences"] = 1130
+        self.base["registered_workflows"] -= 1
+        self.base["external_uses"] -= 1
+        self.base["actions"][0]["occurrences"] = self.base["external_uses"]
         self.base_commit = "a" * 40
         self.base_type = "commit\n"
         self.base_raw = None
@@ -234,6 +236,18 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
     def mutable_calls(self):
         return [command for command in self.commands if command[:2] == ["git", "ls-remote"]]
 
+    def test_synthetic_inventory_totals_match_occurrences(self) -> None:
+        for lock in (self.candidate, self.base):
+            self.assertEqual(
+                lock["external_uses"],
+                sum(entry["occurrences"] for entry in lock["actions"]),
+            )
+        self.assertEqual(
+            self.base["registered_workflows"] + 1,
+            self.candidate["registered_workflows"],
+        )
+        self.assertEqual(self.base["external_uses"] + 1, self.candidate["external_uses"])
+
     def test_unchanged_pin_allows_occurrence_change_and_moving_ref(self) -> None:
         self.assertEqual((1, 9), self.verify(expected_base_commit=self.base_commit))
         self.assertEqual([], self.mutable_calls())
@@ -259,7 +273,7 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
 
     def test_new_pin_requires_live_ref_confirmation(self) -> None:
         entry = action_entry()
-        entry["occurrences"] = 1131
+        entry["occurrences"] = self.candidate["external_uses"]
         self.candidate["actions"] = [entry]
         with self.assertRaisesRegex(online.OnlineEvidenceError, "live ref object contradicts"):
             self.verify(expected_base_commit=self.base_commit)
@@ -289,7 +303,7 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
 
     def test_reviewed_annotated_tag_does_not_requery_mutable_resolution(self) -> None:
         entry = action_entry("annotated_tag")
-        entry["occurrences"] = 1131
+        entry["occurrences"] = self.candidate["external_uses"]
         self.candidate["actions"] = [entry]
         self.base = copy.deepcopy(self.candidate)
         self.assertEqual((1, 9), self.verify(expected_base_commit=self.base_commit))
@@ -298,7 +312,7 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
 
     def test_new_annotated_tag_still_requires_tag_object_evidence(self) -> None:
         entry = action_entry("annotated_tag")
-        entry["occurrences"] = 1131
+        entry["occurrences"] = self.candidate["external_uses"]
         self.candidate["actions"] = [entry]
         self.drift = False
         self.assertEqual((1, 9), self.verify(expected_base_commit=self.base_commit))
