@@ -226,6 +226,8 @@ class GuestFixtures(unittest.TestCase):
                 "runsc": FAKE_RUNSC,
                 "busybox": "#!/bin/sh\nexit 0\n",
                 "timeout": "#!/bin/bash\nshift; shift\nexec \"$@\"\n",
+                "mountpoint": '#!/bin/sh\ncase "$FAULT" in namespace_mount|cleanup_failure) exit 0;; *) exit 1;; esac\n',
+                "umount": '#!/bin/sh\n[ "$FAULT" != cleanup_failure ] || exit 1\necho NAMESPACE_UNMOUNTED\n',
             }.items():
                 path = work / name
                 path.write_text(text)
@@ -244,6 +246,15 @@ class GuestFixtures(unittest.TestCase):
         for fault in ("missing_marker", "missing_exit_marker", "wrong_exit", "runtime_failure", "timeout"):
             with self.subTest(fault=fault):
                 self.assertNotEqual(0, self.probe(fault).returncode)
+
+    def test_retained_namespace_is_unmounted_before_cleanup(self):
+        result = self.probe("namespace_mount")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("NAMESPACE_UNMOUNTED", result.stdout)
+
+    def test_namespace_cleanup_failure_is_not_success(self):
+        result = self.probe("cleanup_failure")
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

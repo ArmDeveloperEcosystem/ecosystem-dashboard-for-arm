@@ -4,16 +4,24 @@ BINARY=${1:?runsc path required}
 BUSYBOX=${2:?verified static busybox path required}
 [ -x "$BINARY" ]
 [ -x "$BUSYBOX" ]
+command -v mountpoint >/dev/null
+command -v umount >/dev/null
 WORK=$(mktemp -d /tmp/dashboard-gvisor-smoke.XXXXXX)
 cleanup() {
   rc=$?
   trap - EXIT
   timeout --kill-after=2s 5s "$BINARY" --root="$WORK/state" delete --force dashboard-ok >/dev/null 2>&1 || true
   timeout --kill-after=2s 5s "$BINARY" --root="$WORK/state" delete --force dashboard-exit >/dev/null 2>&1 || true
+  cleanup_failed=0
+  # runsc keeps a bind-mounted network namespace even after its containers exit.
+  if mountpoint -q -- "$WORK/state/null-netns"; then
+    timeout --kill-after=2s 5s umount -- "$WORK/state/null-netns" || cleanup_failed=1
+  fi
   if [ "$rc" -ne 0 ]; then
     for log in "$WORK"/*.log; do [ ! -f "$log" ] || cat "$log"; done
   fi
-  rm -rf "$WORK"
+  rm -rf "$WORK" || cleanup_failed=1
+  if [ "$rc" -eq 0 ] && [ "$cleanup_failed" -ne 0 ]; then rc=1; fi
   exit "$rc"
 }
 trap cleanup EXIT
@@ -25,6 +33,7 @@ chmod -R a+rX "$WORK"
 cd "$WORK/bundle"
 timeout --kill-after=2s 10s "$BINARY" spec
 # A read-only root plus a separate tmpfs tests guest writes without a host bind.
+# shellcheck disable=SC2016
 GUEST='test "$(/bin/busybox uname -m)" = aarch64
 printf "%s" guest-data > /tmp/probe
 test "$(/bin/busybox cat /tmp/probe)" = guest-data
