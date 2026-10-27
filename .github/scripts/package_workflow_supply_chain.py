@@ -36,10 +36,10 @@ EXACT_RUN_SPEC.loader.exec_module(exact_run)
 
 
 EXPECTED_BATCHES = 22
-EXPECTED_WORKFLOWS = 961
-EXPECTED_EXTERNAL_USES = 1131
+EXPECTED_WORKFLOWS = 962
+EXPECTED_EXTERNAL_USES = 1132
 EXPECTED_CONTAINER_USES = 9
-REVIEWED_ADDED_WORKFLOWS = (".github/workflows/test-xen-hypervisor.yml",)
+REVIEWED_ADDED_WORKFLOWS = ('.github/workflows/test-anthropic-sandbox-runtime.yml',)
 SINGLE_MANIFEST_MEDIA_TYPES = frozenset({
     "application/vnd.oci.image.manifest.v1+json",
     "application/vnd.docker.distribution.manifest.v2+json",
@@ -276,7 +276,7 @@ def validate_hardened_workflow_transition(
         expected_keys.add("added_workflows")
         if transition["added_workflows"] != list(REVIEWED_ADDED_WORKFLOWS):
             raise ContractError(
-                "hardened workflow additions are not the reviewed Xen addition"
+                "hardened workflow additions do not match the reviewed package addition"
             )
     if not isinstance(transition, dict) or set(transition) != expected_keys:
         raise ContractError("hardened workflow transition is malformed")
