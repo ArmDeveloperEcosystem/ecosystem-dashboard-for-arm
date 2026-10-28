@@ -82,6 +82,7 @@ on:
 jobs:
   test-nvidia-gpu-driver-container:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     env:
       BASELINE_VERSION: "535.288.01"
       PACKAGE_SLUG: "nvidia-gpu-driver-container"
@@ -91,312 +92,248 @@ jobs:
       OFFICIAL_DOCS: "https://github.com/NVIDIA/gpu-driver-container#gpu-driver-container"
       GITHUB_REPO: ""
       IMAGE_VARIANT: "ubuntu22.04"
+      PINNED_CONTAINER_IMAGE_NVIDIA_DRIVER: nvcr.io/nvidia/driver@sha256:21b0c912d4c71f1166c68d4c7e26d28981f0e9d1de5ed00c332e00fdbde41b15 # original: nvcr.io/nvidia/driver:535.288.01-ubuntu22.04
       SCOPED_ARM_PREFLIGHT_PROBE: |
         python3 - <<'PY'
-        import compileall
+        import hashlib
         import json
         import os
         import platform
         import re
-        import shutil
         import subprocess
         import sys
-        import tempfile
-        from pathlib import Path
+        import uuid
 
-        slug = os.environ.get("PACKAGE_SLUG", "").strip()
-        source_dir = os.environ.get("PREFLIGHT_SOURCE_DIR", "baseline-src")
-        root = Path(source_dir).resolve()
-        if not root.exists():
-            root = Path("next-src").resolve()
-        if not slug:
-            raise SystemExit("PACKAGE_SLUG is required for scoped Arm preflight")
-        if not root.exists():
-            raise SystemExit(f"source tree not found for scoped Arm preflight: {root}")
-        if platform.machine().lower() not in {"aarch64", "arm64"}:
-            raise SystemExit(f"scoped Arm preflight requires an Arm64 runner, got {platform.machine()}")
-
-        patterns = {
-            "bionemo-framework": ["src", "bionemo", "sub-packages", "pyproject.toml"],
-            "cccl": ["libcudacxx/include", "thrust", "cub", "CMakeLists.txt"],
-            "clara-viz": ["src", "python", "CMakeLists.txt", "pyproject.toml"],
-            "cucim": ["python/cucim", "cpp", "python", "pyproject.toml"],
-            "cuda-gdb": ["gdb", "cuda", "README*", "Makefile", "configure"],
-            "cuda-python": ["cuda_bindings", "cuda_core", "cuda_python", "pyproject.toml"],
-            "cudf": ["python/cudf", "cpp/include/cudf", "python", "pyproject.toml"],
-            "cugraph": ["python/cugraph", "cpp", "python", "pyproject.toml"],
-            "cuml": ["python/cuml", "cpp", "python", "pyproject.toml"],
-            "cuopt": ["python/cuopt", "cpp", "python", "pyproject.toml"],
-            "cutile-python": ["cutile", "cuda_tile", "python", "src", "*.dist-info/METADATA", "pyproject.toml"],
-            "cutlass": ["include/cutlass", "examples", "CMakeLists.txt"],
-            "cuvs": ["python/cuvs", "python/pylibcuvs", "cpp", "pyproject.toml"],
-            "cv-cuda": ["python", "src", "samples", "CMakeLists.txt"],
-            "dali": ["dali", "dali/python", "third_party", "CMakeLists.txt"],
-            "dask-cuda": ["dask_cuda", "python/dask_cuda", "pyproject.toml"],
-            "dcgm-exporter": ["go.mod", "cmd", "internal", "deployment", "Dockerfile"],
-            "dcgm": ["dcgmlib", "hostengine", "sdk", "CMakeLists.txt", "Makefile"],
-            "gdrcopy": ["include", "src", "packages", "Makefile"],
-            "holoscan-sdk": ["python/holoscan", "src", "include", "CMakeLists.txt"],
-            "nvidia-container-toolkit": ["cmd/nvidia-ctk", "cmd", "internal", "go.mod"],
-            "nvidia-gpu-driver-container": ["Dockerfile", "base", "ubuntu", "centos7", "vgpu", "README.md"],
-            "nvimagecodec": ["python", "src", "include", "CMakeLists.txt"],
-            "nvshmem": ["src", "include", "examples", "CMakeLists.txt", "Makefile"],
-            "nx-cugraph": ["nx_cugraph", "_nx_cugraph", "pyproject.toml", "VERSION"],
-            "physics-nemo": ["src", "physicsnemo", "examples", "pyproject.toml"],
-            "raft": ["cpp/include/raft", "python/pylibraft", "python", "pyproject.toml"],
-            "resiliency-extension": ["src", "nvidia_resiliency_ext", "resiliency_extension", "pyproject.toml"],
-            "rmm": ["cpp/include/rmm", "python/rmm", "python", "pyproject.toml"],
-            "sparks-rapids": ["pom.xml", "sql-plugin", "integration_tests", "dist"],
-            "tensorrt-llm": ["tensorrt_llm", "cpp", "examples", "pyproject.toml"],
-            "tensorrt": ["python", "samples", "include", "CMakeLists.txt"],
-            "tilelang": ["tilelang", "python", "src", "pyproject.toml"],
+        REPOSITORY = "nvcr.io/nvidia/driver"
+        INDEX_TYPES = {
+            "application/vnd.oci.image.index.v1+json",
+            "application/vnd.docker.distribution.manifest.list.v2+json",
         }
-
-        regexes = {
-            "bionemo-framework": r"BioNeMo|bionemo|biomolecular|lightning|model",
-            "cccl": r"CCCL|cuda::std|Thrust|CUB|libcu\+\+",
-            "clara-viz": r"Clara|viz|render|CUDA|volume",
-            "cucim": r"cuCIM|cucim|image|skimage|CUDA",
-            "cuda-gdb": r"cuda-gdb|CUDA|GDB|debug",
-            "cuda-python": r"cuda-python|cuda.bindings|CUDA Python|driver|runtime",
-            "cudf": r"cuDF|cudf|dataframe|RAPIDS|CUDA",
-            "cugraph": r"cuGraph|cugraph|graph|RAPIDS|CUDA",
-            "cuml": r"cuML|cuml|machine learning|RAPIDS|CUDA",
-            "cuopt": r"cuOpt|cuopt|solver|optimization|CUDA",
-            "cutile-python": r"cuTile|cutile|tile|CUDA|compiler",
-            "cutlass": r"CUTLASS|cutlass|GEMM|CUDA|tensor",
-            "cuvs": r"cuVS|cuvs|vector search|nearest|RAPIDS",
-            "cv-cuda": r"CV-CUDA|cvcuda|computer vision|CUDA|image",
-            "dali": r"DALI|nvidia.dali|pipeline|decode|augmentation",
-            "dask-cuda": r"dask-cuda|dask_cuda|CUDACluster|RAPIDS|worker",
-            "dcgm-exporter": r"DCGM|Prometheus|metrics|exporter|deployment",
-            "dcgm": r"DCGM|dcgmi|hostengine|diagnostics|telemetry",
-            "gdrcopy": r"GDRCopy|GPUDirect|RDMA|gdrdrv|GPU memory",
-            "holoscan-sdk": r"Holoscan|holoscan|operator|application|pipeline",
-            "nvidia-container-toolkit": r"nvidia-ctk|container-toolkit|runtime|config|NVIDIA",
-            "nvidia-gpu-driver-container": r"driver container|NVIDIA|GPU|kernel|module",
-            "nvimagecodec": r"nvImageCodec|nvimgcodec|decode|encode|CUDA",
-            "nvshmem": r"NVSHMEM|OpenSHMEM|PGAS|NVLink|CUDA",
-            "nx-cugraph": r"nx-cugraph|nx_cugraph|NetworkX|backend|cuGraph",
-            "physics-nemo": r"PhysicsNeMo|physicsnemo|physics|model|training",
-            "raft": r"RAFT|pylibraft|nearest|RAPIDS|CUDA",
-            "resiliency-extension": r"resilien|checkpoint|fault|training|GPU",
-            "rmm": r"RMM|rmm|memory resource|allocator|RAPIDS",
-            "sparks-rapids": r"Spark RAPIDS|rapids-4-spark|cuDF|GPU|plugin",
-            "tensorrt-llm": r"TensorRT-LLM|tensorrt_llm|trtllm|builder|model",
-            "tensorrt": r"TensorRT|tensorrt|trtexec|builder|engine",
-            "tilelang": r"TileLang|tilelang|kernel|compiler|CUDA",
+        MANIFEST_TYPES = {
+            "application/vnd.oci.image.manifest.v1+json",
+            "application/vnd.docker.distribution.manifest.v2+json",
         }
+        SCOPE = (
+            "CPU-only Arm64 image payload preflight: native shell, driver-script syntax "
+            "and bundled installer checksum only. No driver installation, kernel module "
+            "load, privileged container, CUDA or GPU execution was tested."
+        )
+        mode = os.environ["DRIVER_PREFLIGHT_MODE"]
+        current = os.environ["BASELINE_VERSION"]
+        variant = os.environ["IMAGE_VARIANT"]
+        latest = "unknown"
+        observed = "not_installed"
 
-        py_targets = {
-            "bionemo-framework": ["src", "bionemo", "sub-packages"],
-            "clara-viz": ["python", "src"],
-            "cucim": ["python/cucim", "python"],
-            "cuda-python": ["cuda_bindings", "cuda_core", "cuda_python", "cuda"],
-            "cudf": ["python/cudf", "python"],
-            "cugraph": ["python/cugraph", "python"],
-            "cuml": ["python/cuml", "python"],
-            "cuopt": ["python/cuopt", "python", "cuopt"],
-            "cutile-python": ["cutile", "python", "src"],
-            "cuvs": ["python/cuvs", "python/pylibcuvs", "python"],
-            "cv-cuda": ["python", "src"],
-            "dali": ["dali/python", "dali"],
-            "dask-cuda": ["dask_cuda", "python/dask_cuda"],
-            "holoscan-sdk": ["python/holoscan", "python"],
-            "nvimagecodec": ["python", "nvimgcodec"],
-            "nx-cugraph": ["nx_cugraph", "_nx_cugraph"],
-            "physics-nemo": ["src", "physicsnemo"],
-            "raft": ["python/pylibraft", "python"],
-            "resiliency-extension": ["src", "nvidia_resiliency_ext", "resiliency_extension"],
-            "rmm": ["python/rmm", "python"],
-            "tensorrt-llm": ["tensorrt_llm", "python"],
-            "tensorrt": ["python", "samples/python"],
-            "tilelang": ["tilelang", "python", "src"],
-        }
+        class EvidenceUnavailable(ValueError):
+            pass
 
-        def matching_paths(hints):
-            found = []
-            for hint in hints:
-                matches = list(root.glob(hint))
-                if not matches and any(ch in hint for ch in "*?["):
-                    matches = list(root.glob(hint))
-                if not matches:
-                    candidate = root / hint
-                    if candidate.exists():
-                        matches = [candidate]
-                found.extend(path for path in matches if path.exists())
-            return found
+        def require(condition, message):
+            if not condition:
+                raise EvidenceUnavailable(message)
 
-        def content_matches(pattern):
-            rx = re.compile(pattern, re.I)
-            scanned = 0
-            for path in root.rglob("*"):
-                if not path.is_file() or path.stat().st_size > 2_000_000:
-                    continue
-                if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".so", ".a", ".o", ".jar", ".whl"}:
-                    continue
-                scanned += 1
-                try:
-                    text = path.read_text(errors="ignore")
-                except OSError:
-                    continue
-                if rx.search(text):
-                    return path.relative_to(root)
-                if scanned >= 350:
-                    break
-            return None
+        def output(**fields):
+            with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
+                for key, value in fields.items():
+                    stream.write(f"{key}={' '.join(str(value).splitlines())}\n")
 
-        def run_command(command, cwd=root, timeout=120):
-            if shutil.which(command[0]) is None:
-                return False, f"{command[0]} unavailable"
-            proc = subprocess.run(command, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
-            return proc.returncode == 0, proc.stdout[-1000:]
+        def command(args, timeout=120):
+            env = {k: v for k, v in os.environ.items()
+                   if k not in {"GH_TOKEN", "GITHUB_TOKEN"}}
+            return subprocess.run(args, env=env, check=True, capture_output=True,
+                                  timeout=timeout).stdout
 
-        proofs = []
-        hits = matching_paths(patterns.get(slug, ["README*", "pyproject.toml", "go.mod", "CMakeLists.txt", "Makefile"]))
-        evidence = content_matches(regexes.get(slug, re.escape(slug).replace("\\-", "[-_ ]")))
+        def registry(operation, reference, *flags):
+            try:
+                return command(["skopeo", operation, "--no-creds", "--tls-verify=true",
+                                *flags, "docker://" + reference])
+            except (subprocess.SubprocessError, OSError) as exc:
+                raise EvidenceUnavailable(f"Registry {operation} unavailable: {type(exc).__name__}") from exc
 
-        if not hits and slug == "cutile-python":
-            version = os.environ.get("LATEST_VERSION") or os.environ.get("BASELINE_VERSION", "")
-            if not version:
-                raise SystemExit("cutile-python preflight requires BASELINE_VERSION or LATEST_VERSION")
-            import urllib.request
-            import zipfile
-            data = json.load(urllib.request.urlopen("https://pypi.org/pypi/cuda-tile/json", timeout=30))
-            release_files = data.get("releases", {}).get(version, [])
-            wheels = [item for item in release_files if "manylinux2014_aarch64" in item.get("filename", "") and item.get("url")]
-            if not wheels:
-                raise SystemExit(f"no published Arm64 cuda-tile wheel found for {version}")
-            with tempfile.TemporaryDirectory() as tmp:
-                wheel_path = Path(tmp) / wheels[0]["filename"]
-                with urllib.request.urlopen(wheels[0]["url"], timeout=60) as response:
-                    wheel_path.write_bytes(response.read())
-                with zipfile.ZipFile(wheel_path) as wheel:
-                    names = wheel.namelist()
-                    if not any(name.endswith(".dist-info/METADATA") for name in names):
-                        raise SystemExit("cuda-tile wheel is missing dist-info metadata")
-                    if not any(re.search(r"cuda[_-]?tile|cutile|tile", name, re.I) for name in names):
-                        raise SystemExit("cuda-tile wheel did not expose package-specific payload names")
-            manifest_dir = Path(".arm-preflight")
-            manifest_dir.mkdir(exist_ok=True)
-            (manifest_dir / f"{slug}-manifest.txt").write_text(f"pypi_version={version}\nwheel={wheels[0]['filename']}\n")
-            print(f"scoped-arm-preflight-ok: {slug}: pypi_arm64_wheel:{wheels[0]['filename']}, wheel_manifest")
-            raise SystemExit(0)
+        def digest(raw):
+            return "sha256:" + hashlib.sha256(raw).hexdigest()
 
-        if not hits and slug == "nvidia-gpu-driver-container":
-            import urllib.request
-            version = os.environ.get("BASELINE_VERSION", "")
-            variant = os.environ.get("IMAGE_VARIANT", "ubuntu22.04")
-            page_url = os.environ.get("DOWNLOAD_URL") or os.environ.get("HOMEPAGE_URL")
-            html = urllib.request.urlopen(page_url, timeout=45).read().decode("utf-8", errors="ignore")
-            expected_tag = f"{version}-{variant}" if version else variant
-            if expected_tag not in html and version not in html:
-                raise SystemExit(f"driver container tag evidence not found for {expected_tag}")
-            window_start = max(0, html.find(version) - 1600) if version in html else 0
-            window = html[window_start:window_start + 4000]
-            if not re.search(r"multi.?arch|MultiArchitecture|arm64|aarch64|driver|NVIDIA", window, re.I):
-                raise SystemExit("driver container page did not expose scoped multi-arch/driver evidence")
-            manifest_dir = Path(".arm-preflight")
-            manifest_dir.mkdir(exist_ok=True)
-            (manifest_dir / f"{slug}-manifest.txt").write_text(f"ngc_tag={expected_tag}\npage={page_url}\n")
-            print(f"scoped-arm-preflight-ok: {slug}: ngc_multiarch_tag:{expected_tag}, driver_container_manifest")
-            raise SystemExit(0)
-        if not hits:
-            raise SystemExit(f"no package-specific source/artifact paths found for {slug} in {root}")
-        if evidence is None:
-            raise SystemExit(f"no package-specific evidence pattern matched for {slug} in {root}")
+        def descriptor(value):
+            require(isinstance(value, dict), "Missing image descriptor")
+            require(re.fullmatch(r"sha256:[0-9a-f]{64}", str(value.get("digest", ""))),
+                    "Invalid image digest")
+            require(type(value.get("size")) is int and value["size"] > 0,
+                    "Invalid image descriptor size")
+            return value["digest"]
 
-        manifest_dir = Path(".arm-preflight")
-        manifest_dir.mkdir(exist_ok=True)
-        manifest = manifest_dir / f"{slug}-manifest.txt"
-        manifest.write_text("\n".join([f"source_root={root}", f"evidence={evidence}"] + [str(path.relative_to(root)) for path in hits[:25]]) + "\n")
-        proofs.append(f"manifest:{manifest}")
+        def candidate():
+            data = json.loads(registry("list-tags", REPOSITORY))
+            require(isinstance(data, dict), "Invalid registry tag document")
+            require(data.get("Repository") == REPOSITORY, "Unexpected tag repository")
+            tags = data.get("Tags")
+            require(isinstance(tags, list) and all(isinstance(tag, str) for tag in tags),
+                    "Invalid registry tag inventory")
+            require(f"{current}-{variant}" in tags, "Baseline absent from tag inventory")
+            pattern = re.compile(r"([0-9]+\.[0-9]+\.[0-9]+)-" + re.escape(variant))
+            versions = {m[1] for tag in tags if (m := pattern.fullmatch(tag))}
+            newer = [v for v in versions if tuple(map(int, v.split("."))) >
+                     tuple(map(int, current.split(".")))]
+            return max(newer, key=lambda v: tuple(map(int, v.split(".")))) if newer else None
 
-        compiled = False
-        for rel in py_targets.get(slug, []):
-            target = root / rel
-            if not target.exists():
-                continue
-            ok = compileall.compile_dir(str(target), quiet=1) if target.is_dir() else compileall.compile_file(str(target), quiet=1)
-            if not ok:
-                raise SystemExit(f"Python source compile failed for {slug}: {target}")
-            proofs.append(f"python_compile:{target.relative_to(root)}")
-            compiled = True
-            break
-
-        if slug in {"dcgm-exporter", "nvidia-container-toolkit"} and (root / "go.mod").exists():
-            ok, output = run_command(["go", "list", "./..."])
-            if ok:
-                proofs.append("go_list")
+        def resolve(reference, version):
+            require(re.fullmatch(re.escape(REPOSITORY) +
+                                r"(?::[0-9]+\.[0-9]+\.[0-9]+-ubuntu22\.04|@sha256:[0-9a-f]{64})",
+                                reference), "Unexpected image repository or reference")
+            raw = registry("inspect", reference, "--raw")
+            root_digest = digest(raw)
+            if "@" in reference:
+                require(reference == REPOSITORY + "@" + root_digest, "Pinned index digest mismatch")
+            document = json.loads(raw)
+            require(isinstance(document, dict), "Invalid manifest document")
+            require(document.get("schemaVersion") == 2, "Unsupported manifest schema")
+            if document.get("mediaType") in INDEX_TYPES:
+                entries = document.get("manifests")
+                require(isinstance(entries, list) and all(isinstance(x, dict) and
+                        isinstance(x.get("platform"), dict) for x in entries),
+                        "Invalid multi-architecture index")
+                arm = [x for x in entries if x.get("platform", {}).get("os") == "linux"
+                       and x.get("platform", {}).get("architecture") == "arm64"
+                       and x.get("platform", {}).get("variant", "") in {"", "v8"}]
+                require(len(arm) == 1, "Expected exactly one Linux/Arm64 image")
+                selected = descriptor(arm[0])
+                require(arm[0].get("mediaType") in MANIFEST_TYPES, "Unsupported Arm manifest type")
+                raw = registry("inspect", REPOSITORY + "@" + selected, "--raw")
+                require(digest(raw) == selected and len(raw) == arm[0]["size"],
+                        "Arm manifest digest or size mismatch")
+                document = json.loads(raw)
             else:
-                proofs.append("go_manifest_only")
+                selected = root_digest
+            require(isinstance(document, dict), "Invalid image manifest document")
+            require(document.get("schemaVersion") == 2 and
+                    document.get("mediaType") in MANIFEST_TYPES, "Unsupported image manifest")
+            config_digest = descriptor(document.get("config"))
+            layers = document.get("layers")
+            require(isinstance(layers, list) and layers, "Missing image payload layers")
+            for layer in layers:
+                descriptor(layer)
+            reference = REPOSITORY + "@" + selected
+            config = json.loads(registry("inspect", reference, "--config"))
+            require(isinstance(config, dict) and isinstance(config.get("config"), dict),
+                    "Invalid image config document")
+            require(config.get("architecture") == "arm64" and config.get("os") == "linux",
+                    "Image config is not Linux/Arm64")
+            require(config.get("config", {}).get("Entrypoint") == ["nvidia-driver", "init"],
+                    "Unexpected driver-container entrypoint")
+            environment = config.get("config", {}).get("Env", [])
+            require(isinstance(environment, list) and all(isinstance(x, str) for x in environment) and
+                    environment.count("DRIVER_VERSION=" + version) == 1 and
+                    environment.count("TARGETARCH=arm64") == 1 and
+                    sum(x.startswith("DRIVER_VERSION=") for x in environment) == 1 and
+                    sum(x.startswith("TARGETARCH=") for x in environment) == 1,
+                    "Driver version or target architecture mismatch")
+            return reference, root_digest, config_digest
 
-        if slug == "cccl" and (root / "libcudacxx" / "include").exists():
-            compiler = shutil.which("g++") or shutil.which("c++")
-            if compiler:
-                with tempfile.TemporaryDirectory() as tmp:
-                    src = Path(tmp) / "cccl_smoke.cpp"
-                    obj = Path(tmp) / "cccl_smoke.o"
-                    src.write_text('#include <cuda/std/tuple>\nint smoke(){ cuda::std::tuple<int> t{1}; return cuda::std::get<0>(t); }\n')
-                    ok, _ = run_command([compiler, "-std=c++17", "-I", str(root / "libcudacxx" / "include"), "-c", str(src), "-o", str(obj)])
-                    if ok:
-                        proofs.append("cxx_compile:cuda_std_tuple")
+        def preflight(reference, version, config_digest):
+            command(["docker", "pull", "--platform", "linux/arm64", reference], timeout=600)
+            images = json.loads(command(["docker", "image", "inspect", reference]))
+            require(isinstance(images, list) and len(images) == 1 and isinstance(images[0], dict),
+                    "Missing pulled image")
+            image = images[0]
+            require(image.get("Id") == config_digest and image.get("Architecture") == "arm64"
+                    and image.get("Os") == "linux", "Pulled image identity mismatch")
+            name = "nvidia-driver-preflight-" + uuid.uuid4().hex
+            script = r'''
+        test "$(uname -m)" = aarch64
+        test "$TARGETARCH" = arm64
+        test "$DRIVER_VERSION" = "$1"
+        . /etc/os-release
+        test "$ID:$VERSION_ID" = ubuntu:22.04
+        test -s /usr/local/bin/nvidia-driver
+        test -s /tmp/install.sh
+        bash -n /usr/local/bin/nvidia-driver
+        bash -n /tmp/install.sh
+        installer="/drivers/NVIDIA-Linux-aarch64-$1.run"
+        test -s "$installer"
+        # --check verifies the embedded archive and exits without installing it.
+        sh "$installer" --check
+        printf 'DRIVER_PREFLIGHT_OK version=%s arch=aarch64 checksum=verified\n' "$1"
+        '''
+            try:
+                result = command([
+                    "docker", "run", "--rm", "--name", name, "--pull=never",
+                    "--platform", "linux/arm64", "--runtime", "runc",
+                    "--network", "none", "--read-only", "--user", "65534:65534",
+                    "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                    "--pids-limit", "64", "--cpus", "2", "--memory", "512m",
+                    "--memory-swap", "512m", "--entrypoint", "/bin/bash",
+                    reference, "-euc", script, "--", version,
+                ], timeout=180).decode()
+                require(f"DRIVER_PREFLIGHT_OK version={version} arch=aarch64 checksum=verified"
+                        in result.splitlines(), "Missing completed payload proof")
+                print(result, end="")
+            finally:
+                subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=30)
 
-        if slug == "cutlass" and (root / "include" / "cutlass").exists():
-            compiler = shutil.which("g++") or shutil.which("c++")
-            if compiler:
-                with tempfile.TemporaryDirectory() as tmp:
-                    src = Path(tmp) / "cutlass_smoke.cpp"
-                    obj = Path(tmp) / "cutlass_smoke.o"
-                    src.write_text('#include <cutlass/cutlass.h>\nint smoke(){ return int(cutlass::Status::kSuccess); }\n')
-                    ok, _ = run_command([compiler, "-std=c++17", "-I", str(root / "include"), "-c", str(src), "-o", str(obj)])
-                    if ok:
-                        proofs.append("cxx_compile:cutlass_status")
-
-        if slug in {"gdrcopy", "nvshmem", "dcgm", "cuda-gdb"}:
-            makefile = root / "Makefile"
-            if makefile.exists() and shutil.which("make"):
-                ok, _ = run_command(["make", "-n", "-s"], timeout=60)
-                if ok:
-                    proofs.append("make_dry_run")
-
-        if slug == "sparks-rapids" and (root / "pom.xml").exists():
-            text = (root / "pom.xml").read_text(errors="ignore")
-            if re.search(r"rapids|spark|cudf", text, re.I):
-                proofs.append("pom_plugin_identity")
-
-        if slug == "nvidia-gpu-driver-container":
-            dockerfiles = [path for path in root.rglob("Dockerfile*") if path.is_file()]
-            if dockerfiles:
-                proofs.append("driver_container_dockerfile_manifest")
-
-        if not compiled and len(proofs) == 1:
-            code_file = next((p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in {".py", ".go", ".cc", ".cpp", ".c", ".cu", ".h", ".hpp", ".java", ".scala", ".xml", ".yaml", ".yml"}), None)
-            if code_file is None:
-                raise SystemExit(f"no source/config file available for scoped package proof: {slug}")
-            proofs.append(f"source_identity_scan:{code_file.relative_to(root)}")
-
-        print(f"scoped-arm-preflight-ok: {slug}: " + ", ".join(proofs))
+        try:
+            require(platform.system() == "Linux" and platform.machine() in {"aarch64", "arm64"},
+                    "Native Linux/Arm64 runner required")
+            require(mode in {"baseline", "candidate"} and variant == "ubuntu22.04" and
+                    re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", current), "Invalid preflight context")
+            if mode == "candidate":
+                try:
+                    latest = candidate()
+                    if latest is None:
+                        output(status="skipped", decision="no_newer_stable_available",
+                               current_version=current, latest_version=current,
+                               next_installed_version="n/a",
+                               regression_result="No newer stable matching registry tag exists",
+                               comparison=SCOPE + " Complete registry tag inventory checked.")
+                        sys.exit(0)
+                    reference, index_digest, config_digest = resolve(
+                        REPOSITORY + ":" + latest + "-" + variant, latest)
+                except (EvidenceUnavailable, ValueError, KeyError, TypeError) as exc:
+                    output(status="skipped", decision="metadata_review_required",
+                           current_version=current, latest_version=latest or "unknown",
+                           next_installed_version=observed,
+                           regression_result="Candidate registry evidence unresolved",
+                           comparison=SCOPE + " Deferred: " + str(exc))
+                    sys.exit(0)
+            else:
+                latest = current
+                reference, index_digest, config_digest = resolve(
+                    os.environ["PINNED_CONTAINER_IMAGE_NVIDIA_DRIVER"], current)
+            preflight(reference, latest, config_digest)
+            observed = latest
+            evidence = f"index={index_digest}; image={reference}; config={config_digest}"
+            print(evidence)
+            if mode == "candidate":
+                output(status="passed", decision="limited_cpu_smoke_validated",
+                       current_version=current, latest_version=latest,
+                       next_installed_version=observed,
+                       regression_result="Native Arm64 image payload preflight passed",
+                       comparison=SCOPE + " " + evidence)
+        except (EvidenceUnavailable, ValueError, KeyError, TypeError,
+                subprocess.SubprocessError, OSError) as exc:
+            print(f"Image payload preflight failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            if mode == "candidate":
+                output(status="failed", decision="limited_cpu_smoke_failed",
+                       current_version=current, latest_version=latest,
+                       next_installed_version=observed,
+                       regression_result="Required image payload preflight failed",
+                       comparison=SCOPE + " Preflight did not complete successfully.")
+            sys.exit(1)
         PY
-
-
 
     outputs:
       contract_version: "2.0"
       package_slug: ${{ steps.metadata.outputs.package_slug }}
-      package_name: 'NVIDIA GPU Driver Container'
+      package_name: 'NVIDIA GPU Driver Container (CPU-only image preflight)'
       package_version: ${{ steps.version.outputs.version || 'unknown' }}
       run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
       badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
-      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '5' }}
       tests_passed: ${{ steps.summary.outputs.passed || '0' }}
-      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '6' }}
       tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
       duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
-      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
-      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
-      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_status: ${{ steps.summary.outputs.regression_status || 'failed' }}
+      regression_decision: ${{ steps.summary.outputs.regression_decision || 'next_regression_failed' }}
+      regression_result: ${{ steps.summary.outputs.regression_result || '' }}
+      regression_comparison: ${{ steps.summary.outputs.regression_comparison || 'Required candidate evidence unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
@@ -423,7 +360,7 @@ jobs:
       - name: Bootstrap baseline dependencies
         uses: ./.github/actions/apt-bootstrap
         with:
-          packages: "git curl jq tar unzip file ca-certificates"
+          packages: "git curl jq tar unzip file ca-certificates skopeo"
           quiet: "true"
 
       - name: Install baseline source or artifact
@@ -713,7 +650,7 @@ jobs:
 
       - name: Test 1 - Check package-specific baseline markers
         id: test1
-        continue-on-error: true
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -762,7 +699,7 @@ jobs:
 
       - name: Test 2 - Check published package metadata
         id: test2
-        continue-on-error: true
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -780,7 +717,7 @@ jobs:
 
       - name: Test 3 - Check package-specific docs and manifests
         id: test3
-        continue-on-error: true
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -826,7 +763,7 @@ jobs:
 
       - name: Test 4 - Verify Arm64 runner and lane assumptions
         id: test4
-        continue-on-error: true
+        if: always()
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -844,165 +781,156 @@ jobs:
 
       - name: Test 5 - Run scoped Arm preflight proof
         id: test5
-        continue-on-error: true
+        if: always()
         run: |
           set -euo pipefail
-          START_TIME=$(date +%s)
-          export PREFLIGHT_SOURCE_DIR=baseline-src
-          if bash -euo pipefail -c "$SCOPED_ARM_PREFLIGHT_PROBE"; then
-            echo "status=passed" >> "$GITHUB_OUTPUT"
-            echo "note=Arm preflight smoke passed; completed package-specific source/compile/import/help/manifest proof on Arm64. Full GPU/CUDA/RAPIDS runtime remains scoped and was not claimed." >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "note=Scoped Arm preflight failed; this workflow does not treat metadata-only checks as green." >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          START_TIME=$SECONDS
+          finish_test() {
+            local rc=$?
+            trap - EXIT
+            if [ "$rc" -eq 0 ]; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$((SECONDS - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap finish_test EXIT
+          DRIVER_PREFLIGHT_MODE=baseline bash -euo pipefail -c "$SCOPED_ARM_PREFLIGHT_PROBE"
+
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
+        env:
+          CORE_RESULTS: "${{ steps.test1.outcome }}:${{ steps.test1.outputs.status }} ${{ steps.test2.outcome }}:${{ steps.test2.outputs.status }} ${{ steps.test3.outcome }}:${{ steps.test3.outputs.status }} ${{ steps.test4.outcome }}:${{ steps.test4.outputs.status }} ${{ steps.test5.outcome }}:${{ steps.test5.outputs.status }}"
         run: |
           set -euo pipefail
-          START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version || env.BASELINE_VERSION }}"
-          PAGE_HTML="$(mktemp)"
-          trap 'rm -f "$PAGE_HTML"' EXIT
-          curl -fsSL "$DOWNLOAD_URL" -o "$PAGE_HTML"
-
-          TAG_RESULT="$(python3 - "$CURRENT" "$IMAGE_VARIANT" "$PAGE_HTML" <<'PY'
-          import pathlib
-          import re
-          import sys
-
-          current = tuple(int(part) for part in sys.argv[1].split("."))
-          variant = sys.argv[2]
-          html = pathlib.Path(sys.argv[3]).read_text(encoding="utf-8", errors="ignore")
-
-          pattern = re.compile(rf'([0-9]+\.[0-9]+\.[0-9]+)-{re.escape(variant)}')
-          tags = sorted({match.group(1) for match in pattern.finditer(html)}, key=lambda value: tuple(int(part) for part in value.split(".")))
-          newer = [value for value in tags if tuple(int(part) for part in value.split(".")) > current]
-          if not newer:
-              print("NONE\t\t")
-              raise SystemExit(0)
-
-          latest = newer[-1]
-          full_tag = f"{latest}-{variant}"
-          positions = [match.start() for match in re.finditer(re.escape(full_tag), html)]
-          multi = False
-          for pos in positions:
-              window = html[max(0, pos - 1400):pos + 1400]
-              if ('isMultiArchitecture\\":true' in window) or ('"isMultiArchitecture":true' in window):
-                  multi = True
-                  break
-          print(("FOUND" if multi else "TAG_ONLY"), latest, full_tag, sep="\t")
-          PY
-          )"
-
-          STATUS_KIND="$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $1}')"
-          LATEST_VERSION="$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $2}')"
-          FULL_TAG="$(printf '%s' "$TAG_RESULT" | awk -F '\t' '{print $3}')"
-
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-
-          case "$STATUS_KIND" in
-            NONE)
-              echo "latest_version=$CURRENT" >> "$GITHUB_OUTPUT"
-              echo "next_installed_version=n/a" >> "$GITHUB_OUTPUT"
-              echo "decision=no_newer_stable_available" >> "$GITHUB_OUTPUT"
-              echo "regression_result=No newer stable public Arm64 image tag is available" >> "$GITHUB_OUTPUT"
-              echo "comparison=Tests 1-5 validated the scoped NVIDIA GPU Driver Container multi-architecture image/catalog preflight, and the public NGC tag stream does not currently expose a newer stable ${IMAGE_VARIANT} image tag than ${CURRENT}. No kernel driver load, privileged container launch, CUDA driver, GPU runtime, or live GPU execution is claimed." >> "$GITHUB_OUTPUT"
-              echo "status=skipped" >> "$GITHUB_OUTPUT"
-              ;;
-            FOUND)
-              echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
-              echo "next_installed_version=$FULL_TAG" >> "$GITHUB_OUTPUT"
-              echo "decision=limited_cpu_smoke_validated" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Arm preflight proof passed on Arm64" >> "$GITHUB_OUTPUT"
-              echo "comparison=Test 6 limited_cpu_smoke_validated: reran the bounded scoped NVIDIA GPU Driver Container image tag/catalog proof for ${FULL_TAG} on the Arm64 runner. This validates published multi-architecture driver-container payload evidence only; no kernel driver load, privileged container launch, CUDA driver, GPU runtime, or live GPU execution is claimed." >> "$GITHUB_OUTPUT"
-              echo "status=passed" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "latest_version=metadata_review" >> "$GITHUB_OUTPUT"
-              echo "next_installed_version=metadata_review" >> "$GITHUB_OUTPUT"
-              echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-              echo "regression_result=Automatic next-version resolution needs manual review" >> "$GITHUB_OUTPUT"
-              echo "comparison=The public NGC page exposes newer NVIDIA GPU Driver Container tags, but the workflow could not verify a trustworthy multi-architecture candidate object for the ${IMAGE_VARIANT} line automatically." >> "$GITHUB_OUTPUT"
-              echo "status=skipped" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          START_TIME=$SECONDS
+          finish_test() {
+            local rc=$?
+            trap - EXIT
+            if [ "$rc" -ne 0 ]; then
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "decision=limited_cpu_smoke_failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "duration=$((SECONDS - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit "$rc"
+          }
+          trap finish_test EXIT
+          if [ "$CORE_RESULTS" != "success:passed success:passed success:passed success:passed success:passed" ]; then
+            {
+              echo "status=skipped"
+              echo "decision=baseline_failed"
+              echo "current_version=$BASELINE_VERSION"
+              echo "latest_version=unknown"
+              echo "next_installed_version=not_installed"
+              echo "regression_result=Baseline checks failed or were incomplete"
+              echo "comparison=Candidate not attempted because all five baseline checks are required."
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          DRIVER_PREFLIGHT_MODE=candidate bash -euo pipefail -c "$SCOPED_ARM_PREFLIGHT_PROBE"
 
       - name: Calculate test summary
         id: summary
         if: always()
+        env:
+          T1: "${{ steps.test1.outputs.status }}"
+          T2: "${{ steps.test2.outputs.status }}"
+          T3: "${{ steps.test3.outputs.status }}"
+          T4: "${{ steps.test4.outputs.status }}"
+          T5: "${{ steps.test5.outputs.status }}"
+          T6: "${{ steps.test6.outputs.status }}"
+          O1: "${{ steps.test1.outcome }}"
+          O2: "${{ steps.test2.outcome }}"
+          O3: "${{ steps.test3.outcome }}"
+          O4: "${{ steps.test4.outcome }}"
+          O5: "${{ steps.test5.outcome }}"
+          O6: "${{ steps.test6.outcome }}"
+          DECISION: "${{ steps.test6.outputs.decision }}"
+          RESULT: "${{ steps.test6.outputs.regression_result }}"
+          COMPARISON: "${{ steps.test6.outputs.comparison }}"
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
-          D1="${{ steps.test1.outputs.duration || '0' }}"
-          D2="${{ steps.test2.outputs.duration || '0' }}"
-          D3="${{ steps.test3.outputs.duration || '0' }}"
-          D4="${{ steps.test4.outputs.duration || '0' }}"
-          D5="${{ steps.test5.outputs.duration || '0' }}"
-          D6="${{ steps.test6.outputs.duration || '0' }}"
-          PASSED=0
-          FAILED=0
-          SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
+          set -euo pipefail
+          PASSED=0 FAILED=0 SKIPPED=0 CORE_FAILED=0
+          STATUSES=("$T1" "$T2" "$T3" "$T4" "$T5")
+          OUTCOMES=("$O1" "$O2" "$O3" "$O4" "$O5")
+          for index in 0 1 2 3 4; do
+            if [ "${STATUSES[$index]}" = passed ] && [ "${OUTCOMES[$index]}" = success ]; then
+              STATUS=passed
               PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
             else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
-          CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+              STATUS=failed
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
+            echo "test$((index + 1))_status=$STATUS" >> "$GITHUB_OUTPUT"
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
-            OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
+          if [ "$CORE_FAILED" -gt 0 ]; then
+            T6=skipped
+            DECISION=baseline_failed
+            RESULT="Baseline checks failed or were incomplete"
+            COMPARISON="Candidate evidence is not accepted because all five baseline checks are required."
+          elif [ "$O6:$T6:$DECISION" = "success:passed:limited_cpu_smoke_validated" ] &&
+               [[ "$RESULT" =~ [^[:space:]] && "$COMPARISON" =~ [^[:space:]] ]]; then
+            :
+          elif [ "$O6:$T6:$DECISION" = "success:skipped:no_newer_stable_available" ] &&
+               [[ "$RESULT" =~ [^[:space:]] && "$COMPARISON" =~ [^[:space:]] ]]; then
+            :
           else
-            OVERALL_STATUS="failure"
-            BADGE_STATUS="failing"
+            if [ "$DECISION" = metadata_review_required ]; then
+              COMPARISON="Deferred candidate evidence (metadata_review_required) does not satisfy the required check. $COMPARISON"
+            elif [ "$O6:$T6:$DECISION" != "failure:failed:limited_cpu_smoke_failed" ]; then
+              COMPARISON="Missing, invalid or contradictory candidate evidence. $COMPARISON"
+            fi
+            T6=failed
+            if [ "$DECISION" != limited_cpu_smoke_failed ]; then DECISION=next_regression_failed; fi
+            RESULT="Required candidate preflight did not pass. $RESULT"
           fi
-          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
-          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
-          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
-          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
-          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
-          echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
-          echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          case "$T6" in
+            passed) PASSED=$((PASSED + 1));;
+            failed) FAILED=$((FAILED + 1));;
+            skipped) SKIPPED=$((SKIPPED + 1));;
+          esac
+          DURATION=$((${{ steps.test1.outputs.duration || '0' }} + ${{ steps.test2.outputs.duration || '0' }} + ${{ steps.test3.outputs.duration || '0' }} + ${{ steps.test4.outputs.duration || '0' }} + ${{ steps.test5.outputs.duration || '0' }} + ${{ steps.test6.outputs.duration || '0' }}))
+          OVERALL_STATUS=failure BADGE_STATUS=failing
+          if [ "$FAILED" -eq 0 ]; then OVERALL_STATUS=success; BADGE_STATUS=passing; fi
+          {
+            echo "passed=$PASSED"
+            echo "failed=$FAILED"
+            echo "skipped=$SKIPPED"
+            echo "duration=$DURATION"
+            echo "core_failed=$CORE_FAILED"
+            echo "overall_status=$OVERALL_STATUS"
+            echo "badge_status=$BADGE_STATUS"
+            echo "regression_status=$T6"
+            echo "regression_decision=$DECISION"
+            echo "regression_result=$RESULT"
+            echo "regression_comparison=$COMPARISON"
+          } >> "$GITHUB_OUTPUT"
+          [ "$OVERALL_STATUS" = success ]
 
       - name: Create test summary
         if: always()
         uses: ./.github/actions/write-package-job-summary
         with:
-          package_name: 'NVIDIA GPU Driver Container'
+          package_name: 'NVIDIA GPU Driver Container (CPU-only image preflight)'
           version: ${{ steps.version.outputs.version || 'unknown' }}
           overall_status: ${{ steps.summary.outputs.overall_status || 'unknown' }}
           tests_passed: ${{ steps.summary.outputs.passed || '0' }}
-          tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+          tests_failed: ${{ steps.summary.outputs.failed || '6' }}
           tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
           duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
-          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
-          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
-          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
-          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
-          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
-          test6_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          test1_status: ${{ steps.summary.outputs.test1_status || 'failed' }}
+          test2_status: ${{ steps.summary.outputs.test2_status || 'failed' }}
+          test3_status: ${{ steps.summary.outputs.test3_status || 'failed' }}
+          test4_status: ${{ steps.summary.outputs.test4_status || 'failed' }}
+          test5_status: ${{ steps.summary.outputs.test5_status || 'failed' }}
+          test6_status: ${{ steps.summary.outputs.regression_status || 'failed' }}
+          test6_decision: ${{ steps.summary.outputs.regression_decision || 'next_regression_failed' }}
           regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
           regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
           regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
-          regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
-          regression_details: ${{ steps.test6.outputs.comparison || steps.test6.outputs.note || 'Regression comparison summary unavailable.' }}
+          regression_result: ${{ steps.summary.outputs.regression_result || 'Required candidate preflight unavailable.' }}
+          regression_details: ${{ steps.summary.outputs.regression_comparison || 'Required candidate evidence unavailable.' }}
