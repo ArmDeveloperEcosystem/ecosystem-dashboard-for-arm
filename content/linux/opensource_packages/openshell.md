@@ -12,16 +12,20 @@ optional_info:
     homepage_url: https://docs.nvidia.com/openshell/latest/
     support_caveats_inline: true
     support_caveats: >-
-        Linux Arm64 requires a supported runtime and the documented Landlock ABI 3+,
-        seccomp, task-memory, and socket-binding capabilities; kernel version alone
-        is insufficient. Docker requires Engine 28+; MicroVM requires KVM on Linux.
-        Debian packages require glibc 2.28+. The Python package is an SDK, not the CLI.
-        Historical minimum 0.0.6 is the first public launch release, not a deployment recommendation.
+        Linux Arm64 container sandboxes require a supported runtime and the
+        documented kernel security features, including Landlock ABI 3+ and seccomp.
+        The microVM backend requires KVM access. Debian packages require glibc 2.28+.
     getting_started_resources:
         official_docs: https://github.com/NVIDIA/OpenShell/blob/v0.1.6/docs/about/installation.mdx
+        arm_content: https://learn.arm.com/install-guides/openshell/
 optional_hidden_info:
     release_notes__supported_minimum: https://github.com/NVIDIA/OpenShell/releases/tag/v0.0.6
     other_info: >-
+        Container-backend requirements include task-memory and socket-binding
+        capabilities; kernel version alone is insufficient. The Docker driver
+        requires Engine 28+. The Python package is an SDK, not the CLI.
+        Historical minimum 0.0.6 is the first public launch release, not a
+        deployment recommendation.
         SPDX Apache-2.0: https://github.com/NVIDIA/OpenShell/blob/v0.1.6/LICENSE .
         Support: https://github.com/NVIDIA/OpenShell/blob/v0.1.6/docs/about/support-matrix.mdx .
         Launch: https://developer.nvidia.com/blog/run-autonomous-self-evolving-agents-more-safely-with-nvidia-openshell/ .
