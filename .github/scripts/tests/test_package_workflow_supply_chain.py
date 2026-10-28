@@ -44,6 +44,7 @@ RELEVANT_PATHS = (
     ".github/scripts/tests/test_xen_hypervisor_smoke_workflow.py",
     ".github/scripts/tests/test_chef_infra_smoke_workflow.py",
     ".github/scripts/tests/test_chef_source_scope_render.py",
+    ".github/scripts/tests/test_chiaki_ng_smoke_workflow.py",
     "themes/arm-design-system-hugo-theme/layouts/partials/package-display/row-sub.html",
     ".github/scripts/tests/test_verify_action_lock_online.py",
     ".github/scripts/tests/test_exact_run_aggregation.py",
@@ -1259,7 +1260,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "06e659e323c413241b1e446d2ef4985f16f48a4d04372b11bddc540d3abddd2c",
+            "152ea8df045553e691b8df38e37d90fe5314654eac366df9514f6b842e06d9ba",
             result["workflow_sha256"],
         )
 
@@ -1514,7 +1515,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "checkout_uses": 983,
                 "permission_exceptions": 4,
                 "topology_sha256": "2934204313856f857817d1885ecc51919e085b79ec3f1ad00617be9a7a432a16",
-                "workflow_sha256": "06e659e323c413241b1e446d2ef4985f16f48a4d04372b11bddc540d3abddd2c",
+                "workflow_sha256": "152ea8df045553e691b8df38e37d90fe5314654eac366df9514f6b842e06d9ba",
             },
             supply_chain.validate_hardening(
                 self.root,

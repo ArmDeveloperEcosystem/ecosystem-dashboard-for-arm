@@ -4,6 +4,7 @@ permissions:
   contents: read
 
 on:
+  workflow_dispatch:
   workflow_call:
     outputs:
       contract_version:
@@ -103,10 +104,10 @@ jobs:
       tests_failed: ${{ steps.summary.outputs.failed || '0' }}
       tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
       duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
-      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
-      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
-      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_status: ${{ steps.summary.outputs.regression_status || 'failed' }}
+      regression_decision: ${{ steps.summary.outputs.regression_decision || 'next_regression_failed' }}
+      regression_result: ${{ steps.summary.outputs.regression_result || 'Regression evidence unavailable.' }}
+      regression_comparison: ${{ steps.summary.outputs.regression_comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
@@ -344,6 +345,8 @@ jobs:
       - name: Test 5 - Run bounded package-specific smoke
         id: test5
         continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -376,9 +379,10 @@ jobs:
             TAG="$1"
             ASSET_RE="$2"
             OUTPUT="$3"
-            URL="$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$TAG" | jq -r --arg re "$ASSET_RE" '[.assets[] | select(.name | test($re; "i")) | .browser_download_url][0] // empty')"
-            [ -n "$URL" ]
-            curl -fL --retry 3 -o "$OUTPUT" "$URL"
+            URL="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN:?GitHub API token is required}" "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$TAG" | jq -r --arg re "$ASSET_RE" '[.assets[] | select(.name | test($re; "i")) | .browser_download_url][0] // empty')" || return 1
+            unset GH_TOKEN GITHUB_TOKEN
+            [ -n "$URL" ] || return 1
+            curl -fL --retry 3 -o "$OUTPUT" "$URL" || return 1
             printf '%s\n' "$URL"
           }
 
@@ -415,6 +419,8 @@ jobs:
                 [ -n "$TAG" ] && [ "$TAG" != "default_branch" ]
                 mkdir -p ../artifacts
                 ASSET_URL="$(download_release_asset "$TAG" 'AppImage.*(arm64|aarch64)|(arm64|aarch64).*AppImage' ../artifacts/chiaki-ng.AppImage)"
+                # The lookup runs in a subshell; clear the caller before executing the artifact.
+                unset GH_TOKEN GITHUB_TOKEN
                 file ../artifacts/chiaki-ng.AppImage | tee /tmp/chiaki-ng-appimage.file
                 grep -Eiq 'ARM aarch64|aarch64' /tmp/chiaki-ng-appimage.file
                 chmod +x ../artifacts/chiaki-ng.AppImage
@@ -612,7 +618,15 @@ jobs:
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
       - name: Test 6 - Regression Validation
         id: test6
+        if: >-
+          ${{ success() && steps.test1.outcome == 'success' && steps.test1.outputs.status == 'passed' &&
+              steps.test2.outcome == 'success' && steps.test2.outputs.status == 'passed' &&
+              steps.test3.outcome == 'success' && steps.test3.outputs.status == 'passed' &&
+              steps.test4.outcome == 'success' && steps.test4.outputs.status == 'passed' &&
+              steps.test5.outcome == 'success' && steps.test5.outputs.status == 'passed' }}
         uses: ./.github/actions/generic-source-regression-check
+        env:
+          GH_TOKEN: ${{ github.token }}
         with:
           baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
           github_repo: ${{ env.GITHUB_REPO }}
@@ -622,7 +636,8 @@ jobs:
             source_contains() { grep -R -I -Eiq "$1" . 2>/dev/null; }
             TAG="$CANDIDATE_TAG"
             [ -n "$TAG" ]
-            ASSET_URL="$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$TAG" | jq -r '[.assets[] | select(.name | test("AppImage.*(arm64|aarch64)|(arm64|aarch64).*AppImage"; "i")) | .browser_download_url][0] // empty')"
+            ASSET_URL="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN:?GitHub API token is required}" "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$TAG" | jq -r '[.assets[] | select(.name | test("AppImage.*(arm64|aarch64)|(arm64|aarch64).*AppImage"; "i")) | .browser_download_url][0] // empty')"
+            unset GH_TOKEN GITHUB_TOKEN
             [ -n "$ASSET_URL" ]
             curl -fL --retry 3 -o /tmp/chiaki-ng-next.AppImage "$ASSET_URL"
             file /tmp/chiaki-ng-next.AppImage | grep -Eiq 'ARM aarch64|aarch64'
@@ -636,19 +651,53 @@ jobs:
       - name: Calculate test summary
         id: summary
         if: always()
+        env:
+          REGRESSION_DECISION: ${{ steps.test6.outputs.decision }}
+          REGRESSION_RESULT: ${{ steps.test6.outputs.regression_result }}
+          REGRESSION_COMPARISON: ${{ steps.test6.outputs.comparison }}
         run: |
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
+          set -euo pipefail
+          T1="${{ steps.test1.outputs.status || 'failed' }}"
+          T2="${{ steps.test2.outputs.status || 'failed' }}"
+          T3="${{ steps.test3.outputs.status || 'failed' }}"
+          T4="${{ steps.test4.outputs.status || 'failed' }}"
+          T5="${{ steps.test5.outputs.status || 'failed' }}"
+          T6="${{ steps.test6.outputs.status || 'failed' }}"
           D1="${{ steps.test1.outputs.duration || '0' }}"
           D2="${{ steps.test2.outputs.duration || '0' }}"
           D3="${{ steps.test3.outputs.duration || '0' }}"
           D4="${{ steps.test4.outputs.duration || '0' }}"
           D5="${{ steps.test5.outputs.duration || '0' }}"
           D6="${{ steps.test6.outputs.duration || '0' }}"
+          OUTCOMES=("${{ steps.test1.outcome }}" "${{ steps.test2.outcome }}" "${{ steps.test3.outcome }}" "${{ steps.test4.outcome }}" "${{ steps.test5.outcome }}")
+          CORE_FAILED=0
+          for I in 1 2 3 4 5; do
+            VAR="T$I"
+            if [ "${!VAR}" != "passed" ] || [ "${OUTCOMES[$((I - 1))]}" != "success" ]; then
+              printf -v "$VAR" '%s' failed
+              CORE_FAILED=$((CORE_FAILED + 1))
+            fi
+          done
+          if [ "$CORE_FAILED" -gt 0 ]; then
+            T6="skipped"
+            REGRESSION_DECISION="baseline_failed"
+            REGRESSION_RESULT="Candidate preflight was not run because baseline checks failed."
+            REGRESSION_COMPARISON="Chiaki-ng scoped Arm preflight requires five passing baseline checks before candidate validation."
+          else
+            VALID_REGRESSION=false
+            if [ "${{ steps.test6.outcome }}" = "success" ]; then
+              case "$T6:$REGRESSION_DECISION" in
+                passed:limited_cpu_smoke_validated|failed:limited_cpu_smoke_failed|failed:next_install_failed|skipped:no_newer_stable_available)
+                  VALID_REGRESSION=true ;;
+              esac
+            fi
+            if [ "$VALID_REGRESSION" != true ]; then
+              T6="failed"
+              REGRESSION_DECISION="next_regression_failed"
+              REGRESSION_RESULT="Candidate preflight did not produce valid completed regression evidence. ${REGRESSION_RESULT:-No regression result was emitted.}"
+              REGRESSION_COMPARISON="Missing, deferred, or contradictory Test 6 evidence is a failure. ${REGRESSION_COMPARISON:-No comparison was emitted.}"
+            fi
+          fi
           PASSED=0
           FAILED=0
           SKIPPED=0
@@ -662,12 +711,6 @@ jobs:
             fi
           done
           DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
-          CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
-              CORE_FAILED=$((CORE_FAILED + 1))
-            fi
-          done
           if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
             OVERALL_STATUS="success"
             BADGE_STATUS="passing"
@@ -682,3 +725,8 @@ jobs:
           echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
           echo "overall_status=$OVERALL_STATUS" >> "$GITHUB_OUTPUT"
           echo "badge_status=$BADGE_STATUS" >> "$GITHUB_OUTPUT"
+          echo "regression_status=$T6" >> "$GITHUB_OUTPUT"
+          echo "regression_decision=$REGRESSION_DECISION" >> "$GITHUB_OUTPUT"
+          echo "regression_result=$REGRESSION_RESULT" >> "$GITHUB_OUTPUT"
+          echo "regression_comparison=$REGRESSION_COMPARISON" >> "$GITHUB_OUTPUT"
+          test "$OVERALL_STATUS" = success
