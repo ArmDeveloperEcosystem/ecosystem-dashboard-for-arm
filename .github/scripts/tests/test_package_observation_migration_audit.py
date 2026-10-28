@@ -32,8 +32,8 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             self.report["totals"],
         )
         self.assertEqual(
-            {"next_install_failed": 1, "next_regression_failed": 1,
-             "not_applicable_package_manager": 8, "not_configured": 951},
+            {"next_install_failed": 1, "next_regression_failed": 2,
+             "not_applicable_package_manager": 8, "not_configured": 950},
             self.report["fallback_counts"],
         )
         self.assertEqual(
@@ -136,9 +136,10 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             304, len(remediation["package_manager_summary_omits_test6"])
         )
         # The audit flags every default except not_configured, including Chef's
-        # and Garden's failure defaults; runtime tests prove that they stay red.
-        self.assertEqual(10, len(remediation["unsafe_fallback_workflows"]))
+        # Garden's and Chiaki's failure defaults; runtime tests prove they stay red.
+        self.assertEqual(11, len(remediation["unsafe_fallback_workflows"]))
         self.assertIn("chef-infra", remediation["unsafe_fallback_workflows"])
+        self.assertIn("chiaki-ng", remediation["unsafe_fallback_workflows"])
         self.assertIn("garden-linux", remediation["unsafe_fallback_workflows"])
         self.assertEqual(["freecad"], remediation["package_manager_missing_decision"])
         self.assertEqual(
@@ -234,7 +235,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "13946697bf667d7fbc1cf6abd7f0a84e6cfcdb5ff799c1ee82be4c1c102b3d47",
+            "4a37309f72f293ed3dc09fbc2c23c14a0f61bb892b75b4b7a4fe0a0bcfeb828f",
             digest,
         )
 
