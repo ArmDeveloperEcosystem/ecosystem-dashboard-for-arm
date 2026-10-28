@@ -10,10 +10,9 @@ supported_minimum_version:
   release_date: 2016/06/02
 optional_info:
   homepage_url: https://github.com/containers/bubblewrap
-  support_caveats: Requires Linux namespace support and a host policy that permits
-    the requested namespaces. The historical minimum is not a security recommendation;
-    use a maintained release. The smoke test verifies native Arm64 sandbox execution
-    and isolation, not the security of every possible application sandbox policy.
+  support_caveats: Requires Linux namespace support and a host security policy that
+    permits creating the required namespaces. Use a maintained release for security
+    updates.
   alternative_options: null
   getting_started_resources:
     official_docs: https://github.com/containers/bubblewrap#usage
@@ -28,6 +27,9 @@ optional_hidden_info:
   release_notes__supported_minimum: https://github.com/containers/bubblewrap/releases/tag/v0.1.0
   release_notes__recommended_minimum: null
   other_info: >-
+    The historical minimum is not a security recommendation. The smoke test verifies
+    native Arm64 sandbox execution and isolation, not the security of every possible
+    application sandbox policy.
     The annotated v0.1.0 tag explicitly identifies the first release and is dated
     2016-06-02. Debian's archived bubblewrap 0.1.0-1 binaries include arm64:
     https://snapshot.debian.org/mr/binary/bubblewrap/0.1.0-1/binfiles . The Arm64
