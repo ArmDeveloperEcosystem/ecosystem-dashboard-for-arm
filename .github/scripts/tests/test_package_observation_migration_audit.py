@@ -32,7 +32,8 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             self.report["totals"],
         )
         self.assertEqual(
-            {"next_install_failed": 1, "not_applicable_package_manager": 8, "not_configured": 952},
+            {"next_install_failed": 1, "next_regression_failed": 2,
+             "not_applicable_package_manager": 8, "not_configured": 950},
             self.report["fallback_counts"],
         )
         self.assertEqual(
@@ -59,10 +60,12 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         remediation = self.report["remediation"]
         self.assertEqual({}, remediation["missing_test_steps"])
         # The advisory scan cannot follow EXIT traps. Executable workflow tests
-        # verify Xen's outputs and Garden Linux's Test 5 finalizer separately.
+        # verify Chef's sourced finalizer, Xen's outputs and Garden Linux's
+        # Test 5 finalizer separately; these are not missing runtime outputs.
         self.assertEqual(
-            {**{f"test{number}": ["xen-hypervisor"] for number in range(1, 5)},
-             "test5": ["garden-linux", "xen-hypervisor"]},
+            {**{f"test{number}": ["chef-infra", "xen-hypervisor"] for number in range(1, 5)},
+             "test5": ["chef-infra", "garden-linux", "xen-hypervisor"],
+             "test6": ["chef-infra"]},
             remediation["missing_test_status"],
         )
         self.assertEqual({}, remediation["invalid_test_names"])
@@ -80,23 +83,27 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         remediation = self.report["remediation"]
         self.assertEqual(17, len(remediation["emitter_missing_slug"]))
         self.assertEqual(
-            {"test1": 1, "test2": 1, "test3": 1, "test4": 4, "test5": 44, "test6": 6},
+            {"test1": 2, "test2": 2, "test3": 2, "test4": 5, "test5": 45, "test6": 7},
             {
                 key: len(value)
                 for key, value in remediation["missing_test_duration"].items()
             },
         )
         # Duration writes share the same EXIT-trap reachability limitation.
+        for number in range(1, 7):
+            self.assertIn(
+                "chef-infra", remediation["missing_test_duration"][f"test{number}"]
+            )
         for number in range(1, 6):
             self.assertIn(
                 "xen-hypervisor", remediation["missing_test_duration"][f"test{number}"]
             )
         self.assertNotIn("backstage", remediation["missing_test_duration"]["test4"])
         self.assertIn("garden-linux", remediation["missing_test_duration"]["test5"])
-        # Garden Linux binds status/duration through step env, outside this
+        # Chef and Garden Linux bind status/duration through step env, outside this
         # advisory scan's literal run-script reference analysis.
         self.assertEqual(
-            {"test1": 1, "test2": 1, "test3": 2, "test4": 2, "test5": 3, "test6": 321},
+            {"test1": 2, "test2": 2, "test3": 3, "test4": 3, "test5": 4, "test6": 321},
             {
                 key: len(value)
                 for key, value in remediation[
@@ -105,7 +112,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"core_failed": 375, "duration": 3, "skipped": 697},
+            {"core_failed": 375, "duration": 3, "skipped": 696},
             {
                 key: len(value)
                 for key, value in remediation["missing_summary_outputs"].items()
@@ -128,9 +135,11 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(
             304, len(remediation["package_manager_summary_omits_test6"])
         )
-        # The audit flags every default except not_configured, including Garden's
-        # explicit failure default; runtime tests prove that it stays red.
-        self.assertEqual(9, len(remediation["unsafe_fallback_workflows"]))
+        # The audit flags every default except not_configured, including Chef's
+        # Garden's and Chiaki's failure defaults; runtime tests prove they stay red.
+        self.assertEqual(11, len(remediation["unsafe_fallback_workflows"]))
+        self.assertIn("chef-infra", remediation["unsafe_fallback_workflows"])
+        self.assertIn("chiaki-ng", remediation["unsafe_fallback_workflows"])
         self.assertIn("garden-linux", remediation["unsafe_fallback_workflows"])
         self.assertEqual(["freecad"], remediation["package_manager_missing_decision"])
         self.assertEqual(
@@ -186,7 +195,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             953, len(remediation["unsafe_package_version_fallback"])
         )
         self.assertEqual(
-            961, len(remediation["unsafe_regression_narrative_fallback"])
+            960, len(remediation["unsafe_regression_narrative_fallback"])
         )
         self.assertEqual(
             22, len(remediation["legacy_batch_collector_workflows"])
@@ -226,7 +235,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "24f3b15b042c263111ba609695baf98545141399e6f94715c34cb18008d86fd7",
+            "4a37309f72f293ed3dc09fbc2c23c14a0f61bb892b75b4b7a4fe0a0bcfeb828f",
             digest,
         )
 

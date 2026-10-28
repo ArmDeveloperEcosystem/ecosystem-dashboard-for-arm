@@ -32,6 +32,9 @@ RELEVANT_PATHS = (
     ".github/scripts/verify_action_lock_online.py",
     ".github/scripts/package_workflow_supply_chain.py",
     ".github/scripts/xen_toolstack_smoke.c",
+    ".github/scripts/chef_source_setup.sh",
+    ".github/scripts/chef_source_probe.rb",
+    ".github/scripts/chef_upstream_file_specs.rb",
     ".github/scripts/exact_run_aggregation.py",
     ".github/scripts/package_result_policy.py",
     ".github/scripts/package_observation.py",
@@ -39,6 +42,10 @@ RELEVANT_PATHS = (
     ".github/scripts/promote_package_results.py",
     ".github/scripts/tests/test_package_workflow_supply_chain.py",
     ".github/scripts/tests/test_xen_hypervisor_smoke_workflow.py",
+    ".github/scripts/tests/test_chef_infra_smoke_workflow.py",
+    ".github/scripts/tests/test_chef_source_scope_render.py",
+    ".github/scripts/tests/test_chiaki_ng_smoke_workflow.py",
+    "themes/arm-design-system-hugo-theme/layouts/partials/package-display/row-sub.html",
     ".github/scripts/tests/test_verify_action_lock_online.py",
     ".github/scripts/tests/test_exact_run_aggregation.py",
     ".github/scripts/tests/test_package_observation.py",
@@ -1187,7 +1194,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         transition = lock["hardened_workflow_transition"]
         self.assertEqual(
-            "a67f5c04e286e07cd77989e834566ed14b11df7680c05df2af3c77665fce9ec2",
+            "07a8cabb200137935a1a4266254f9153a0caafb532958869835abff4b5ef0211",
             transition["from_sha256"],
         )
         self.assertNotIn("added_workflows", transition)
@@ -1253,7 +1260,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "07a8cabb200137935a1a4266254f9153a0caafb532958869835abff4b5ef0211",
+            "a43551634278c6ad2f623dcf40fd9502cf4b8c7dd3c2295ccc5c2ede50c04739",
             result["workflow_sha256"],
         )
 
@@ -1508,7 +1515,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "checkout_uses": 983,
                 "permission_exceptions": 4,
                 "topology_sha256": "2934204313856f857817d1885ecc51919e085b79ec3f1ad00617be9a7a432a16",
-                "workflow_sha256": "07a8cabb200137935a1a4266254f9153a0caafb532958869835abff4b5ef0211",
+                "workflow_sha256": "a43551634278c6ad2f623dcf40fd9502cf4b8c7dd3c2295ccc5c2ede50c04739",
             },
             supply_chain.validate_hardening(
                 self.root,
