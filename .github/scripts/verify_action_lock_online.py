@@ -370,7 +370,9 @@ def _reject_json_constant(value: str) -> None:
     raise OnlineEvidenceError(f"action lock contains non-finite JSON value: {value}")
 
 
-def _parse_lock(raw: str, label: str) -> Mapping[str, Any]:
+def _parse_lock(
+    raw: str, label: str, *, authenticated_base: bool = False,
+) -> Mapping[str, Any]:
     if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_LOCK_BYTES:
         raise OnlineEvidenceError(f"{label} exceeds the lock size bound or is not text")
     try:
@@ -401,9 +403,10 @@ def _parse_lock(raw: str, label: str) -> Mapping[str, Any]:
     if not isinstance(actions, list) or not actions:
         raise OnlineEvidenceError(f"{label} has no action entries")
     containers = lock_data.get("containers")
+    # A trusted historical base may predate new containers; candidates may not.
     if (
         not isinstance(containers, list)
-        or len(containers) != supply_chain.EXPECTED_CONTAINER_USES
+        or (not authenticated_base and len(containers) != supply_chain.EXPECTED_CONTAINER_USES)
         or lock_data["container_uses"] != len(containers)
     ):
         raise OnlineEvidenceError(f"{label} has an invalid container inventory")
@@ -453,6 +456,7 @@ def _authenticated_base_lock(
     return _parse_lock(
         runner([*git, "show", f"{base_commit}:{LOCK_RELATIVE_PATH}"]),
         "authenticated base action lock",
+        authenticated_base=True,
     )
 
 

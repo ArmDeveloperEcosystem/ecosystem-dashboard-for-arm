@@ -45,6 +45,8 @@ RELEVANT_PATHS = (
     ".github/scripts/tests/test_chef_infra_smoke_workflow.py",
     ".github/scripts/tests/test_chef_source_scope_render.py",
     ".github/scripts/tests/test_chiaki_ng_smoke_workflow.py",
+    ".github/scripts/tests/test_benchmarksql_smoke_workflow.py",
+    ".github/scripts/tests/test_nvidia_gpu_driver_container_smoke_workflow.py",
     "themes/arm-design-system-hugo-theme/layouts/partials/package-display/row-sub.html",
     ".github/scripts/tests/test_verify_action_lock_online.py",
     ".github/scripts/tests/test_exact_run_aggregation.py",
@@ -1186,7 +1188,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         self.assertEqual([], lock["unresolved_references"])
         self.assertEqual(supply_chain.SOURCE_COMMIT, lock["source_commit"])
         self.assertEqual(1131, lock["external_uses"])
-        self.assertEqual(9, lock["container_uses"])
+        self.assertEqual(10, lock["container_uses"])
         self.assertEqual(15, len(lock["actions"]))
         self.assertRegex(
             lock["migration_parent_workflow_sha256"],
@@ -1194,7 +1196,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         transition = lock["hardened_workflow_transition"]
         self.assertEqual(
-            "07a8cabb200137935a1a4266254f9153a0caafb532958869835abff4b5ef0211",
+            "a43551634278c6ad2f623dcf40fd9502cf4b8c7dd3c2295ccc5c2ede50c04739",
             transition["from_sha256"],
         )
         self.assertNotIn("added_workflows", transition)
@@ -1203,7 +1205,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             transition["to_sha256"],
         )
         self.assertTrue(transition["reason"].strip())
-        self.assertEqual(9, len(lock["containers"]))
+        self.assertEqual(10, len(lock["containers"]))
         for entry in lock["actions"]:
             self.assertTrue(entry["github_api_repository_confirmed"])
             self.assertTrue(entry["github_api_commit_confirmed"])
@@ -1260,7 +1262,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "a43551634278c6ad2f623dcf40fd9502cf4b8c7dd3c2295ccc5c2ede50c04739",
+            "25f64d1e12d812ed21af8878b4ac32b284fdf2675fa6f98cd06025e5c62f3b97",
             result["workflow_sha256"],
         )
 
@@ -1498,7 +1500,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
     def test_every_container_is_digest_pinned(self) -> None:
         lock = supply_chain.load_lock(self.root)
         containers = supply_chain.container_lock_by_workflow(lock)
-        self.assertEqual(9, len(containers))
+        self.assertEqual(10, len(containers))
         for relative, entry in containers.items():
             text = (self.root / relative).read_text(encoding="utf-8")
             self.assertIn(entry["resolved_ref"], text)
@@ -1510,12 +1512,12 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                 "registered_workflows": 961,
                 "batch_workflows": 22,
                 "external_uses": 1131,
-                "container_uses": 9,
+                "container_uses": 10,
                 "unique_original_refs": 15,
                 "checkout_uses": 983,
                 "permission_exceptions": 4,
-                "topology_sha256": "2934204313856f857817d1885ecc51919e085b79ec3f1ad00617be9a7a432a16",
-                "workflow_sha256": "a43551634278c6ad2f623dcf40fd9502cf4b8c7dd3c2295ccc5c2ede50c04739",
+                "topology_sha256": "bac13e39284e93da9df3ea67922d6ed1c3d04434dfcd5a79cdf5577acd1a85ce",
+                "workflow_sha256": "25f64d1e12d812ed21af8878b4ac32b284fdf2675fa6f98cd06025e5c62f3b97",
             },
             supply_chain.validate_hardening(
                 self.root,
