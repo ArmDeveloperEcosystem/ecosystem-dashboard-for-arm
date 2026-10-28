@@ -13,15 +13,16 @@ optional_info:
     support_caveats_inline: true
     support_caveats: >-
         Version 0.0.81 on Linux Arm64 requires Node.js 22.12+, bubblewrap, socat,
-        ripgrep, seccomp, and working nested user, PID, mount, and network namespaces.
-        Ubuntu 24.04 AppArmor policy can block the required user namespaces.
-        Historical minimum 0.0.1 (2025-10-20) is the first published release,
-        not a deployment recommendation.
+        ripgrep, seccomp, and permission to create the required Linux namespaces.
+        Ubuntu 24.04 AppArmor policy can restrict user namespaces.
     getting_started_resources:
         official_docs: https://github.com/anthropics/sandbox-runtime/blob/v0.0.81/README.md
 optional_hidden_info:
     release_notes__supported_minimum: https://www.npmjs.com/package/@anthropic-ai/sandbox-runtime/v/0.0.1
     other_info: >-
+        Required namespaces include nested user, PID, mount, and network namespaces.
+        Historical minimum 0.0.1 (2025-10-20) is the first published release,
+        not a deployment recommendation.
         SPDX Apache-2.0: https://github.com/anthropics/sandbox-runtime/blob/v0.0.81/LICENSE .
         Initial source: https://github.com/anthropics/sandbox-runtime/tree/b483c6113b5a7f05d32eec16ba61734ce9bf597c .
         Arm evidence by v0.0.38: https://github.com/anthropics/sandbox-runtime/blob/v0.0.38/README.md .
