@@ -11,18 +11,13 @@ supported_minimum_version:
 optional_info:
     homepage_url: https://firecracker-microvm.github.io/
     support_caveats: >-
-        Version v0.17.0 (2019/06/14) introduced alpha aarch64 support, not
-        production-ready support. Guest execution requires readable/writable
-        /dev/kvm, a compatible Arm64 virtualization host, and compatible host
-        and guest kernels; upstream validated combinations use 4 KiB pages.
-        An aarch64 CPU alone is insufficient: virtualized hosts must expose
-        KVM to the process. Running the pre-boot API does not demonstrate
-        guest execution. Production deployments should use the matching
-        jailer and follow upstream host, guest-kernel, and isolation guidance.
+        Requires an Arm64 Linux host with read/write access to /dev/kvm and
+        compatible host and guest kernels. Virtual machines must expose
+        hardware virtualization.
     alternative_options:
     getting_started_resources:
         official_docs: https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md
-        arm_content:
+        arm_content: https://learn.arm.com/learning-paths/servers-and-cloud-computing/firecracker-ai-sandbox/2-prepare-the-arm-host/
         partner_content:
     arm_recommended_minimum_version:
         version_number:
@@ -35,6 +30,13 @@ optional_hidden_info:
     release_notes__supported_minimum: https://github.com/firecracker-microvm/firecracker/releases/tag/v0.17.0
     release_notes__recommended_minimum:
     other_info: >-
+        Version v0.17.0 (2019/06/14) introduced alpha aarch64 support, not
+        production-ready support. Upstream validated kernel combinations use
+        4 KiB pages. An aarch64 CPU alone is insufficient: virtualized hosts
+        must expose KVM to the process. Running the pre-boot API does not
+        demonstrate guest execution. Production deployments should use the
+        matching jailer and follow upstream host, guest-kernel, and isolation
+        guidance.
         Historical alpha introduction:
         https://github.com/firecracker-microvm/firecracker/releases/tag/v0.17.0
         Modern smoke baseline: v1.17.0, published 2026/09/10,
