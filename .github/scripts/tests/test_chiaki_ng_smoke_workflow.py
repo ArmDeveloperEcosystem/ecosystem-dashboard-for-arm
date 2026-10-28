@@ -50,7 +50,7 @@ import json, os, sys
 from pathlib import Path
 args = sys.argv[1:]
 url = next(a for a in args if a.startswith("https://"))
-api = url.startswith("https://api.github.com/repos/streetpea/chiaki-ng/releases/tags/")
+api = url.startswith("https://api.github.com/repos/chiaki-ng/chiaki-ng/releases/tags/")
 with open(os.environ["CALLS"], "a") as calls:
     calls.write(json.dumps({"kind": "metadata" if api else "asset", "url": url}) + "\n")
 if api:
@@ -60,14 +60,16 @@ if api:
     if os.environ.get("API_ERROR"):
         print("curl: (22) The requested URL returned error: " + os.environ["API_ERROR"], file=sys.stderr)
         sys.exit(22)
-    if os.environ.get("BAD_JSON"):
+    if os.environ.get("API_REDIRECT"):
+        print(json.dumps({"message": "Moved Permanently", "url": "https://example.invalid/redirect"}))
+    elif os.environ.get("BAD_JSON"):
         print("not JSON")
     else:
         assets = [] if os.environ.get("MISSING_ASSET") else [{"name": "chiaki-ng-arm64.AppImage",
-                  "browser_download_url": "https://github.com/streetpea/chiaki-ng/releases/download/fixture/chiaki-ng-arm64.AppImage"}]
+                  "browser_download_url": "https://github.com/chiaki-ng/chiaki-ng/releases/download/fixture/chiaki-ng-arm64.AppImage"}]
         print(json.dumps({"assets": assets}))
 else:
-    assert url == "https://github.com/streetpea/chiaki-ng/releases/download/fixture/chiaki-ng-arm64.AppImage"
+    assert url == "https://github.com/chiaki-ng/chiaki-ng/releases/download/fixture/chiaki-ng-arm64.AppImage"
     assert "-H" not in args and "--location-trusted" not in args
     assert "GH_TOKEN" not in os.environ and "GITHUB_TOKEN" not in os.environ
     if os.environ.get("ASSET_ERROR"):
@@ -145,7 +147,7 @@ else:
     def run_candidate(self, **environment):
         inputs = {name: str(data.get("default", "")) for name, data in self.action["inputs"].items()}
         inputs.update({k: self.render(str(v), self.values) for k, v in self.steps["test6"]["with"].items()})
-        inputs.update(baseline_version="1.9.3", github_repo="streetpea/chiaki-ng",
+        inputs.update(baseline_version="1.9.3", github_repo="chiaki-ng/chiaki-ng",
                       lane_kind=self.job["env"]["LANE_KIND"],
                       next_version_override="1.10.0", candidate_tag_override="v1.10.0")
         # Exercise the real composite/probe with a fixed offline candidate, not tag discovery.
@@ -159,6 +161,7 @@ else:
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def test_permissions_triggers_and_credentials_are_step_scoped(self):
+        self.assertEqual("chiaki-ng/chiaki-ng", self.job["env"]["GITHUB_REPO"])
         self.assertEqual({"contents": "read"}, self.workflow["permissions"])
         self.assertIn("workflow_dispatch", self.workflow[True])
         self.assertIn("workflow_call", self.workflow[True])
@@ -185,7 +188,7 @@ else:
         self.assertEqual("limited_cpu_smoke_validated", fields["decision"])
 
     def test_http_errors_and_missing_metadata_never_download_or_pass(self):
-        for failure in ({"API_ERROR": "401"}, {"API_ERROR": "403"}, {"BAD_JSON": "1"}, {"MISSING_ASSET": "1"}, {"GH_TOKEN": ""}):
+        for failure in ({"API_ERROR": "401"}, {"API_ERROR": "403"}, {"API_REDIRECT": "1"}, {"BAD_JSON": "1"}, {"MISSING_ASSET": "1"}, {"GH_TOKEN": ""}):
             for name in ("test5", "test6"):
                 with self.subTest(step=name, failure=failure):
                     before = len(self.calls())
