@@ -175,6 +175,12 @@ else:
         self.assertFalse(self.steps["test6"]["with"].get("defer_on_limited_cpu_probe_failure", False))
         self.assertEqual("Test 6 - Regression Validation", self.steps["test6"]["name"])
 
+    def test_baseline_metadata_matches_the_unchanged_dashboard_entry(self):
+        process, fields = self.run_step("test2", {
+            "steps.expectations.outputs.content_page": str(ROOT / "content/linux/opensource_packages/chiaki-ng.md")})
+        self.assertEqual(0, process.returncode, process.stdout + process.stderr)
+        self.assertEqual("passed", fields["status"])
+
     def test_baseline_and_real_composite_authenticate_only_metadata(self):
         for name in ("test5", "test6"):
             with self.subTest(step=name):
