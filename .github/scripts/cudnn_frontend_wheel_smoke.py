@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ast
 import compileall
+import copy
 from email.parser import BytesParser
 import hashlib
 import io
@@ -13,6 +14,7 @@ import os
 from pathlib import Path, PurePosixPath
 import platform
 import re
+import signal
 import stat
 import struct
 import subprocess
@@ -49,18 +51,26 @@ def download(url: str, host: str, maximum: int) -> bytes:
             checked_url(newurl, host)
             return super().redirect_request(req, fp, code, msg, headers, newurl)
 
-    started = time.monotonic()
-    opener = build_opener(SameOriginRedirect())
-    with opener.open(checked_url(url, host), timeout=30) as response:
-        checked_url(response.url, host)
-        chunks = []
-        size = 0
-        while chunk := response.read(128 * 1024):
-            size += len(chunk)
-            if size > maximum or time.monotonic() - started > 120:
-                raise ValueError("Artifact download exceeded its size or time limit")
-            chunks.append(chunk)
-    return b"".join(chunks)
+    def timeout(signum, frame):
+        raise TimeoutError("Artifact download exceeded its time limit")
+
+    previous_handler = signal.signal(signal.SIGALRM, timeout)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 120)
+    try:
+        opener = build_opener(SameOriginRedirect())
+        with opener.open(checked_url(url, host), timeout=30) as response:
+            checked_url(response.url, host)
+            chunks = []
+            size = 0
+            while chunk := response.read(128 * 1024):
+                size += len(chunk)
+                if size > maximum:
+                    raise ValueError("Artifact download exceeded its size limit")
+                chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def wheel_tags(filename: str, version: str, python_tag: str, glibc: tuple[int, int]) -> set[str]:
@@ -133,7 +143,7 @@ def unpack_verified_wheel(raw: bytes, wheel: dict, version: str, destination: Pa
             if (not name or item.orig_filename != item.filename or "\\" in name or
                     ":" in name or any(part in {"", ".", ".."} for part in parts) or
                     name in names or (stat.S_IFMT(mode) not in {0, stat.S_IFREG, stat.S_IFDIR}) or
-                    item.flag_bits & 1):
+                    item.flag_bits & 1 or item.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}):
                 raise ValueError("Wheel contains an unsafe or duplicate archive member")
             names.add(name)
             if not item.is_dir():
@@ -141,26 +151,49 @@ def unpack_verified_wheel(raw: bytes, wheel: dict, version: str, destination: Pa
         for name in names:
             if any(parent.as_posix() in files for parent in PurePosixPath(name).parents if parent.as_posix() != "."):
                 raise ValueError("Wheel contains conflicting file and directory paths")
-        dist_info = f"nvidia_cudnn_frontend-{version}.dist-info"
-        metadata_names = [name for name in files if name.endswith(".dist-info/METADATA")]
-        if metadata_names != [f"{dist_info}/METADATA"]:
-            raise ValueError("Wheel distribution identity is ambiguous or incorrect")
-        metadata = BytesParser().parsebytes(archive.read(metadata_names[0]))
-        for field, expected in (("Name", PROJECT), ("Version", version)):
-            if metadata.get_all(field) != [expected]:
-                raise ValueError(f"Wheel METADATA {field} does not match the selected release")
-        wheel_metadata = BytesParser().parsebytes(archive.read(f"{dist_info}/WHEEL"))
-        tags = wheel_metadata.get_all("Tag", [])
-        if (set(tags) != wheel["tags"] or len(tags) != len(set(tags)) or
-                wheel_metadata.get_all("Root-Is-Purelib") != ["false"]):
-            raise ValueError("Wheel metadata tags contradict its Arm64 binary filename")
+        # Stream even metadata: ZIP sizes are untrusted and read() may inflate unboundedly.
+        expanded = 0
         for item in members:
             target = destination.joinpath(*item.filename.rstrip("/").split("/"))
             if item.is_dir():
                 target.mkdir(parents=True, exist_ok=True)
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(archive.read(item))
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            actual = 0
+            # Read one byte beyond the declaration so CPython cannot hide a
+            # short overrun by truncating the output before its CRC check.
+            probe_info = copy.copy(item)
+            probe_info.file_size += 1
+            with archive.open(probe_info) as source, target.open("xb") as output:
+                while chunk := source.read(64 * 1024):
+                    actual += len(chunk)
+                    expanded += len(chunk)
+                    if actual > item.file_size or expanded > MAX_EXPANDED_BYTES:
+                        raise ValueError("Actual wheel expansion exceeds its declared size or limit")
+                    output.write(chunk)
+                # CPython ZipExtFile truncates at declared size even before deflate EOF.
+                # Fail closed on that contradiction instead of trusting a prefix CRC.
+                if (getattr(source, "_compress_left", None) != 0 or
+                        (item.compress_type == zipfile.ZIP_DEFLATED and
+                         (not source._decompressor.eof or source._decompressor.unused_data))):
+                    raise ValueError("Wheel member has an incomplete or trailing compressed stream")
+            if actual != item.file_size:
+                raise ValueError("Actual wheel member size differs from its declaration")
+        dist_info = f"nvidia_cudnn_frontend-{version}.dist-info"
+        metadata_names = [name for name in files if name.endswith(".dist-info/METADATA")]
+        if metadata_names != [f"{dist_info}/METADATA"]:
+            raise ValueError("Wheel distribution identity is ambiguous or incorrect")
+        if any((destination / dist_info / name).stat().st_size > 1024 * 1024 for name in ("METADATA", "WHEEL")):
+            raise ValueError("Wheel metadata exceeds its size limit")
+        metadata = BytesParser().parsebytes((destination / metadata_names[0]).read_bytes())
+        for field, expected in (("Name", PROJECT), ("Version", version)):
+            if metadata.get_all(field) != [expected]:
+                raise ValueError(f"Wheel METADATA {field} does not match the selected release")
+        wheel_metadata = BytesParser().parsebytes((destination / dist_info / "WHEEL").read_bytes())
+        tags = wheel_metadata.get_all("Tag", [])
+        if (set(tags) != wheel["tags"] or len(tags) != len(set(tags)) or
+                wheel_metadata.get_all("Root-Is-Purelib") != ["false"]):
+            raise ValueError("Wheel metadata tags contradict its Arm64 binary filename")
 
 
 def validate_payload(root: Path, version: str) -> int:
@@ -170,11 +203,17 @@ def validate_payload(root: Path, version: str) -> int:
     if not header.is_file() or "#include <cudnn.h>" not in aggregate.read_text(encoding="utf-8"):
         raise ValueError("cuDNN Frontend headers or cuDNN library boundary are missing")
     tree = ast.parse((source / "__init__.py").read_text(encoding="utf-8"))
-    versions = [node.value.value for node in tree.body if isinstance(node, ast.Assign)
-                and any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets)
-                and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)]
-    if versions != [version]:
+    assignments = [node for node in tree.body if isinstance(node, ast.Assign)
+                   and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                   and node.targets[0].id == "__version__"]
+    writes = [node for node in ast.walk(tree) if isinstance(node, ast.Name)
+              and node.id == "__version__" and isinstance(node.ctx, (ast.Store, ast.Del))]
+    if (len(assignments) != 1 or len(writes) != 1 or
+            not isinstance(assignments[0].value, ast.Constant) or assignments[0].value.value != version):
         raise ValueError("Python package version does not match the selected release")
+    extension = source / f"_compiled_module.cpython-{sys.version_info.major}{sys.version_info.minor}-aarch64-linux-gnu.so"
+    if not extension.is_file():
+        raise ValueError("Wheel is missing the required CPython AArch64 extension")
     binaries = list(source.rglob("*.so"))
     if not binaries:
         raise ValueError("Wheel contains no binary Python extension")
@@ -240,7 +279,9 @@ def main() -> int:
                           comparison=f"Baseline {args.baseline_version} is source preflight; candidate is the official extracted wheel payload {wheel['filename']} SHA-256 {wheel['sha256']}. No Python extension import, cuDNN library load or GPU execution was tested.")
             print(f"CUDNN_FRONTEND_WHEEL_PREFLIGHT_OK version={version} arch=aarch64 sha256={wheel['sha256']} python_files={count}")
     except Exception as error:
-        fields["regression_result"] = f"Official Arm wheel payload preflight failed: {error}"
+        fields.update(status="failed", decision="limited_cpu_smoke_failed", next_installed_version="not_installed",
+                      regression_result=f"Official Arm wheel payload preflight failed: {error}",
+                      comparison="Candidate validation failed; no successful candidate execution is claimed.")
         print(fields["regression_result"], file=sys.stderr)
     fields["duration"] = str(int(time.monotonic() - started))
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
