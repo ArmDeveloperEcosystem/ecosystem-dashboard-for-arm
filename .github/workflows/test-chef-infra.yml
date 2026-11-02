@@ -23,7 +23,7 @@ on:
         description: Overall package run status
         value: ${{ jobs.test-chef-infra.outputs.run_status }}
       badge_status:
-        description: Badge status derived from core baseline checks
+        description: Badge status for all required source checks
         value: ${{ jobs.test-chef-infra.outputs.badge_status }}
       core_failed:
         description: Number of failed baseline core checks (Tests 1-5)
@@ -59,7 +59,7 @@ on:
         description: Next candidate version selected for regression validation
         value: ${{ jobs.test-chef-infra.outputs.regression_latest_version }}
       regression_next_installed_version:
-        description: Candidate version reported by installed next artifact
+        description: Candidate version loaded from the isolated source bundle
         value: ${{ jobs.test-chef-infra.outputs.regression_next_installed_version }}
       regression_policy:
         description: Regression applicability policy classification
@@ -82,27 +82,29 @@ on:
 jobs:
   test-chef-infra:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
     env:
       CHEF_VERSION: "18.8.54"
       CHEF_NEXT_VERSION: "18.10.17"
-    
+      CHEF_WORK_ROOT: ${{ github.workspace }}/chef-source-validation
+      GEM_HOME: ${{ github.workspace }}/chef-source-tools
     outputs:
       contract_version: "2.0"
       package_slug: ${{ steps.metadata.outputs.package_slug }}
-      package_name: 'Chef Infra'
-      package_version: ${{ steps.version.outputs.version || 'unknown' }}
+      package_name: 'Chef Infra (source file-resource API only)'
+      package_version: ${{ steps.test1.outputs.version || 'unknown' }}
       run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
       badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
-      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '5' }}
       tests_passed: ${{ steps.summary.outputs.passed || '0' }}
-      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '6' }}
       tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
       duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
-      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
-      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
-      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
-      regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+      regression_status: ${{ steps.test6.outputs.status || 'failed' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'next_regression_failed' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || 'Source API validation did not complete.' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'No completed source API comparison; not vendor installer or CLI coverage.' }}
+      regression_current_version: ${{ steps.test6.outputs.current_version || steps.test1.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
       regression_policy: "applicable"
@@ -116,284 +118,163 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # original: actions/checkout@v4
         with:
           persist-credentials: false
-      
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          echo "package_slug=chef-infra" >> "$GITHUB_OUTPUT"
-          echo "dashboard_link=/opensource_packages/chef-infra" >> "$GITHUB_OUTPUT"
-      - name: Install Dependencies
+          {
+            echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "package_slug=chef-infra"
+            echo "dashboard_link=/opensource_packages/chef-infra"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo '## Chef Infra source API validation'
+            echo 'Scope: pinned upstream source, real file-resource API operations and applicable upstream file specs. Not vendor installer, CLI equivalence, or all Chef tests.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Install native source build prerequisites
+        id: dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y curl wget
-      
-      - name: Install Chef Infra Client
+          set -euo pipefail
+          bash .github/actions/apt-bootstrap/bootstrap.sh --packages "ruby-full ruby-dev build-essential pkg-config libffi-dev libssl-dev zlib1g-dev libarchive-dev libyaml-dev cmake git file"
+          gem install bundler --version 2.3.27 --no-document
+          echo "$GEM_HOME/bin" >> "$GITHUB_PATH"
+      - name: Prepare pinned baseline source and frozen dependencies
         id: install
-        run: |
-          set -euo pipefail
-          echo "Installing Chef Infra Client..."
-          CURRENT_VERSION="${CHEF_VERSION}"
-          echo "baseline_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
-          CHEF_DEB_URL="https://packages.chef.io/files/stable/chef/${CURRENT_VERSION}/ubuntu/24.04/chef_${CURRENT_VERSION}-1_arm64.deb"
-          wget -q -O /tmp/chef-infra-client.deb "$CHEF_DEB_URL"
-          sudo dpkg -i /tmp/chef-infra-client.deb >/tmp/chef-install.log 2>&1 || {
-            cat /tmp/chef-install.log
-            sudo apt-get install -f -y
-            sudo dpkg -i /tmp/chef-infra-client.deb
-          }
-
-          if command -v chef-client >/dev/null 2>&1; then
-            echo "Chef Infra Client installed successfully"
-            echo "install_status=success" >> "$GITHUB_OUTPUT"
-          else
-            echo "Failed to install Chef Infra Client"
-            echo "install_status=failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-      
-      - name: Get Chef version
-        id: version
-        run: |
-          set -euo pipefail
-          VERSION=$(timeout 10s chef-client --version 2>&1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
-          if [ -z "$VERSION" ]; then
-            VERSION="${{ steps.install.outputs.baseline_version || 'unknown' }}"
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected Chef version: $VERSION"
-      
-      - name: Test 1 - Check Binary
+        run: bash .github/scripts/chef_source_setup.sh baseline
+      - name: Test 1 - Exact source identity and loaded version
         id: test1
-        continue-on-error: true
+        if: always()
+        env:
+          CHEF_SETUP_OUTCOME: ${{ steps.install.outcome }}
         run: |
-          START_TIME=$(date +%s)
-          
-          if which chef-client; then
-            echo "✓ chef-client binary found"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ chef-client binary not found"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-            fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 2 - Run Help
+          source .github/scripts/chef_source_setup.sh baseline
+          chef_start_check
+          chef_require_setup
+          bundle _2.3.27_ exec ruby "$GITHUB_WORKSPACE/.github/scripts/chef_source_probe.rb" identity
+      - name: Test 2 - Ohai source API platform detection
         id: test2
-        continue-on-error: true
+        if: always()
+        env:
+          CHEF_SETUP_OUTCOME: ${{ steps.install.outcome }}
         run: |
-          START_TIME=$(date +%s)
-          
-          if timeout 10s chef-client --help >/dev/null 2>&1; then
-             echo "✓ chef-client help works"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ chef-client help failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-      
-      - name: Test 3 - Check Ohai
+          source .github/scripts/chef_source_setup.sh baseline
+          chef_start_check
+          chef_require_setup
+          bundle _2.3.27_ exec ruby "$GITHUB_WORKSPACE/.github/scripts/chef_source_probe.rb" ohai
+      - name: Test 3 - Real file-resource API operations
         id: test3
-        continue-on-error: true
+        if: always()
+        env:
+          CHEF_SETUP_OUTCOME: ${{ steps.install.outcome }}
         run: |
-          START_TIME=$(date +%s)
-          
-          # Ohai is installed with Chef
-          if which ohai && timeout 10s ohai --version >/dev/null 2>&1; then
-             echo "✓ ohai binary found and works"
-             echo "status=passed" >> $GITHUB_OUTPUT
-          else
-             echo "✗ ohai check failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-      - name: Test 4 - Local Mode Run
+          source .github/scripts/chef_source_setup.sh baseline
+          chef_start_check
+          chef_require_setup
+          bundle _2.3.27_ exec ruby "$GITHUB_WORKSPACE/.github/scripts/chef_source_probe.rb" resource
+      - name: Test 4 - Applicable upstream functional file specs
         id: test4
-        continue-on-error: true
+        if: always()
+        env:
+          CHEF_SETUP_OUTCOME: ${{ steps.install.outcome }}
         run: |
-          set -euo pipefail
-          START_TIME=$(date +%s)
-          
-          cat > hello.rb << 'EOF'
-          file '/tmp/hello.txt' do
-            content 'Hello, World!'
-          end
-          EOF
-          
-          if sudo env CHEF_LICENSE=accept-silent timeout 120s chef-apply hello.rb >/tmp/chef-apply.log 2>&1; then
-             if grep -q "Hello, World!" /tmp/hello.txt; then
-                echo "✓ chef-client local run successful"
-                echo "status=passed" >> $GITHUB_OUTPUT
-            else
-                echo "✗ File content mismatch"
-                echo "status=failed" >> $GITHUB_OUTPUT
-                exit 1
-            fi
-          else
-             echo "✗ chef-client local run failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
-            fi
-          
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
-      - name: Test 5 - Architecture Verification
+          source .github/scripts/chef_source_setup.sh baseline
+          chef_start_check
+          chef_require_setup
+          bundle _2.3.27_ exec ruby "$GITHUB_WORKSPACE/.github/scripts/chef_upstream_file_specs.rb"
+          chef_assert_source
+      - name: Test 5 - Native Arm64 Ruby and dependency objects
         id: test5
-        continue-on-error: true
+        if: always()
+        env:
+          CHEF_SETUP_OUTCOME: ${{ steps.install.outcome }}
         run: |
-          START_TIME=$(date +%s)
-          # Functional Validation
-          ARCH=$(uname -m)
-
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
-
+          source .github/scripts/chef_source_setup.sh baseline
+          chef_start_check
+          chef_require_setup
+          bundle _2.3.27_ exec ruby "$GITHUB_WORKSPACE/.github/scripts/chef_source_probe.rb" native
       - name: Test 6 - Regression Validation
         id: test6
         if: always()
+        env:
+          BASELINE_VERSION: ${{ steps.test1.outputs.version || 'unknown' }}
+          BASELINE_READY: ${{ steps.dependencies.outcome == 'success' && steps.install.outcome == 'success' && steps.test1.outcome == 'success' && steps.test1.outputs.status == 'passed' && steps.test2.outcome == 'success' && steps.test2.outputs.status == 'passed' && steps.test3.outcome == 'success' && steps.test3.outputs.status == 'passed' && steps.test4.outcome == 'success' && steps.test4.outputs.status == 'passed' && steps.test5.outcome == 'success' && steps.test5.outputs.status == 'passed' }}
         run: |
-          set -euo pipefail
-          START_TIME=$(date +%s)
-          CURRENT_VERSION="${{ steps.version.outputs.version || steps.install.outputs.baseline_version || env.CHEF_VERSION }}"
-          LATEST_VERSION="${CHEF_NEXT_VERSION}"
-          NEXT_INSTALLED_VERSION="not_installed"
-          STATUS="failed"
-          DECISION="next_install_failed"
-          RESULT="Next version installation failed on Arm64"
-          COMPARISON="Current pinned version ${CURRENT_VERSION} passed Tests 1-5, but next candidate ${LATEST_VERSION} did not install/report cleanly on Arm64."
-
-          NEXT_DEB_URL="https://packages.chef.io/files/stable/chef/${LATEST_VERSION}/ubuntu/24.04/chef_${LATEST_VERSION}-1_arm64.deb"
-          if wget -q -O /tmp/chef-infra-next.deb "$NEXT_DEB_URL"; then
-            if sudo dpkg -i /tmp/chef-infra-next.deb >/tmp/chef-next-install.log 2>&1 || { sudo apt-get install -f -y >/tmp/chef-next-fix.log 2>&1 && sudo dpkg -i /tmp/chef-infra-next.deb >/tmp/chef-next-install-retry.log 2>&1; }; then
-              NEXT_INSTALLED_VERSION=$(timeout 10s chef-client --version 2>&1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
-              if [ "$NEXT_INSTALLED_VERSION" = "$LATEST_VERSION" ]; then
-                STATUS="passed"
-                DECISION="next_install_validated"
-                RESULT="Next version installed successfully on Arm64"
-                COMPARISON="Current pinned version ${CURRENT_VERSION} passed Tests 1-5 in this run. The next candidate ${LATEST_VERSION} downloaded and installed successfully on Arm64, and chef-client reported ${NEXT_INSTALLED_VERSION}."
-              fi
-            fi
+          source .github/scripts/chef_source_setup.sh candidate
+          CHEF_REGRESSION=true
+          chef_start_check
+          if [ "$BASELINE_READY" != true ]; then
+            CHEF_TEST_STATUS=skipped
+            CHEF_DECISION=baseline_failed
+            CHEF_RESULT='Candidate not executed because required baseline source checks failed.'
+            CHEF_COMPARISON='Baseline source API validation failed; no successful regression comparison is claimed.'
+            exit 0
           fi
-
-          echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
-          echo "decision=${DECISION}" >> "$GITHUB_OUTPUT"
-          echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${LATEST_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=${NEXT_INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "regression_result=${RESULT}" >> "$GITHUB_OUTPUT"
-          echo "comparison=${COMPARISON}" >> "$GITHUB_OUTPUT"
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-
-          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
-          if [ "$last_status" = "failed" ]; then
-            exit 1
-          fi
+          chef_setup
+          chef_require_setup
+          bundle _2.3.27_ exec ruby "$GITHUB_WORKSPACE/.github/scripts/chef_source_probe.rb" all
+          CHEF_NEXT_OBSERVED=$(cat "$EVIDENCE_DIR/source-version.txt")
+          test "$CHEF_NEXT_OBSERVED" = "$CHEF_NEXT_VERSION"
+          bundle _2.3.27_ exec ruby "$GITHUB_WORKSPACE/.github/scripts/chef_upstream_file_specs.rb"
+          chef_assert_source
+          CHEF_RESULT="Candidate source API identity, Ohai, file operations, native objects and upstream specs passed: $(cat "$EVIDENCE_DIR/spec-summary.txt")."
+          CHEF_COMPARISON="Baseline $BASELINE_VERSION: $(cat "$CHEF_WORK_ROOT/baseline/evidence/spec-summary.txt"). Candidate $CHEF_NEXT_OBSERVED: $(cat "$EVIDENCE_DIR/spec-summary.txt"). Source file-resource API coverage only; filtered examples were not executed; vendor CLI and .deb distributions were not tested."
+          CHEF_DECISION=validated_next_release
       - name: Calculate test summary
-        if: always()
         id: summary
+        if: always()
+        env:
+          T1: ${{ steps.test1.outputs.status }}:${{ steps.test1.outcome }}:${{ steps.test1.outputs.duration || '0' }}
+          T2: ${{ steps.test2.outputs.status }}:${{ steps.test2.outcome }}:${{ steps.test2.outputs.duration || '0' }}
+          T3: ${{ steps.test3.outputs.status }}:${{ steps.test3.outcome }}:${{ steps.test3.outputs.duration || '0' }}
+          T4: ${{ steps.test4.outputs.status }}:${{ steps.test4.outcome }}:${{ steps.test4.outputs.duration || '0' }}
+          T5: ${{ steps.test5.outputs.status }}:${{ steps.test5.outcome }}:${{ steps.test5.outputs.duration || '0' }}
+          T6: ${{ steps.test6.outputs.status }}:${{ steps.test6.outcome }}:${{ steps.test6.outputs.duration || '0' }}
+          DECISION: ${{ steps.test6.outputs.decision }}
+          SETUP_OK: ${{ steps.dependencies.outcome == 'success' && steps.install.outcome == 'success' }}
         run: |
           set -euo pipefail
-          PASSED=0
-          FAILED=0
-          CORE_FAILED=0
-          TOTAL_DURATION=0
-
-          # Check Binary
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
+          PASSED=0 FAILED=0 SKIPPED=0 CORE_FAILED=0 TOTAL_DURATION=0
+          INDEX=0
+          for CHECK in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
+            INDEX=$((INDEX + 1))
+            IFS=: read -r STATUS OUTCOME DURATION <<< "$CHECK"
+            if [ "$STATUS" = passed ] && [ "$OUTCOME" = success ]; then
+              PASSED=$((PASSED + 1))
+            elif [ "$INDEX" -eq 6 ] && [ "$STATUS" = skipped ] && [ "$OUTCOME" = success ] && [ "$DECISION" = baseline_failed ] && [ "$CORE_FAILED" -gt 0 ]; then
+              SKIPPED=$((SKIPPED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              if [ "$INDEX" -le 5 ]; then CORE_FAILED=$((CORE_FAILED + 1)); fi
+            fi
+            if [[ "$DURATION" =~ ^[0-9]+$ ]]; then TOTAL_DURATION=$((TOTAL_DURATION + 10#$DURATION)); fi
+          done
+          {
+            echo "passed=$PASSED"
+            echo "failed=$FAILED"
+            echo "skipped=$SKIPPED"
+            echo "core_failed=$CORE_FAILED"
+            echo "duration=$TOTAL_DURATION"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$PASSED" -eq 6 ] && [ "$SETUP_OK" = true ] && [ "$DECISION" = validated_next_release ]; then
+            echo 'overall_status=success' >> "$GITHUB_OUTPUT"
+            echo 'badge_status=passing' >> "$GITHUB_OUTPUT"
           else
-            FAILED=$((FAILED + 1))
-            CORE_FAILED=$((CORE_FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
-
-          # Run Help
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-            CORE_FAILED=$((CORE_FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
-
-          # Check Ohai
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-            CORE_FAILED=$((CORE_FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Local Mode Run
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-            CORE_FAILED=$((CORE_FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Architecture Verification
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-            CORE_FAILED=$((CORE_FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-          echo "core_failed=$CORE_FAILED" >> $GITHUB_OUTPUT
-
-          if [ $CORE_FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
-          else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
-          fi
-
-          if [ $CORE_FAILED -ne 0 ]; then
+            echo 'overall_status=failure' >> "$GITHUB_OUTPUT"
+            echo 'badge_status=failing' >> "$GITHUB_OUTPUT"
             exit 1
           fi
-      - name: Create test summary
+      - name: Report source validation scope and outcomes
         if: always()
+        env:
+          VERSION: ${{ steps.test1.outputs.version || 'unknown' }}
+          RUN_STATUS: ${{ steps.summary.outputs.overall_status || 'failure' }}
+          PASSED: ${{ steps.summary.outputs.passed || '0' }}
+          FAILED: ${{ steps.summary.outputs.failed || '6' }}
+          SKIPPED: ${{ steps.summary.outputs.skipped || '0' }}
+          COMPARISON: ${{ steps.test6.outputs.comparison || 'Source comparison did not complete.' }}
         run: |
-          echo "## Chef Infra Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check Binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Run Help: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check Ohai: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Local Mode Run: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          {
+            printf '\nBaseline source version: %s; outcome: %s.\n' "$VERSION" "$RUN_STATUS"
+            printf 'Six workflow checks: %s passed, %s failed, %s skipped.\n' "$PASSED" "$FAILED" "$SKIPPED"
+            printf '%s\n' "$COMPARISON"
+            printf 'Detailed source identity, native objects, filesystem assertions and RSpec selection JSON are retained in job logs. No vendor CLI or installer equivalence is claimed.\n'
+          } >> "$GITHUB_STEP_SUMMARY"

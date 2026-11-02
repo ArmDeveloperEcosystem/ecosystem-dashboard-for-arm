@@ -38,7 +38,7 @@ EXACT_RUN_SPEC.loader.exec_module(exact_run)
 EXPECTED_BATCHES = 22
 EXPECTED_WORKFLOWS = 961
 EXPECTED_EXTERNAL_USES = 1131
-EXPECTED_CONTAINER_USES = 9
+EXPECTED_CONTAINER_USES = 10
 REVIEWED_ADDED_WORKFLOWS = (".github/workflows/test-xen-hypervisor.yml",)
 SINGLE_MANIFEST_MEDIA_TYPES = frozenset({
     "application/vnd.oci.image.manifest.v1+json",

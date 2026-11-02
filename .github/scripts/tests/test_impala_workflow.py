@@ -218,6 +218,128 @@ sys.exit(int(os.environ.get(kind + '_RC', '0')))
                          tuple(summary[key] for key in ("passed", "failed", "skipped", "core_failed", "overall_status", "badge_status")))
         return summary
 
+    def prepare_baseline_install(self):
+        self.env.update(self.job["env"], IMPALA_WORKDIR=str(self.root / "install"),
+                        GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="1")
+        for name in ("mkdir", "cat", "chmod"):
+            (self.bin / name).symlink_to(shutil.which(name))
+        self.stub("curl", r'''
+import os
+from pathlib import Path
+import sys
+assert sys.argv[1:] == ['-fsSL', '-o', os.environ['IMPALA_WORKDIR'] + '/work/impala.deb',
+                       os.environ['IMPALA_RELEASE_URL']]
+Path(sys.argv[3]).write_bytes(b'fixture baseline package')
+''')
+        self.stub("timeout", r'''
+import json
+import os
+from pathlib import Path
+import sys
+assert sys.argv[1:3] == ['--kill-after=10s', '180s']
+with (Path(os.environ['FIXTURE_ROOT']) / 'install-calls').open('a') as log:
+    log.write(json.dumps(['timeout', *sys.argv[1:]]) + '\n')
+os.execvp(sys.argv[3], sys.argv[3:])
+''')
+        self.stub("sleep", r'''
+import json
+import os
+from pathlib import Path
+import sys
+with (Path(os.environ['FIXTURE_ROOT']) / 'install-calls').open('a') as log:
+    log.write(json.dumps(['sleep', *sys.argv[1:]]) + '\n')
+''')
+        self.stub("docker", r'''
+import json
+import os
+from pathlib import Path
+import sys
+root = Path(os.environ['FIXTURE_ROOT'])
+calls = root / 'install-calls'
+with calls.open('a') as log:
+    log.write(json.dumps(['docker', *sys.argv[1:]]) + '\n')
+command = sys.argv[1]
+if command == '--version':
+    sys.exit(0)
+if command == 'pull':
+    assert sys.argv[2:] == ['--platform', 'linux/arm64', 'ubuntu:20.04']
+    attempts = sum(json.loads(line)[:2] == ['docker', 'pull'] for line in calls.read_text().splitlines())
+    if attempts <= int(os.environ.get('PULL_FAILURES', '0')):
+        print(os.environ.get('PULL_ERROR', 'failed to fetch oauth token: https://auth.docker.io/token: 502 Bad Gateway'),
+              file=sys.stderr)
+        sys.exit(int(os.environ.get('PULL_RC', '1')))
+elif command == 'build':
+    assert sys.argv[2:] == ['--platform', 'linux/arm64', '-t', 'impala-arm64-smoke:123-1',
+                           os.environ['IMPALA_WORKDIR'] + '/image']
+    dockerfile = Path(sys.argv[-1]) / 'Dockerfile'
+    assert dockerfile.read_text().splitlines()[0] == 'FROM ubuntu:20.04'
+    sys.exit(int(os.environ.get('BUILD_RC', '0')))
+elif command == 'run':
+    assert sys.argv[2:5] == ['--rm', '--platform', 'linux/arm64']
+    assert sys.argv[-1] == '--version'
+    kind = 'SHELL' if sys.argv[-2].endswith('/impala-shell') else 'SERVER'
+    banner = 'Impala Shell v' if kind == 'SHELL' else 'impalad version '
+    print(banner + os.environ['IMPALA_VERSION'] + '-RELEASE (build)')
+    sys.exit(int(os.environ.get(kind + '_RC', '0')))
+else:
+    raise AssertionError(sys.argv)
+''')
+
+    def run_baseline_install(self, **env):
+        calls = self.root / "install-calls"
+        calls.write_text("")
+        result, outputs = self.run_step("install", **env)
+        return result, outputs, [json.loads(line) for line in calls.read_text().splitlines()]
+
+    def baseline_pull_calls(self, attempts):
+        calls = [["docker", "--version"]]
+        for attempt in range(1, attempts + 1):
+            pull = ["docker", "pull", "--platform", "linux/arm64", "ubuntu:20.04"]
+            calls.extend([["timeout", "--kill-after=10s", "180s", *pull], pull])
+            if attempt < attempts:
+                calls.append(["sleep", str(attempt * 5)])
+        return calls
+
+    def test_baseline_pull_succeeds_on_first_second_or_third_attempt(self):
+        self.prepare_baseline_install()
+        self.assertFalse(self.steps["install"].get("continue-on-error", False))
+        self.assertEqual("ubuntu:20.04", self.job["env"]["IMPALA_IMAGE"])
+        for failures in (0, 1, 2):
+            with self.subTest(failures=failures):
+                result, outputs, calls = self.run_baseline_install(PULL_FAILURES=str(failures))
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertEqual({"install_status": "success", "image_tag": "impala-arm64-smoke:123-1",
+                                  "work_dir": str(self.root / "install/work")}, outputs)
+                self.assertEqual(self.baseline_pull_calls(failures + 1), calls[:-3])
+                self.assertEqual(["build", "run", "run"], [call[1] for call in calls[-3:]])
+                self.assertEqual(failures, result.stderr.count("502 Bad Gateway"))
+
+    def test_baseline_pull_exhaustion_permanent_errors_and_timeouts_fail_closed(self):
+        self.prepare_baseline_install()
+        for error, status in (("502 Bad Gateway", 1), ("pull access denied", 17),
+                              ("pull timed out", 124), ("pull killed after timeout", 137)):
+            with self.subTest(error=error):
+                result, outputs, calls = self.run_baseline_install(
+                    PULL_FAILURES="99", PULL_ERROR=error, PULL_RC=str(status))
+                self.assertEqual(status, result.returncode, result.stdout + result.stderr)
+                self.assertEqual({}, outputs)
+                self.assertEqual(self.baseline_pull_calls(3), calls)
+                self.assertEqual(3, result.stderr.count(error))
+                self.assertIn("after 3 attempts", result.stderr)
+
+    def test_baseline_pull_recovery_does_not_retry_build_or_runtime_failures(self):
+        self.prepare_baseline_install()
+        for failures in (0, 2):
+            for variable, status, commands in (("BUILD_RC", 23, ["build"]),
+                    ("SHELL_RC", 17, ["build", "run"]), ("SERVER_RC", 42, ["build", "run", "run"])):
+                with self.subTest(failures=failures, variable=variable):
+                    result, outputs, calls = self.run_baseline_install(
+                        PULL_FAILURES=str(failures), **{variable: str(status)})
+                    self.assertEqual(status, result.returncode, result.stdout + result.stderr)
+                    self.assertEqual({}, outputs)
+                    self.assertEqual(self.baseline_pull_calls(failures + 1), calls[:-len(commands)])
+                    self.assertEqual(commands, [call[1] for call in calls[-len(commands):]])
+
     def test_pinned_baseline_free_runner_and_secretless_checkout_remain(self):
         self.assertEqual(BASELINE, self.job["env"]["IMPALA_VERSION"])
         self.assertIn("4.5.0-RELEASE_hive-3.1.3-aarch64.ubuntu-20.04.deb", self.job["env"]["IMPALA_RELEASE_URL"])
