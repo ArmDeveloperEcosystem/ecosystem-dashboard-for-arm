@@ -104,10 +104,10 @@ jobs:
       tests_failed: ${{ steps.summary.outputs.failed || '0' }}
       tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
       duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
-      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
-      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
-      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_status: ${{ steps.summary.outputs.regression_status || 'failed' }}
+      regression_decision: ${{ steps.summary.outputs.regression_decision || 'next_regression_failed' }}
+      regression_result: ${{ steps.summary.outputs.regression_result || 'Regression validation did not complete.' }}
+      regression_comparison: ${{ steps.summary.outputs.regression_comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
@@ -344,95 +344,75 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
-        uses: ./.github/actions/generic-source-regression-check
-        with:
-          baseline_version: ${{ steps.version.outputs.version || env.BASELINE_VERSION }}
-          github_repo: ${{ env.GITHUB_REPO }}
-          lane_kind: ${{ env.LANE_KIND }}
-          limited_cpu_probe: |
-            set -euo pipefail
-            ROOT="next-src"
-            [ "$(uname -m)" = "aarch64" ]
-            [ -f "$ROOT/include/cudnn_frontend.h" ]
-            [ -f "$ROOT/include/cudnn_frontend_version.h" ]
-            [ -d "$ROOT/python/cudnn" ]
-            grep -Fq '#include <cudnn.h>' "$ROOT/include/cudnn_frontend.h"
-            TMPDIR="$(mktemp -d)"
-            trap 'rm -rf "$TMPDIR"' EXIT
-            cat > "$TMPDIR/cudnn_frontend_version_probe.cpp" <<'CPP'
-            #include <cudnn_frontend_version.h>
-            #ifndef CUDNN_FRONTEND_VERSION
-            #error CUDNN_FRONTEND_VERSION missing
-            #endif
-            int main() { return CUDNN_FRONTEND_VERSION >= 0 ? 0 : 1; }
-            CPP
-            g++ -std=c++17 -I"$ROOT/include" -fsyntax-only "$TMPDIR/cudnn_frontend_version_probe.cpp"
-            python3 - "$ROOT" "${LATEST_VERSION:-}" <<'PY'
-            import compileall
-            import re
-            import sys
-            from pathlib import Path
-
-            root = Path(sys.argv[1])
-            expected = sys.argv[2].lstrip("v")
-            header = (root / "include/cudnn_frontend_version.h").read_text(encoding="utf-8")
-            values = {}
-            for name in ("MAJOR", "MINOR", "PATCH"):
-                match = re.search(rf"#define\s+CUDNN_FRONTEND_{name}_VERSION\s+([0-9]+)", header)
-                if not match:
-                    raise SystemExit(f"missing cuDNN Frontend {name} version macro")
-                values[name] = match.group(1)
-            actual = ".".join(values[name] for name in ("MAJOR", "MINOR", "PATCH"))
-            if expected and actual != expected:
-                raise SystemExit(f"cuDNN Frontend header version {actual} != expected {expected}")
-            if not compileall.compile_dir(str(root / "python/cudnn"), quiet=1):
-                raise SystemExit("compileall failed for python/cudnn")
-            print(f"cudnn-frontend-next-preflight-ok: header version {actual} and Python sources compiled")
-            PY
-          limited_cpu_description: "Test 6 limited_cpu_smoke_validated: reran the cuDNN Frontend bounded Arm preflight against the next stable source candidate, compiling the package version header and python/cudnn sources while verifying the aggregate header's cuDNN runtime boundary. This is CPU-side package preflight evidence only; no cuDNN library load or GPU execution is claimed."
+        if: >-
+          ${{ success() && steps.test1.outcome == 'success' && steps.test1.outputs.status == 'passed' &&
+              steps.test2.outcome == 'success' && steps.test2.outputs.status == 'passed' &&
+              steps.test3.outcome == 'success' && steps.test3.outputs.status == 'passed' &&
+              steps.test4.outcome == 'success' && steps.test4.outputs.status == 'passed' &&
+              steps.test5.outcome == 'success' && steps.test5.outputs.status == 'passed' }}
+        timeout-minutes: 10
+        env:
+          CURRENT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/cudnn_frontend_wheel_smoke.py \
+            --baseline-version "$CURRENT_VERSION"
       - name: Calculate test summary
         id: summary
         if: always()
+        env:
+          T1: ${{ steps.test1.outputs.status }}
+          T2: ${{ steps.test2.outputs.status }}
+          T3: ${{ steps.test3.outputs.status }}
+          T4: ${{ steps.test4.outputs.status }}
+          T5: ${{ steps.test5.outputs.status }}
+          T6: ${{ steps.test6.outputs.status }}
+          O1: ${{ steps.test1.outcome }}
+          O2: ${{ steps.test2.outcome }}
+          O3: ${{ steps.test3.outcome }}
+          O4: ${{ steps.test4.outcome }}
+          O5: ${{ steps.test5.outcome }}
+          O6: ${{ steps.test6.outcome }}
+          DECISION: ${{ steps.test6.outputs.decision }}
+          RESULT: ${{ steps.test6.outputs.regression_result }}
+          COMPARISON: ${{ steps.test6.outputs.comparison }}
         run: |
-          # shellcheck disable=SC2129
-          T1="${{ steps.test1.outputs.status || '' }}"
-          T2="${{ steps.test2.outputs.status || '' }}"
-          T3="${{ steps.test3.outputs.status || '' }}"
-          T4="${{ steps.test4.outputs.status || '' }}"
-          T5="${{ steps.test5.outputs.status || '' }}"
-          T6="${{ steps.test6.outputs.status || '' }}"
-          D1="${{ steps.test1.outputs.duration || '0' }}"
-          D2="${{ steps.test2.outputs.duration || '0' }}"
-          D3="${{ steps.test3.outputs.duration || '0' }}"
-          D4="${{ steps.test4.outputs.duration || '0' }}"
-          D5="${{ steps.test5.outputs.duration || '0' }}"
-          D6="${{ steps.test6.outputs.duration || '0' }}"
-          PASSED=0
-          FAILED=0
-          SKIPPED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6"; do
-            if [ "$STATUS" = "passed" ]; then
+          set -euo pipefail
+          PASSED=0 FAILED=0 SKIPPED=0 CORE_FAILED=0
+          STATUSES=("$T1" "$T2" "$T3" "$T4" "$T5")
+          OUTCOMES=("$O1" "$O2" "$O3" "$O4" "$O5")
+          for index in 0 1 2 3 4; do
+            if [ "${STATUSES[$index]}" = passed ] && [ "${OUTCOMES[$index]}" = success ]; then
               PASSED=$((PASSED + 1))
-            elif [ "$STATUS" = "failed" ]; then
-              FAILED=$((FAILED + 1))
             else
-              SKIPPED=$((SKIPPED + 1))
-            fi
-          done
-          DURATION=$((D1 + D2 + D3 + D4 + D5 + D6))
-          CORE_FAILED=0
-          for STATUS in "$T1" "$T2" "$T3" "$T4" "$T5"; do
-            if [ "$STATUS" = "failed" ]; then
+              FAILED=$((FAILED + 1))
               CORE_FAILED=$((CORE_FAILED + 1))
             fi
           done
-          if [ $FAILED -eq 0 ] && [ $PASSED -gt 0 ]; then
-            OVERALL_STATUS="success"
-            BADGE_STATUS="passing"
+          if [ "$CORE_FAILED" -gt 0 ]; then
+            T6=skipped
+            DECISION=baseline_failed
+            RESULT="Baseline checks failed or were incomplete"
+            COMPARISON="Candidate evidence is not accepted because all five baseline checks are required."
+          elif [ "$O6:$T6:$DECISION" = "success:passed:limited_cpu_smoke_validated" ] &&
+               [[ "$RESULT" =~ [^[:space:]] && "$COMPARISON" =~ [^[:space:]] ]]; then
+            :
+          elif [ "$O6:$T6:$DECISION" = "success:skipped:no_newer_stable_available" ] &&
+               [[ "$RESULT" =~ [^[:space:]] && "$COMPARISON" =~ [^[:space:]] ]]; then
+            :
           else
-            OVERALL_STATUS="failure"
-            BADGE_STATUS="failing"
+            T6=failed
+            if [ "$DECISION" != limited_cpu_smoke_failed ]; then DECISION=next_regression_failed; fi
+            RESULT="Required candidate preflight did not pass. $RESULT"
           fi
+          case "$T6" in
+            passed) PASSED=$((PASSED + 1));;
+            failed) FAILED=$((FAILED + 1));;
+            skipped) SKIPPED=$((SKIPPED + 1));;
+          esac
+          DURATION=$((${{ steps.test1.outputs.duration || '0' }} + ${{ steps.test2.outputs.duration || '0' }} + ${{ steps.test3.outputs.duration || '0' }} + ${{ steps.test4.outputs.duration || '0' }} + ${{ steps.test5.outputs.duration || '0' }} + ${{ steps.test6.outputs.duration || '0' }}))
+          OVERALL_STATUS=failure BADGE_STATUS=failing
+          if [ "$FAILED" -eq 0 ]; then OVERALL_STATUS=success; BADGE_STATUS=passing; fi
           {
             echo "passed=$PASSED"
             echo "failed=$FAILED"
@@ -441,4 +421,9 @@ jobs:
             echo "core_failed=$CORE_FAILED"
             echo "overall_status=$OVERALL_STATUS"
             echo "badge_status=$BADGE_STATUS"
+            echo "regression_status=$T6"
+            echo "regression_decision=$DECISION"
+            echo "regression_result=$RESULT"
+            echo "regression_comparison=$COMPARISON"
           } >> "$GITHUB_OUTPUT"
+          [ "$OVERALL_STATUS" = success ]
