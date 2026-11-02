@@ -32,8 +32,8 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             self.report["totals"],
         )
         self.assertEqual(
-            {"next_install_failed": 1, "next_regression_failed": 2,
-             "not_applicable_package_manager": 8, "not_configured": 950},
+            {"next_install_failed": 1, "next_regression_failed": 4,
+             "not_applicable_package_manager": 8, "not_configured": 948},
             self.report["fallback_counts"],
         )
         self.assertEqual(
@@ -61,11 +61,12 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual({}, remediation["missing_test_steps"])
         # The advisory scan cannot follow EXIT traps. Executable workflow tests
         # verify Chef's sourced finalizer, Xen's outputs and Garden Linux's
-        # Test 5 finalizer separately; these are not missing runtime outputs.
+        # Test 5 finalizer separately. NVIDIA's trap and BenchmarkSQL's Python
+        # outputs are likewise covered by executable tests, not this literal scan.
         self.assertEqual(
             {**{f"test{number}": ["chef-infra", "xen-hypervisor"] for number in range(1, 5)},
-             "test5": ["chef-infra", "garden-linux", "xen-hypervisor"],
-             "test6": ["chef-infra"]},
+             "test5": ["chef-infra", "garden-linux", "nvidia-gpu-driver-container", "xen-hypervisor"],
+             "test6": ["benchmarksql", "chef-infra"]},
             remediation["missing_test_status"],
         )
         self.assertEqual({}, remediation["invalid_test_names"])
@@ -83,7 +84,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         remediation = self.report["remediation"]
         self.assertEqual(17, len(remediation["emitter_missing_slug"]))
         self.assertEqual(
-            {"test1": 2, "test2": 2, "test3": 2, "test4": 5, "test5": 45, "test6": 7},
+            {"test1": 2, "test2": 2, "test3": 2, "test4": 5, "test5": 46, "test6": 9},
             {
                 key: len(value)
                 for key, value in remediation["missing_test_duration"].items()
@@ -100,10 +101,10 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             )
         self.assertNotIn("backstage", remediation["missing_test_duration"]["test4"])
         self.assertIn("garden-linux", remediation["missing_test_duration"]["test5"])
-        # Chef and Garden Linux bind status/duration through step env, outside this
+        # Chef, Garden Linux and BenchmarkSQL bind through step env, outside this
         # advisory scan's literal run-script reference analysis.
         self.assertEqual(
-            {"test1": 2, "test2": 2, "test3": 3, "test4": 3, "test5": 4, "test6": 321},
+            {"test1": 3, "test2": 3, "test3": 4, "test4": 4, "test5": 5, "test6": 322},
             {
                 key: len(value)
                 for key, value in remediation[
@@ -112,7 +113,8 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"core_failed": 375, "duration": 3, "skipped": 696},
+            {"badge_status": 1, "core_failed": 376, "duration": 4,
+             "failed": 1, "overall_status": 1, "passed": 1, "skipped": 696},
             {
                 key: len(value)
                 for key, value in remediation["missing_summary_outputs"].items()
@@ -130,14 +132,14 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         )
         # Xen writes a runtime-selected $DECISION; the advisory scan does not
         # infer its baseline-failure branches from literal output records.
-        self.assertEqual(24, len(remediation["no_literal_decision"]))
+        self.assertEqual(25, len(remediation["no_literal_decision"]))
         self.assertIn("xen-hypervisor", remediation["no_literal_decision"])
         self.assertEqual(
             304, len(remediation["package_manager_summary_omits_test6"])
         )
         # The audit flags every default except not_configured, including Chef's
-        # Garden's and Chiaki's failure defaults; runtime tests prove they stay red.
-        self.assertEqual(11, len(remediation["unsafe_fallback_workflows"]))
+        # Garden's, Chiaki's and these repairs' failure defaults; runtime tests prove they stay red.
+        self.assertEqual(13, len(remediation["unsafe_fallback_workflows"]))
         self.assertIn("chef-infra", remediation["unsafe_fallback_workflows"])
         self.assertIn("chiaki-ng", remediation["unsafe_fallback_workflows"])
         self.assertIn("garden-linux", remediation["unsafe_fallback_workflows"])
@@ -183,13 +185,13 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             [], remediation["invalid_workflow_call_observation_output"]
         )
         self.assertEqual(
-            371,
+            370,
             len(remediation["non_package_manager_missing_baseline_guard"]),
         )
         self.assertIn(
             "xen-hypervisor", remediation["non_package_manager_missing_baseline_guard"]
         )
-        self.assertEqual(321, len(remediation["summary_omits_test6_status"]))
+        self.assertEqual(322, len(remediation["summary_omits_test6_status"]))
         self.assertIn("garden-linux", remediation["summary_omits_test6_status"])
         self.assertEqual(
             953, len(remediation["unsafe_package_version_fallback"])
@@ -235,7 +237,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "4a37309f72f293ed3dc09fbc2c23c14a0f61bb892b75b4b7a4fe0a0bcfeb828f",
+            "39c7f1de97a80fa997e4fd91f70c709f5a56d18ab4c271d37f2e162a72915ac7",
             digest,
         )
 

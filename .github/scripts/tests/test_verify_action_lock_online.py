@@ -235,7 +235,7 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
         return [command for command in self.commands if command[:2] == ["git", "ls-remote"]]
 
     def test_unchanged_pin_allows_occurrence_change_and_moving_ref(self) -> None:
-        self.assertEqual((1, 9), self.verify(expected_base_commit=self.base_commit))
+        self.assertEqual((1, 10), self.verify(expected_base_commit=self.base_commit))
         self.assertEqual([], self.mutable_calls())
         git = ["git", "--no-replace-objects", "-C", str(self.root)]
         self.assertEqual([
@@ -247,7 +247,7 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
             ["gh", "api", f"repos/example/action/commits/{COMMIT}"],
             ["gh", "api", f"repos/example/action/contents/action.yml?ref={COMMIT}"],
         ], self.commands[2:])
-        self.assertEqual(9, self.containers.call_count)
+        self.assertEqual(10, self.containers.call_count)
 
     def test_no_base_keeps_full_live_ref_verification(self) -> None:
         with self.assertRaisesRegex(online.OnlineEvidenceError, "live ref object contradicts"):
@@ -255,7 +255,54 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
         self.assertEqual(1, len(self.mutable_calls()))
         self.assertFalse(any("show" in command for command in self.commands))
         self.drift = False
-        self.assertEqual((1, 9), self.verify())
+        self.assertEqual((1, 10), self.verify())
+
+    def test_authenticated_base_may_predate_a_reviewed_container_addition(self) -> None:
+        self.base["containers"].pop()
+        self.base["container_uses"] = len(self.base["containers"])
+        expected = online.supply_chain.EXPECTED_CONTAINER_USES
+        self.assertEqual((1, expected), self.verify(expected_base_commit=self.base_commit))
+        self.assertEqual(expected, self.containers.call_count)
+        self.assertEqual(
+            [mock.call(entry, self.runner) for entry in self.candidate["containers"]],
+            self.containers.call_args_list,
+        )
+
+    def test_new_container_live_verification_failure_cannot_be_inherited_from_base(self) -> None:
+        self.base["containers"].pop()
+        self.base["container_uses"] = len(self.base["containers"])
+        added = self.candidate["containers"][-1]
+
+        def verify_container(entry, runner):
+            if entry == added:
+                raise online.OnlineEvidenceError("new container digest mismatch")
+
+        self.containers.side_effect = verify_container
+        with self.assertRaisesRegex(online.OnlineEvidenceError, "new container digest mismatch"):
+            self.verify(expected_base_commit=self.base_commit)
+        self.containers.assert_called_with(added, self.runner)
+
+    def test_older_inventory_is_never_accepted_as_the_candidate(self) -> None:
+        self.candidate["containers"].pop()
+        self.candidate["container_uses"] = len(self.candidate["containers"])
+        with self.assertRaisesRegex(online.OnlineEvidenceError, "invalid container inventory"):
+            self.verify(expected_base_commit=self.base_commit)
+        self.assertEqual([], self.commands)
+
+    def test_base_inventory_still_requires_matching_count_and_valid_entries(self) -> None:
+        original = copy.deepcopy(self.base)
+        for mutation in (
+            lambda lock: lock.update(container_uses=0),
+            lambda lock: lock.update(container_uses=True),
+            lambda lock: lock["containers"][0].update(linux_arm64_confirmed=False),
+            lambda lock: lock["containers"][0].update(unreviewed=True),
+        ):
+            with self.subTest(mutation=mutation):
+                self.base = copy.deepcopy(original)
+                mutation(self.base)
+                with self.assertRaises(online.OnlineEvidenceError):
+                    self.verify(expected_base_commit=self.base_commit)
+        self.assertFalse(any(command[0] == "gh" for command in self.commands))
 
     def test_new_pin_requires_live_ref_confirmation(self) -> None:
         entry = action_entry()
@@ -265,7 +312,7 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
             self.verify(expected_base_commit=self.base_commit)
         self.assertEqual(1, len(self.mutable_calls()))
         self.drift = False
-        self.assertEqual((1, 9), self.verify(expected_base_commit=self.base_commit))
+        self.assertEqual((1, 10), self.verify(expected_base_commit=self.base_commit))
 
     def test_same_ref_changed_commit_requires_full_live_verification(self) -> None:
         entry = self.candidate["actions"][0]
@@ -292,7 +339,7 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
         entry["occurrences"] = 1131
         self.candidate["actions"] = [entry]
         self.base = copy.deepcopy(self.candidate)
-        self.assertEqual((1, 9), self.verify(expected_base_commit=self.base_commit))
+        self.assertEqual((1, 10), self.verify(expected_base_commit=self.base_commit))
         self.assertEqual([], self.mutable_calls())
         self.assertFalse(any("/git/tags/" in command[-1] for command in self.commands))
 
@@ -301,7 +348,7 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
         entry["occurrences"] = 1131
         self.candidate["actions"] = [entry]
         self.drift = False
-        self.assertEqual((1, 9), self.verify(expected_base_commit=self.base_commit))
+        self.assertEqual((1, 10), self.verify(expected_base_commit=self.base_commit))
         self.assertEqual(1, len(self.mutable_calls()))
         self.assertIn(["gh", "api", f"repos/example/action/git/tags/{TAG_OBJECT}"], self.commands)
 
@@ -391,7 +438,7 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
         for arguments, base in (([], None), (["--expected-base-commit", self.base_commit], self.base_commit)):
             with self.subTest(arguments=arguments), mock.patch.object(
                 online.sys, "argv", [str(SCRIPT), "--lock", str(self.path), *arguments]
-            ), mock.patch.object(online, "verify_lock", return_value=(1, 9)) as verify, mock.patch("builtins.print"):
+            ), mock.patch.object(online, "verify_lock", return_value=(1, 10)) as verify, mock.patch("builtins.print"):
                 self.assertEqual(0, online.main())
                 verify.assert_called_once_with(self.path, expected_base_commit=base)
 

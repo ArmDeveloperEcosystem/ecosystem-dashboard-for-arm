@@ -512,7 +512,11 @@ class ExactRunAggregationTests(unittest.TestCase):
         payload = contract.topology_payload(topology)
         self.assertEqual(payload["over_capacity_batches"], [])
         self.assertEqual(payload["target_packages_per_batch"], 45)
-        self.assertEqual(len(payload["external_actions"]), 23)
+        self.assertEqual(len(payload["external_actions"]), 24)
+        self.assertIn(
+            "docker://nvcr.io/nvidia/driver@sha256:21b0c912d4c71f1166c68d4c7e26d28981f0e9d1de5ed00c332e00fdbde41b15",
+            payload["external_actions"],
+        )
         self.assertIn(
             "docker://python@sha256:d8fac68ebdc45b8d66d53f1ed6c1532da81109a8f5532a6ca0c951ed31107d70",
             payload["external_actions"],
