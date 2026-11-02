@@ -20,8 +20,6 @@ from .kb_client import KBClient
 from .runtime import RuntimeConfig
 from .search_service import SearchService
 
-ROOT = Path(__file__).resolve().parents[1]
-
 
 class Filters(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -54,10 +52,9 @@ def create_app(catalog_path=None, service=None, config: RuntimeConfig | None = N
             headers["Authorization"] = "Bearer " + config.kb_token
         service = SearchService(
             catalog,
-            transport=lambda endpoint, params, _: kb_client.fetch(
-                endpoint, params, headers
-            ),
+            transport=kb_client.fetch,
             endpoint=config.kb_url,
+            headers=headers,
             scope_confirmed=config.kb_scope_confirmed,
         )
     search = service

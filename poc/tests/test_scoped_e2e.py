@@ -122,7 +122,6 @@ def test_real_http_scoping_preserves_rank_unique_editions_and_current_details(
         assert row["title"] == current["title"]
         assert current["description"] in row["reason"]
         assert row["license"] == current["license"]
-        assert row["match_source"] == "kb_scoped"
         assert "SYNTHETIC FIXTURE" not in row["reason"]
     assert provider.requests == [
         {

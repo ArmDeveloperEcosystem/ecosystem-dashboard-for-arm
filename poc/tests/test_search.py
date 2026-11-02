@@ -13,6 +13,7 @@ from poc.server import create_app
 from poc.tests.test_catalog_matching import hit, make_catalog, package
 
 ROOT = Path(__file__).resolve().parents[2]
+ENDPOINT = "https://kb.example.test/search"
 
 
 @pytest.fixture
@@ -39,7 +40,11 @@ def catalog(tmp_path):
 
 def service_with(catalog, hits, **kwargs):
     return SearchService(
-        catalog, transport=lambda *_: {"results": hits}, scope_confirmed=True, **kwargs
+        catalog,
+        transport=lambda *_: {"results": hits},
+        endpoint=ENDPOINT,
+        scope_confirmed=True,
+        **kwargs,
     )
 
 
@@ -54,7 +59,9 @@ def test_unconfirmed_contract_never_calls_provider_even_for_matching_name(catalo
     def forbidden(*_):
         pytest.fail("Default-off scope must not call the provider")
 
-    response = SearchService(catalog, transport=forbidden).search("Redis")
+    response = SearchService(catalog, transport=forbidden, endpoint=ENDPOINT).search(
+        "Redis"
+    )
     assert response["mode"] == "kb_unavailable"
     assert response["status"] == "unavailable"
     assert response["results"] == []
@@ -77,9 +84,9 @@ def test_query_and_explicit_scope_are_sent_without_rewriting(catalog, filters, e
         calls.append((endpoint, params, headers))
         return {"results": []}
 
-    response = SearchService(catalog, transport=capture, scope_confirmed=True).search(
-        query, filters
-    )
+    response = SearchService(
+        catalog, transport=capture, endpoint=ENDPOINT, scope_confirmed=True
+    ).search(query, filters)
     assert len(calls) == 1
     expected = {
         "q": query,
@@ -90,7 +97,7 @@ def test_query_and_explicit_scope_are_sent_without_rewriting(catalog, filters, e
     if edition:
         expected["edition"] = edition
     assert calls[0][1] == expected
-    assert response["query"] == response["interpreted_query"] == query
+    assert response["query"] == query
     assert response["constraints"]["license"] == filters.get("license", "all")
 
 
@@ -108,7 +115,7 @@ def test_catalog_descriptions_and_titles_do_not_discover_independent_candidates(
         assert response["results"] == []
         assert response["mode"] == "kb_scoped"
         assert response["status"] == "no_matches"
-        assert response["interpreted_query"] == query
+        assert response["query"] == query
 
 
 def test_kb_rank_dedup_and_separate_editions_use_current_catalog_details(catalog):
@@ -135,7 +142,6 @@ def test_kb_rank_dedup_and_separate_editions_use_current_catalog_details(catalog
     assert result["total"] == 3
     assert all(p["title"] == catalog.by_id[p["id"]]["title"] for p in result["results"])
     assert all(p["reason"] == "Current catalog description" for p in result["results"])
-    assert all(p["match_source"] == "kb_scoped" for p in result["results"])
 
 
 @pytest.mark.parametrize(
@@ -165,7 +171,9 @@ def test_any_contract_violation_rejects_entire_batch_and_does_not_cache(catalog,
         calls.append(args)
         return next(responses)
 
-    search = SearchService(catalog, transport=provider, scope_confirmed=True)
+    search = SearchService(
+        catalog, transport=provider, endpoint=ENDPOINT, scope_confirmed=True
+    )
     failed = search.search("request")
     assert failed["results"] == []
     assert failed["mode"] == "kb_unavailable"
@@ -203,7 +211,9 @@ def test_unknown_identity_is_omitted_with_notice_without_title_guessing(catalog)
     ],
 )
 def test_invalid_provider_envelopes_are_unavailable(catalog, payload):
-    search = SearchService(catalog, transport=lambda *_: payload, scope_confirmed=True)
+    search = SearchService(
+        catalog, transport=lambda *_: payload, endpoint=ENDPOINT, scope_confirmed=True
+    )
     assert search.search("Redis")["mode"] == "kb_unavailable"
     assert not search.cache
 
@@ -215,7 +225,9 @@ def test_provider_outage_has_no_semantic_catalog_fallback_and_is_not_cached(cata
         calls.append(args)
         raise httpx.TimeoutException("PRIVATE PROVIDER DETAILS")
 
-    search = SearchService(catalog, transport=fail, scope_confirmed=True)
+    search = SearchService(
+        catalog, transport=fail, endpoint=ENDPOINT, scope_confirmed=True
+    )
     for _ in range(2):
         result = search.search("Redis")
         assert result["results"] == []
@@ -232,7 +244,9 @@ def test_filters_refine_only_retrieved_candidates_in_original_order(catalog):
         calls.append(params)
         return {"results": [hit("nginx"), hit("redis"), hit("weaviate")]}
 
-    search = SearchService(catalog, transport=provider, scope_confirmed=True)
+    search = SearchService(
+        catalog, transport=provider, endpoint=ENDPOINT, scope_confirmed=True
+    )
     result = search.search("unaltered query", {"category": "Data", "tested_only": True})
     assert [p["title"] for p in result["results"]] == ["Redis"]
     assert "locally" in " ".join(result["notices"])
@@ -252,7 +266,9 @@ def test_valid_response_cache_separates_endpoint_query_scope_and_edition(catalog
             "results": [hit("weaviate", edition=params.get("edition", "open-source"))]
         }
 
-    search = SearchService(catalog, transport=provider, scope_confirmed=True)
+    search = SearchService(
+        catalog, transport=provider, endpoint=ENDPOINT, scope_confirmed=True
+    )
     assert search.search("request")["total"] == 1
     assert search.search("request")["total"] == 1
     assert search.search("request", {"license": "opensource"})["total"] == 1
@@ -276,7 +292,9 @@ def test_cache_expires_and_empty_valid_responses_are_cached(catalog, monkeypatch
         calls.append(args)
         return {"results": []}
 
-    search = SearchService(catalog, transport=provider, scope_confirmed=True)
+    search = SearchService(
+        catalog, transport=provider, endpoint=ENDPOINT, scope_confirmed=True
+    )
     search.search("request")
     search.search("request")
     assert len(calls) == 1
@@ -312,8 +330,12 @@ def test_api_rejects_invalid_and_removed_context_fields(catalog):
 
 
 def test_api_unavailable_is_503_and_process_readiness_does_not_claim_kb_ready(catalog):
+    def forbidden(*_):
+        pytest.fail("Default-off scope must not call the provider")
+
     app = create_app(
-        service=SearchService(catalog), config=RuntimeConfig(serve_static=False)
+        service=SearchService(catalog, transport=forbidden, endpoint=ENDPOINT),
+        config=RuntimeConfig(serve_static=False),
     )
     with TestClient(app, base_url="http://127.0.0.1") as client:
         result = client.post("/api/search", json={"query": "Redis"})

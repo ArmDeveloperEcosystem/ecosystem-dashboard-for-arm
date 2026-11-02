@@ -344,8 +344,9 @@ function smoothScrollForStickyFilters() {
 /* Hides (and shows) table elements by modifying the row's hidden attribute */
 function hideElements(all_path_cards,results_to_hide) {
     // Hide elements in array (and actively show all OTHER elements)
+    const hidden_cards = new Set(results_to_hide);
     for (let card of all_path_cards) {
-        if (results_to_hide.includes(card)) { 
+        if (hidden_cards.has(card)) {
                     
             // Hide card and subrow!
             card.setAttribute('hidden',true);

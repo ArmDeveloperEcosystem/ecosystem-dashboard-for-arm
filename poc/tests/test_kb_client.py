@@ -25,9 +25,7 @@ def request_params(query):
     }
 
 
-def test_import_does_not_inspect_unused_default_client_environment(
-    monkeypatch, tmp_path
-):
+def test_import_does_not_inspect_network_environment(monkeypatch, tmp_path):
     monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing-ca.pem"))
     monkeypatch.setenv("HTTPS_PROXY", "unsupported://proxy.invalid:9")
     imported = subprocess.run(

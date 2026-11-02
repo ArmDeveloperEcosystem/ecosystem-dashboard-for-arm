@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections import Counter
 import json
 import logging
 import math
 import time
+from collections import Counter, OrderedDict
 
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
@@ -21,12 +21,13 @@ class SearchBoundary:
         self.config = config
         self.metrics = metrics
         self.inflight = 0
-        self.clients = {}
+        self.clients = OrderedDict()
 
     def admit_client(self, client):
         now = time.monotonic()
-        # State is bounded even if every request has a different source IP.
-        self.clients = {k: v for k, v in self.clients.items() if now - v[0] < 60}
+        # Fixed windows expire in insertion order; avoid scanning active clients.
+        while self.clients and now - next(iter(self.clients.values()))[0] >= 60:
+            self.clients.popitem(last=False)
         previous = self.clients.get(client)
         if previous is None:
             if len(self.clients) >= self.config.max_rate_clients:

@@ -1,12 +1,7 @@
-"""KB-led candidate discovery with current-catalog identity validation.
-
-The proposed scoped API contract is opt-in and has not been validated against
-an updated live provider. Natural-language queries pass through unchanged.
-"""
+"""Scoped KB retrieval and current-catalog validation; queries pass unchanged."""
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from collections import OrderedDict
@@ -14,27 +9,27 @@ from collections import OrderedDict
 import httpx
 
 from .catalog import DOC_TYPE, PLATFORM, Catalog, ScopedContractError
-from .kb_client import fetch_kb
 
 KB_LIMIT = 50
 
 
 class SearchService:
     def __init__(
-        self, catalog: Catalog, transport=None, *, endpoint=None, scope_confirmed=False
+        self,
+        catalog: Catalog,
+        transport,
+        *,
+        endpoint,
+        headers=None,
+        scope_confirmed=False,
     ):
         if type(scope_confirmed) is not bool:
             raise ValueError("scope_confirmed must be an explicit boolean")
         self.catalog = catalog
-        self.transport = transport or fetch_kb
-        self.endpoint = endpoint or os.getenv(
-            "ARM_KB_SEARCH_URL", "https://knowledge.armdevtechapi.com/search"
-        )
+        self.transport = transport
+        self.endpoint = endpoint
         self.scope_confirmed = scope_confirmed
-        self.headers = {"User-Agent": "Arm-Ecosystem-Search/1.0"}
-        token = os.getenv("ARM_KB_API_TOKEN")
-        if token:
-            self.headers["Authorization"] = "Bearer " + token
+        self.headers = dict(headers or {})
         self.cache = OrderedDict()
         self.lock = threading.Lock()
 
@@ -95,14 +90,12 @@ class SearchService:
         }[constraints["license"]]
         base = {
             "query": query,
-            "interpreted_query": query,
             "results": [],
             "constraints": constraints,
             "notices": [],
             "mode": "kb_scoped",
             "status": "no_matches",
             "total": 0,
-            "catalog_count": len(self.catalog.packages),
         }
 
         def unavailable(notice):
@@ -164,8 +157,6 @@ class SearchService:
                     "id": package["id"],
                     "title": package["title"],
                     "reason": package["description"],
-                    "evidence_url": package["url"],
-                    "match_source": "kb_scoped",
                     "category": package["category"],
                     "license": package["license"],
                     "has_recorded_tests": package["has_recorded_tests"],

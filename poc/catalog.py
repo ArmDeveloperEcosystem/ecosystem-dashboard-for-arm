@@ -14,7 +14,7 @@ PLATFORM = "linux"
 
 
 class ScopedContractError(ValueError):
-    """The provider did not satisfy the proposed scoped response contract."""
+    """The provider did not satisfy the scoped response contract."""
 
 
 def trusted_arm_url(value: str) -> bool:
@@ -61,7 +61,7 @@ class Catalog:
                 "Duplicate dashboard package identities: resolve before serving search"
             )
         self.by_identity = {}
-        self.by_url_id = {}
+        self.url_ids = set()
         for package in self.packages:
             if (
                 package.get("platform") != PLATFORM
@@ -78,7 +78,7 @@ class Catalog:
             if key in self.by_identity:
                 raise ValueError("Ambiguous dashboard URL/platform/edition identity")
             self.by_identity[key] = package
-            self.by_url_id.setdefault(url_id, []).append(package)
+            self.url_ids.add(url_id)
             record = package.get("test_record") or {}
             runner = (record.get("run") or {}).get("runner") or {}
             os_name = str(runner.get("os", "")).lower()
@@ -135,6 +135,6 @@ class Catalog:
         url_id = package_parameter(value)
         key = (url_id, hit["platform"], hit["edition"])
         package = self.by_identity.get(key)
-        if package is None and url_id in self.by_url_id:
+        if package is None and url_id in self.url_ids:
             raise ScopedContractError("KB edition disagrees with the current catalog")
         return [package] if package else []

@@ -7,6 +7,10 @@ const { readFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 const vm = require('node:vm');
 
+const sharedContext = vm.createContext({ document: { addEventListener() {} } });
+vm.runInContext(readFileSync(resolve(__dirname, '../../themes/arm-design-system-hugo-theme/static/js/eco-dashboard/search.js'), 'utf8'), sharedContext);
+const hideElements = sharedContext.hideElements;
+
 class Element {
     constructor() {
         this.attributes = {};
@@ -37,7 +41,7 @@ class Element {
         delete this.attributes[key];
         if (key === 'hidden') this.hidden = false;
     }
-    getAttribute(key) { return this.attributes[key] ?? null; }
+    getAttribute(key) { return key === 'id' ? this.id || null : this.attributes[key] ?? null; }
     get parentNode() { return this.parent || null; }
     get nextElementSibling() {
         return this.parent ? this.parent.children[this.parent.children.indexOf(this) + 1] || null : null;
@@ -61,7 +65,7 @@ class Element {
     closest() { return this.parent || this; }
 }
 
-function fixture(fetcher) {
+function fixture(fetcher, packageIDs = ['postgresql', 'nginx']) {
     const ids = ['nl-search-input', 'nl-search-form', 'nl-search-tested', 'nl-search-clear',
         'nl-search-feedback', 'nl-search-status', 'nl-search-interpretation', 'nl-search-constraints',
         'nl-search-notice', 'nl-search-refinements', 'currently-shown-number', 'if-none-contribute-div',
@@ -79,7 +83,7 @@ function fixture(fetcher) {
     });
     root.querySelectorAll = () => buttons;
     const table = new Element();
-    const rows = ['postgresql', 'nginx'].map((id, index) => {
+    const rows = packageIDs.map((id, index) => {
         const row = new Element();
         row.id = 'row-' + index;
         row.classList.add('search-div');
@@ -124,7 +128,7 @@ function fixture(fetcher) {
         fetch: async (url, options) => { calls.push(JSON.parse(options.body)); signals.push(options.signal); return fetcher(url, options); },
         sanitizeInput: value => value.replace(/[^a-zA-Z0-9 .\-/]+/g, '').replace(/\s+/g, ' '),
         filter_card: () => false,
-        hideElements: (all, hidden) => all.forEach(row => { row.hidden = hidden.includes(row); }),
+        hideElements,
         updateClearFilterOption: () => {}
     });
     vm.runInContext(readFileSync(resolve(__dirname, '../../themes/arm-design-system-hugo-theme/static/js/eco-dashboard/conversational-search.js'), 'utf8'), context);
@@ -135,13 +139,13 @@ function fixture(fetcher) {
 
 function response(results, extra = {}) {
     return { ok: true, json: async () => ({ status: 'ok', mode: 'kb_scoped',
-        interpreted_query: 'databases', constraints: { license: 'all', category: null, tested_only: false },
+        query: 'databases', constraints: { license: 'all', category: null, tested_only: false },
         results: results.map(item => ({ ...item, id: item.id.includes('/') ? item.id : 'linux/opensource_packages/' + item.id + '.md' })), notices: [], ...extra }) };
 }
 
-test('Only catalog IDs render; descriptions are text and returned URLs create no links', async () => {
+test('Only catalog IDs render; descriptions remain plain text without injected elements', async () => {
     const f = fixture(async () => response([
-        { id: 'postgresql', reason: '<img src=x onerror=alert(1)>', evidence_url: 'javascript:alert(1)' },
+        { id: 'postgresql', reason: '<img src=x onerror=alert(1)>' },
         { id: 'invented-package', reason: 'Invented result' }
     ]));
     await f.app.search('databases');
@@ -152,10 +156,37 @@ test('Only catalog IDs render; descriptions are text and returned URLs create no
     assert.equal(f.nodes['currently-shown-number'].textContent, '1');
 });
 
+test('Shared visibility updates scale linearly and close hidden details and carets', () => {
+    const ids = Array.from({ length: 256 }, (_, index) => 'package-' + index);
+    const f = fixture(async () => response([]), ids);
+    const hidden = f.rows.filter((_, index) => index % 2 === 0);
+    for (const row of f.rows) {
+        row.details.hidden = false;
+        row.classList.add('main-sw-row--clicked');
+        row.caret.classList.add('rotated');
+    }
+    let membershipReads = 0;
+    const measuredHidden = new Proxy(hidden, {
+        get(target, key, receiver) {
+            if (typeof key === 'string' && /^\d+$/.test(key)) membershipReads += 1;
+            return Reflect.get(target, key, receiver);
+        }
+    });
+    hideElements(f.rows, measuredHidden);
+    assert.ok(membershipReads <= f.rows.length, 'Visibility must not rescan the hidden list for each row');
+    f.rows.forEach((row, index) => {
+        const shouldHide = index % 2 === 0;
+        assert.equal(row.hidden, shouldHide);
+        assert.equal(row.details.hidden, shouldHide);
+        assert.equal(row.classList.contains('main-sw-row--clicked'), !shouldHide);
+        assert.equal(row.caret.classList.contains('rotated'), !shouldHide);
+    });
+});
+
 test('Refinement buttons change structured controls and preserve the exact submitted query', async () => {
     const f = fixture(async (_url, options) => response([{ id: 'postgresql', reason: 'Database' }], {
         constraints: JSON.parse(options.body).filters,
-        interpreted_query: 'This response must not rewrite the query'
+        query: 'This response must not rewrite the query'
     }));
     const query = '  Databases for vector search?  ';
     await f.app.search(query);
@@ -194,8 +225,8 @@ test('Same-title package variants cannot inherit a different catalog record matc
 test('Same-slug editions open only their own existing details without a new package link', async () => {
     const commercialID = 'linux/commercial_packages/postgresql.md';
     const f = fixture(async () => response([
-        { id: commercialID, reason: 'Commercial description', evidence_url: '/linux/?package=postgresql' },
-        { id: 'postgresql', reason: 'Open-source description', evidence_url: '/linux/?package=postgresql' }
+        { id: commercialID, reason: 'Commercial description' },
+        { id: 'postgresql', reason: 'Open-source description' }
     ]));
     const [openSource, commercial] = f.rows;
     commercial.setAttribute('data-title-urlized', 'postgresql');
@@ -230,7 +261,7 @@ test('Late responses cannot replace results from a newer search', async () => {
     const f = fixture(() => new Promise(resolve => pending.push(resolve)));
     const oldRequest = f.app.search('databases');
     const newRequest = f.app.search('web servers');
-    pending[1](response([{ id: 'nginx', reason: 'Web server' }], { interpreted_query: 'web servers' }));
+    pending[1](response([{ id: 'nginx', reason: 'Web server' }], { query: 'web servers' }));
     await newRequest;
     pending[0](response([{ id: 'postgresql', reason: 'Database' }]));
     await oldRequest;
@@ -322,7 +353,7 @@ test('Changing rank moves only the needed pair and preserves static rows through
     ]);
     assert.equal(f.table.insertedChildren.length, 2, 'Swapping two pairs only needs one pair to move');
     assert.ok(f.table.insertedChildren.every(node => node === f.rows[1] || node === f.rows[1].details));
-    assert.equal(f.rows[1].details.hidden, false);
+    assert.equal(f.rows[1].details.hidden, true, 'A new request closes details while its results are pending');
     f.table.insertedChildren.length = 0;
     await f.app.search('');
     assert.ok(f.table.children.every((node, index) => node === originalNodes[index]));
@@ -331,6 +362,28 @@ test('Changing rank moves only the needed pair and preserves static rows through
     f.table.insertedChildren.length = 0;
     await f.app.search('');
     assert.equal(f.table.insertedChildren.length, 0, 'Clearing an already restored table does not detach rows');
+});
+
+test('Active ranking excludes unmatched rows from comparison sorting', async () => {
+    const unmatchedIDs = Array.from({ length: 64 }, (_, index) => 'other-' + index);
+    const f = fixture(async () => response([
+        { id: 'nginx', reason: 'Web server' }, { id: 'postgresql', reason: 'Database' }
+    ]), ['postgresql', 'nginx', ...unmatchedIDs]);
+    const originalNodes = [...f.table.children];
+    let unmatchedPinChecks = 0;
+    for (const row of f.rows.slice(2)) {
+        const contains = row.classList.contains;
+        row.classList.contains = value => {
+            if (value === 'js-pinned') unmatchedPinChecks += 1;
+            return contains(value);
+        };
+    }
+    await f.app.search('software');
+    assert.ok(unmatchedPinChecks <= unmatchedIDs.length, 'Unmatched rows need one eligibility check, not sorting comparisons');
+    assert.deepEqual(f.table.children.slice(0, 4).map(row => row.id), ['row-1', 'details-1', 'row-0', 'details-0']);
+    assert.ok(f.rows.slice(2).every(row => row.hidden));
+    await f.app.search('');
+    assert.ok(f.table.children.every((node, index) => node === originalNodes[index]));
 });
 
 test('Pinned packages retain their section and placeholder pairs stay intact through rank and clear', async () => {

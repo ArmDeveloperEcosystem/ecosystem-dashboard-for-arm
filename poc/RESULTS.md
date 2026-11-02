@@ -1,5 +1,30 @@
 # Scoped KB search — validation status
 
+## Minimality review — 2 November 2026
+
+Removed unused search-response fields, duplicate KB-client/configuration setup,
+unused catalog metadata and an obsolete operational recorder. The local build
+launcher and relevance evaluator remain in the repository but are excluded from
+the API image. The two exact dependency lockfiles remain the installation sources.
+Search scope, ranking, identity checks, deadlines and failure handling are unchanged.
+
+Visibility uses set membership instead of repeated hidden-list scans; active
+search sorts only matching/pinned pairs. Rate-limit expiry removes expired windows
+from an ordered map instead of scanning every client on every request.
+Independent review accepted these changes. Local validation passed **209 Python
+tests, 19 UI tests and all three Hugo build configurations**. The two new UI
+performance regressions fail against the preceding implementation.
+
+The generated 1,179-record catalog decreased from 4,728,968 to 3,179,230 bytes
+(32.8%) without losing any fields consumed by the search implementation.
+Actual Chrome checks preserved provider rank, detail expansion, open-source
+refinement, the original query and browse order. Four submit-to-display samples
+were 553/373 ms for initial searches and 37/38 ms for repeats; API waiting was
+516/334 ms and 3.5/3.7 ms respectively. These small local samples have uncontrolled
+provider cache state and are not a production latency guarantee.
+Evidence is under `.poc/minimality-review-20261102/`. Relevance and staging
+acceptance remain pending; the dated October evidence below remains historical.
+
 Automated validation repeated on **14 October 2026**. This replaces the earlier hybrid
 search implementation. Historical semantic test counts and latency measurements
 are not acceptance evidence for the new retrieval path.

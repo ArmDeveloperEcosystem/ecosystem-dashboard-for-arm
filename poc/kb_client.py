@@ -98,8 +98,7 @@ class KBClient:
 
     def _http_client(self) -> httpx.Client:
         # Initialize in an admitted worker, never under the admission lock. TLS
-        # setup is then covered by the caller deadline and unused default clients
-        # do not inspect proxy/CA environment settings during module import.
+        # setup is then covered by the caller deadline.
         with self._http_lock:
             if self._http is None:
                 self._http = httpx.Client(
@@ -153,11 +152,3 @@ class KBClient:
         # Completion callbacks take the lifecycle lock. Never join workers (or
         # cancel pending futures, which also invokes callbacks) while holding it.
         self._executor.shutdown(wait=wait, cancel_futures=True)
-
-
-_CLIENT = KBClient()
-
-
-def fetch_kb(endpoint: str, params: dict, headers: dict[str, str]) -> dict:
-    """Fetch JSON with an eight-second caller deadline and four-work-item cap."""
-    return _CLIENT.fetch(endpoint, params, headers)

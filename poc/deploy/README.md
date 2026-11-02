@@ -17,12 +17,12 @@ Browser: developer.arm.com/ecosystem-dashboard/linux/
 
 ## Contract gate
 
-This candidate implements a **proposed**, not yet confirmed, scoped KB contract.
-The default `ARM_KB_SCOPE_CONFIRMED=false` blocks KB search calls and produces an
-explicit unavailable result. Enabling the flag alone is not validation. Confirm
-request syntax, pre-top-k filters, response metadata, ingestion completeness and
-Linux/edition isolation with the KB owners; run the representative live searches
-before enabling it in staging. Follow [the search contract](../README.md).
+The scoped KB integration was verified on 14 October 2026; relevance and staging
+acceptance remain pending. The default `ARM_KB_SCOPE_CONFIRMED=false` blocks KB
+search calls and produces an explicit unavailable result. Enable the flag for
+controlled validation of the target provider, then repeat scope, package-identity
+and representative-query checks before rollout. Enabling the flag alone is not
+validation. Follow [the search contract](../README.md).
 
 The image smoke test sets the flag only against a deliberately unreachable
 loopback fixture. It expects HTTP 503 with no invented semantic records. Successful

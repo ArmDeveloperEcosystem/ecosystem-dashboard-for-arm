@@ -82,7 +82,11 @@
                 const firstRow = pairs[0].row;
                 const lastPair = pairs[pairs.length - 1];
                 const afterRows = (lastPair.details || lastPair.row).nextElementSibling;
-                pairs.sort((a, b) => {
+                const searching = state.matches !== null;
+                const ordered = searching ? pairs.filter(({ row }) =>
+                    row.classList.contains('js-pinned') || rank.has(row.getAttribute('data-catalog-id'))
+                ) : pairs;
+                ordered.sort((a, b) => {
                     const aPinned = a.row.classList.contains('js-pinned');
                     const bPinned = b.row.classList.contains('js-pinned');
                     if (aPinned !== bPinned) return aPinned ? -1 : 1;
@@ -92,13 +96,10 @@
                     return (rank.get(aID) ?? Infinity) - (rank.get(bID) ?? Infinity) ||
                         (browseOrder.get(aID) ?? Infinity) - (browseOrder.get(bID) ?? Infinity);
                 });
-                const searching = state.matches !== null;
                 // Promote only result/pinned pairs; hidden rows need no reordering.
                 // Restore browse order from the end so promoted pairs move back
                 // without reconnecting every intervening row's custom elements.
-                const ordered = searching ? pairs.filter(({ row }) =>
-                    row.classList.contains('js-pinned') || rank.has(row.getAttribute('data-catalog-id'))
-                ) : pairs.reverse();
+                if (!searching) ordered.reverse();
                 let cursor = searching ? firstRow : afterRows;
                 for (const { row, details } of ordered) {
                     const inPlace = searching ? row === cursor : (details || row).nextElementSibling === cursor;

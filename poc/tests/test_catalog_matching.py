@@ -14,7 +14,6 @@ def package(slug, *, edition="open-source", identity=None, **fields):
     return {
         "id": identity or f"linux/{license}_packages/{slug}.md",
         "url_id": slug,
-        "slug": slug,
         "url": "/linux/?package=" + slug,
         "platform": "linux",
         "edition": edition,

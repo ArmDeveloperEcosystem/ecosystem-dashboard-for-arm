@@ -117,7 +117,7 @@ For deterministic integration/demo testing with a **synthetic KB**:
 ```
 
 Open `http://127.0.0.1:8876/linux/`. Try `vector databases`, `Weaviate`, `Redis`,
-`Voltus`, or `fixture:provider_error`. The launcher enables the proposed contract
+`Voltus`, or `fixture:provider_error`. The launcher enables scoped search
 only for its loopback fixture. These canned responses validate plumbing, row
 matching and failure handling; they are not evidence of live search quality.
 

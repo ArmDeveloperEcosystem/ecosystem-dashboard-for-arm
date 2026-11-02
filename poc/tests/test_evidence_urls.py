@@ -8,6 +8,7 @@ from poc.catalog import ARM_HOSTS, Catalog, ScopedContractError, trusted_arm_url
 from poc.search_service import SearchService
 
 ROOT = Path(__file__).resolve().parents[2]
+ENDPOINT = "https://kb.example.test/search"
 PACKAGE_PATH = "/ecosystem-dashboard/linux/?package=redis"
 UNTRUSTED_URLS = [
     "https://evil.example\\@developer.arm.com" + PACKAGE_PATH,
@@ -83,19 +84,25 @@ def test_explicit_https_arm_evidence_remains_usable(catalog, url):
 def test_parser_disagreement_hit_fails_entire_scoped_response(catalog):
     hit = redis_hit(UNTRUSTED_URLS[0])
     service = SearchService(
-        catalog, transport=lambda *_: {"results": [hit]}, scope_confirmed=True
+        catalog,
+        transport=lambda *_: {"results": [hit]},
+        endpoint=ENDPOINT,
+        scope_confirmed=True,
     )
     result = service.search("Redis")
     assert result["results"] == []
     assert result["mode"] == "kb_unavailable"
 
 
-def test_valid_hit_links_to_current_catalog_instead_of_provider_url(catalog):
+def test_legacy_hit_resolves_to_current_catalog_record(catalog):
     hit = redis_hit("https://arm.com/developer-hub/ecosystem-dashboard/?package=redis")
     service = SearchService(
-        catalog, transport=lambda *_: {"results": [hit]}, scope_confirmed=True
+        catalog,
+        transport=lambda *_: {"results": [hit]},
+        endpoint=ENDPOINT,
+        scope_confirmed=True,
     )
     result = service.search("Redis")
     redis = result["results"][0]
-    assert redis["evidence_url"] == catalog.by_id[redis["id"]]["url"]
+    assert redis["id"] == "linux/opensource_packages/redis.md"
     assert redis["reason"] == catalog.by_id[redis["id"]]["description"]

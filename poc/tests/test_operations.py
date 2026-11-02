@@ -3,12 +3,15 @@
 import asyncio
 import logging
 import threading
+from collections import Counter
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from poc.http_guard import SearchBoundary
+from poc.kb_client import KBClient
 from poc.runtime import RuntimeConfig
 from poc.serve import trusted_proxies
 from poc.server import create_app
@@ -217,6 +220,29 @@ def test_rate_state_is_bounded_without_evicting_active_client_limits():
     asyncio.run(run())
 
 
+def test_rate_windows_expire_without_refreshing_active_clients(monkeypatch):
+    now = [1000]
+    monkeypatch.setattr("poc.http_guard.time.monotonic", lambda: now[0])
+    guard = SearchBoundary(
+        None, RuntimeConfig(max_rate_clients=2, requests_per_minute=2), Counter()
+    )
+    assert guard.admit_client("first")
+    now[0] = 1010
+    assert guard.admit_client("second")
+    now[0] = 1059
+    assert guard.admit_client("first")
+    assert not guard.admit_client("third")
+    now[0] = 1060
+    assert guard.admit_client("third")  # First's original window has expired.
+    assert guard.admit_client("second")
+    assert not guard.admit_client("second")
+    assert not guard.admit_client("first")  # Both remaining windows stay active.
+    now[0] = 1070
+    assert guard.admit_client("first")  # Second expires despite its later request.
+    assert guard.admit_client("third")
+    assert not guard.admit_client("third")
+
+
 def test_exhausted_request_admission_does_not_queue_more_work():
     entered = threading.Event()
     release = threading.Event()
@@ -289,7 +315,7 @@ def test_invalid_provider_output_is_sanitized_before_framework_serialization(cap
         def search(self, *args):
             return {
                 "mode": "kb_scoped",
-                "evidence_url": "https://learn.arm.com/PRIVATE_QUERY_TEXT/\ud800",
+                "results": [{"reason": "PRIVATE_QUERY_TEXT\ud800"}],
             }
 
     app = create_app(
@@ -352,6 +378,33 @@ def test_kb_client_is_owned_and_closed_by_app_lifecycle():
     assert owned._closed
     with pytest.raises(httpx.ConnectError, match="closed"):
         owned.fetch("https://kb.example/search", {"q": "test"}, {})
+
+
+def test_runtime_kb_configuration_and_headers_are_request_local(monkeypatch):
+    monkeypatch.setenv("ARM_KB_API_TOKEN", "IGNORED_ENV_TOKEN")
+    monkeypatch.setenv("ARM_KB_SEARCH_URL", "https://ignored.example/search")
+    calls = []
+
+    def fetch(self, endpoint, params, headers):
+        calls.append((endpoint, dict(headers)))
+        headers.clear()  # A transport cannot mutate the next request's headers.
+        return {"results": []}
+
+    monkeypatch.setattr(KBClient, "fetch", fetch)
+    config = RuntimeConfig(
+        serve_static=False,
+        kb_scope_confirmed=True,
+        kb_url="https://configured.example/search",
+        kb_token="CONFIG_TOKEN",
+    )
+    with TestClient(create_app(config=config), base_url="http://127.0.0.1") as client:
+        for query in ("first", "second"):
+            assert client.post("/api/search", json={"query": query}).status_code == 200
+    expected_headers = {
+        "User-Agent": "Arm-Ecosystem-Search/1.0",
+        "Authorization": "Bearer CONFIG_TOKEN",
+    }
+    assert calls == [(config.kb_url, expected_headers)] * 2
 
 
 @pytest.mark.parametrize("value", ["*", "0.0.0.0/0", "::/0", "proxy.example"])
