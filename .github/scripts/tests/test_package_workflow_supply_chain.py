@@ -35,6 +35,7 @@ RELEVANT_PATHS = (
     ".github/scripts/chef_source_setup.sh",
     ".github/scripts/chef_source_probe.rb",
     ".github/scripts/chef_upstream_file_specs.rb",
+    ".github/scripts/cudnn_frontend_wheel_smoke.py",
     ".github/scripts/exact_run_aggregation.py",
     ".github/scripts/package_result_policy.py",
     ".github/scripts/package_observation.py",
@@ -47,6 +48,8 @@ RELEVANT_PATHS = (
     ".github/scripts/tests/test_chiaki_ng_smoke_workflow.py",
     ".github/scripts/tests/test_benchmarksql_smoke_workflow.py",
     ".github/scripts/tests/test_nvidia_gpu_driver_container_smoke_workflow.py",
+    ".github/scripts/tests/test_cudnn_fe_smoke_workflow.py",
+    ".github/scripts/tests/test_cudnn_frontend_wheel_smoke.py",
     "themes/arm-design-system-hugo-theme/layouts/partials/package-display/row-sub.html",
     ".github/scripts/tests/test_verify_action_lock_online.py",
     ".github/scripts/tests/test_exact_run_aggregation.py",
@@ -1196,7 +1199,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         transition = lock["hardened_workflow_transition"]
         self.assertEqual(
-            "a43551634278c6ad2f623dcf40fd9502cf4b8c7dd3c2295ccc5c2ede50c04739",
+            "25f64d1e12d812ed21af8878b4ac32b284fdf2675fa6f98cd06025e5c62f3b97",
             transition["from_sha256"],
         )
         self.assertNotIn("added_workflows", transition)
