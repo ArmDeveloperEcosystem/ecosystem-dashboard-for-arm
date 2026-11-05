@@ -143,7 +143,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         )
         # Xen writes a runtime-selected $DECISION; the advisory scan does not
         # infer its baseline-failure branches from literal output records.
-        self.assertEqual(27, len(remediation["no_literal_decision"]))
+        self.assertEqual(26, len(remediation["no_literal_decision"]))
         self.assertIn("xen-hypervisor", remediation["no_literal_decision"])
         self.assertEqual(
             304, len(remediation["package_manager_summary_omits_test6"])
@@ -196,7 +196,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             [], remediation["invalid_workflow_call_observation_output"]
         )
         self.assertEqual(
-            371,
+            370,
             len(remediation["non_package_manager_missing_baseline_guard"]),
         )
         self.assertIn(
@@ -246,7 +246,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            '70fae8aad4210cb306b0872628c241ec78a91fe96d27b008eff126c8854a3705',
+            'f4d06282eead9a8d95e729bdf017e361d2c74019fe2fb3b9dad6125b675b04ac',
             digest,
         )
 
@@ -271,8 +271,6 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
          'missing_test_status.test4',
          'missing_test_status.test5',
          'missing_workflow_call_observation_output',
-         'no_literal_decision',
-         'non_package_manager_missing_baseline_guard',
          'summary_missing_duration_reference.test1',
          'summary_missing_duration_reference.test2',
          'summary_missing_duration_reference.test3',

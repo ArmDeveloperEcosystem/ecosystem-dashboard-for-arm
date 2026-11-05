@@ -275,11 +275,12 @@ jobs:
           trap finish EXIT
           timeout --kill-after=10s 360s sudo bash .github/scripts/tests/firecracker_guest_smoke.sh "$BINARY" "$BASELINE_TAG"
 
-      - name: Test 6 - Confirm reviewed baseline is the latest stable release
+      - name: Test 6 - Resolve the latest stable Firecracker release
         id: test6
         if: always()
         continue-on-error: true
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           INSTALL_OUTCOME: ${{ steps.install.outcome }}
           VERSION_OUTCOME: ${{ steps.version.outcome }}
           S1: ${{ steps.test1.outputs.status }}
@@ -294,28 +295,143 @@ jobs:
           O5: ${{ steps.test5.outcome }}
         run: |
           set -euo pipefail
-          STATUS=skipped
-          DECISION=current_is_latest_stable
+          START_TIME=$(date +%s)
+          BASELINE_OK=true
           if [ "$INSTALL_OUTCOME" != success ] || [ "$VERSION_OUTCOME" != success ]; then
-            STATUS=skipped
-            DECISION=baseline_failed
+            BASELINE_OK=false
           fi
           for i in 1 2 3 4 5; do
             s="S$i"; o="O$i"
             if [ "${!s}" != passed ] || [ "${!o}" != success ]; then
-              STATUS=skipped
-              DECISION=baseline_failed
+              BASELINE_OK=false
             fi
           done
+
           # Keep individual writes visible to the advisory output scanner.
-          # shellcheck disable=SC2129
-          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
-          echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
-          echo "duration=0" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$BASELINE_TAG" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-          echo "regression_result=The immutable baseline is the latest stable Firecracker release reviewed on 2026-11-04." >> "$GITHUB_OUTPUT"
-          echo "comparison=No newer stable release exists, so a separate upgrade runtime is not applicable." >> "$GITHUB_OUTPUT"
+          if [ "$BASELINE_OK" != true ]; then
+            {
+              echo "status=skipped"
+              echo "decision=baseline_failed"
+              echo "latest_version=not_checked"
+              echo "next_installed_version=not_installed"
+              echo "regression_result=Latest-release lookup was not attempted because the Firecracker baseline failed."
+              echo "comparison=Tests 1-5 must pass before Test 6 can compare the tested baseline with the official latest stable release."
+              echo "duration=$(($(date +%s) - START_TIME))"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          RESPONSE=$(mktemp)
+          trap 'rm -f "$RESPONSE"' EXIT
+          emit_lookup_failure() {
+            local reason="$1"
+            {
+              echo "status=failed"
+              echo "decision=next_lookup_failed"
+              echo "latest_version=lookup_failed"
+              echo "next_installed_version=not_installed"
+              echo "regression_result=The official GitHub latest-release lookup failed."
+              echo "comparison=Tests 1-5 passed for ${BASELINE_TAG}, but ${reason}. Test 6 failed closed and makes no latest-release or upgrade-safety claim."
+              echo "duration=$(($(date +%s) - START_TIME))"
+            } >> "$GITHUB_OUTPUT"
+            exit 1
+          }
+
+          CURL_ARGS=(
+            --silent
+            --show-error
+            --location
+            --connect-timeout 15
+            --max-time 60
+            --retry 2
+            --retry-delay 1
+            --retry-all-errors
+            --header "Accept: application/vnd.github+json"
+            --header "X-GitHub-Api-Version: 2022-11-28"
+            --output "$RESPONSE"
+            --write-out '%{http_code}'
+          )
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            CURL_ARGS+=(--header "Authorization: Bearer ${GITHUB_TOKEN}")
+          fi
+          RELEASES_URL="${GITHUB_API_URL:-https://api.github.com}/repos/firecracker-microvm/firecracker/releases/latest"
+          if ! HTTP_STATUS=$(curl "${CURL_ARGS[@]}" "$RELEASES_URL"); then
+            emit_lookup_failure "the GitHub API request did not complete"
+          fi
+          if [ "$HTTP_STATUS" != 200 ]; then
+            emit_lookup_failure "the GitHub API returned HTTP ${HTTP_STATUS}"
+          fi
+
+          if ! RELEASE_INFO=$(python3 - "$RESPONSE" "$BASELINE_TAG" <<'PY'
+          import json
+          import re
+          import sys
+
+          response_path, baseline_tag = sys.argv[1:]
+          with open(response_path, encoding="utf-8") as response:
+              release = json.load(response)
+          if not isinstance(release, dict):
+              raise ValueError("GitHub release response must be an object")
+          if release.get("draft") is not False or release.get("prerelease") is not False:
+              raise ValueError("GitHub latest release must be stable and published")
+          latest_tag = release.get("tag_name")
+          if not isinstance(latest_tag, str):
+              raise ValueError("GitHub latest release has no tag name")
+          expected_url = (
+              "https://github.com/firecracker-microvm/firecracker/releases/tag/"
+              + latest_tag
+          )
+          if release.get("html_url") != expected_url:
+              raise ValueError("GitHub latest release URL does not match Firecracker")
+
+          pattern = re.compile(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+
+          def version(tag: str) -> tuple[int, int, int]:
+              match = pattern.fullmatch(tag)
+              if match is None:
+                  raise ValueError(f"non-canonical Firecracker release tag: {tag!r}")
+              return tuple(int(part) for part in match.groups())
+
+          baseline = version(baseline_tag)
+          latest = version(latest_tag)
+          if latest < baseline:
+              raise ValueError("GitHub latest release is older than the tested baseline")
+          relation = "current" if latest == baseline else "newer"
+          print(f"{relation}\t{latest_tag}")
+          PY
+          ); then
+            emit_lookup_failure "the GitHub response did not identify a valid stable Firecracker release"
+          fi
+
+          RELATION=${RELEASE_INFO%%$'\t'*}
+          LATEST_TAG=${RELEASE_INFO#*$'\t'}
+          if [ -z "$LATEST_TAG" ] || [ "$RELATION" = "$RELEASE_INFO" ]; then
+            emit_lookup_failure "the validated GitHub response was incomplete"
+          fi
+
+          if [ "$RELATION" = current ]; then
+            {
+              echo "status=skipped"
+              echo "decision=current_is_latest_stable"
+              echo "latest_version=$LATEST_TAG"
+              echo "next_installed_version=not_installed"
+              echo "regression_result=GitHub's official latest-release endpoint reports ${LATEST_TAG}, matching the tested Firecracker baseline."
+              echo "comparison=Tests 1-5 passed for ${BASELINE_TAG}; no newer stable Firecracker release is currently published, so no candidate was installed."
+              echo "duration=$(($(date +%s) - START_TIME))"
+            } >> "$GITHUB_OUTPUT"
+          elif [ "$RELATION" = newer ]; then
+            {
+              echo "status=skipped"
+              echo "decision=upgrade_candidate_available"
+              echo "latest_version=$LATEST_TAG"
+              echo "next_installed_version=not_installed"
+              echo "regression_result=GitHub's official latest-release endpoint reports newer stable Firecracker release ${LATEST_TAG}."
+              echo "comparison=Tests 1-5 passed for ${BASELINE_TAG}. Candidate ${LATEST_TAG} requires separate native Arm64 KVM validation; it was not installed and no upgrade-safety claim is made."
+              echo "duration=$(($(date +%s) - START_TIME))"
+            } >> "$GITHUB_OUTPUT"
+          else
+            emit_lookup_failure "the validated GitHub response had an unsupported release relationship"
+          fi
 
       - name: Calculate fail-closed test summary
         id: summary
@@ -363,6 +479,7 @@ jobs:
           done
           if [ "$O6" = success ] && {
             { [ "$CORE_FAILED" -eq 0 ] && [ "$S6" = skipped ] && [ "$DECISION" = current_is_latest_stable ]; } ||
+            { [ "$CORE_FAILED" -eq 0 ] && [ "$S6" = skipped ] && [ "$DECISION" = upgrade_candidate_available ]; } ||
             { [ "$CORE_FAILED" -gt 0 ] && [ "$S6" = skipped ] && [ "$DECISION" = baseline_failed ]; }
           }; then
             SKIPPED=1

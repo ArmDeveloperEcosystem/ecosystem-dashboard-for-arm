@@ -46,6 +46,52 @@ class WorkflowFixtures(unittest.TestCase):
             env.update({f"S{i}": "passed", f"O{i}": "success", f"D{i}": "1"})
         return env
 
+    def release_payload(self, tag=None, **overrides):
+        tag = tag or JOB["env"]["BASELINE_TAG"]
+        payload = {
+            "tag_name": tag,
+            "html_url": (
+                "https://github.com/firecracker-microvm/firecracker/releases/tag/"
+                + tag
+            ),
+            "draft": False,
+            "prerelease": False,
+        }
+        payload.update(overrides)
+        return json.dumps(payload, sort_keys=True)
+
+    def curl_fixture(self, payload=None, *, status="200", exit_code=0):
+        if exit_code:
+            return f"#!/bin/bash\nexit {exit_code}\n"
+        payload = self.release_payload() if payload is None else payload
+        return """#!/bin/bash
+set -euo pipefail
+output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output)
+      output="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+[ -n "$output" ]
+printf '%%s' %s > "$output"
+printf '%%s' %s
+""" % (shlex.quote(payload), shlex.quote(status))
+
+    def run_test6(self, *, payload=None, status="200", exit_code=0, env=None):
+        values = self.summary_env()
+        values.update(env or {})
+        return self.shell(
+            STEPS["test6"]["run"],
+            values,
+            {"curl": self.curl_fixture(payload, status=status, exit_code=exit_code)},
+        )
+
     def test_contract(self):
         trigger = DOCUMENT.get("on", DOCUMENT.get(True))
         self.assertIn("workflow_dispatch", trigger)
@@ -57,12 +103,81 @@ class WorkflowFixtures(unittest.TestCase):
         self.assertEqual("applicable", JOB["outputs"]["regression_policy"])
         actions = [step["uses"] for step in JOB["steps"] if "uses" in step]
         self.assertEqual(["actions/checkout@11d5960a326750d5838078e36cf38b85af677262"], actions)
+        self.assertEqual("${{ github.token }}", STEPS["test6"]["env"]["GITHUB_TOKEN"])
 
     def test_latest_stable_decision_is_not_counted_as_passed(self):
         result, values = self.shell(STEPS["summary"]["run"], self.summary_env())
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(("5", "0", "1", "success"),
                          tuple(values[k] for k in ("passed", "failed", "skipped", "overall_status")))
+
+    def test_official_latest_release_matching_baseline_is_skipped_honestly(self):
+        result, values = self.run_test6()
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(
+            ("skipped", "current_is_latest_stable", JOB["env"]["BASELINE_TAG"],
+             "not_installed"),
+            tuple(values[key] for key in (
+                "status", "decision", "latest_version", "next_installed_version"
+            )),
+        )
+        self.assertIn("official latest-release endpoint", values["regression_result"])
+        self.assertNotIn("reviewed on", values["regression_result"])
+
+    def test_newer_official_release_is_deferred_without_upgrade_claim(self):
+        result, values = self.run_test6(payload=self.release_payload("v1.18.0"))
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(
+            ("skipped", "upgrade_candidate_available", "v1.18.0", "not_installed"),
+            tuple(values[key] for key in (
+                "status", "decision", "latest_version", "next_installed_version"
+            )),
+        )
+        self.assertIn("requires separate native Arm64 KVM validation", values["comparison"])
+        self.assertIn("no upgrade-safety claim", values["comparison"])
+
+        summary_env = self.summary_env()
+        summary_env.update(
+            S6=values["status"],
+            O6="success",
+            D6=values["duration"],
+            DECISION=values["decision"],
+        )
+        summary, counts = self.shell(STEPS["summary"]["run"], summary_env)
+        self.assertEqual(0, summary.returncode, summary.stdout + summary.stderr)
+        self.assertEqual(
+            ("5", "0", "1", "success"),
+            tuple(counts[key] for key in (
+                "passed", "failed", "skipped", "overall_status"
+            )),
+        )
+
+    def test_latest_release_lookup_failures_fail_closed(self):
+        cases = {
+            "transport": {"exit_code": 7},
+            "http": {"status": "503"},
+            "malformed": {"payload": "not-json"},
+            "prerelease": {
+                "payload": self.release_payload("v1.18.0", prerelease=True)
+            },
+            "older_than_baseline": {"payload": self.release_payload("v1.16.0")},
+            "wrong_repository": {
+                "payload": self.release_payload(
+                    html_url="https://github.com/example/firecracker/releases/tag/v1.17.0"
+                )
+            },
+        }
+        for name, fixture in cases.items():
+            with self.subTest(name=name):
+                result, values = self.run_test6(**fixture)
+                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertEqual(
+                    ("failed", "next_lookup_failed", "lookup_failed", "not_installed"),
+                    tuple(values[key] for key in (
+                        "status", "decision", "latest_version", "next_installed_version"
+                    )),
+                )
+                self.assertIn("failed closed", values["comparison"])
 
     def test_missing_failed_or_forged_pass_cannot_turn_green(self):
         faults = [{"S5": ""}, {"O5": "failure"}, {"S5": "failed"},
@@ -84,6 +199,7 @@ class WorkflowFixtures(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(("skipped", "baseline_failed"),
                          (values["status"], values["decision"]))
+        self.assertEqual("not_checked", values["latest_version"])
 
 
     def test_pipeline_summary_matches_repository_regression_policy(self):
@@ -97,7 +213,10 @@ class WorkflowFixtures(unittest.TestCase):
             with self.subTest(fault=fault):
                 env = self.summary_env()
                 env.update(fault)
-                regression, evidence = self.shell(STEPS["test6"]["run"], env)
+                regression, evidence = self.shell(
+                    STEPS["test6"]["run"], env,
+                    {"curl": self.curl_fixture()},
+                )
                 self.assertEqual(0, regression.returncode, regression.stderr)
                 env.update(S6=evidence["status"], O6="success", DECISION=evidence["decision"])
                 result, values = self.shell(STEPS["summary"]["run"], env)
@@ -119,7 +238,8 @@ class WorkflowFixtures(unittest.TestCase):
                 semantic = policy.expected_regression_metadata(
                     decision=evidence["decision"], core_failed=int(values["core_failed"]))
                 expected_status = (
-                    "skipped" if semantic["status"] == "not_applicable"
+                    "skipped"
+                    if semantic["status"] in {"not_applicable", "deferred"}
                     else semantic["status"]
                 )
                 self.assertEqual(expected_status, evidence["status"])
