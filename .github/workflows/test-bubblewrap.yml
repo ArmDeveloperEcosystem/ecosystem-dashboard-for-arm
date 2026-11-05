@@ -20,7 +20,7 @@ on:
       regression_result: {description: Regression result, value: '${{ jobs.test-bubblewrap.outputs.regression_result }}'}
       regression_comparison: {description: Regression comparison, value: '${{ jobs.test-bubblewrap.outputs.regression_comparison }}'}
       regression_current_version: {description: Baseline version, value: '${{ jobs.test-bubblewrap.outputs.regression_current_version }}'}
-      regression_latest_version: {description: Pinned newer candidate, value: '${{ jobs.test-bubblewrap.outputs.regression_latest_version }}'}
+      regression_latest_version: {description: Authoritative current GitHub latest release, value: '${{ jobs.test-bubblewrap.outputs.regression_latest_version }}'}
       regression_next_installed_version: {description: Installed candidate version, value: '${{ jobs.test-bubblewrap.outputs.regression_next_installed_version }}'}
       run_id: {description: GitHub run ID, value: '${{ jobs.test-bubblewrap.outputs.run_id }}'}
       run_attempt: {description: GitHub run attempt, value: '${{ jobs.test-bubblewrap.outputs.run_attempt }}'}
@@ -83,9 +83,18 @@ jobs:
           bash .github/actions/apt-bootstrap/bootstrap.sh \
             --packages 'meson ninja-build libcap-dev libcap2-bin pkg-config gcc libc6-dev python3' \
             --no-install-recommends true
-          # Upstream CI requires user namespaces; this changes only this disposable runner.
-          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+          # Upstream CI requires user namespaces; record the disposable runner's
+          # policy so the always-running cleanup step can restore it exactly.
+          original_userns_policy=unavailable
+          if original_userns_policy=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null); then
+            case "$original_userns_policy" in
+              0|1) ;;
+              *) echo "Unexpected kernel.apparmor_restrict_unprivileged_userns value: $original_userns_policy" >&2; exit 1 ;;
+            esac
+            echo "APPARMOR_USERNS_ORIGINAL=$original_userns_policy" >> "$GITHUB_ENV"
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          else
+            echo 'APPARMOR_USERNS_ORIGINAL=unavailable' >> "$GITHUB_ENV"
           fi
           unshare --user --map-root-user --mount true
           prefix="$RUNNER_TEMP/bubblewrap-$BASELINE_VERSION"
@@ -155,12 +164,10 @@ jobs:
         continue-on-error: true
         env:
           CORE_OUTCOMES: ${{ toJSON(steps) }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          {
-            echo "current_version=$BASELINE_VERSION"
-            echo "latest_version=$CANDIDATE_VERSION"
-          } >> "$GITHUB_OUTPUT"
+          echo "current_version=$BASELINE_VERSION" >> "$GITHUB_OUTPUT"
           if ! python3 -c 'import json,os; s=json.loads(os.environ["CORE_OUTCOMES"]); assert all(s.get("test"+str(i),{}).get("outcome")=="success" and s["test"+str(i)]["outputs"].get("status")=="passed" for i in range(1,6))'; then
             {
               echo status=skipped
@@ -170,7 +177,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          start=$SECONDS; status=failed; decision=next_install_failed
+          start=$SECONDS; status=failed; decision=next_lookup_failed
           finish() {
             code=$?
             {
@@ -181,15 +188,73 @@ jobs:
             exit "$code"
           }
           trap finish EXIT
+          latest_release_json="$RUNNER_TEMP/bubblewrap-latest-release.json"
+          if ! curl --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --retry 3 --connect-timeout 20 --max-time 60 \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            'https://api.github.com/repos/containers/bubblewrap/releases/latest' \
+            --output "$latest_release_json"; then
+            echo "regression_result=Authoritative GitHub latest-release lookup failed; no candidate was tested." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if ! latest_version=$(python3 - "$latest_release_json" <<'PY'
+          import json
+          import re
+          import sys
+
+          with open(sys.argv[1], encoding='utf-8') as release_file:
+              release = json.load(release_file)
+          tag = release.get('tag_name')
+          if release.get('draft') is not False or release.get('prerelease') is not False:
+              raise SystemExit('GitHub latest release must be a stable, published release')
+          match = re.fullmatch(r'v([0-9]+(?:\.[0-9]+){2})', tag or '')
+          if not match:
+              raise SystemExit(f'Unexpected bubblewrap latest-release tag: {tag!r}')
+          print(match.group(1))
+          PY
+          ); then
+            echo "regression_result=GitHub latest-release metadata was invalid; no candidate was tested." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "latest_version=$latest_version" >> "$GITHUB_OUTPUT"
+          if test "$latest_version" != "$CANDIDATE_VERSION"; then
+            status=skipped
+            decision=upgrade_candidate_available
+            {
+              echo 'next_installed_version=not_installed'
+              echo "regression_result=GitHub reports $latest_version as the current latest release; pinned candidate $CANDIDATE_VERSION was not tested as latest."
+              echo 'comparison=The pinned candidate differs from the authoritative latest release; refresh its version and checksum before native validation.'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          decision=next_install_failed
           prefix="$RUNNER_TEMP/bubblewrap-$CANDIDATE_VERSION"
           bash .github/scripts/bubblewrap_smoke.sh build "$CANDIDATE_VERSION" "$CANDIDATE_SHA256" "$prefix"
           bash .github/scripts/bubblewrap_smoke.sh complete "$prefix" "$CANDIDATE_VERSION"
           {
             echo "next_installed_version=$CANDIDATE_VERSION"
-            echo regression_result='Pinned newer release passed native sandbox execution and isolation probes.'
-            echo comparison='Both releases passed the same version, ELF, execution, filesystem, namespace and upstream-suite checks; this is not an assertion that the candidate remains the latest release.'
+            echo regression_result='Authoritative latest release passed native sandbox execution and isolation probes.'
+            echo comparison='Both releases passed the same version, ELF, execution, filesystem, namespace and upstream-suite checks.'
           } >> "$GITHUB_OUTPUT"
           status=passed; decision=next_install_validated
+      - name: Restore unprivileged user namespace policy
+        id: cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          original_userns_policy=${APPARMOR_USERNS_ORIGINAL:-unavailable}
+          if test "$original_userns_policy" = unavailable; then
+            exit 0
+          fi
+          case "$original_userns_policy" in
+            0|1) ;;
+            *) echo "Refusing to restore unexpected user namespace policy: $original_userns_policy" >&2; exit 1 ;;
+          esac
+          sudo sysctl -w "kernel.apparmor_restrict_unprivileged_userns=$original_userns_policy"
+          test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = "$original_userns_policy"
       - name: Enforce six-test result
         id: summary
         if: always()
@@ -227,10 +292,12 @@ jobs:
               print(f'Invalid test contract: {error}', file=sys.stderr)
           if steps.get('install', {}).get('outcome') != 'success' or steps.get('install', {}).get('outputs', {}).get('install_status') != 'success' or steps.get('version', {}).get('outcome') != 'success':
               status = 'failure'
+          if steps.get('cleanup', {}).get('outcome') != 'success':
+              status = 'failure'
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               for key, value in {'passed': passed, 'failed': failed, 'skipped': skipped,
                   'core_failed': core_failed, 'duration': duration, 'overall_status': status,
-                  'badge_status': 'passing' if core_failed == 0 and steps.get('install', {}).get('outcome') == 'success' and steps.get('version', {}).get('outcome') == 'success' else 'failing'}.items():
+                  'badge_status': 'passing' if core_failed == 0 and steps.get('install', {}).get('outcome') == 'success' and steps.get('version', {}).get('outcome') == 'success' and steps.get('cleanup', {}).get('outcome') == 'success' else 'failing'}.items():
                   print(f'{key}={value}', file=output)
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
               print('## bubblewrap native Arm64 sandbox validation', file=summary)

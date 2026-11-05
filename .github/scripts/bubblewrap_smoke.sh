@@ -32,9 +32,10 @@ sandbox() {
     --proc /proc --dev /dev --tmpfs /tmp "$@"
 }
 
-execution_probe() {
+execution_probe() (
   local binary=$1 work
   work=$(mktemp -d "${RUNNER_TEMP:?}/bwrap-execution.XXXXXX")
+  trap 'rm -rf -- "$work"' EXIT
   # Commands expand inside the sandbox shell.
   # shellcheck disable=SC2016
   sandbox "$binary" /bin/sh -ec \
@@ -44,11 +45,12 @@ execution_probe() {
   local code=0
   sandbox "$binary" /bin/sh -c 'exit 23' > "$work/nonzero.log" 2>&1 || code=$?
   test "$code" -eq 23
-}
+)
 
-readonly_probe() {
+readonly_probe() (
   local binary=$1 work
   work=$(mktemp -d "${RUNNER_TEMP:?}/bwrap-readonly.XXXXXX")
+  trap 'rm -rf -- "$work"' EXIT
   printf protected > "$work/protected"
   # Positional arguments belong to the sandbox shell.
   # shellcheck disable=SC2016
@@ -57,11 +59,12 @@ readonly_probe() {
     sh "$work/protected" > "$work/output" 2> "$work/denial.log"
   grep -Fxq BWRAP_READONLY_OK "$work/output"
   test "$(cat "$work/protected")" = protected
-}
+)
 
-namespaces_probe() {
+namespaces_probe() (
   local binary=$1 work host_pid host_net
   work=$(mktemp -d "${RUNNER_TEMP:?}/bwrap-namespaces.XXXXXX")
+  trap 'rm -rf -- "$work"' EXIT
   host_pid=$(readlink /proc/self/ns/pid)
   host_net=$(readlink /proc/self/ns/net)
   test -n "$host_pid"
@@ -72,7 +75,7 @@ namespaces_probe() {
     'inner_pid=$(readlink /proc/self/ns/pid) || exit 1; inner_net=$(readlink /proc/self/ns/net) || exit 1; test -n "$inner_pid"; test -n "$inner_net"; test "$inner_pid" != "$1"; test "$inner_net" != "$2"; echo BWRAP_NAMESPACES_OK' \
     sh "$host_pid" "$host_net" > "$work/output"
   grep -Fxq BWRAP_NAMESPACES_OK "$work/output"
-}
+)
 
 suite_probe() {
   local prefix=$1
