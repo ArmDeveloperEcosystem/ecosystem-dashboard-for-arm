@@ -95,7 +95,7 @@ class PackageWorkflowTests(unittest.TestCase):
         self.assertEqual(self.job["steps"][0]["uses"], CHECKOUT)
         self.assertEqual(self.job["steps"][0]["with"]["persist-credentials"], "false")
         self.assertNotIn("||", self.steps["version"]["run"])
-        self.assertIn("KVM required", self.job["outputs"]["package_name"])
+        self.assertEqual(self.job["outputs"]["package_name"], "Microsandbox")
 
     def test_shell_syntax_and_embedded_python(self):
         for step in self.job["steps"]:
