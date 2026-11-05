@@ -311,23 +311,28 @@ jobs:
           S5: ${{ steps.test5.outputs.status }}
           O5: ${{ steps.test5.outcome }}
           BUSYBOX: ${{ steps.install.outputs.busybox_path }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           STATUS=failed
-          DECISION=next_regression_failed
-          LATEST_VERSION="$CANDIDATE_TAG"
+          DECISION=next_lookup_failed
+          LATEST_VERSION=not_selected
           NEXT_INSTALLED_VERSION=not_installed
-          REGRESSION_RESULT="The newer gVisor release did not complete the Arm64 systrap guest smoke."
-          COMPARISON="The baseline passed, but the newer release failed the same OCI guest behavior."
+          REGRESSION_RESULT="The authoritative latest stable gVisor release could not be selected."
+          COMPARISON="No latest-release claim or candidate validation is valid without a successful authoritative lookup."
           CANDIDATE_DIR=
+          RELEASE_JSON=
           finish() {
             rc=$?
             trap - EXIT
             if [ -n "$CANDIDATE_DIR" ] && ! rm -rf "$CANDIDATE_DIR"; then
               rc=1
             fi
-            if [ "$rc" -ne 0 ] && [ "$DECISION" != baseline_failed ]; then
+            if [ -n "$RELEASE_JSON" ] && ! rm -f "$RELEASE_JSON"; then
+              rc=1
+            fi
+            if [ "$rc" -ne 0 ] && [ "$DECISION" != baseline_failed ] && [ "$DECISION" != next_lookup_failed ]; then
               STATUS=failed
               DECISION=next_regression_failed
             fi
@@ -363,7 +368,44 @@ jobs:
           if [ "$DECISION" = baseline_failed ]; then
             exit 0
           fi
+          RELEASE_JSON=$(mktemp "$RUNNER_TEMP/gvisor-latest.XXXXXX.json")
+          curl --fail --silent --show-error --location --retry 3 \
+            --connect-timeout 15 --max-time 60 \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Authorization: Bearer ${GH_TOKEN:?}" \
+            "https://api.github.com/repos/google/gvisor/releases/latest" -o "$RELEASE_JSON"
+          unset GH_TOKEN GITHUB_TOKEN
+          LOOKED_UP_VERSION=$(jq -er '
+            select(.draft == false and .prerelease == false) |
+            select(.published_at | type == "string" and length > 0) |
+            .tag_name |
+            select(type == "string" and test("^release-[0-9]{8}\\.[0-9]+$"))
+          ' "$RELEASE_JSON")
+          LATEST_VERSION="$LOOKED_UP_VERSION"
+          [[ "$CANDIDATE_TAG" =~ ^release-([0-9]{8})\.([0-9]+)$ ]]
+          CANDIDATE_DATE=${BASH_REMATCH[1]}
+          CANDIDATE_REVISION=$((10#${BASH_REMATCH[2]}))
+          [[ "$LATEST_VERSION" =~ ^release-([0-9]{8})\.([0-9]+)$ ]]
+          LATEST_DATE=${BASH_REMATCH[1]}
+          LATEST_REVISION=$((10#${BASH_REMATCH[2]}))
+          if [ "$LATEST_VERSION" != "$CANDIDATE_TAG" ]; then
+            if [[ "$LATEST_DATE" > "$CANDIDATE_DATE" ]] || \
+              { [ "$LATEST_DATE" = "$CANDIDATE_DATE" ] && [ "$LATEST_REVISION" -gt "$CANDIDATE_REVISION" ]; }; then
+              STATUS=deferred
+              DECISION=upgrade_candidate_available
+              REGRESSION_RESULT="GitHub reports newer stable gVisor release $LATEST_VERSION; the unpinned release was not downloaded or executed."
+              COMPARISON="Pinned candidate $CANDIDATE_TAG is stale. Pin $LATEST_VERSION and its publisher checksum before native Arm64 validation."
+              exit 0
+            fi
+            REGRESSION_RESULT="GitHub latest stable release $LATEST_VERSION precedes pinned candidate $CANDIDATE_TAG."
+            COMPARISON="Authoritative release metadata and the pinned candidate disagree; validation failed closed."
+            exit 1
+          fi
           test -n "$BUSYBOX"
+          DECISION=next_regression_failed
+          REGRESSION_RESULT="The pinned latest stable gVisor release did not complete the Arm64 systrap guest smoke."
+          COMPARISON="The baseline passed, but the pinned latest stable release failed the same OCI guest behavior."
           CANDIDATE_DIR=$(mktemp -d "$RUNNER_TEMP/gvisor-candidate.XXXXXX")
           ARCHIVE="$CANDIDATE_DIR/gvisor-aarch64.tar.bz2"
           curl --fail --location --retry 3 --connect-timeout 15 --max-time 180 \
@@ -382,8 +424,8 @@ jobs:
           STATUS=passed
           DECISION=validated_next_release
           NEXT_INSTALLED_VERSION="$CANDIDATE_TAG"
-          REGRESSION_RESULT="The newer gVisor release passed the same native Arm64 systrap OCI guest smoke."
-          COMPARISON="Both baseline and newer releases passed marker, tmpfs write, read-only root, and exit-code propagation checks."
+          REGRESSION_RESULT="GitHub latest stable release $LATEST_VERSION matched the pinned candidate and passed the native Arm64 systrap OCI guest smoke."
+          COMPARISON="Both the baseline and pinned latest stable release passed marker, tmpfs write, read-only root, and exit-code propagation checks."
 
       - name: Calculate fail-closed test summary
         id: summary
@@ -431,6 +473,8 @@ jobs:
           done
           if [ "$CORE_FAILED" -eq 0 ] && [ "$O6" = success ] && [ "$S6" = passed ] && [ "$DECISION" = validated_next_release ]; then
             PASSED=$((PASSED + 1))
+          elif [ "$CORE_FAILED" -eq 0 ] && [ "$O6" = success ] && [ "$S6" = deferred ] && [ "$DECISION" = upgrade_candidate_available ]; then
+            SKIPPED=1
           elif [ "$CORE_FAILED" -gt 0 ] && [ "$O6" = success ] && [ "$S6" = skipped ] && [ "$DECISION" = baseline_failed ]; then
             SKIPPED=1
           else
@@ -458,6 +502,10 @@ jobs:
           SKIPPED: ${{ steps.summary.outputs.skipped || '0' }}
           REGRESSION: ${{ steps.test6.outputs.status || 'failed' }}
           DECISION: ${{ steps.test6.outputs.decision || 'baseline_failed' }}
+          LATEST_VERSION: ${{ steps.test6.outputs.latest_version || 'not_selected' }}
+          NEXT_INSTALLED_VERSION: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          REGRESSION_RESULT: ${{ steps.test6.outputs.regression_result || 'No regression validation evidence.' }}
+          COMPARISON: ${{ steps.test6.outputs.comparison || 'No regression validation evidence.' }}
         run: |
           {
             echo "## gVisor OCI guest smoke under systrap (no KVM)"
@@ -465,6 +513,8 @@ jobs:
             echo "- Baseline status: $STATUS; passed=$PASSED failed=$FAILED skipped/deferred=$SKIPPED"
             echo "- Runner: ubuntu-24.04-arm"
             echo "- Scope: gVisor OCI guest smoke under systrap (no KVM)."
-            echo "- Test 6: $REGRESSION ($DECISION). The pinned newer release is exercised with the same native Arm64 systrap guest behavior."
+            echo "- Test 6: $REGRESSION ($DECISION); authoritative latest=$LATEST_VERSION; installed candidate=$NEXT_INSTALLED_VERSION."
+            echo "- Test 6 result: $REGRESSION_RESULT"
+            echo "- Comparison: $COMPARISON"
             echo "- Historical Arm minimum is not exercised by this modern baseline."
           } >> "$GITHUB_STEP_SUMMARY"

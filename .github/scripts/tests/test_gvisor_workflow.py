@@ -40,7 +40,10 @@ class WorkflowFixtures(unittest.TestCase):
                "INSTALL_OUTCOME": "success", "VERSION_OUTCOME": "success",
                "CANDIDATE_TAG": JOB["env"]["CANDIDATE_TAG"],
                "CANDIDATE_SHA256": JOB["env"]["CANDIDATE_SHA256"],
-               "BUSYBOX": "/fixture/busybox"}
+               "BUSYBOX": "/fixture/busybox", "GH_TOKEN": "fixture-token",
+               "API_LATEST_TAG": JOB["env"]["CANDIDATE_TAG"],
+               "API_LOOKUP_FAILURE": "0", "API_MALFORMED": "0",
+               "EXPECT_NO_DOWNLOAD": "0"}
         for i in range(1, 6):
             env.update({f"S{i}": "passed", f"O{i}": "success", f"D{i}": "1"})
         return env
@@ -49,11 +52,28 @@ class WorkflowFixtures(unittest.TestCase):
         return {
             "curl": """#!/bin/bash
 set -eu
+output=
+url=
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = -o ]; then printf fixture > "$2"; exit 0; fi
-  shift
+  case "$1" in
+    -o) output=$2; shift 2 ;;
+    http*) url=$1; shift ;;
+    *) shift ;;
+  esac
 done
-exit 2
+test -n "$output"
+if [[ "$url" == */releases/latest ]]; then
+  [ "$API_LOOKUP_FAILURE" = 0 ] || exit 22
+  if [ "$API_MALFORMED" = 1 ]; then
+    printf '{}\n' > "$output"
+  else
+    printf '{"tag_name":"%s","draft":false,"prerelease":false,"published_at":"2026-11-02T00:00:00Z"}\n' \
+      "$API_LATEST_TAG" > "$output"
+  fi
+  exit 0
+fi
+[ "$EXPECT_NO_DOWNLOAD" = 0 ] || exit 97
+printf fixture > "$output"
 """,
             "sha256sum": "#!/bin/sh\ncat >/dev/null\nexit 0\n",
             "tar": """#!/bin/bash
@@ -133,6 +153,46 @@ exec "$@"
         self.assertEqual("validated_next_release", values["decision"])
         self.assertEqual(JOB["env"]["CANDIDATE_TAG"], values["latest_version"])
         self.assertEqual(JOB["env"]["CANDIDATE_TAG"], values["next_installed_version"])
+        self.assertIn("matched the pinned candidate", values["regression_result"])
+
+    def test_newer_unpinned_stable_release_is_explicitly_deferred(self):
+        env = self.summary_env()
+        env.update(API_LATEST_TAG="release-20261103.0", EXPECT_NO_DOWNLOAD="1")
+        result, values = self.shell(
+            STEPS["test6"]["run"], env, self.candidate_commands()
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("deferred", values["status"])
+        self.assertEqual("upgrade_candidate_available", values["decision"])
+        self.assertEqual("release-20261103.0", values["latest_version"])
+        self.assertEqual("not_installed", values["next_installed_version"])
+
+        env.update(S6=values["status"], O6="success", DECISION=values["decision"])
+        summary, totals = self.shell(STEPS["summary"]["run"], env)
+        self.assertEqual(0, summary.returncode, summary.stdout + summary.stderr)
+        self.assertEqual(("5", "0", "1", "success"),
+                         tuple(totals[key] for key in
+                               ("passed", "failed", "skipped", "overall_status")))
+
+    def test_latest_release_lookup_errors_fail_closed(self):
+        faults = (
+            ({"API_LOOKUP_FAILURE": "1"}, "not_selected"),
+            ({"API_MALFORMED": "1"}, "not_selected"),
+            ({"API_LATEST_TAG": "release-candidate"}, "not_selected"),
+            ({"API_LATEST_TAG": "release-20261026.0"}, "release-20261026.0"),
+        )
+        for fault, expected_latest in faults:
+            with self.subTest(fault=fault):
+                env = self.summary_env()
+                env.update(fault, EXPECT_NO_DOWNLOAD="1")
+                result, values = self.shell(
+                    STEPS["test6"]["run"], env, self.candidate_commands()
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual("failed", values["status"])
+                self.assertEqual("next_lookup_failed", values["decision"])
+                self.assertEqual(expected_latest, values["latest_version"])
+                self.assertEqual("not_installed", values["next_installed_version"])
 
 
     def test_pipeline_summary_matches_repository_regression_policy(self):
