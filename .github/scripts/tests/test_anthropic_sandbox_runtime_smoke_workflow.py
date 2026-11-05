@@ -46,6 +46,7 @@ class SmokeWorkflowTests(unittest.TestCase):
                 cwd=ROOT, env=env, text=True, capture_output=True, timeout=15,
             )
             values = dict(line.split("=", 1) for line in output.read_text().splitlines()) if output.exists() else {}
+            self.last_report = report.read_text() if report.exists() else ""
             return process, values
 
     def baseline(self):
@@ -60,8 +61,8 @@ class SmokeWorkflowTests(unittest.TestCase):
                 "outcome": "success", "outputs": {"status": "passed", "duration": str(ordinal)}}
         return states
 
-    def summarize(self, states):
-        process, outputs = self.execute("test6", states)
+    def summarize(self, states, **extra):
+        process, outputs = self.execute("test6", states, **extra)
         self.assertEqual(process.returncode, 0, process.stderr)
         states = copy.deepcopy(states)
         states["test6"] = {"outcome": "success", "outputs": outputs}
@@ -114,17 +115,29 @@ class SmokeWorkflowTests(unittest.TestCase):
         self.assertEqual(regression["status"], "skipped")
         self.assertEqual(regression["latest_version"], "0.0.81")
         self.assertEqual(regression["next_installed_version"], "not_installed")
+        self.assertIn(
+            "The tested baseline 0.0.81 matches the live npm latest tag.",
+            self.last_report,
+        )
+        self.assertNotIn("that newer release was not installed", self.last_report)
 
     def test_new_npm_latest_is_reported_without_claiming_it_passed(self):
         endpoint = "data:application/json,%7B%22version%22%3A%220.0.82%22%7D"
-        process, outputs = self.execute(
-            "test6", self.baseline(), NPM_LATEST_ENDPOINT=endpoint
+        process, summary, outputs = self.summarize(
+            self.baseline(), NPM_LATEST_ENDPOINT=endpoint
         )
         self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(summary["overall_status"], "success")
         self.assertEqual(outputs["decision"], "upgrade_candidate_available")
         self.assertEqual(outputs["status"], "skipped")
         self.assertEqual(outputs["latest_version"], "0.0.82")
         self.assertEqual(outputs["next_installed_version"], "not_installed")
+        self.assertIn(
+            "The tested baseline 0.0.81 passed Tests 1-5. Live npm latest is "
+            "0.0.82; that newer release was not installed or validated in this run.",
+            self.last_report,
+        )
+        self.assertNotIn("matches the live npm latest tag", self.last_report)
 
     def test_latest_lookup_failure_fails_closed(self):
         process, outputs = self.execute(
