@@ -101,6 +101,17 @@ class BubblewrapWorkflowTests(unittest.TestCase):
         self.assertIn('test "$("$BWRAP_BINARY" --version)"', self.steps['version']['run'])
         self.assertNotIn('|| true', self.steps['version']['run'])
 
+    def test_job_outputs_fail_closed_and_use_the_linux_dashboard_route(self):
+        outputs = self.job['outputs']
+        self.assertIn("|| 'not_installed'", outputs['package_version'])
+        self.assertIn("|| 'failed'", outputs['regression_status'])
+        self.assertIn("|| 'not_installed'", outputs['regression_current_version'])
+        self.assertIn("|| 'not_checked'", outputs['regression_latest_version'])
+        self.assertIn(
+            'dashboard_link=/linux/opensource_packages/bubblewrap',
+            self.steps['metadata']['run'],
+        )
+
     def test_every_dispatched_probe_function_exists(self):
         source = HELPER.read_text()
         for mode in ('execution', 'readonly', 'namespaces'):
