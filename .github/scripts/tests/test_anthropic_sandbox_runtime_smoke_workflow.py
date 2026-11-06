@@ -82,7 +82,14 @@ class SmokeWorkflowTests(unittest.TestCase):
         self.assertIs(actions[0]["with"]["persist-credentials"], False)
         self.assertNotIn("'unknown'", WORKFLOW.read_text())
         self.assertIn("validate_six_test_result", self.steps["summary"]["run"])
+        self.assertIn("|| 'not_installed'", self.job["outputs"]["package_version"])
+        self.assertIn("|| 'failed'", self.job["outputs"]["regression_status"])
         self.assertIn("|| 'baseline_failed'", self.job["outputs"]["regression_decision"])
+        self.assertIn("|| 'not_evaluated'", self.job["outputs"]["regression_latest_version"])
+        self.assertIn(
+            "dashboard_link=/linux/opensource_packages/anthropic-sandbox-runtime",
+            self.steps["metadata"]["run"],
+        )
         for ordinal in range(1, 6):
             step = self.steps[f"test{ordinal}"]
             self.assertIs(step["continue-on-error"], True)
