@@ -249,7 +249,8 @@ function URLsearchAndfiltering(url_str) {
     //    2. Filter  (?license=)
     //    3. Filter  (?category=)
     //    4. Package (?package=)    must exactly match a URLIZED package name, or default to main page
-    const search_string = sanitizeInput(params.get('search') || '');
+    const search_value = params.get('search') || '';
+    const search_string = window.dashboardSearch ? search_value : sanitizeInput(search_value);
     const license_filter_string = sanitizeInput(params.get('license') || '');
     const category_filter_string = sanitizeInput(params.get('category') || '');
     const package_string = sanitizeInput(params.get('package') || '');
@@ -344,8 +345,9 @@ function smoothScrollForStickyFilters() {
 /* Hides (and shows) table elements by modifying the row's hidden attribute */
 function hideElements(all_path_cards,results_to_hide) {
     // Hide elements in array (and actively show all OTHER elements)
+    const hidden_cards = new Set(results_to_hide);
     for (let card of all_path_cards) {
-        if (results_to_hide.includes(card)) { 
+        if (hidden_cards.has(card)) {
                     
             // Hide card and subrow!
             card.setAttribute('hidden',true);
@@ -372,6 +374,11 @@ function hideElements(all_path_cards,results_to_hide) {
 
 /* Updates the UI to indicate the correct # of packages currently displayed */
 function updateShownNumber() {
+
+    if (window.dashboardSearch) {
+        window.dashboardSearch.updateCount();
+        return;
+    }
 
     // Update UI telling how many are displayed
     let current_num = document.getElementById('currently-shown-number').innerHTML;
@@ -489,6 +496,11 @@ function updateFacet(filter_group, item_name) {
     // Show/hide the clear filter option now
     updateClearFilterOption()
 
+    if (window.dashboardSearch) {
+        window.dashboardSearch.filtersChanged();
+        return;
+    }
+
     // Apply search and filters to current parameters
             // deal with ads search promise
     document.getElementById('search-box').value().then((value) => { 
@@ -596,6 +608,9 @@ function addFacet(element) {
 
 /* Reset all currently rendered radio-filter groups back to 'All'. */
 function clearAllFilters() {
+    if (window.dashboardSearch) {
+        window.dashboardSearch.resetFilters();
+    }
     // Reset ADS-checkboxes to select 'All'
     let checkable_inputs = document.querySelectorAll('input.checkable-input');
     for (let input of checkable_inputs) {
@@ -640,6 +655,9 @@ function searchByTitle(card,search_word_array) {
 
 /* Calls both search & filter logic, and returns all rows that should be hidden as list */
 function applySearchAndFilters(all_path_cards, search_string) {    
+    if (window.dashboardSearch) {
+        return window.dashboardSearch.rowsToHide(all_path_cards);
+    }
     // Skip search bits if no search string
     let skip_search = false;
     if ((typeof search_string) == 'undefined') {
@@ -679,6 +697,11 @@ function searchHandler(search_string) {
     // HANDLE if coming from ads search box (event.value) or URL (string)
     if (! (typeof search_string === 'string')) {
         search_string = search_string.value;
+    }
+
+    if (window.dashboardSearch) {
+        window.dashboardSearch.search(search_string);
+        return;
     }
 
     // Set page state to Browse, if not already
@@ -791,6 +814,9 @@ document.addEventListener("DOMContentLoaded", function () {
     // 1
     // Assign inputChangeHandler to search box
     const search_box = document.getElementById('search-box');
+    if (search_box && search_box.hasAttribute('data-conversational-search') && window.createDashboardSearch) {
+        window.dashboardSearch = window.createDashboardSearch(search_box);
+    }
     search_box.inputChangeHandler = searchHandler;    
 
     // 2

@@ -1,0 +1,162 @@
+"""Scoped KB retrieval and current-catalog validation; queries pass unchanged."""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections import OrderedDict
+
+import httpx
+
+from .catalog import DOC_TYPE, PLATFORM, Catalog, ScopedContractError
+
+KB_LIMIT = 50
+
+
+class SearchService:
+    def __init__(
+        self,
+        catalog: Catalog,
+        transport,
+        *,
+        endpoint,
+        headers=None,
+        scope_confirmed=False,
+    ):
+        if type(scope_confirmed) is not bool:
+            raise ValueError("scope_confirmed must be an explicit boolean")
+        self.catalog = catalog
+        self.transport = transport
+        self.endpoint = endpoint
+        self.scope_confirmed = scope_confirmed
+        self.headers = dict(headers or {})
+        self.cache = OrderedDict()
+        self.lock = threading.Lock()
+
+    def _retrieve(self, query, edition):
+        params = {"q": query, "k": KB_LIMIT, "doc_type": DOC_TYPE, "platform": PLATFORM}
+        if edition is not None:
+            params["edition"] = edition
+        key = (self.endpoint, query, KB_LIMIT, DOC_TYPE, PLATFORM, edition)
+        with self.lock:
+            cached = self.cache.get(key)
+            if cached and time.monotonic() - cached[0] < 300:
+                self.cache.move_to_end(key)
+                return cached[1]
+        response = self.transport(self.endpoint, params, dict(self.headers))
+        if not isinstance(response, dict) or not isinstance(
+            response.get("results"), list
+        ):
+            raise ScopedContractError("Missing scoped result list")
+        hits = response["results"]
+        if len(hits) > KB_LIMIT:
+            raise ScopedContractError("Provider exceeded the requested result limit")
+        # KB owns ranking and URL/edition deduplication. Validate every hit before
+        # caching, including hits a later local filter would otherwise remove.
+        mapped = []
+        omitted = 0
+        for hit in hits:
+            package = self.catalog.resolve_hit(hit, edition=edition)
+            if package is None:
+                omitted += 1
+                continue
+            mapped.append(package)
+        validated = (mapped, omitted)
+        with self.lock:
+            self.cache[key] = (time.monotonic(), validated)
+            self.cache.move_to_end(key)
+            while len(self.cache) > 128:
+                self.cache.popitem(last=False)
+        return validated
+
+    def search(self, query, filters=None):
+        supplied = filters or {}
+        constraints = {
+            "license": supplied.get("license", "all"),
+            "category": supplied.get("category"),
+            "tested_only": supplied.get("tested_only", False),
+        }
+        edition = {
+            "all": None,
+            "opensource": "open-source",
+            "commercial": "commercial",
+        }[constraints["license"]]
+        base = {
+            "query": query,
+            "results": [],
+            "notices": [],
+            "mode": "kb_scoped",
+            "status": "no_matches",
+            "total": 0,
+        }
+
+        def unavailable(notice):
+            base.update(mode="kb_unavailable", status="unavailable")
+            base["notices"].append(notice)
+            return base
+
+        if not self.scope_confirmed:
+            return unavailable(
+                "Knowledge-base search is unavailable: the scoped API contract has not "
+                "been confirmed. Browse packages by name using the dashboard search."
+            )
+        if not query.strip():
+            base["notices"].append("Enter a description to search the knowledge base.")
+            return base
+        try:
+            mapped, omitted = self._retrieve(query, edition)
+        except ScopedContractError:
+            return unavailable(
+                "Knowledge-base search is unavailable: the provider response did not "
+                "satisfy the required dashboard, Linux, edition, and canonical URL contract. "
+                "Browse packages by name using the dashboard search."
+            )
+        except (httpx.HTTPError, ValueError, TypeError, KeyError):
+            return unavailable(
+                "Knowledge-base search is temporarily unavailable. "
+                "Browse packages by name using the dashboard search."
+            )
+        notices = base["notices"]
+        notices.append(
+            "Showing up to 50 results ranked by relevance, not every possible match."
+        )
+        if omitted:
+            notices.append(
+                f"{omitted} result{' is' if omitted == 1 else 's are'} unavailable in this dashboard "
+                f"and {'was' if omitted == 1 else 'were'} not shown."
+            )
+        if constraints["category"] or constraints["tested_only"]:
+            notices.append(
+                "Category and test filters narrow these results; other matching packages may not appear."
+            )
+        if constraints["tested_only"]:
+            notices.append(
+                "Recorded Arm64 tests do not mean every test passed. "
+                "Open a package to see its test results."
+            )
+        for package in mapped:
+            category = constraints["category"]
+            if category and category.casefold() not in (
+                package["category"].casefold(),
+                package["parent_category"].casefold(),
+            ):
+                continue
+            if constraints["tested_only"] and not package["has_recorded_tests"]:
+                continue
+            base["results"].append(
+                {
+                    "id": package["id"],
+                    "title": package["title"],
+                    "reason": package["description"],
+                    "category": package["category"],
+                    "license": package["license"],
+                    "has_recorded_tests": package["has_recorded_tests"],
+                }
+            )
+        base["total"] = len(base["results"])
+        base["status"] = "ok" if base["results"] else "no_matches"
+        if not base["results"]:
+            notices.append(
+                "No matching current catalog packages were found in this KB result set."
+            )
+        return base
