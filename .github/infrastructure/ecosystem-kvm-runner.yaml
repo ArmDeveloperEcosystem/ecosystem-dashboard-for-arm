@@ -1,0 +1,975 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Least-privilege AWS boundary for one-job Arm64 KVM GitHub Actions runners.
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: ArmDeveloperEcosystem
+    AllowedPattern: "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+  GitHubRepository:
+    Type: String
+    Default: ecosystem-dashboard-for-arm
+    AllowedPattern: "^[A-Za-z0-9._-]{1,100}$"
+  GitHubEnvironment:
+    Type: String
+    Default: kvm-runner-provision
+    AllowedPattern: "^[A-Za-z0-9._-]{1,100}$"
+  GitHubCleanupEnvironment:
+    Type: String
+    Default: kvm-runner-cleanup
+    AllowedPattern: "^[A-Za-z0-9._-]{1,100}$"
+  AllowedGitHubActors:
+    Type: CommaDelimitedList
+    Default: ranimandepudi,pareenaverma
+  AllowedWorkflowPaths:
+    Type: CommaDelimitedList
+    Default: >-
+      .github/workflows/validate-ephemeral-kvm-runner.yml,
+      .github/workflows/supplemental-kvm-firecracker.yml,
+      .github/workflows/supplemental-kvm-microsandbox.yml,
+      .github/workflows/supplemental-kvm-libkrun.yml
+  GitHubOidcProviderArn:
+    Type: String
+    AllowedPattern: >-
+      ^arn:[a-z0-9-]+:iam::[0-9]{12}:oidc-provider/token\.actions\.githubusercontent\.com$
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+  AmiId:
+    Type: AWS::EC2::Image::Id
+  AmiOwnerId:
+    Type: String
+    Default: "099720109477"
+    AllowedValues:
+      - "099720109477"
+  InstanceType:
+    Type: String
+    Default: c7g.metal
+    AllowedValues:
+      - c7g.metal
+
+Resources:
+  KvmRunnerVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.255.0.0/24
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: ecosystem-dashboard-kvm
+        - Key: Project
+          Value: ecosystem-dashboard-kvm
+        - Key: ManagedBy
+          Value: cloudformation
+
+  KvmRunnerInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Project
+          Value: ecosystem-dashboard-kvm
+        - Key: ManagedBy
+          Value: cloudformation
+
+  KvmRunnerInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref KvmRunnerInternetGateway
+      VpcId: !Ref KvmRunnerVpc
+
+  KvmRunnerSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      CidrBlock: 10.255.0.0/26
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref KvmRunnerVpc
+      Tags:
+        - Key: Name
+          Value: ecosystem-dashboard-kvm
+        - Key: Project
+          Value: ecosystem-dashboard-kvm
+        - Key: ManagedBy
+          Value: cloudformation
+
+  KvmRunnerRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref KvmRunnerVpc
+      Tags:
+        - Key: Project
+          Value: ecosystem-dashboard-kvm
+        - Key: ManagedBy
+          Value: cloudformation
+
+  KvmRunnerDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: KvmRunnerInternetGatewayAttachment
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref KvmRunnerInternetGateway
+      RouteTableId: !Ref KvmRunnerRouteTable
+
+  KvmRunnerRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref KvmRunnerRouteTable
+      SubnetId: !Ref KvmRunnerSubnet
+
+  KvmRunnerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Outbound-only access for disposable ecosystem KVM runners
+      VpcId: !Ref KvmRunnerVpc
+      SecurityGroupIngress: []
+      SecurityGroupEgress:
+        - Description: Ubuntu package mirrors that redirect to HTTPS
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - Description: GitHub, package registries, and HTTPS package mirrors
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Project
+          Value: ecosystem-dashboard-kvm
+        - Key: ManagedBy
+          Value: cloudformation
+
+  KvmRunnerProvisionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: Proj-GitHub-EcosystemDashboard-KVM-Validation
+      Description: >-
+        Invokes the fixed KVM broker and reads runner state from protected main.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub >-
+                  repo:${GitHubOwner}/${GitHubRepository}:environment:${GitHubEnvironment}
+      Policies:
+        - PolicyName: InvokeDisposableKvmRunnerBroker
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt KvmRunnerBrokerFunction.Arn
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeInstanceStatus
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+
+  KvmRunnerBrokerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: Proj-EcosystemDashboard-KVM-Broker
+      Description: >-
+        Fixed AWS control plane for serialized disposable KVM runner launches.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BrokeredDisposableKvmRunnerLifecycle
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: UseReviewedImage
+                Effect: Allow
+                Action: ec2:RunInstances
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:ec2:${AWS::Region}::image/${AmiId}
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+                    ec2:Owner: !Ref AmiOwnerId
+              - Sid: UseReviewedNetwork
+                Effect: Allow
+                Action: ec2:RunInstances
+                Resource:
+                  - !Sub >-
+                    arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${KvmRunnerSubnet}
+                  - !Sub >-
+                    arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${KvmRunnerSecurityGroup}
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+              - Sid: LaunchOnlyTaggedMetalInstances
+                Effect: Allow
+                Action: ec2:RunInstances
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+                    ec2:InstanceType: !Ref InstanceType
+                    ec2:MetadataHttpEndpoint: disabled
+                    ec2:MetadataHttpTokens: required
+                    ec2:MetadataHttpPutResponseHopLimit: "1"
+                    aws:RequestTag/Project: ecosystem-dashboard-kvm
+                    aws:RequestTag/ManagedBy: github-actions
+                    aws:RequestTag/GitHubRepository: !Sub ${GitHubOwner}/${GitHubRepository}
+                  "Null":
+                    aws:RequestTag/GitHubRunId: "false"
+                    aws:RequestTag/GitHubRunAttempt: "false"
+                    aws:RequestTag/OwnershipNonce: "false"
+                    aws:RequestTag/ExpiresAt: "false"
+              - Sid: LaunchOnlyTaggedEncryptedRunnerStorage
+                Effect: Allow
+                Action: ec2:RunInstances
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
+                Condition:
+                  Bool:
+                    ec2:Encrypted: "true"
+                  NumericEquals:
+                    ec2:VolumeSize: 40
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+                    ec2:VolumeType: gp3
+                    aws:RequestTag/Project: ecosystem-dashboard-kvm
+                    aws:RequestTag/ManagedBy: github-actions
+                    aws:RequestTag/GitHubRepository: !Sub ${GitHubOwner}/${GitHubRepository}
+                  "Null":
+                    aws:RequestTag/GitHubRunId: "false"
+                    aws:RequestTag/GitHubRunAttempt: "false"
+                    aws:RequestTag/OwnershipNonce: "false"
+                    aws:RequestTag/ExpiresAt: "false"
+              - Sid: LaunchOnlyTaggedRunnerNetworking
+                Effect: Allow
+                Action: ec2:RunInstances
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+                    aws:RequestTag/Project: ecosystem-dashboard-kvm
+                    aws:RequestTag/ManagedBy: github-actions
+                    aws:RequestTag/GitHubRepository: !Sub ${GitHubOwner}/${GitHubRepository}
+                  "Null":
+                    aws:RequestTag/GitHubRunId: "false"
+                    aws:RequestTag/GitHubRunAttempt: "false"
+                    aws:RequestTag/OwnershipNonce: "false"
+                    aws:RequestTag/ExpiresAt: "false"
+              - Sid: TagOnlyNewRunnerResources
+                Effect: Allow
+                Action: ec2:CreateTags
+                Resource:
+                  - !Sub >-
+                    arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                  - !Sub >-
+                    arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
+                  - !Sub >-
+                    arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+                    ec2:CreateAction: RunInstances
+                    aws:RequestTag/Project: ecosystem-dashboard-kvm
+                    aws:RequestTag/ManagedBy: github-actions
+                    aws:RequestTag/GitHubRepository: !Sub ${GitHubOwner}/${GitHubRepository}
+              - Sid: InspectRunnerState
+                Effect: Allow
+                Action:
+                  - ec2:DescribeImages
+                  - ec2:DescribeInstances
+                  - ec2:DescribeInstanceStatus
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeVolumes
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+              - Sid: TerminateOnlyManagedRunners
+                Effect: Allow
+                Action: ec2:TerminateInstances
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+                    ec2:ResourceTag/Project: ecosystem-dashboard-kvm
+                    ec2:ResourceTag/ManagedBy: github-actions
+                    ec2:ResourceTag/GitHubRepository: !Sub ${GitHubOwner}/${GitHubRepository}
+              - Sid: WriteBrokerLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "${KvmRunnerBrokerLogGroup.Arn}:*"
+
+  KvmRunnerCleanupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: Proj-GitHub-EcosystemDashboard-KVM-Cleanup
+      Description: >-
+        Inspects and terminates only tagged ecosystem dashboard KVM runners.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub >-
+                  repo:${GitHubOwner}/${GitHubRepository}:environment:${GitHubCleanupEnvironment}
+      Policies:
+        - PolicyName: DisposableKvmRunnerCleanup
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InspectManagedRunnerState
+                Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeVolumes
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+              - Sid: InvokeManagedRunnerCleanupBroker
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt KvmRunnerCleanupFunction.Arn
+
+  KvmRunnerBrokerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/ecosystem-dashboard-kvm-broker
+      RetentionInDays: 30
+
+  KvmRunnerBrokerFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: KvmRunnerBrokerLogGroup
+    Properties:
+      FunctionName: ecosystem-dashboard-kvm-broker
+      Description: Serializes and validates disposable KVM runner lifecycle requests.
+      Architectures:
+        - arm64
+      Runtime: python3.13
+      Handler: index.handler
+      MemorySize: 128
+      ReservedConcurrentExecutions: 1
+      Timeout: 60
+      Role: !GetAtt KvmRunnerBrokerRole.Arn
+      Environment:
+        Variables:
+          ALLOWED_GITHUB_ACTORS: !Join [",", !Ref AllowedGitHubActors]
+          ALLOWED_WORKFLOW_PATHS: !Join [",", !Ref AllowedWorkflowPaths]
+          AMI_ID: !Ref AmiId
+          AMI_OWNER_ID: !Ref AmiOwnerId
+          GITHUB_REPOSITORY: !Sub ${GitHubOwner}/${GitHubRepository}
+          INSTANCE_TYPE: !Ref InstanceType
+          SECURITY_GROUP_ID: !Ref KvmRunnerSecurityGroup
+          SUBNET_ID: !Ref KvmRunnerSubnet
+      Code:
+        ZipFile: |
+          import datetime
+          import json
+          import os
+          import re
+          import urllib.request
+
+          import boto3
+
+
+          ec2 = boto3.client("ec2")
+          allowed_actors = set(os.environ["ALLOWED_GITHUB_ACTORS"].split(","))
+          allowed_workflows = set(os.environ["ALLOWED_WORKFLOW_PATHS"].split(","))
+          repository = os.environ["GITHUB_REPOSITORY"]
+
+
+          def github_json(path):
+              request = urllib.request.Request(
+                  f"https://api.github.com{path}",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "User-Agent": "ecosystem-dashboard-kvm-broker",
+                      "X-GitHub-Api-Version": "2026-03-10",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=10) as response:
+                  if response.status != 200:
+                      raise RuntimeError("GitHub identity lookup failed")
+                  return json.load(response)
+
+
+          def require_string(event, name, pattern):
+              value = event.get(name, "")
+              if not isinstance(value, str) or not re.fullmatch(pattern, value):
+                  raise ValueError(f"invalid {name}")
+              return value
+
+
+          def validate_run_identity(event):
+              run_id = require_string(event, "run_id", r"[0-9]+")
+              attempt = require_string(event, "run_attempt", r"[1-9][0-9]*")
+              head_sha = require_string(event, "head_sha", r"[0-9a-f]{40}")
+              if event.get("repository") != repository:
+                  raise ValueError("unexpected repository")
+              run = github_json(f"/repos/{repository}/actions/runs/{run_id}")
+              main = github_json(f"/repos/{repository}/git/ref/heads/main")
+              workflow_path = run.get("path", "").split("@", 1)[0]
+              if workflow_path not in allowed_workflows:
+                  raise ValueError("workflow path is not approved")
+              if (
+                  run.get("repository", {}).get("full_name") != repository
+                  or run.get("event") != "workflow_dispatch"
+                  or run.get("head_branch") != "main"
+                  or run.get("head_sha") != head_sha
+                  or run.get("run_attempt") != int(attempt)
+                  or run.get("status") not in {"queued", "in_progress"}
+                  or run.get("actor", {}).get("login") not in allowed_actors
+                  or run.get("triggering_actor", {}).get("login") not in allowed_actors
+                  or main.get("object", {}).get("sha") != head_sha
+              ):
+                  raise ValueError("workflow run is not current protected main")
+              return run_id, attempt, head_sha
+
+
+          def active_instances(run_id=None, attempt=None):
+              filters = [
+                  {"Name": "tag:Project", "Values": ["ecosystem-dashboard-kvm"]},
+                  {"Name": "tag:ManagedBy", "Values": ["github-actions"]},
+                  {"Name": "tag:GitHubRepository", "Values": [repository]},
+                  {
+                      "Name": "instance-state-name",
+                      "Values": ["pending", "running", "stopping", "stopped"],
+                  },
+              ]
+              if run_id is not None:
+                  filters.extend(
+                      [
+                          {"Name": "tag:GitHubRunId", "Values": [run_id]},
+                          {"Name": "tag:GitHubRunAttempt", "Values": [attempt]},
+                      ]
+                  )
+              response = ec2.describe_instances(Filters=filters)
+              return [
+                  instance
+                  for reservation in response["Reservations"]
+                  for instance in reservation["Instances"]
+              ]
+
+
+          def validate_image():
+              images = ec2.describe_images(ImageIds=[os.environ["AMI_ID"]])["Images"]
+              if len(images) != 1:
+                  raise ValueError("reviewed AMI is missing")
+              image = images[0]
+              if not (
+                  image.get("OwnerId") == os.environ["AMI_OWNER_ID"]
+                  and image.get("Architecture") == "arm64"
+                  and image.get("State") == "available"
+                  and image.get("ImageType") == "machine"
+                  and image.get("RootDeviceType") == "ebs"
+                  and image.get("VirtualizationType") == "hvm"
+                  and image.get("EnaSupport") is True
+                  and image.get("Name", "").startswith(
+                      "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-arm64-server-"
+                  )
+              ):
+                  raise ValueError("reviewed AMI provenance changed")
+              return image["RootDeviceName"]
+
+
+          def launch(event):
+              run_id, attempt, _head_sha = validate_run_identity(event)
+              nonce = require_string(event, "ownership_nonce", r"[0-9a-f]{32}")
+              user_data = event.get("user_data", "")
+              if (
+                  not isinstance(user_data, str)
+                  or not user_data.startswith("#!/usr/bin/env bash\n")
+                  or len(user_data.encode()) > 16384
+              ):
+                  raise ValueError("invalid runner bootstrap")
+              requested_expiry = datetime.datetime.fromisoformat(
+                  require_string(
+                      event,
+                      "expires_at",
+                      r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+                  ).replace("Z", "+00:00")
+              )
+              now = datetime.datetime.now(datetime.timezone.utc)
+              if not now + datetime.timedelta(minutes=20) <= requested_expiry <= now + datetime.timedelta(minutes=60):
+                  raise ValueError("runner expiry is outside the bounded window")
+              if active_instances():
+                  raise RuntimeError("another managed KVM runner is already active")
+              root_device = validate_image()
+              tags = [
+                  {"Key": "Project", "Value": "ecosystem-dashboard-kvm"},
+                  {"Key": "ManagedBy", "Value": "github-actions"},
+                  {"Key": "GitHubRepository", "Value": repository},
+                  {"Key": "GitHubRunId", "Value": run_id},
+                  {"Key": "GitHubRunAttempt", "Value": attempt},
+                  {"Key": "OwnershipNonce", "Value": nonce},
+                  {"Key": "ExpiresAt", "Value": requested_expiry.strftime("%Y-%m-%dT%H:%M:%SZ")},
+              ]
+              response = ec2.run_instances(
+                  ImageId=os.environ["AMI_ID"],
+                  InstanceType=os.environ["INSTANCE_TYPE"],
+                  MinCount=1,
+                  MaxCount=1,
+                  NetworkInterfaces=[
+                      {
+                          "DeviceIndex": 0,
+                          "SubnetId": os.environ["SUBNET_ID"],
+                          "Groups": [os.environ["SECURITY_GROUP_ID"]],
+                          "AssociatePublicIpAddress": True,
+                          "DeleteOnTermination": True,
+                      }
+                  ],
+                  BlockDeviceMappings=[
+                      {
+                          "DeviceName": root_device,
+                          "Ebs": {
+                              "DeleteOnTermination": True,
+                              "Encrypted": True,
+                              "VolumeSize": 40,
+                              "VolumeType": "gp3",
+                          },
+                      }
+                  ],
+                  TagSpecifications=[
+                      {"ResourceType": resource, "Tags": tags}
+                      for resource in ("instance", "volume", "network-interface")
+                  ],
+                  MetadataOptions={
+                      "HttpEndpoint": "disabled",
+                      "HttpTokens": "required",
+                      "HttpPutResponseHopLimit": 1,
+                      "InstanceMetadataTags": "disabled",
+                  },
+                  InstanceInitiatedShutdownBehavior="terminate",
+                  UserData=user_data,
+              )
+              instances = response.get("Instances", [])
+              if len(instances) != 1 or not re.fullmatch(
+                  r"i-[0-9a-f]{8,17}", instances[0].get("InstanceId", "")
+              ):
+                  raise RuntimeError("EC2 returned an invalid launch result")
+              return {"instance_id": instances[0]["InstanceId"]}
+
+
+          def cleanup(event):
+              run_id = require_string(event, "run_id", r"[0-9]+")
+              attempt = require_string(event, "run_attempt", r"[1-9][0-9]*")
+              if event.get("repository") != repository:
+                  raise ValueError("unexpected repository")
+              expected_instance = event.get("instance_id", "")
+              expected_nonce = event.get("ownership_nonce", "")
+              if expected_instance and not re.fullmatch(r"i-[0-9a-f]{8,17}", expected_instance):
+                  raise ValueError("invalid expected instance")
+              if expected_nonce and not re.fullmatch(r"[0-9a-f]{32}", expected_nonce):
+                  raise ValueError("invalid expected ownership nonce")
+              instances = active_instances(run_id, attempt)
+              instance_ids = []
+              nonces = []
+              for instance in instances:
+                  tags = {tag["Key"]: tag["Value"] for tag in instance.get("Tags", [])}
+                  nonce = tags.get("OwnershipNonce", "")
+                  if (
+                      instance.get("InstanceType") != os.environ["INSTANCE_TYPE"]
+                      or not re.fullmatch(r"[0-9a-f]{32}", nonce)
+                  ):
+                      raise ValueError("refusing to terminate an unowned instance")
+                  instance_ids.append(instance["InstanceId"])
+                  nonces.append(nonce)
+              mismatch = bool(
+                  (expected_instance and expected_instance not in instance_ids)
+                  or (expected_nonce and expected_nonce not in nonces)
+              )
+              if instance_ids:
+                  ec2.terminate_instances(InstanceIds=instance_ids)
+              return {
+                  "instance_ids": instance_ids,
+                  "ownership_nonces": nonces,
+                  "duplicate_runner": len(instance_ids) > 1,
+                  "identity_mismatch": mismatch,
+              }
+
+
+          def handler(event, _context):
+              operation = event.get("operation")
+              if operation == "launch":
+                  return launch(event)
+              if operation == "cleanup":
+                  return cleanup(event)
+              raise ValueError("unsupported broker operation")
+
+  KvmRunnerCleanupBrokerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: >-
+        Terminates only exact tagged KVM runner resources requested by cleanup.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BrokeredDisposableKvmRunnerCleanup
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InspectManagedRunnerState
+                Effect: Allow
+                Action: ec2:DescribeInstances
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+              - Sid: TerminateOnlyManagedRunners
+                Effect: Allow
+                Action: ec2:TerminateInstances
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+                    ec2:ResourceTag/Project: ecosystem-dashboard-kvm
+                    ec2:ResourceTag/ManagedBy: github-actions
+                    ec2:ResourceTag/GitHubRepository: !Sub ${GitHubOwner}/${GitHubRepository}
+              - Sid: WriteCleanupBrokerLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "${KvmRunnerCleanupBrokerLogGroup.Arn}:*"
+
+  KvmRunnerCleanupBrokerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/ecosystem-dashboard-kvm-cleanup
+      RetentionInDays: 30
+
+  KvmRunnerCleanupFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: KvmRunnerCleanupBrokerLogGroup
+    Properties:
+      FunctionName: ecosystem-dashboard-kvm-cleanup
+      Description: Validates ownership and terminates exact disposable KVM runners.
+      Architectures:
+        - arm64
+      Runtime: python3.13
+      Handler: index.handler
+      MemorySize: 128
+      ReservedConcurrentExecutions: 1
+      Timeout: 60
+      Role: !GetAtt KvmRunnerCleanupBrokerRole.Arn
+      Environment:
+        Variables:
+          GITHUB_REPOSITORY: !Sub ${GitHubOwner}/${GitHubRepository}
+          INSTANCE_TYPE: !Ref InstanceType
+      Code:
+        ZipFile: |
+          import os
+          import re
+
+          import boto3
+
+
+          ec2 = boto3.client("ec2")
+          repository = os.environ["GITHUB_REPOSITORY"]
+
+
+          def require_string(event, name, pattern, optional=False):
+              value = event.get(name, "")
+              if optional and value == "":
+                  return value
+              if not isinstance(value, str) or not re.fullmatch(pattern, value):
+                  raise ValueError(f"invalid {name}")
+              return value
+
+
+          def handler(event, _context):
+              if event.get("repository") != repository:
+                  raise ValueError("unexpected repository")
+              run_id = require_string(event, "run_id", r"[0-9]+")
+              attempt = require_string(event, "run_attempt", r"[1-9][0-9]*")
+              expected_instance = require_string(
+                  event, "instance_id", r"i-[0-9a-f]{8,17}", optional=True
+              )
+              expected_nonce = require_string(
+                  event, "ownership_nonce", r"[0-9a-f]{32}", optional=True
+              )
+              filters = [
+                  {"Name": "tag:Project", "Values": ["ecosystem-dashboard-kvm"]},
+                  {"Name": "tag:ManagedBy", "Values": ["github-actions"]},
+                  {"Name": "tag:GitHubRepository", "Values": [repository]},
+                  {"Name": "tag:GitHubRunId", "Values": [run_id]},
+                  {"Name": "tag:GitHubRunAttempt", "Values": [attempt]},
+                  {
+                      "Name": "instance-state-name",
+                      "Values": ["pending", "running", "stopping", "stopped"],
+                  },
+              ]
+              response = ec2.describe_instances(Filters=filters)
+              instances = [
+                  instance
+                  for reservation in response["Reservations"]
+                  for instance in reservation["Instances"]
+              ]
+              instance_ids = []
+              nonces = []
+              for instance in instances:
+                  tags = {tag["Key"]: tag["Value"] for tag in instance.get("Tags", [])}
+                  nonce = tags.get("OwnershipNonce", "")
+                  if (
+                      instance.get("InstanceType") != os.environ["INSTANCE_TYPE"]
+                      or tags.get("Project") != "ecosystem-dashboard-kvm"
+                      or tags.get("ManagedBy") != "github-actions"
+                      or tags.get("GitHubRepository") != repository
+                      or tags.get("GitHubRunId") != run_id
+                      or tags.get("GitHubRunAttempt") != attempt
+                      or not re.fullmatch(r"[0-9a-f]{32}", nonce)
+                  ):
+                      raise ValueError("refusing to terminate an unowned instance")
+                  instance_ids.append(instance["InstanceId"])
+                  nonces.append(nonce)
+              mismatch = bool(
+                  (expected_instance and expected_instance not in instance_ids)
+                  or (expected_nonce and expected_nonce not in nonces)
+              )
+              if instance_ids:
+                  ec2.terminate_instances(InstanceIds=instance_ids)
+              return {
+                  "instance_ids": instance_ids,
+                  "ownership_nonces": nonces,
+                  "duplicate_runner": len(instance_ids) > 1,
+                  "identity_mismatch": mismatch,
+              }
+
+  KvmRunnerExpiryFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ExpireDisposableKvmRunners
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ec2:DescribeInstances
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+              - Effect: Allow
+                Action: ec2:TerminateInstances
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+                    ec2:ResourceTag/Project: ecosystem-dashboard-kvm
+                    ec2:ResourceTag/ManagedBy: github-actions
+                    ec2:ResourceTag/GitHubRepository: !Sub ${GitHubOwner}/${GitHubRepository}
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "${KvmRunnerExpiryLogGroup.Arn}:*"
+              - Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: EcosystemDashboard/KvmRunner
+
+  KvmRunnerExpiryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/ecosystem-dashboard-kvm-expiry
+      RetentionInDays: 30
+
+  KvmRunnerExpiryFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: KvmRunnerExpiryLogGroup
+    Properties:
+      FunctionName: ecosystem-dashboard-kvm-expiry
+      Description: Terminates tagged KVM runners after their immutable expiry time.
+      Architectures:
+        - arm64
+      Runtime: python3.13
+      Handler: index.handler
+      MemorySize: 128
+      ReservedConcurrentExecutions: 1
+      Timeout: 60
+      Role: !GetAtt KvmRunnerExpiryFunctionRole.Arn
+      Environment:
+        Variables:
+          GITHUB_REPOSITORY: !Sub ${GitHubOwner}/${GitHubRepository}
+      Code:
+        ZipFile: |
+          import datetime
+          import os
+
+          import boto3
+
+
+          cloudwatch = boto3.client("cloudwatch")
+          ec2 = boto3.client("ec2")
+
+
+          def handler(_event, _context):
+              now = datetime.datetime.now(datetime.timezone.utc)
+              filters = [
+                  {"Name": "tag:Project", "Values": ["ecosystem-dashboard-kvm"]},
+                  {"Name": "tag:ManagedBy", "Values": ["github-actions"]},
+                  {"Name": "tag:GitHubRepository", "Values": [os.environ["GITHUB_REPOSITORY"]]},
+                  {"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped"]},
+              ]
+              instances = []
+              paginator = ec2.get_paginator("describe_instances")
+              for page in paginator.paginate(Filters=filters):
+                  for reservation in page["Reservations"]:
+                      for instance in reservation["Instances"]:
+                          instances.append(instance)
+              expired = []
+              for instance in instances:
+                  tags = {tag["Key"]: tag["Value"] for tag in instance.get("Tags", [])}
+                  value = tags.get("ExpiresAt", "")
+                  hard_expiry = instance["LaunchTime"] + datetime.timedelta(minutes=60)
+                  try:
+                      tagged_expiry = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+                      if (
+                          tagged_expiry.tzinfo is None
+                          or tagged_expiry.utcoffset() is None
+                      ):
+                          raise ValueError("expiry tag is not timezone-aware")
+                  except (TypeError, ValueError):
+                      print(f"Fail-closed expiry for malformed tag on {instance['InstanceId']}")
+                      expired.append(instance["InstanceId"])
+                      continue
+                  if min(tagged_expiry, hard_expiry) <= now:
+                      expired.append(instance["InstanceId"])
+              if len(instances) > 1:
+                  ordered = sorted(instances, key=lambda item: item["LaunchTime"])
+                  expired.extend(item["InstanceId"] for item in ordered[1:])
+              expired = sorted(set(expired))
+              if expired:
+                  ec2.terminate_instances(InstanceIds=expired)
+              cloudwatch.put_metric_data(
+                  Namespace="EcosystemDashboard/KvmRunner",
+                  MetricData=[
+                      {"MetricName": "ActiveRunners", "Value": len(instances), "Unit": "Count"},
+                      {"MetricName": "TerminatedRunners", "Value": len(expired), "Unit": "Count"},
+                  ],
+              )
+              return {"terminated": expired}
+
+  KvmRunnerExpirySchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Check disposable KVM runner expiry tags every five minutes.
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt KvmRunnerExpiryFunction.Arn
+          Id: KvmRunnerExpiryFunction
+
+  KvmRunnerExpiryPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref KvmRunnerExpiryFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt KvmRunnerExpirySchedule.Arn
+
+  KvmRunnerMultiplicityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: More than one disposable KVM runner is active.
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      MetricName: ActiveRunners
+      Namespace: EcosystemDashboard/KvmRunner
+      Period: 300
+      Statistic: Maximum
+      Threshold: 1
+      TreatMissingData: breaching
+
+  KvmRunnerJanitorErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The disposable KVM expiry janitor reported an error.
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref KvmRunnerExpiryFunction
+      EvaluationPeriods: 1
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Period: 300
+      Statistic: Sum
+      Threshold: 0
+      TreatMissingData: notBreaching
+
+Outputs:
+  BrokerFunctionName:
+    Description: Environment variable ECOSYSTEM_KVM_BROKER_FUNCTION_NAME
+    Value: !Ref KvmRunnerBrokerFunction
+  CleanupFunctionName:
+    Description: Environment variable ECOSYSTEM_KVM_CLEANUP_FUNCTION_NAME
+    Value: !Ref KvmRunnerCleanupFunction
+  ProvisionRoleArn:
+    Description: Environment variable ECOSYSTEM_KVM_AWS_ROLE_ARN
+    Value: !GetAtt KvmRunnerProvisionRole.Arn
+  CleanupRoleArn:
+    Description: Environment variable ECOSYSTEM_KVM_AWS_CLEANUP_ROLE_ARN
+    Value: !GetAtt KvmRunnerCleanupRole.Arn
+  SecurityGroupId:
+    Description: Environment variable ECOSYSTEM_KVM_SECURITY_GROUP_ID
+    Value: !Ref KvmRunnerSecurityGroup
+  SubnetId:
+    Description: Environment variable ECOSYSTEM_KVM_SUBNET_ID
+    Value: !Ref KvmRunnerSubnet
+  VpcId:
+    Description: Isolated VPC containing no corporate or workload routes
+    Value: !Ref KvmRunnerVpc
+  AmiId:
+    Description: Environment variable ECOSYSTEM_KVM_AMI_ID
+    Value: !Ref AmiId
+  AmiOwnerId:
+    Description: Environment variable ECOSYSTEM_KVM_AMI_OWNER_ID
+    Value: !Ref AmiOwnerId
+  Region:
+    Description: Environment variable ECOSYSTEM_KVM_REGION
+    Value: !Ref AWS::Region
