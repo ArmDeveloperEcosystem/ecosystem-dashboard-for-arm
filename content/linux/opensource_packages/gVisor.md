@@ -26,18 +26,24 @@ optional_info:
     reference_content: null
     rationale: null
 optional_hidden_info:
-  release_notes__supported_minimum: null
+  release_notes__supported_minimum: "https://storage.googleapis.com/gvisor/releases/release/20210121.1/aarch64/runsc.sha512"
   release_notes__recommended_minimum: null
   other_info: >-
-    The dashboard already records release-20210121.1 as its public minimum, and
-    this change does not strengthen that inherited claim. Official gVisor issue
-    63 and merged Arm64 work show functional development and Arm64 execution in
-    2018-2020, so the first supported release has not been independently proven.
-    A dashboard evidence owner must resolve that historical boundary before this
-    metadata update is merge-ready. The modern native smoke baseline is
-    release-20261019.0; its checksummed AArch64 bundle is exercised with the
-    systrap platform and does not establish the historical minimum. Baseline
-    bundle SHA-256:
+    release-20210121.1 is the first official publisher-distributed Arm64
+    release. The upstream AArch64 release pipeline landed in January 2021, and
+    the canonical publisher bucket contains no earlier tagged aarch64/runsc
+    object. The release-20210121.1 AArch64 executable identifies itself with
+    that version and matches the publisher's SHA-512 checksum. Earlier 2019-2020
+    Arm64 code, demonstrations, and preliminary documentation establish active
+    development but not an earlier publisher-distributed Arm64 release. Release
+    pipeline: https://github.com/google/gvisor/pull/5188 . Release-directory
+    correction: https://github.com/google/gvisor/pull/5259 . Publisher artifact:
+    https://storage.googleapis.com/gvisor/releases/release/20210121.1/aarch64/runsc .
+    Publisher checksum:
+    https://storage.googleapis.com/gvisor/releases/release/20210121.1/aarch64/runsc.sha512 .
+    The modern native smoke baseline is release-20261019.0; its checksummed
+    AArch64 bundle is exercised with the systrap platform and does not claim to
+    reproduce the historical release environment. Baseline bundle SHA-256:
     5790f89dc94b091b5aa0f0b6596aa4391606b3fe5f069e68f440576f3388abd8.
     Publisher checksums:
     https://github.com/google/gvisor/releases/download/release-20261019.0/SHA256SUMS .
