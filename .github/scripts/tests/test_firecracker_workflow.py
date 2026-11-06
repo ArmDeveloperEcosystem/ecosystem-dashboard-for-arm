@@ -12,7 +12,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github/workflows/test-firecraker.yml"
+SUPPLEMENTAL_WORKFLOW = ROOT / ".github/workflows/supplemental-kvm-firecracker.yml"
 DOCUMENT = yaml.safe_load(WORKFLOW.read_text())
+SUPPLEMENTAL_DOCUMENT = yaml.safe_load(SUPPLEMENTAL_WORKFLOW.read_text())
 JOB = next(iter(DOCUMENT["jobs"].values()))
 STEPS = {step.get("id"): step for step in JOB["steps"] if "id" in step}
 
@@ -95,6 +97,8 @@ printf '%%s' %s
     def test_contract(self):
         trigger = DOCUMENT.get("on", DOCUMENT.get(True))
         self.assertIn("workflow_dispatch", trigger)
+        self.assertEqual(["test-firecraker"], list(DOCUMENT["jobs"]))
+        self.assertEqual("ubuntu-24.04-arm", JOB["runs-on"])
         self.assertEqual(24, len(trigger["workflow_call"]["outputs"]))
         self.assertEqual(set(JOB["outputs"]), set(trigger["workflow_call"]["outputs"]))
         for i in range(1, 7):
@@ -104,6 +108,21 @@ printf '%%s' %s
         actions = [step["uses"] for step in JOB["steps"] if "uses" in step]
         self.assertEqual(["actions/checkout@11d5960a326750d5838078e36cf38b85af677262"], actions)
         self.assertEqual("${{ github.token }}", STEPS["test6"]["env"]["GITHUB_TOKEN"])
+
+    def test_registered_lane_is_hosted_and_kvm_free(self):
+        body = WORKFLOW.read_text()
+        for forbidden in (
+            "/dev/kvm",
+            "firecracker_guest_smoke.sh",
+            "provision-ephemeral-kvm-runner",
+            "cleanup-ephemeral-kvm-runner",
+            "self-hosted",
+        ):
+            self.assertNotIn(forbidden, body)
+        self.assertIn("readelf --file-header", STEPS["test4"]["run"])
+        self.assertIn("Machine:[[:space:]]+AArch64", STEPS["test4"]["run"])
+        self.assertIn("firecracker_api_smoke.sh", STEPS["test5"]["run"])
+        self.assertNotIn("sudo bash", STEPS["test5"]["run"])
 
     def test_latest_stable_decision_is_not_counted_as_passed(self):
         result, values = self.shell(STEPS["summary"]["run"], self.summary_env())
@@ -133,7 +152,10 @@ printf '%%s' %s
                 "status", "decision", "latest_version", "next_installed_version"
             )),
         )
-        self.assertIn("requires separate native Arm64 KVM validation", values["comparison"])
+        self.assertIn(
+            "requires the separate supplemental native Arm64 KVM workflow",
+            values["comparison"],
+        )
         self.assertIn("no upgrade-safety claim", values["comparison"])
 
         summary_env = self.summary_env()
@@ -354,14 +376,17 @@ class GuestEvidenceFixtures(unittest.TestCase):
                         {"HELPER": str(helper), "LOG": str(log), "CODE": str(code)})
                     self.assertEqual(expected, result.returncode == 0, result.stdout + result.stderr)
 
-    def test_kvm_is_mandatory_and_no_api_fallback(self):
+    def test_kvm_helper_is_strict_and_has_no_api_fallback(self):
         body = (ROOT / ".github/scripts/tests/firecracker_guest_smoke.sh").read_text()
         self.assertIn("[ -c /dev/kvm ]", body)
         self.assertIn("fcntl.ioctl(fd, 0xAE00, 0) == 12", body)
         self.assertIn('return 1', body)
         self.assertIn("--no-api --config-file", body)
-        self.assertIn("firecracker_guest_smoke.sh", STEPS["test5"]["run"])
-        self.assertNotIn("firecracker_api_smoke.sh", STEPS["test5"]["run"])
+        guest_run = SUPPLEMENTAL_DOCUMENT["jobs"]["guest"]
+        serialized = yaml.safe_dump(guest_run)
+        self.assertIn("firecracker_guest_smoke.sh", serialized)
+        self.assertNotIn("continue-on-error", serialized)
+        self.assertIn("timeout --kill-after=10s 420s", serialized)
 
     def test_pinned_guest_inputs(self):
         body = (ROOT / ".github/scripts/tests/firecracker_guest_smoke.sh").read_text()
@@ -369,6 +394,77 @@ class GuestEvidenceFixtures(unittest.TestCase):
         self.assertIn("8bc7fc7d1eabc0dd7dd8a33cb53b0bb11f25c09d4276757cfe16eb5c8509fa90", body)
         self.assertIn("490be704c18868cde014fbdf4e025a1548bd3efe23bff5086becdf43d6fb05ad", body)
         self.assertIn('sha256sum -c -', body)
+
+
+class SupplementalWorkflowFixtures(unittest.TestCase):
+    def test_manual_protected_main_contract(self):
+        trigger = SUPPLEMENTAL_DOCUMENT.get("on", SUPPLEMENTAL_DOCUMENT.get(True))
+        self.assertEqual(["workflow_dispatch"], list(trigger))
+        self.assertEqual(
+            {"authorize", "provision", "guest", "cleanup"},
+            set(SUPPLEMENTAL_DOCUMENT["jobs"]),
+        )
+        authorize = SUPPLEMENTAL_DOCUMENT["jobs"]["authorize"]["steps"][0]["run"]
+        self.assertIn('test "$GITHUB_REF" = "refs/heads/main"', authorize)
+        self.assertIn('test "$REF_PROTECTED" = "true"', authorize)
+        self.assertIn('test "$GITHUB_SHA" = "$current_main_sha"', authorize)
+        self.assertIn("github.triggering_actor", SUPPLEMENTAL_WORKFLOW.read_text())
+
+    def test_provision_and_cleanup_use_protected_foundation_actions(self):
+        provision = SUPPLEMENTAL_DOCUMENT["jobs"]["provision"]
+        cleanup = SUPPLEMENTAL_DOCUMENT["jobs"]["cleanup"]
+        self.assertEqual("kvm-runner-provision", provision["environment"])
+        self.assertEqual("kvm-runner-cleanup", cleanup["environment"])
+        self.assertIn("id-token", provision["permissions"])
+        self.assertIn("id-token", cleanup["permissions"])
+        self.assertEqual(
+            "./.github/actions/provision-ephemeral-kvm-runner",
+            provision["steps"][1]["uses"],
+        )
+        self.assertEqual(
+            "./.github/actions/cleanup-ephemeral-kvm-runner",
+            cleanup["steps"][1]["uses"],
+        )
+        self.assertIn("always()", cleanup["if"])
+        self.assertEqual({"provision", "guest"}, set(cleanup["needs"]))
+
+    def test_target_uses_group_plus_random_label_without_privileged_credentials(self):
+        guest = SUPPLEMENTAL_DOCUMENT["jobs"]["guest"]
+        self.assertEqual({}, guest["permissions"])
+        self.assertNotIn("environment", guest)
+        self.assertEqual(
+            "${{ vars.ECOSYSTEM_KVM_RUNNER_GROUP_NAME }}",
+            guest["runs-on"]["group"],
+        )
+        self.assertEqual(
+            "${{ needs.provision.outputs.runner-label }}",
+            guest["runs-on"]["labels"],
+        )
+        serialized = yaml.safe_dump(guest)
+        self.assertNotIn("secrets.", serialized)
+        self.assertNotIn("${{ github.token }}", serialized)
+        self.assertNotIn("actions/checkout", serialized)
+        self.assertNotIn("id-token: write", serialized)
+        isolation_probe = guest["steps"][0]["run"]
+        self.assertIn('test -z "${!name:-}"', isolation_probe)
+
+    def test_target_fetches_exact_public_source_and_requires_real_guest_behavior(self):
+        guest = SUPPLEMENTAL_DOCUMENT["jobs"]["guest"]
+        serialized = yaml.safe_dump(guest)
+        self.assertIn(
+            "https://codeload.github.com/ArmDeveloperEcosystem/"
+            "ecosystem-dashboard-for-arm/tar.gz/${GITHUB_SHA}",
+            serialized,
+        )
+        self.assertNotIn("Authorization:", serialized)
+        self.assertIn("test -c /dev/kvm", serialized)
+        self.assertIn("test -r /dev/kvm", serialized)
+        self.assertIn("test -w /dev/kvm", serialized)
+        self.assertIn("firecracker_guest_smoke.sh", serialized)
+        self.assertIn("KVM API 12", serialized)
+        self.assertIn("child exit 37", serialized)
+        self.assertIn("clean VMM shutdown", serialized)
+        self.assertNotIn("continue-on-error", serialized)
 
 
 

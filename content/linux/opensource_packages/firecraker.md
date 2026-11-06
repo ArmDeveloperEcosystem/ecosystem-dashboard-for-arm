@@ -27,14 +27,17 @@ optional_hidden_info:
   release_notes__recommended_minimum: null
   other_info: >-
     Firecracker v0.17.0 introduced alpha AArch64 support; it is a historical
-    compatibility floor, not a deployment recommendation. The modern smoke
-    baseline is v1.17.0 and requires a real KVM guest boot. A pre-boot API check
-    alone does not establish compatibility. The reviewed helper uses pinned
-    upstream guest-kernel and initramfs objects, verifies their measured hashes,
-    checks guest AArch64 identity and I/O, and requires guest exit propagation.
-    GitHub-hosted ubuntu-24.04-arm currently exposes no /dev/kvm, so the native
-    workflow must remain draft until an approved Arm64 KVM runner executes the
-    exact proposed bytes. Baseline archive SHA-256:
+    compatibility floor, not a deployment recommendation. The recurring hosted
+    Arm64 workflow validates the v1.17.0 publisher bundle, exact Firecracker and
+    jailer versions, Arm64 ELF identity, and real pre-boot API state mutation and
+    rejection behavior without claiming a guest boot. The protected supplemental
+    KVM workflow uses a disposable credential-free target to require writable
+    /dev/kvm, KVM API 12, a real Arm64 microVM boot, guest file I/O, child exit 37,
+    the reboot marker, and clean VMM shutdown. The reviewed helper uses pinned
+    upstream guest-kernel and initramfs objects and verifies their measured
+    hashes. Durable exact-byte guest evidence is published at
+    https://github.com/ranimandepudi/ecosystem-dashboard-for-arm/releases/tag/ecosystem-arm64-validation-20261106 .
+    Jailer isolation is not tested or claimed. Baseline archive SHA-256:
     e351ebe4f7a16b5873bbd51005d2e6767103cff4d5ebc829df2d3f95a93e2256.
     Publisher checksum:
     https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-aarch64.tgz.sha256.txt .

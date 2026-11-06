@@ -7,16 +7,33 @@ PID=
 cleanup() {
   rc=$?
   trap - EXIT
+  cleanup_failed=false
   if [ -n "$PID" ]; then
-    kill "$PID" 2>/dev/null || true
-    sleep 0.1
-    kill -KILL "$PID" 2>/dev/null || true
+    if kill -0 "$PID" 2>/dev/null; then
+      kill "$PID" 2>/dev/null || cleanup_failed=true
+      for _ in $(seq 1 20); do
+        kill -0 "$PID" 2>/dev/null || break
+        sleep 0.1
+      done
+      if kill -0 "$PID" 2>/dev/null; then
+        kill -KILL "$PID" 2>/dev/null || cleanup_failed=true
+      fi
+    elif [ "$rc" -eq 0 ]; then
+      cleanup_failed=true
+    fi
     wait "$PID" 2>/dev/null || true
+    if kill -0 "$PID" 2>/dev/null; then
+      cleanup_failed=true
+    fi
   fi
-  if [ "$rc" -ne 0 ]; then
+  if [ "$rc" -ne 0 ] || [ "$cleanup_failed" = true ]; then
     for log in "$WORK"/*.log "$WORK/response.json"; do [ ! -f "$log" ] || cat "$log"; done
   fi
-  rm -rf "$WORK"
+  rm -rf "$WORK" || cleanup_failed=true
+  if [ "$rc" -eq 0 ] && [ "$cleanup_failed" = true ]; then
+    echo "Firecracker API smoke cleanup failed." >&2
+    rc=1
+  fi
   exit "$rc"
 }
 trap cleanup EXIT
@@ -26,7 +43,7 @@ SOCKET="$WORK/api.socket"
 "$BINARY" --api-sock "$SOCKET" > "$WORK/firecracker.log" 2>&1 &
 PID=$!
 ready=false
-for i in $(seq 1 50); do
+for _ in $(seq 1 50); do
   kill -0 "$PID"
   if [ -S "$SOCKET" ]; then ready=true; break; fi
   sleep 0.1
