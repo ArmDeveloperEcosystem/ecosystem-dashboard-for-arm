@@ -14,7 +14,7 @@ optional_info:
     support_caveats:
     alternative_options:
     getting_started_resources:
-        official_docs: https://www.dragonflydb.io/docs
+        official_docs:
         arm_content:
         partner_content:
     arm_recommended_minimum_version:

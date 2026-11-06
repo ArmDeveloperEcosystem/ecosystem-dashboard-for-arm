@@ -249,7 +249,8 @@ function URLsearchAndfiltering(url_str) {
     //    2. Filter  (?license=)
     //    3. Filter  (?category=)
     //    4. Package (?package=)    must exactly match a URLIZED package name, or default to main page
-    const search_string = sanitizeInput(params.get('search') || '');
+    const search_value = params.get('search') || '';
+    const search_string = window.dashboardSearch ? search_value : sanitizeInput(search_value);
     const license_filter_string = sanitizeInput(params.get('license') || '');
     const category_filter_string = sanitizeInput(params.get('category') || '');
     const package_string = sanitizeInput(params.get('package') || '');

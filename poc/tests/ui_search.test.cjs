@@ -147,6 +147,40 @@ function response(results, extra = {}) {
         results: results.map(item => ({ ...item, id: item.id.includes('/') ? item.id : 'linux/opensource_packages/' + item.id + '.md' })), notices: [], ...extra }) };
 }
 
+test('URL searches preserve the decoded query through KB dispatch while legacy search remains sanitized', async () => {
+    const query = '  C++ & 日本語 databases? "exact" + café  ';
+    for (const enabled of [true, false]) {
+        const f = fixture(async () => response([{ id: 'postgresql', reason: 'Database' }]));
+        const searchBox = new Element();
+        let pending, legacyQuery;
+        const context = vm.createContext({
+            URLSearchParams,
+            console: { log() {} },
+            window: enabled ? { dashboardSearch: { search(value) { pending = f.app.search(value); } } } : {},
+            document: {
+                addEventListener() {},
+                getElementById: id => id === 'search-box' ? searchBox : null,
+                querySelectorAll: () => []
+            }
+        });
+        vm.runInContext(readFileSync(resolve(__dirname, '../../themes/arm-design-system-hugo-theme/static/js/eco-dashboard/search.js'), 'utf8'), context);
+        context.applySearchAndFilters = (_, value) => { legacyQuery = value; return []; };
+        context.updateShownNumber = () => {};
+        context.URLsearchAndfiltering('?search=' + encodeURIComponent(query));
+        if (enabled) {
+            await pending;
+            assert.equal(f.calls[0].query, query);
+            assert.equal(f.nodes['nl-search-input'].value, query);
+            assert.equal(searchBox.getAttribute('search-value'), query);
+            assert.equal(legacyQuery, undefined);
+        } else {
+            assert.equal(legacyQuery, ' C databases exact caf ');
+            assert.equal(searchBox.getAttribute('search-value'), ' C databases exact caf ');
+            assert.equal(f.calls.length, 0);
+        }
+    }
+});
+
 test('Search feedback uses a closed native disclosure without repeated query or scope nodes', () => {
     const template = readFileSync(resolve(__dirname, '../../themes/arm-design-system-hugo-theme/layouts/partials/eco-dashboard/conversational-search.html'), 'utf8');
     const details = template.match(/<details\b([^>]*\bid="nl-search-details"[^>]*)>([\s\S]*?)<\/details>/);
