@@ -268,6 +268,34 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
             self.containers.call_args_list,
         )
 
+    def test_authenticated_base_accepts_its_canonical_historical_addition(self) -> None:
+        self.base["hardened_workflow_transition"]["added_workflows"] = [
+            ".github/workflows/test-prior-package.yml"
+        ]
+        self.assertEqual((1, 10), self.verify(expected_base_commit=self.base_commit))
+
+    def test_authenticated_base_rejects_malformed_historical_additions(self) -> None:
+        malformed = (
+            [],
+            [".github/workflows/test-prior-package.yml"] * 2,
+            ["../test-prior-package.yml"],
+            [".github/workflows/./test-prior-package.yml"],
+            [".github/workflows/test-prior-package.yml "],
+            [True],
+        )
+        for additions in malformed:
+            with self.subTest(additions=additions):
+                self.commands.clear()
+                self.base["hardened_workflow_transition"]["added_workflows"] = additions
+                with self.assertRaisesRegex(
+                    online.OnlineEvidenceError,
+                    "authenticated base action lock: hardened workflow additions are malformed",
+                ):
+                    self.verify(expected_base_commit=self.base_commit)
+                self.assertFalse(
+                    any(command[:2] == ["gh", "api"] for command in self.commands)
+                )
+
     def test_new_container_live_verification_failure_cannot_be_inherited_from_base(self) -> None:
         self.base["containers"].pop()
         self.base["container_uses"] = len(self.base["containers"])

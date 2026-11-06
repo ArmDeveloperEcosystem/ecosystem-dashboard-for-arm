@@ -501,7 +501,31 @@ class ExactRunAggregationTests(unittest.TestCase):
             contract.topology_payload(topology)["mutable_external_actions"], []
         )
         packages = [package for batch in topology for package in batch.packages]
-        self.assertEqual(len(packages), 962)
+        self.assertEqual(len(packages), 965)
+        self.assertEqual(
+            [(22, "test-bubblewrap", ".github/workflows/test-bubblewrap.yml")],
+            [(batch.batch, package.job, package.workflow_path)
+             for batch in topology for package in batch.packages
+             if package.package_slug == "bubblewrap"],
+        )
+        self.assertEqual(
+            [(22, "test-openshell", ".github/workflows/test-openshell.yml")],
+            [(batch.batch, package.job, package.workflow_path)
+             for batch in topology for package in batch.packages
+             if package.package_slug == "openshell"],
+        )
+        self.assertEqual(
+            [
+                (
+                    22,
+                    "test-anthropic-sandbox-runtime",
+                    ".github/workflows/test-anthropic-sandbox-runtime.yml",
+                )
+            ],
+            [(batch.batch, package.job, package.workflow_path)
+             for batch in topology for package in batch.packages
+             if package.package_slug == "anthropic-sandbox-runtime"],
+        )
         self.assertEqual(
             [(22, "test-libkrun", ".github/workflows/test-libkrun.yml")],
             [(batch.batch, package.job, package.workflow_path)
