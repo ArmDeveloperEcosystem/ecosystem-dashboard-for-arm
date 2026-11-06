@@ -1,5 +1,23 @@
 # Scoped KB search — validation status
 
+## Search feedback and mobile layout — 6 November 2026
+
+Successful searches now show one compact result count and quick refinements.
+The repeated query and scope chips are removed; existing filter controls retain
+the selected state. Routine ranking and coverage explanations sit in a closed,
+keyboard-accessible "How search works" disclosure. Omitted-record warnings,
+unexpected notices, empty-result guidance and labelled name-only fallback remain
+visible. Editing, loading and clearing reset the disclosure. On small screens,
+the existing filter button sits above the full-width search card.
+
+Local validation passed 208 Python tests and 25 UI tests. Real Chrome checks
+covered compact results, keyboard disclosure, exact-edition details, refinements,
+editing, empty results, fallback/recovery, count restoration and the 390px mobile
+layout, including the filter panel. A live monitoring query returned 49 mapped
+packages. No page errors were observed. Independent UI and test review found no
+blocker. Evidence is under `.poc/ux-review-20261106/`. Search relevance and staging
+acceptance remain open; the retrieval contract and backend behavior are unchanged.
+
 ## KB contract simplification — 5 November 2026
 
 The deployed KB reports API `1.2.0`, retrieval package `0.5.3` and source

@@ -18,6 +18,7 @@ class Element {
         this.insertedChildren = [];
         this.listeners = {};
         this.hidden = false;
+        this.open = false;
         this.checked = false;
         this.value = '';
         this.id = '';
@@ -67,10 +68,11 @@ class Element {
 
 function fixture(fetcher, packageIDs = ['postgresql', 'nginx'], filterCard = () => false) {
     const ids = ['nl-search-input', 'nl-search-form', 'nl-search-tested', 'nl-search-clear',
-        'nl-search-feedback', 'nl-search-status', 'nl-search-interpretation', 'nl-search-constraints',
-        'nl-search-notice', 'nl-search-refinements', 'currently-shown-number', 'if-none-contribute-div',
+        'nl-search-feedback', 'nl-search-status', 'nl-search-details', 'nl-search-details-copy',
+        'nl-search-notice', 'nl-search-refinements', 'currently-shown-number', 'results-status-bar', 'if-none-contribute-div',
         'filter-facet-display-name-group-license', 'filter-facet-display-name-group-category', 'category-description'];
     const nodes = Object.fromEntries(ids.map(id => [id, new Element()]));
+    nodes['nl-search-details'].hidden = true;
     const submit = new Element();
     nodes['nl-search-form'].querySelector = () => submit;
     const root = new Element();
@@ -143,6 +145,29 @@ function response(results, extra = {}) {
         results: results.map(item => ({ ...item, id: item.id.includes('/') ? item.id : 'linux/opensource_packages/' + item.id + '.md' })), notices: [], ...extra }) };
 }
 
+test('Search feedback uses a closed native disclosure without repeated query or scope nodes', () => {
+    const template = readFileSync(resolve(__dirname, '../../themes/arm-design-system-hugo-theme/layouts/partials/eco-dashboard/conversational-search.html'), 'utf8');
+    const details = template.match(/<details\b([^>]*\bid="nl-search-details"[^>]*)>([\s\S]*?)<\/details>/);
+    assert.ok(details, 'Search explanation must use a native details element');
+    assert.doesNotMatch(details[1], /\bopen(?:\s|=|$)/);
+    assert.match(details[2], /<summary\b[^>]*>\s*How search works\s*<\/summary>/);
+    assert.doesNotMatch(template, /id="nl-search-(?:interpretation|constraints)"/);
+});
+
+test('Successful searches show one compact count with optional explanation and refinements', async () => {
+    for (const ids of [['postgresql'], ['postgresql', 'nginx']]) {
+        const f = fixture(async () => response(ids.map(id => ({ id, reason: 'A match' }))));
+        await f.app.search('software');
+        assert.equal(f.nodes['nl-search-status'].textContent, ids.length === 1 ? '1 result' : '2 results');
+        assert.equal(f.nodes['nl-search-details'].hidden, false);
+        assert.equal(f.nodes['nl-search-details'].open, false);
+        assert.match(f.nodes['nl-search-details-copy'].textContent, /Packages are ranked by the Arm Knowledge Base\./);
+        assert.equal(f.nodes['nl-search-notice'].hidden, true);
+        assert.equal(f.nodes['nl-search-refinements'].hidden, false);
+        assert.equal(f.nodes['results-status-bar'].hidden, true);
+    }
+});
+
 test('Only catalog IDs render; descriptions remain plain text without injected elements', async () => {
     const f = fixture(async () => response([
         { id: 'postgresql', reason: '<img src=x onerror=alert(1)>' },
@@ -153,6 +178,7 @@ test('Only catalog IDs render; descriptions remain plain text without injected e
     assert.equal(f.rows[0].title.children[0].textContent, '<img src=x onerror=alert(1)>');
     assert.equal(f.rows[0].title.children[0].children.length, 0);
     assert.match(f.nodes['nl-search-notice'].textContent, /outside the current catalog/);
+    assert.equal(f.nodes['nl-search-notice'].hidden, false);
     assert.equal(f.nodes['currently-shown-number'].textContent, '1');
 });
 
@@ -201,7 +227,6 @@ test('Refinement buttons change structured controls and preserve the exact submi
     assert.equal(f.radios.license[1].checked, true);
     assert.equal(f.nodes['nl-search-tested'].checked, true);
     assert.match(f.nodes['filter-facet-display-name-group-license'].textContent, /Open source/);
-    assert.equal(f.nodes['nl-search-interpretation'].textContent, 'Search: “' + query + '”');
 });
 
 test('Refinements preserve category feedback and responses do not rewrite selected controls', async () => {
@@ -224,9 +249,6 @@ test('Refinements preserve category feedback and responses do not rewrite select
     assert.equal(f.nodes['nl-search-tested'].checked, true);
     assert.equal(f.nodes['filter-facet-display-name-group-category'].textContent, 'Category: Databases');
     assert.equal(f.nodes['category-description'].textContent, 'Database software');
-    assert.deepEqual(f.nodes['nl-search-constraints'].children.map(chip => chip.textContent), [
-        'Linux on Arm', 'Open source', 'Databases', 'Recorded Arm64 tests'
-    ]);
 });
 
 test('An unavailable service falls back to clearly identified package-name matching', async () => {
@@ -307,7 +329,7 @@ test('Late responses cannot replace results from a newer search', async () => {
     pending[0](response([{ id: 'postgresql', reason: 'Database' }]));
     await oldRequest;
     assert.deepEqual(f.rows.map(row => row.hidden), [true, false]);
-    assert.equal(f.nodes['nl-search-interpretation'].textContent, 'Search: “web servers”');
+    assert.equal(f.nodes['nl-search-input'].value, 'web servers');
     assert.equal(f.signals[0].aborted, true);
 });
 
@@ -340,10 +362,12 @@ test('Clearing a query restores the catalog, preserves selected test filter, and
     await f.app.search('');
     assert.deepEqual(f.rows.map(row => row.hidden), [false, true]);
     assert.equal(f.rows[0].title.children.length, 0);
+    assert.equal(f.nodes['results-status-bar'].hidden, true);
     f.nodes['nl-search-tested'].checked = false;
     await f.app.search('');
     assert.deepEqual(f.rows.map(row => row.hidden), [false, false]);
     assert.equal(f.nodes['nl-search-feedback'].hidden, true);
+    assert.equal(f.nodes['results-status-bar'].hidden, false);
 });
 
 test('Sidebar changes send selected structured filters with the current query', async () => {
@@ -470,7 +494,8 @@ test('Pinned packages retain their section and placeholder pairs stay intact thr
     ]);
     assert.equal(placeholder.hidden, true);
     assert.equal(placeholder.title.children.length, 0);
-    assert.match(f.nodes['nl-search-notice'].textContent, /Pinned packages/);
+    assert.match(f.nodes['nl-search-details-copy'].textContent, /Pinned packages/);
+    assert.equal(f.nodes['nl-search-notice'].hidden, true);
     assert.equal(f.nodes['currently-shown-number'].textContent, '2');
     assert.ok(!f.table.insertedChildren.includes(pinned), 'An already positioned pinned row stays attached');
     assert.ok(!f.table.insertedChildren.includes(pinned.details), 'Pinned details stay attached');
@@ -506,6 +531,9 @@ test('Unavailable KB, old hybrid mode, malformed responses and HTTP errors show 
         assert.deepEqual(f.rows.map(row => row.hidden), [false, true]);
         assert.match(f.nodes['nl-search-status'].textContent, /Natural-language search is unavailable. Name search only: 1 match/);
         assert.match(f.nodes['nl-search-notice'].textContent, /Clear search to browse/);
+        assert.equal(f.nodes['nl-search-notice'].hidden, false);
+        assert.equal(f.nodes['nl-search-details'].hidden, true);
+        assert.equal(f.nodes['nl-search-details'].open, false);
     }
 });
 
@@ -513,21 +541,68 @@ test('Empty scoped results stay empty and do not become catalog-discovered match
     const f = fixture(async () => response([], { status: 'no_matches' }));
     await f.app.search('PostgreSQL');
     assert.deepEqual(f.rows.map(row => row.hidden), [true, true]);
-    assert.equal(f.nodes['nl-search-status'].textContent, 'No matching packages in this catalog.');
+    assert.equal(f.nodes['nl-search-status'].textContent, 'No matches found.');
     assert.equal(f.nodes['nl-search-refinements'].hidden, true);
+    assert.equal(f.nodes['nl-search-notice'].hidden, false);
+    assert.match(f.nodes['nl-search-notice'].textContent, /broader wording.*filters.*clear the search/);
+    assert.equal(f.nodes['nl-search-details'].hidden, false);
+    assert.equal(f.nodes['nl-search-details'].open, false);
+    assert.equal(f.nodes['results-status-bar'].hidden, true);
 });
 
-test('Relevant retrieval and refinement limitations remain visible together', async () => {
-    const notices = [
+test('Routine retrieval details are collapsed while warnings remain visible', async () => {
+    const routineNotices = [
         'Results cover up to the first 50 ranked hits.',
-        'An old package was omitted.',
         'Category and recorded-test filters apply only to retrieved packages.',
-        'Recorded tests do not guarantee every test passed.',
+        'Recorded Linux Arm64 tests only. This does not guarantee every test passed.',
         'No matching current catalog packages were found.'
     ];
+    const warning = 'An old package was omitted.';
+    const notices = [...routineNotices, warning];
     const f = fixture(async () => response([], { status: 'no_matches', notices }));
     await f.app.search('databases');
-    for (const notice of notices) assert.ok(f.nodes['nl-search-notice'].textContent.includes(notice));
+    assert.equal(f.nodes['nl-search-details'].hidden, false);
+    assert.equal(f.nodes['nl-search-details'].open, false);
+    for (const notice of routineNotices) {
+        assert.ok(f.nodes['nl-search-details-copy'].textContent.includes(notice));
+        assert.ok(!f.nodes['nl-search-notice'].textContent.includes(notice));
+    }
+    assert.equal(f.nodes['nl-search-notice'].hidden, false);
+    assert.ok(f.nodes['nl-search-notice'].textContent.includes(warning));
+    assert.ok(!f.nodes['nl-search-details-copy'].textContent.includes(warning));
+});
+
+test('Editing, loading, clearing and fallback remove stale explanation and reset its disclosure', async () => {
+    for (const transition of ['edit', 'loading', 'clear', 'fallback']) {
+        let finishRequest;
+        let requests = 0;
+        const f = fixture(async () => {
+            if (++requests === 1) return response([{ id: 'postgresql', reason: 'Database' }]);
+            if (transition === 'fallback') throw new Error('Offline');
+            return new Promise(resolve => { finishRequest = resolve; });
+        });
+        await f.app.search('databases');
+        f.nodes['nl-search-details'].open = true;
+        let pending;
+        if (transition === 'edit') {
+            f.nodes['nl-search-input'].value = 'new query';
+            f.nodes['nl-search-input'].listeners.input();
+        } else if (transition === 'clear') {
+            await f.app.search('');
+        } else {
+            pending = f.app.search('PostgreSQL');
+            if (transition === 'fallback') await pending;
+        }
+        assert.equal(f.nodes['nl-search-details'].hidden, true, transition);
+        assert.equal(f.nodes['nl-search-details'].open, false, transition);
+        assert.equal(f.nodes['nl-search-details-copy'].textContent, '', transition);
+        if (transition === 'loading') {
+            finishRequest(response([{ id: 'postgresql', reason: 'Database' }]));
+            await pending;
+            assert.equal(f.nodes['nl-search-details'].hidden, false);
+            assert.equal(f.nodes['nl-search-details'].open, false);
+        }
+    }
 });
 
 test('Editing or clearing during a request cancels it and ignores its eventual response', async () => {

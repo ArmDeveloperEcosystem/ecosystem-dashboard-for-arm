@@ -10,9 +10,9 @@
         const clearButton = root.querySelector('#nl-search-clear');
         const feedback = root.querySelector('#nl-search-feedback');
         const status = root.querySelector('#nl-search-status');
-        const interpretation = root.querySelector('#nl-search-interpretation');
-        const constraints = root.querySelector('#nl-search-constraints');
         const notice = root.querySelector('#nl-search-notice');
+        const details = root.querySelector('#nl-search-details');
+        const detailsCopy = root.querySelector('#nl-search-details-copy');
         const refinements = root.querySelector('#nl-search-refinements');
         const state = {
             query: '', matches: null, fallback: false,
@@ -62,6 +62,7 @@
         function updateCount() {
             const count = allRows().filter(row => !isPlaceholder(row) && !row.hidden).length;
             document.getElementById('currently-shown-number').textContent = String(count);
+            document.getElementById('results-status-bar').hidden = Boolean(state.query || tested.checked);
             const contribute = document.getElementById('if-none-contribute-div');
             contribute.classList.toggle('show', count === 0 && !state.pending);
             contribute.classList.toggle('no-transition', count !== 0 || state.pending);
@@ -136,21 +137,6 @@
             }
         }
 
-        function renderConstraints() {
-            constraints.replaceChildren();
-            const filters = currentFilters();
-            const labels = ['Linux on Arm'];
-            if (filters.license === 'opensource') labels.push('Open source');
-            if (filters.license === 'commercial') labels.push('Commercial');
-            if (filters.category) labels.push(filters.category);
-            if (filters.tested_only) labels.push('Recorded Arm64 tests');
-            for (const label of labels) {
-                const chip = document.createElement('span');
-                chip.textContent = label;
-                constraints.appendChild(chip);
-            }
-        }
-
         function syncFilters(next) {
             if (!next || typeof next !== 'object') return;
             const options = Array.from(document.querySelectorAll('input.group-license'));
@@ -174,7 +160,7 @@
             state.pending = value;
             root.setAttribute('aria-busy', String(value));
             submitButton.disabled = value;
-            submitButton.textContent = value ? 'Searching…' : 'Search →';
+            submitButton.textContent = value ? 'Searching…' : 'Search';
         }
 
         function cancelRequest() {
@@ -189,6 +175,12 @@
             notice.hidden = !message;
         }
 
+        function resetDetails() {
+            details.hidden = true;
+            details.open = false;
+            detailsCopy.textContent = '';
+        }
+
         function restoreCatalog() {
             cancelRequest();
             window.clearTimeout(state.filterTimer);
@@ -198,26 +190,23 @@
             input.value = '';
             clearButton.hidden = true;
             feedback.hidden = !tested.checked;
-            interpretation.hidden = true;
+            resetDetails();
             refinements.hidden = true;
             setNotice('');
             removeReasons();
             const count = renderRows();
             status.textContent = tested.checked ? count + ' packages with recorded Arm64 tests.' : '';
-            renderConstraints();
         }
 
-        function showNameFallback(query) {
+        function showNameFallback() {
             state.matches = null;
             state.fallback = true;
             removeReasons();
             const count = renderRows();
             status.textContent = 'Natural-language search is unavailable. Name search only: ' + count + (count === 1 ? ' match.' : ' matches.');
-            interpretation.textContent = 'Package name contains: “' + query + '”';
-            interpretation.hidden = false;
+            resetDetails();
             refinements.hidden = true;
             setNotice('Try a package name or use the filters. Clear search to browse all packages, or submit again to retry.');
-            renderConstraints();
         }
 
         async function search(query, options) {
@@ -244,14 +233,13 @@
             state.fallback = false;
             clearButton.hidden = false;
             feedback.hidden = false;
-            interpretation.hidden = true;
+            resetDetails();
             refinements.hidden = true;
             setNotice('');
             status.textContent = 'Finding packages for your workload…';
             busy(true);
             removeReasons();
             renderRows();
-            renderConstraints();
             const timeout = window.setTimeout(() => controller.abort(), 15000);
             try {
                 const payload = { query, filters: currentFilters() };
@@ -277,20 +265,27 @@
                 busy(false);
                 renderReasons();
                 const count = renderRows();
-                status.textContent = count ? count + (count === 1 ? ' matching package.' : ' matching packages, ordered by relevance.') : 'No matching packages in this catalog.';
-                interpretation.textContent = 'Search: “' + query + '”';
-                interpretation.hidden = false;
-                renderConstraints();
+                status.textContent = count ? count + (count === 1 ? ' result' : ' results') : 'No matches found.';
                 const messages = Array.isArray(data.notices) ? data.notices.filter(item => typeof item === 'string').slice(0, 5).map(item => item.slice(0, 400)) : [];
-                if (allRows().some(row => !row.hidden && !isPlaceholder(row) && row.classList.contains('js-pinned'))) messages.push('Pinned packages stay at the top.');
-                if (omitted) messages.push('Suggestions outside the current catalog were omitted.');
-                if (!count) messages.push('Try broader wording, adjust the filters, or clear the search to browse all packages.');
-                setNotice(messages.join(' '));
+                const explanations = ['Packages are ranked by the Arm Knowledge Base.'];
+                const warnings = [];
+                // Fold only known explanatory notices; unexpected messages stay visible.
+                const routinePrefixes = ['Results cover up to', 'Category and recorded-test filters',
+                    'Recorded Linux Arm64 tests only.', 'No matching current catalog packages were found'];
+                for (const message of messages) {
+                    (routinePrefixes.some(prefix => message.startsWith(prefix)) ? explanations : warnings).push(message);
+                }
+                if (allRows().some(row => !row.hidden && !isPlaceholder(row) && row.classList.contains('js-pinned'))) explanations.push('Pinned packages stay at the top.');
+                if (omitted) warnings.push('Suggestions outside the current catalog were omitted.');
+                if (!count) warnings.push('Try broader wording, adjust the filters, or clear the search to browse all packages.');
+                setNotice(warnings.join(' '));
+                detailsCopy.textContent = explanations.join(' ');
+                details.hidden = false;
                 refinements.hidden = count === 0;
             } catch (_) {
                 if (version !== state.version) return;
                 busy(false);
-                showNameFallback(query);
+                showNameFallback();
             } finally {
                 window.clearTimeout(timeout);
                 if (version === state.version) {
@@ -334,6 +329,7 @@
                 feedback.hidden = false;
                 status.textContent = state.query ? 'Search edited. Submit to update the results below.' : 'Press Search to find matching packages.';
                 refinements.hidden = true;
+                resetDetails();
                 setNotice('');
             }
         });
