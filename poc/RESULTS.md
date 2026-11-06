@@ -2,21 +2,27 @@
 
 ## Search feedback and mobile layout — 6 November 2026
 
-Successful searches now show one compact result count and quick refinements.
+Successful searches now show one compact result count and an open-source shortcut.
 The repeated query and scope chips are removed; existing filter controls retain
 the selected state. Routine ranking and coverage explanations sit in a closed,
 keyboard-accessible "How search works" disclosure. Omitted-record warnings,
 unexpected notices, empty-result guidance and labelled name-only fallback remain
 visible. Editing, loading and clearing reset the disclosure. On small screens,
-the existing filter button sits above the full-width search card.
+the existing filter button sits above the full-width search card with a readable
+"Filters" label. Starter examples return on clear or empty results; they are hidden
+while searching and when results are shown. Recorded-test filtering has one
+checkbox, and the open-source shortcut disappears when that filter is selected.
+Shortcuts move focus to the search input before hiding. Notices use plain language,
+and Clear search is a secondary text action with a 44px touch target.
 
-Local validation passed 208 Python tests and 25 UI tests. Real Chrome checks
+Local validation passed 208 Python tests and 26 UI tests. Real Chrome checks
 covered compact results, keyboard disclosure, exact-edition details, refinements,
 editing, empty results, fallback/recovery, count restoration and the 390px mobile
 layout, including the filter panel. A live monitoring query returned 49 mapped
-packages. No page errors were observed. Independent UI and test review found no
+packages. Local, production-path and feature-disabled Hugo builds pass.
+No page errors were observed. Independent UX, accessibility and test review found no
 blocker. Evidence is under `.poc/ux-review-20261106/`. Search relevance and staging
-acceptance remain open; the retrieval contract and backend behavior are unchanged.
+acceptance remain open; retrieval, ranking and identity matching are unchanged.
 
 ## KB contract simplification — 5 November 2026
 

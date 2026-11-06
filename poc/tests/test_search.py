@@ -194,7 +194,7 @@ def test_unknown_identity_is_omitted_with_notice_without_title_guessing(catalog)
         catalog, [hit("deleted", title="Redis"), hit("nginx")]
     ).search("Redis")
     assert [p["title"] for p in result["results"]] == ["Nginx"]
-    assert "Omitted 1 KB hit" in " ".join(result["notices"])
+    assert "1 result is unavailable in this dashboard and was not shown." in result["notices"]
 
 
 @pytest.mark.parametrize(
@@ -247,8 +247,8 @@ def test_filters_refine_only_retrieved_candidates_in_original_order(catalog):
     )
     result = search.search("unaltered query", {"category": "Data", "tested_only": True})
     assert [p["title"] for p in result["results"]] == ["Redis"]
-    assert "locally" in " ".join(result["notices"])
-    assert "does not guarantee every test passed" in " ".join(result["notices"])
+    assert "Category and test filters narrow these results" in " ".join(result["notices"])
+    assert "do not mean every test passed" in " ".join(result["notices"])
     empty = search.search("unaltered query", {"category": "Imaginary"})
     assert empty["results"] == []
     assert len(calls) == 1

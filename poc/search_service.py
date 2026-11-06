@@ -118,22 +118,21 @@ class SearchService:
             )
         notices = base["notices"]
         notices.append(
-            "Results cover up to the first 50 KB-ranked hits in the selected scope; "
-            "they are not an exhaustive catalog search."
+            "Showing up to 50 results ranked by relevance, not every possible match."
         )
         if omitted:
             notices.append(
-                f"Omitted {omitted} KB hit(s) whose package identity is absent from the current catalog."
+                f"{omitted} result{' is' if omitted == 1 else 's are'} unavailable in this dashboard "
+                f"and {'was' if omitted == 1 else 'were'} not shown."
             )
         if constraints["category"] or constraints["tested_only"]:
             notices.append(
-                "Category and recorded-test filters are applied locally to this bounded KB result set. "
-                "Matching packages outside that set may not appear."
+                "Category and test filters narrow these results; other matching packages may not appear."
             )
         if constraints["tested_only"]:
             notices.append(
-                "Recorded Linux Arm64 tests only. A recorded test does not guarantee every test passed; "
-                "open the package to review the evidence."
+                "Recorded Arm64 tests do not mean every test passed. "
+                "Open a package to see its test results."
             )
         for package in mapped:
             category = constraints["category"]

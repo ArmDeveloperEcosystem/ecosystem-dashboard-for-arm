@@ -14,6 +14,7 @@
         const details = root.querySelector('#nl-search-details');
         const detailsCopy = root.querySelector('#nl-search-details-copy');
         const refinements = root.querySelector('#nl-search-refinements');
+        const examples = root.querySelector('#nl-search-examples');
         const state = {
             query: '', matches: null, fallback: false,
             version: 0, controller: null, filterTimer: null, pending: false
@@ -189,6 +190,7 @@
             state.fallback = false;
             input.value = '';
             clearButton.hidden = true;
+            examples.hidden = false;
             feedback.hidden = !tested.checked;
             resetDetails();
             refinements.hidden = true;
@@ -232,6 +234,7 @@
             state.matches = new Map();
             state.fallback = false;
             clearButton.hidden = false;
+            examples.hidden = true;
             feedback.hidden = false;
             resetDetails();
             refinements.hidden = true;
@@ -270,18 +273,19 @@
                 const explanations = ['Packages are ranked by the Arm Knowledge Base.'];
                 const warnings = [];
                 // Fold only known explanatory notices; unexpected messages stay visible.
-                const routinePrefixes = ['Results cover up to', 'Category and recorded-test filters',
-                    'Recorded Linux Arm64 tests only.', 'No matching current catalog packages were found'];
+                const routinePrefixes = ['Showing up to', 'Category and test filters',
+                    'Recorded Arm64 tests', 'No matching current catalog packages were found'];
                 for (const message of messages) {
                     (routinePrefixes.some(prefix => message.startsWith(prefix)) ? explanations : warnings).push(message);
                 }
                 if (allRows().some(row => !row.hidden && !isPlaceholder(row) && row.classList.contains('js-pinned'))) explanations.push('Pinned packages stay at the top.');
-                if (omitted) warnings.push('Suggestions outside the current catalog were omitted.');
+                if (omitted) warnings.push('Some results are unavailable in this dashboard and were not shown.');
                 if (!count) warnings.push('Try broader wording, adjust the filters, or clear the search to browse all packages.');
                 setNotice(warnings.join(' '));
                 detailsCopy.textContent = explanations.join(' ');
                 details.hidden = false;
-                refinements.hidden = count === 0;
+                refinements.hidden = count === 0 || currentFilters().license === 'opensource';
+                examples.hidden = count > 0;
             } catch (_) {
                 if (version !== state.version) return;
                 busy(false);
@@ -323,6 +327,7 @@
                     state.matches = null;
                     state.query = '';
                     state.fallback = false;
+                    examples.hidden = false;
                     removeReasons();
                     renderRows();
                 }
@@ -337,13 +342,13 @@
         tested.addEventListener('change', filtersChanged);
         root.querySelectorAll('[data-search-example], [data-search-refinement]').forEach(button => {
             button.addEventListener('click', () => {
+                input.focus();
                 if (button.dataset.searchExample) {
                     search(button.dataset.searchExample, { force: true });
                     return;
                 }
                 const filters = currentFilters();
                 if (button.dataset.searchRefinement === 'opensource') filters.license = 'opensource';
-                if (button.dataset.searchRefinement === 'tested') filters.tested_only = true;
                 syncFilters(filters);
                 search(state.query, { force: true });
             });

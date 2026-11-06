@@ -62,14 +62,14 @@ class Element {
     replaceChildren() { this.children = []; }
     remove() { this.parent.children = this.parent.children.filter(child => child !== this); this.parent = null; }
     addEventListener(type, handler) { this.listeners[type] = handler; }
-    focus() {}
+    focus() { this.focused = true; }
     closest() { return this.parent || this; }
 }
 
 function fixture(fetcher, packageIDs = ['postgresql', 'nginx'], filterCard = () => false) {
     const ids = ['nl-search-input', 'nl-search-form', 'nl-search-tested', 'nl-search-clear',
         'nl-search-feedback', 'nl-search-status', 'nl-search-details', 'nl-search-details-copy',
-        'nl-search-notice', 'nl-search-refinements', 'currently-shown-number', 'results-status-bar', 'if-none-contribute-div',
+        'nl-search-notice', 'nl-search-refinements', 'nl-search-examples', 'currently-shown-number', 'results-status-bar', 'if-none-contribute-div',
         'filter-facet-display-name-group-license', 'filter-facet-display-name-group-category', 'category-description'];
     const nodes = Object.fromEntries(ids.map(id => [id, new Element()]));
     nodes['nl-search-details'].hidden = true;
@@ -78,12 +78,14 @@ function fixture(fetcher, packageIDs = ['postgresql', 'nginx'], filterCard = () 
     const root = new Element();
     root.dataset.endpoint = '/api/search';
     root.querySelector = selector => nodes[selector.slice(1)];
-    const buttons = ['opensource', 'tested'].map(value => {
+    const buttons = ['opensource'].map(value => {
         const button = new Element();
         button.dataset.searchRefinement = value;
         return button;
     });
-    root.querySelectorAll = () => buttons;
+    const example = new Element();
+    example.dataset.searchExample = 'Web servers';
+    root.querySelectorAll = () => [...buttons, example];
     const table = new Element();
     const rows = packageIDs.map((id, index) => {
         const row = new Element();
@@ -136,7 +138,7 @@ function fixture(fetcher, packageIDs = ['postgresql', 'nginx'], filterCard = () 
     vm.runInContext(readFileSync(resolve(__dirname, '../../themes/arm-design-system-hugo-theme/static/js/eco-dashboard/conversational-search.js'), 'utf8'), context);
     vm.runInContext(readFileSync(resolve(__dirname, '../../themes/arm-design-system-hugo-theme/static/js/eco-dashboard/table_functionality.js'), 'utf8'), context);
     const app = window.createDashboardSearch(root);
-    return { app, root, rows, nodes, calls, radios, buttons, table, signals, rowClickHandler: context.rowClickHandler };
+    return { app, root, rows, nodes, calls, radios, buttons, example, table, signals, rowClickHandler: context.rowClickHandler };
 }
 
 function response(results, extra = {}) {
@@ -152,6 +154,7 @@ test('Search feedback uses a closed native disclosure without repeated query or 
     assert.doesNotMatch(details[1], /\bopen(?:\s|=|$)/);
     assert.match(details[2], /<summary\b[^>]*>\s*How search works\s*<\/summary>/);
     assert.doesNotMatch(template, /id="nl-search-(?:interpretation|constraints)"/);
+    assert.doesNotMatch(template, /data-search-refinement="tested"/);
 });
 
 test('Successful searches show one compact count with optional explanation and refinements', async () => {
@@ -165,7 +168,26 @@ test('Successful searches show one compact count with optional explanation and r
         assert.equal(f.nodes['nl-search-notice'].hidden, true);
         assert.equal(f.nodes['nl-search-refinements'].hidden, false);
         assert.equal(f.nodes['results-status-bar'].hidden, true);
+        assert.equal(f.nodes['nl-search-examples'].hidden, true);
     }
+});
+
+test('Example searches hide while loading and return on clear with focus kept on the input', async () => {
+    let finishRequest;
+    const f = fixture(() => new Promise(resolve => { finishRequest = resolve; }));
+    assert.equal(f.nodes['nl-search-examples'].hidden, false);
+    f.example.listeners.click();
+    assert.equal(f.nodes['nl-search-input'].focused, true);
+    assert.equal(f.nodes['nl-search-input'].value, 'Web servers');
+    assert.equal(f.nodes['nl-search-examples'].hidden, true);
+    assert.equal(f.calls[0].query, 'Web servers');
+    finishRequest(response([{ id: 'nginx', reason: 'Web server' }]));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(f.nodes['nl-search-examples'].hidden, true);
+    f.nodes['nl-search-clear'].listeners.click();
+    assert.equal(f.nodes['nl-search-examples'].hidden, false);
+    assert.equal(f.nodes['nl-search-input'].value, '');
+    assert.equal(f.nodes['results-status-bar'].hidden, false);
 });
 
 test('Only catalog IDs render; descriptions remain plain text without injected elements', async () => {
@@ -177,7 +199,7 @@ test('Only catalog IDs render; descriptions remain plain text without injected e
     assert.deepEqual(f.rows.map(row => row.hidden), [false, true]);
     assert.equal(f.rows[0].title.children[0].textContent, '<img src=x onerror=alert(1)>');
     assert.equal(f.rows[0].title.children[0].children.length, 0);
-    assert.match(f.nodes['nl-search-notice'].textContent, /outside the current catalog/);
+    assert.match(f.nodes['nl-search-notice'].textContent, /Some results are unavailable in this dashboard and were not shown\./);
     assert.equal(f.nodes['nl-search-notice'].hidden, false);
     assert.equal(f.nodes['currently-shown-number'].textContent, '1');
 });
@@ -209,7 +231,7 @@ test('Shared visibility updates scale linearly and close hidden details and care
     });
 });
 
-test('Refinement buttons change structured controls and preserve the exact submitted query', async () => {
+test('Open-source shortcut and recorded-tests checkbox preserve the exact submitted query', async () => {
     const f = fixture(async () => response([{ id: 'postgresql', reason: 'Database' }], {
         query: 'This response must not rewrite the query'
     }));
@@ -217,7 +239,10 @@ test('Refinement buttons change structured controls and preserve the exact submi
     await f.app.search(query);
     f.buttons[0].listeners.click();
     await new Promise(resolve => setTimeout(resolve, 0));
-    f.buttons[1].listeners.click();
+    assert.equal(f.nodes['nl-search-refinements'].hidden, true, 'Already-selected license must not offer a redundant action');
+    assert.equal(f.nodes['nl-search-input'].focused, true, 'Focus stays on a visible control');
+    f.nodes['nl-search-tested'].checked = true;
+    f.nodes['nl-search-tested'].listeners.change();
     await new Promise(resolve => setTimeout(resolve, 0));
     assert.deepEqual(f.calls.map(call => call.query), [query, query, query]);
     assert.deepEqual(f.calls[2], {
@@ -239,7 +264,8 @@ test('Refinements preserve category feedback and responses do not rewrite select
     await f.app.search('databases');
     f.buttons[0].listeners.click();
     await new Promise(resolve => setTimeout(resolve, 0));
-    f.buttons[1].listeners.click();
+    f.nodes['nl-search-tested'].checked = true;
+    f.nodes['nl-search-tested'].listeners.change();
     await new Promise(resolve => setTimeout(resolve, 0));
     assert.deepEqual(f.calls[2].filters, {
         license: 'opensource', category: 'Databases', tested_only: true
@@ -257,6 +283,7 @@ test('An unavailable service falls back to clearly identified package-name match
     assert.deepEqual(f.rows.map(row => row.hidden), [false, true]);
     assert.match(f.nodes['nl-search-status'].textContent, /Name search only: 1 match/);
     assert.equal(f.nodes['nl-search-refinements'].hidden, true);
+    assert.equal(f.nodes['nl-search-examples'].hidden, true);
 });
 
 test('Same-title package variants cannot inherit a different catalog record match', async () => {
@@ -548,13 +575,14 @@ test('Empty scoped results stay empty and do not become catalog-discovered match
     assert.equal(f.nodes['nl-search-details'].hidden, false);
     assert.equal(f.nodes['nl-search-details'].open, false);
     assert.equal(f.nodes['results-status-bar'].hidden, true);
+    assert.equal(f.nodes['nl-search-examples'].hidden, false, 'Empty results offer example queries for recovery');
 });
 
 test('Routine retrieval details are collapsed while warnings remain visible', async () => {
     const routineNotices = [
-        'Results cover up to the first 50 ranked hits.',
-        'Category and recorded-test filters apply only to retrieved packages.',
-        'Recorded Linux Arm64 tests only. This does not guarantee every test passed.',
+        'Showing up to 50 results ranked by relevance, not every possible match.',
+        'Category and test filters narrow these results; other matching packages may not appear.',
+        'Recorded Arm64 tests do not mean every test passed. Open a package to see its test results.',
         'No matching current catalog packages were found.'
     ];
     const warning = 'An old package was omitted.';
