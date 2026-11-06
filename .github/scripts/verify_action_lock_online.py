@@ -411,7 +411,10 @@ def _parse_lock(
     ):
         raise OnlineEvidenceError(f"{label} has an invalid container inventory")
     try:
-        supply_chain.validate_hardened_workflow_transition(lock_data)
+        supply_chain.validate_hardened_workflow_transition(
+            lock_data,
+            enforce_reviewed_additions=not authenticated_base,
+        )
         supply_chain.permission_exceptions(lock_data)
         originals: set[str] = set()
         for entry in actions:
