@@ -30,11 +30,11 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             self.report["totals"],
         )
         self.assertEqual(
-            {'baseline_failed': 1,
+            {'baseline_failed': 2,
              'next_install_failed': 1,
              'next_regression_failed': 5,
              'not_applicable_package_manager': 8,
-             'not_configured': 947},
+             'not_configured': 946},
             self.report["fallback_counts"],
         )
         self.assertEqual(
@@ -63,16 +63,17 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         # Test 5 finalizer separately. NVIDIA's trap and BenchmarkSQL's Python
         # outputs and cuDNN's helper are covered by executable tests, not this literal scan.
         self.assertEqual(
-            {'test1': ['bubblewrap', 'chef-infra', 'xen-hypervisor'],
-             'test2': ['bubblewrap', 'chef-infra', 'xen-hypervisor'],
-             'test3': ['bubblewrap', 'chef-infra', 'xen-hypervisor'],
-             'test4': ['bubblewrap', 'chef-infra', 'xen-hypervisor'],
+            {'test1': ['bubblewrap', 'chef-infra', 'gVisor', 'xen-hypervisor'],
+             'test2': ['bubblewrap', 'chef-infra', 'gVisor', 'xen-hypervisor'],
+             'test3': ['bubblewrap', 'chef-infra', 'gVisor', 'xen-hypervisor'],
+             'test4': ['bubblewrap', 'chef-infra', 'gVisor', 'xen-hypervisor'],
              'test5': ['bubblewrap',
                        'chef-infra',
+                       'gVisor',
                        'garden-linux',
                        'nvidia-gpu-driver-container',
                        'xen-hypervisor'],
-             'test6': ['benchmarksql', 'chef-infra', 'cudnn-fe']},
+             'test6': ['benchmarksql', 'chef-infra', 'cudnn-fe', 'gVisor']},
             remediation["missing_test_status"],
         )
         self.assertEqual({}, remediation["invalid_test_names"])
@@ -90,7 +91,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         remediation = self.report["remediation"]
         self.assertEqual(17, len(remediation["emitter_missing_slug"]))
         self.assertEqual(
-            {'test1': 3, 'test2': 3, 'test3': 3, 'test4': 6, 'test5': 47, 'test6': 10},
+            {'test1': 4, 'test2': 4, 'test3': 4, 'test4': 7, 'test5': 48, 'test6': 11},
             {
                 key: len(value)
                 for key, value in remediation["missing_test_duration"].items()
@@ -110,7 +111,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         # Chef, Garden Linux and BenchmarkSQL bind through step env, outside this
         # advisory scan's literal run-script reference analysis.
         self.assertEqual(
-            {"test1": 4, "test2": 4, "test3": 5, "test4": 5, "test5": 6, "test6": 323},
+            {"test1": 5, "test2": 5, "test3": 6, "test4": 6, "test5": 7, "test6": 324},
             {
                 key: len(value)
                 for key, value in remediation[
@@ -119,13 +120,13 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {'overall_status': 2,
-             'badge_status': 2,
-             'core_failed': 377,
-             'passed': 2,
-             'failed': 2,
+            {'overall_status': 3,
+             'badge_status': 3,
+             'core_failed': 378,
+             'passed': 3,
+             'failed': 3,
              'skipped': 697,
-             'duration': 5},
+             'duration': 6},
             {
                 key: len(value)
                 for key, value in remediation["missing_summary_outputs"].items()
@@ -143,14 +144,14 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         )
         # Xen writes a runtime-selected $DECISION; the advisory scan does not
         # infer its baseline-failure branches from literal output records.
-        self.assertEqual(26, len(remediation["no_literal_decision"]))
+        self.assertEqual(27, len(remediation["no_literal_decision"]))
         self.assertIn("xen-hypervisor", remediation["no_literal_decision"])
         self.assertEqual(
             304, len(remediation["package_manager_summary_omits_test6"])
         )
         # The audit flags every default except not_configured, including Chef's
         # Garden's, Chiaki's and these repairs' failure defaults; runtime tests prove they stay red.
-        self.assertEqual(15, len(remediation["unsafe_fallback_workflows"]))
+        self.assertEqual(16, len(remediation["unsafe_fallback_workflows"]))
         self.assertIn("chef-infra", remediation["unsafe_fallback_workflows"])
         self.assertIn("chiaki-ng", remediation["unsafe_fallback_workflows"])
         self.assertIn("garden-linux", remediation["unsafe_fallback_workflows"])
@@ -202,13 +203,13 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertIn(
             "xen-hypervisor", remediation["non_package_manager_missing_baseline_guard"]
         )
-        self.assertEqual(324, len(remediation["summary_omits_test6_status"]))
+        self.assertEqual(325, len(remediation["summary_omits_test6_status"]))
         self.assertIn("garden-linux", remediation["summary_omits_test6_status"])
         self.assertEqual(
             953, len(remediation["unsafe_package_version_fallback"])
         )
         self.assertEqual(
-            960, len(remediation["unsafe_regression_narrative_fallback"])
+            959, len(remediation["unsafe_regression_narrative_fallback"])
         )
         self.assertEqual(
             22, len(remediation["legacy_batch_collector_workflows"])
@@ -246,7 +247,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            'b2102db441c4aa3cab8493c8f9883bf20e5f77b3e1c5285badb7f67a349f9639',
+            'f5dfa696e1705e13ecee507793d5fee86224af88e0c14ad01649b8a67f66cc1f',
             digest,
         )
 
