@@ -1,0 +1,215 @@
+name: Validate ephemeral Arm64 KVM runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type PROVISION-KVM to launch one disposable c7g.metal runner.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ecosystem-kvm-runner-validation
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize protected main run
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce immutable dispatch boundary
+        env:
+          ALLOWED_ACTORS_JSON: ${{ vars.ECOSYSTEM_KVM_ALLOWED_ACTORS_JSON }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          GH_TOKEN: ${{ github.token }}
+          ORIGINAL_ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "ArmDeveloperEcosystem/ecosystem-dashboard-for-arm"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$CONFIRMATION" = "PROVISION-KVM"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          jq -e \
+            --arg original "$ORIGINAL_ACTOR" \
+            --arg triggering "$TRIGGERING_ACTOR" \
+            'type == "array" and length > 0 and
+             all(.[]; type == "string" and test("^[A-Za-z0-9-]+$")) and
+             index($original) != null and index($triggering) != null' \
+            <<< "$ALLOWED_ACTORS_JSON" >/dev/null
+          current_main_sha="$(gh api \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+            --jq '.object.sha')"
+          test "$GITHUB_SHA" = "$current_main_sha"
+
+  provision:
+    name: Provision one-job KVM runner
+    needs: authorize
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    environment: kvm-runner-provision
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      instance-id: ${{ steps.provision.outputs.instance-id }}
+      ownership-nonce: ${{ steps.provision.outputs.ownership-nonce }}
+      runner-label: ${{ steps.provision.outputs.runner-label }}
+      runner-name: ${{ steps.provision.outputs.runner-name }}
+    steps:
+      - name: Check out trusted main without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Provision disposable runner
+        id: provision
+        uses: ./.github/actions/provision-ephemeral-kvm-runner
+        with:
+          aws-role-arn: ${{ vars.ECOSYSTEM_KVM_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.ECOSYSTEM_KVM_REGION }}
+          broker-function-name: ${{ vars.ECOSYSTEM_KVM_BROKER_FUNCTION_NAME }}
+          runner-app-id: ${{ vars.ECOSYSTEM_KVM_RUNNER_APP_ID }}
+          runner-app-private-key: ${{ secrets.ECOSYSTEM_KVM_RUNNER_APP_PRIVATE_KEY }}
+          runner-group-id: ${{ vars.ECOSYSTEM_KVM_RUNNER_GROUP_ID }}
+          repository-read-token: ${{ github.token }}
+
+  probe:
+    name: Prove native KVM isolation
+    needs: provision
+    timeout-minutes: 15
+    permissions: {}
+    runs-on:
+      group: ${{ vars.ECOSYSTEM_KVM_RUNNER_GROUP_NAME }}
+      labels: ${{ needs.provision.outputs.runner-label }}
+    env:
+      EXPECTED_RUNNER_NAME: ${{ needs.provision.outputs.runner-name }}
+    steps:
+      - name: Verify exact runner identity and credential absence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_NAME" = "$EXPECTED_RUNNER_NAME"
+          test "$RUNNER_ARCH" = "ARM64"
+          test "$(uname -s)" = "Linux"
+          test "$(uname -m)" = "aarch64"
+          test -c /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
+          for name in \
+            AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+            ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL \
+            ECOSYSTEM_KVM_RUNNER_APP_PRIVATE_KEY GH_TOKEN GITHUB_TOKEN; do
+            test -z "${!name:-}"
+          done
+          if curl --silent --show-error --max-time 2 \
+            http://169.254.169.254/latest/meta-data/ >/dev/null 2>&1; then
+            echo "Instance metadata unexpectedly responded." >&2
+            exit 1
+          fi
+
+      - name: Exercise KVM API and create an empty VM
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 30 python3 - <<'PY'
+          import fcntl
+          import os
+
+          KVM_GET_API_VERSION = 0xAE00
+          KVM_CREATE_VM = 0xAE01
+          device = os.open("/dev/kvm", os.O_RDWR | os.O_CLOEXEC)
+          try:
+              version = fcntl.ioctl(device, KVM_GET_API_VERSION, 0)
+              if version != 12:
+                  raise SystemExit(f"unexpected KVM API version: {version}")
+              vm = fcntl.ioctl(device, KVM_CREATE_VM, 0)
+              os.close(vm)
+          finally:
+              os.close(device)
+          print("Native Arm64 KVM API version 12 and VM creation verified.")
+          PY
+
+      - name: Write sanitized conformance evidence
+        env:
+          EXPECTED_RUNNER_NAME: ${{ needs.provision.outputs.runner-name }}
+          EVIDENCE_PATH: ${{ runner.temp }}/kvm-conformance-evidence.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import platform
+
+
+          evidence = {
+              "schema_version": 1,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "commit": os.environ["GITHUB_SHA"],
+              "runner_name": os.environ["EXPECTED_RUNNER_NAME"],
+              "runner_arch": os.environ["RUNNER_ARCH"],
+              "os": platform.system(),
+              "machine": platform.machine(),
+              "kvm_device_present": Path("/dev/kvm").is_char_device(),
+              "kvm_api_version": 12,
+              "empty_vm_created": True,
+              "credential_absence_check": "passed",
+              "metadata_endpoint_check": "unreachable",
+          }
+          Path(os.environ["EVIDENCE_PATH"]).write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+          chmod 0600 "$EVIDENCE_PATH"
+
+      - name: Preserve sanitized conformance evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kvm-conformance-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kvm-conformance-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+  cleanup:
+    name: Terminate and verify runner cleanup
+    if: ${{ always() && needs.provision.result != 'skipped' }}
+    needs:
+      - provision
+      - probe
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    environment: kvm-runner-cleanup
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out trusted main without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Terminate target and remove stale registration
+        uses: ./.github/actions/cleanup-ephemeral-kvm-runner
+        with:
+          aws-role-arn: ${{ vars.ECOSYSTEM_KVM_AWS_CLEANUP_ROLE_ARN }}
+          aws-region: ${{ vars.ECOSYSTEM_KVM_REGION }}
+          cleanup-function-name: ${{ vars.ECOSYSTEM_KVM_CLEANUP_FUNCTION_NAME }}
+          instance-id: ${{ needs.provision.outputs.instance-id }}
+          ownership-nonce: ${{ needs.provision.outputs.ownership-nonce }}
+          source-run-id: ${{ github.run_id }}
+          source-run-attempt: ${{ github.run_attempt }}
+          runner-name: ${{ needs.provision.outputs.runner-name }}
+          runner-app-id: ${{ vars.ECOSYSTEM_KVM_RUNNER_APP_ID }}
+          runner-app-private-key: ${{ secrets.ECOSYSTEM_KVM_RUNNER_APP_PRIVATE_KEY }}
