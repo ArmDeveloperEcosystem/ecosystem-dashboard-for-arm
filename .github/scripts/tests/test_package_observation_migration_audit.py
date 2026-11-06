@@ -30,10 +30,11 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             self.report["totals"],
         )
         self.assertEqual(
-            {'next_install_failed': 1,
+            {'baseline_failed': 1,
+             'next_install_failed': 1,
              'next_regression_failed': 5,
              'not_applicable_package_manager': 8,
-             'not_configured': 948},
+             'not_configured': 947},
             self.report["fallback_counts"],
         )
         self.assertEqual(
@@ -149,7 +150,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         )
         # The audit flags every default except not_configured, including Chef's
         # Garden's, Chiaki's and these repairs' failure defaults; runtime tests prove they stay red.
-        self.assertEqual(14, len(remediation["unsafe_fallback_workflows"]))
+        self.assertEqual(15, len(remediation["unsafe_fallback_workflows"]))
         self.assertIn("chef-infra", remediation["unsafe_fallback_workflows"])
         self.assertIn("chiaki-ng", remediation["unsafe_fallback_workflows"])
         self.assertIn("garden-linux", remediation["unsafe_fallback_workflows"])
@@ -207,7 +208,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             954, len(remediation["unsafe_package_version_fallback"])
         )
         self.assertEqual(
-            961, len(remediation["unsafe_regression_narrative_fallback"])
+            960, len(remediation["unsafe_regression_narrative_fallback"])
         )
         self.assertEqual(
             22, len(remediation["legacy_batch_collector_workflows"])
@@ -245,7 +246,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            'c7e01483d15956e6a012e4f6392087508b83d81b18687642e705b3004ce7438a',
+            '4b6fbe5b9dabe9cecd255f8b2dcaab887da34b362e3e7894d846735769df6e49',
             digest,
         )
 
@@ -265,8 +266,9 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
          'missing_workflow_call_observation_output',
          'no_literal_decision',
          'non_package_manager_missing_baseline_guard',
+         'unsafe_fallback_workflows',
          'unsafe_package_version_fallback',
-         'unsafe_regression_narrative_fallback'}
+         }
         actual = set()
         for key, entries in self.report["remediation"].items():
             if isinstance(entries, dict):
