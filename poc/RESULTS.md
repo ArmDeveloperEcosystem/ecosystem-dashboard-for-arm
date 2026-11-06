@@ -1,5 +1,19 @@
 # Scoped KB search — validation status
 
+## Cached-script upgrade fix — 6 November 2026
+
+The previous controller with the new HTML reproduced a null-element error before
+any API request. Fresh-browser checks had missed this cached-asset upgrade path.
+Enabled Linux search now fingerprints all four dashboard scripts, preserving
+execution order and existing Windows/disabled URLs. A built-output regression
+checks that each script URL and emitted bytes match the current source.
+
+209 Python tests pass. Chrome verified button and Enter submission with the old
+unversioned controller URL intercepted: the updated page never requested it and
+rendered live results (50 for "vector databases", 48 for "Web servers"). Existing
+desktop/mobile interaction checks and all three Hugo configurations pass. Evidence:
+`.poc/ux-review-20261106/cache-upgrade.json`.
+
 ## Search feedback and mobile layout — 6 November 2026
 
 Successful searches now show one compact result count and an open-source shortcut.

@@ -9,7 +9,9 @@ import socket
 import threading
 import time
 from contextlib import contextmanager
+from hashlib import sha256
 from html.parser import HTMLParser
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -387,3 +389,35 @@ def test_every_built_dashboard_row_and_url_share_the_exported_identity():
     assert parser.identities == {row["id"]: row["url_id"] for row in catalog}
     for row in catalog:
         assert parse_qs(urlsplit(row["url"]).query)["package"] == [row["url_id"]]
+
+
+def test_built_dashboard_script_urls_change_with_their_content():
+    class Scripts(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.sources = []
+
+        def handle_starttag(self, tag, attributes):
+            source = dict(attributes).get("src", "")
+            if tag == "script" and "js/eco-dashboard/" in source:
+                self.sources.append(source)
+
+    site = DEFAULT_CATALOG.parent
+    parser = Scripts()
+    parser.feed((site / "linux/index.html").read_text())
+    scripts = [
+        "search", "table_functionality", "filter-and-navigate-mobile-behavior",
+        "conversational-search",
+    ]
+    assert len(parser.sources) == len(scripts)
+    source_dir = (
+        Path(__file__).resolve().parents[2]
+        / "themes/arm-design-system-hugo-theme/static/js/eco-dashboard"
+    )
+    for name, url in zip(scripts, parser.sources, strict=True):
+        source = (source_dir / f"{name}.js").read_bytes()
+        expected_name = f"{name}.{sha256(source).hexdigest()}.js"
+        script_url = urlsplit(url)
+        assert script_url.path.rsplit("/", 1)[-1] == expected_name
+        assert not script_url.query, "Version the filename, not the query string"
+        assert (site / "js/eco-dashboard" / expected_name).read_bytes() == source
