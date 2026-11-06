@@ -1,4 +1,4 @@
-name: Test Microsandbox native Arm64 guest smoke (KVM required)
+name: Test Microsandbox hosted Arm64 health
 
 permissions:
   contents: read
@@ -81,8 +81,6 @@ on:
         value: ${{ jobs.test-microsandbox.outputs.timestamp }}
 jobs:
   test-microsandbox:
-    # The confirmed hosted Arm runner has no /dev/kvm: guest tests fail explicitly.
-    # Parent infrastructure integration must supply a reviewed KVM-capable native runner.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 35
     env:
@@ -101,12 +99,12 @@ jobs:
       tests_failed: ${{ steps.summary.outputs.failed || '5' }}
       tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
       duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
-      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
-      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
-      regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
+      regression_status: ${{ steps.test6.outputs.status || 'failed' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'baseline_failed' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || 'No regression validation evidence.' }}
+      regression_comparison: ${{ steps.test6.outputs.comparison || 'No regression validation evidence.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
-      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+      regression_latest_version: ${{ steps.test6.outputs.latest_version || 'not_selected' }}
       regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
       regression_policy: runtime_validation_not_automated
       run_id: ${{ github.run_id }}
@@ -126,7 +124,7 @@ jobs:
           # shellcheck disable=SC2129
           echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "package_slug=microsandbox" >> "$GITHUB_OUTPUT"
-          echo "dashboard_link=/opensource_packages/microsandbox" >> "$GITHUB_OUTPUT"
+          echo "dashboard_link=/linux/opensource_packages/microsandbox" >> "$GITHUB_OUTPUT"
 
       - name: Install checksum-pinned native Microsandbox runtime pair
         id: install
@@ -138,7 +136,8 @@ jobs:
           HOME_DIR="$RUNNER_TEMP/microsandbox-smoke"
           BUNDLE="$HOME_DIR/runtime"
           mkdir -p "$BUNDLE"
-          curl --fail --location --retry 3 --output "$RUNNER_TEMP/microsandbox.tar.gz" \
+          curl --fail --location --retry 3 --connect-timeout 20 --max-time 180 \
+            --output "$RUNNER_TEMP/microsandbox.tar.gz" \
             "https://github.com/superradcompany/microsandbox/releases/download/v$BASELINE_VERSION/microsandbox-linux-aarch64.tar.gz"
           echo "$BUNDLE_SHA256  $RUNNER_TEMP/microsandbox.tar.gz" | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/microsandbox.tar.gz" -C "$BUNDLE"
@@ -160,7 +159,7 @@ jobs:
           test "$VERSION" = "$BASELINE_VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Test 1 - Native executable and firmware identity
+      - name: Test 1 - Native executable, firmware and ABI identity
         id: test1
         if: always() && steps.install.outcome == 'success' && steps.version.outcome == 'success'
         continue-on-error: true
@@ -182,9 +181,11 @@ jobs:
           for binary in "$MSB_PATH" "$MSB_LIBKRUNFW_PATH"; do
             readelf -h "$binary" | grep -Eq 'Machine: +AArch64'
           done
+          readelf -l "$MSB_PATH" \
+            | grep -F '[Requesting program interpreter: /lib/ld-linux-aarch64.so.1]'
           readelf -d "$MSB_LIBKRUNFW_PATH" | grep -F 'Library soname: [libkrunfw.so.5]'
 
-      - name: Test 2 - Mandatory KVM prerequisite and local doctor
+      - name: Test 2 - Execute and verify the launch protocol contract
         id: test2
         if: always() && steps.install.outcome == 'success' && steps.version.outcome == 'success'
         continue-on-error: true
@@ -201,9 +202,28 @@ jobs:
             exit "$rc"
           }
           trap finish_test EXIT
-          bash .github/scripts/tests/microsandbox_guest_smoke.sh preflight
+          PROTOCOL_JSON=$(timeout 15s "$MSB_PATH" __launch-protocol)
+          python3 - "$PROTOCOL_JSON" <<'PY'
+          import json
+          import sys
 
-      - name: Test 3 - Boot Arm64 guest and verify filesystem operations
+          document = json.loads(sys.argv[1])
+          if document.get("protocols") != [2, 1]:
+              raise SystemExit("unexpected launch protocol versions")
+          required_true = {
+              "required_restore_backing",
+              "tcp_accept_queue_size",
+              "guest_clock",
+              "fs_state_limit",
+              "exec_limits",
+          }
+          if any(document.get(key) is not True for key in required_true):
+              raise SystemExit("required launch capability is missing")
+          if not all(isinstance(value, (bool, list)) for value in document.values()):
+              raise SystemExit("launch capability document has an unexpected value type")
+          PY
+
+      - name: Test 3 - Execute and verify schema compatibility metadata
         id: test3
         if: always() && steps.install.outcome == 'success' && steps.version.outcome == 'success'
         continue-on-error: true
@@ -220,9 +240,31 @@ jobs:
             exit "$rc"
           }
           trap finish_test EXIT
-          bash .github/scripts/tests/microsandbox_guest_smoke.sh guest
+          SCHEMA_JSON=$(timeout 15s "$MSB_PATH" __schema-baseline --json)
+          python3 - "$SCHEMA_JSON" "$BASELINE_VERSION" <<'PY'
+          import json
+          import re
+          import sys
 
-      - name: Test 4 - Propagate guest failure exit status
+          document = json.loads(sys.argv[1])
+          expected_version = sys.argv[2]
+          if document.get("schema_baseline_version") != 1:
+              raise SystemExit("unexpected schema baseline format")
+          if document.get("msb_version") != expected_version:
+              raise SystemExit("schema metadata does not match the installed release")
+          if document.get("downgrade_floor") != "0.6.0":
+              raise SystemExit("unexpected downgrade floor")
+          migrations = document.get("migrations")
+          if not isinstance(migrations, list) or not migrations:
+              raise SystemExit("schema migration inventory is empty")
+          if len(migrations) != len(set(migrations)):
+              raise SystemExit("schema migration inventory contains duplicates")
+          pattern = re.compile(r"^m[0-9]{8}_[0-9]{6}_[a-z0-9_]+$")
+          if any(not isinstance(item, str) or not pattern.fullmatch(item) for item in migrations):
+              raise SystemExit("schema migration inventory is malformed")
+          PY
+
+      - name: Test 4 - Create and observe persistent local volume state
         id: test4
         if: always() && steps.install.outcome == 'success' && steps.version.outcome == 'success'
         continue-on-error: true
@@ -239,9 +281,26 @@ jobs:
             exit "$rc"
           }
           trap finish_test EXIT
-          bash .github/scripts/tests/microsandbox_guest_smoke.sh exit-status
+          VOLUME_NAME=arm-hosted-smoke
+          timeout 30s "$MSB_PATH" volume create --quiet "$VOLUME_NAME"
+          VOLUMES_JSON=$(timeout 15s "$MSB_PATH" volume list --format json)
+          python3 - "$VOLUMES_JSON" "$VOLUME_NAME" <<'PY'
+          import json
+          import sys
 
-      - name: Test 5 - Named guest lifecycle and subsequent exec
+          volumes = json.loads(sys.argv[1])
+          expected_name = sys.argv[2]
+          matches = [item for item in volumes if item.get("name") == expected_name]
+          if len(matches) != 1:
+              raise SystemExit("created volume is not uniquely observable")
+          volume = matches[0]
+          if volume.get("kind") != "dir":
+              raise SystemExit("created volume has the wrong storage kind")
+          if volume.get("created_at") in (None, ""):
+              raise SystemExit("created volume has no creation timestamp")
+          PY
+
+      - name: Test 5 - Remove local volume state and reject stale lookup
         id: test5
         if: always() && steps.install.outcome == 'success' && steps.version.outcome == 'success'
         continue-on-error: true
@@ -258,7 +317,32 @@ jobs:
             exit "$rc"
           }
           trap finish_test EXIT
-          bash .github/scripts/tests/microsandbox_guest_smoke.sh lifecycle
+          VOLUME_NAME=arm-hosted-smoke
+          BEFORE_JSON=$(timeout 15s "$MSB_PATH" volume list --format json)
+          python3 - "$BEFORE_JSON" "$VOLUME_NAME" <<'PY'
+          import json
+          import sys
+
+          matches = [item for item in json.loads(sys.argv[1]) if item.get("name") == sys.argv[2]]
+          if len(matches) != 1:
+              raise SystemExit("expected volume state from Test 4 is missing or duplicated")
+          PY
+          timeout 30s "$MSB_PATH" volume remove --quiet "$VOLUME_NAME"
+          AFTER_JSON=$(timeout 15s "$MSB_PATH" volume list --format json)
+          python3 - "$AFTER_JSON" "$VOLUME_NAME" <<'PY'
+          import json
+          import sys
+
+          if any(item.get("name") == sys.argv[2] for item in json.loads(sys.argv[1])):
+              raise SystemExit("removed volume remains observable")
+          PY
+          set +e
+          timeout 15s "$MSB_PATH" volume remove --quiet "$VOLUME_NAME" \
+            >"$RUNNER_TEMP/microsandbox-stale-volume.stdout" \
+            2>"$RUNNER_TEMP/microsandbox-stale-volume.stderr"
+          STALE_RC=$?
+          set -e
+          test "$STALE_RC" -ne 0
 
       - name: Regression policy - explicit runtime-validation deferral
         id: test6
@@ -273,7 +357,7 @@ jobs:
           set -euo pipefail
           DECISION=runtime_validation_not_automated
           RESULT="Newer-version runtime validation not automated; no candidate installed or compared"
-          COMPARISON="Local CLI and mandatory KVM-backed Arm64 guest execution; not the cloud backend. Newer artifacts require reviewed immutable checksums and the same functional checks; no latest-version pass is inferred."
+          COMPARISON="Hosted Arm64 validates the shipped bundle, executable protocol and schema contracts, and local volume state. Real guest behavior is validated separately by the protected supplemental KVM lane. No latest-version pass is inferred."
           if [ "$INSTALL_OUTCOME" != success ] || [ "$INSTALL_STATUS" != success ] \
             || [ "$VERSION_OUTCOME" != success ] || [ -z "$CURRENT_VERSION" ] || [ "$CURRENT_VERSION" = unknown ]; then
             DECISION=baseline_install_failed
@@ -373,11 +457,11 @@ jobs:
           REGRESSION_DECISION: ${{ steps.test6.outputs.decision || 'unknown' }}
         run: |
           {
-            echo "## Microsandbox native Arm64 guest smoke"
+            echo "## Microsandbox recurring hosted Arm64 health"
             echo "- Installed package version: $PACKAGE_VERSION"
             echo "- Status: $STATUS"
             echo "- Passed: $PASSED; failed: $FAILED; skipped: $SKIPPED"
-            echo "- Scope: Local CLI and mandatory KVM-backed Arm64 guest execution; not the cloud backend."
-            echo "- No guest execution is claimed unless the mandatory guest checks actually pass. Missing KVM is not a skip-to-pass condition."
+            echo "- Scope: checksum-pinned AArch64 bundle and ABI, executable launch/schema contracts, and local volume state transitions."
+            echo "- This recurring workflow does not claim a guest boot. Real guest execution is a separate protected-main supplemental KVM workflow."
             echo "- Regression decision: $REGRESSION_DECISION"
           } >> "$GITHUB_STEP_SUMMARY"

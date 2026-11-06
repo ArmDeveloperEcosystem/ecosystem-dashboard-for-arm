@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exact local guest probes used by test-microsandbox.yml; no cloud backend or KVM bypass.
+# Exact local guest probes used by supplemental-kvm-microsandbox.yml; no cloud backend or KVM bypass.
 set -euo pipefail
 
 preflight() {
@@ -63,6 +63,7 @@ trap 'exit 143' TERM
 OWNED=1
 case "$MODE" in
   guest)
+    # shellcheck disable=SC2016 # The quoted probe expands inside the guest shell.
     timeout -k 5s 240s "$MSB_PATH" run --name "$NAME" --no-tty --no-stdin --cpus 1 --memory 512M \
       --entrypoint /bin/sh "$IMAGE" -- -ec \
       'test "$(uname -m)" = aarch64; printf arm-smoke > /tmp/probe; test "$(cat /tmp/probe)" = arm-smoke; echo MICROSANDBOX_ARM64_OK' \
@@ -80,6 +81,7 @@ case "$MODE" in
   lifecycle)
     timeout -k 5s 180s "$MSB_PATH" create --name "$NAME" --cpus 1 --memory 512M "$IMAGE"
     timeout -k 5s 30s "$MSB_PATH" exec "$NAME" -- /bin/sh -ec 'printf persisted > /tmp/lifecycle'
+    # shellcheck disable=SC2016 # The quoted probe expands inside the guest shell.
     timeout -k 5s 30s "$MSB_PATH" exec "$NAME" -- /bin/sh -ec \
       'test "$(cat /tmp/lifecycle)" = persisted; echo MICROSANDBOX_LIFECYCLE_OK' \
       | tee "$WORK/lifecycle.log"

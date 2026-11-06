@@ -29,12 +29,16 @@ optional_hidden_info:
     but is not a Microsandbox-branded release.
   other_info: >-
     The runtime requires hardware virtualization, usable /dev/kvm access, and
-    firmware matching the selected release. The smoke baseline is v0.7.11 with
-    its checksummed Linux AArch64 bundle, matching libkrun firmware, and a
-    digest-pinned Alpine Arm64 guest. Tests 1-5 require a real guest boot,
-    architecture observation, guest I/O, and exit propagation. GitHub-hosted
-    ubuntu-24.04-arm currently exposes no /dev/kvm, so the integration must stay
-    draft until an approved Arm64 KVM runner executes the exact proposed bytes.
+    firmware matching the selected release. The recurring hosted Arm64 smoke
+    baseline is v0.7.11. It verifies the checksummed Linux AArch64 bundle,
+    executable and firmware ABI identity, exact CLI version, launch-protocol and
+    schema contracts, and a local volume create/list/remove lifecycle. That lane
+    does not claim a guest boot. A separate protected-main supplemental KVM lane
+    executes the same release with its matching libkrun firmware and a
+    digest-pinned Alpine Arm64 guest, requiring a real guest boot, Arm64
+    architecture observation, guest I/O, exit propagation, lifecycle behavior,
+    and cleanup. Durable real-guest evidence from 2026/11/06 is retained at
+    https://github.com/ranimandepudi/ecosystem-dashboard-for-arm/releases/tag/ecosystem-arm64-validation-20261106.
     SPDX Apache-2.0:
     https://github.com/superradcompany/microsandbox/blob/v0.7.11/LICENSE .
     Baseline source commit df3e0f7dd69280b88f6e28d6d3cf5fe4bb4a87a0;

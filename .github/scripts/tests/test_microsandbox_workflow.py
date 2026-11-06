@@ -12,6 +12,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 SLUG = "microsandbox"
 WORKFLOW = ROOT / f".github/workflows/test-{SLUG}.yml"
+SUPPLEMENTAL = ROOT / ".github/workflows/supplemental-kvm-microsandbox.yml"
 HELPER = ROOT / f".github/scripts/tests/{SLUG}_guest_smoke.sh"
 PAGE = ROOT / f"content/linux/opensource_packages/{SLUG}.md"
 CHECKOUT = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
@@ -91,11 +92,33 @@ class PackageWorkflowTests(unittest.TestCase):
         self.assertEqual(set(self.doc["on"]["workflow_call"]["outputs"]), OUTPUTS)
         self.assertIn("workflow_dispatch", self.doc["on"])
         self.assertEqual(self.doc["permissions"], {"contents": "read"})
+        self.assertEqual(list(self.doc["jobs"]), ["test-microsandbox"])
         self.assertEqual(self.job["runs-on"], "ubuntu-24.04-arm")
         self.assertEqual(self.job["steps"][0]["uses"], CHECKOUT)
         self.assertEqual(self.job["steps"][0]["with"]["persist-credentials"], "false")
         self.assertNotIn("||", self.steps["version"]["run"])
         self.assertEqual(self.job["outputs"]["package_name"], "Microsandbox")
+
+    def test_registered_workflow_is_strict_hosted_health_without_kvm(self):
+        source = WORKFLOW.read_text()
+        self.assertNotIn("/dev/kvm", source)
+        self.assertNotIn("microsandbox_guest_smoke.sh", source)
+        self.assertNotIn("self-hosted", source)
+        self.assertIn(
+            'echo "dashboard_link=/linux/opensource_packages/microsandbox"',
+            source,
+        )
+        self.assertIn("--connect-timeout 20 --max-time 180", source)
+        for n in range(1, 6):
+            step = self.steps[f"test{n}"]
+            self.assertEqual(step["continue-on-error"], "true")
+            self.assertNotIn("status=skipped", step["run"])
+        self.assertIn("__launch-protocol", self.steps["test2"]["run"])
+        self.assertIn("__schema-baseline --json", self.steps["test3"]["run"])
+        self.assertIn("volume create", self.steps["test4"]["run"])
+        self.assertIn("volume list --format json", self.steps["test4"]["run"])
+        self.assertIn("volume remove", self.steps["test5"]["run"])
+        self.assertIn('test "$STALE_RC" -ne 0', self.steps["test5"]["run"])
 
     def test_shell_syntax_and_embedded_python(self):
         for step in self.job["steps"]:
@@ -187,8 +210,9 @@ class PackageWorkflowTests(unittest.TestCase):
         process, outputs = self.run_shell(step["run"], env)
         self.assertEqual(outputs["decision"], "baseline_install_failed")
 
-    def test_guest_helper_pins_and_requires_real_guest(self):
+    def test_supplemental_guest_helper_pins_and_requires_real_guest(self):
         source = HELPER.read_text()
+        supplemental = SUPPLEMENTAL.read_text()
         self.assertIn("test -c /dev/kvm", source)
         self.assertIn("test -r /dev/kvm", source)
         self.assertIn("test -w /dev/kvm", source)
@@ -199,24 +223,11 @@ class PackageWorkflowTests(unittest.TestCase):
         self.assertIn('test "$(cat /tmp/probe)"', source)
         self.assertNotIn("--privileged", source)
         self.assertNotIn("chmod 666", source)
-        if SLUG == "libkrun":
-            self.assertIn("krun_start_enter", source)
-            self.assertIn("krun_set_exec", source)
-            self.assertIn("grep -Fx LIBKRUN_GUEST_OK", source)
-            self.assertIn("libkrun_guest_smoke.sh guest", self.steps["test5"]["run"])
-            install = self.steps["install"]["run"]
-            self.assertIn("cargo +", install)
-            self.assertIn("--locked -p libkrun", install)
-            self.assertIn('ctypes.CDLL(str(path))', install)
-            self.assertIn('Path("/proc/self/maps")', install)
-            self.assertIn('== -errno.EINVAL', install)
-            self.assertIn("FIRMWARE_SHA256", self.job["env"])
-        else:
-            self.assertIn("export MSB_BACKEND=local", source)
-            for n, mode in [(2, "preflight"), (3, "guest"), (4, "exit-status"), (5, "lifecycle")]:
-                self.assertIn(f"microsandbox_guest_smoke.sh {mode}", self.steps[f"test{n}"]["run"])
-            self.assertIn("MICROSANDBOX_LIFECYCLE_OK", source)
-            self.assertIn('libkrunfw.so.5.6.1', self.steps["install"]["run"])
+        self.assertIn("export MSB_BACKEND=local", source)
+        for mode in ("preflight", "guest", "exit-status", "lifecycle"):
+            self.assertIn(f'"$MICROSANDBOX_GUEST_HELPER" {mode}', supplemental)
+        self.assertIn("MICROSANDBOX_LIFECYCLE_OK", source)
+        self.assertIn('libkrunfw.so.5.6.1', supplemental)
 
     def test_metadata_minimum_is_historical_not_smoke_version(self):
         page = yaml.safe_load(PAGE.read_text().split("---", 2)[1])
@@ -405,7 +416,9 @@ else:
         self.assertIsNone(page["optional_info"]["support_caveats"])
         hidden = page["optional_hidden_info"]["other_info"]
         self.assertIn("/dev/kvm", hidden)
-        self.assertIn("GitHub-hosted", hidden)
+        self.assertIn("recurring hosted Arm64", hidden)
+        self.assertIn("supplemental KVM lane", hidden)
+        self.assertNotIn("must stay draft", hidden)
 
 if __name__ == "__main__":
     unittest.main()
