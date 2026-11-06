@@ -1,0 +1,228 @@
+name: Supplemental Firecracker Arm64 KVM guest validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type RUN-FIRECRACKER-KVM to launch one disposable KVM runner.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supplemental-kvm-firecracker
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize protected main run
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce immutable dispatch boundary
+        env:
+          ALLOWED_ACTORS_JSON: ${{ vars.ECOSYSTEM_KVM_ALLOWED_ACTORS_JSON }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          GH_TOKEN: ${{ github.token }}
+          ORIGINAL_ACTOR: ${{ github.actor }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "ArmDeveloperEcosystem/ecosystem-dashboard-for-arm"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$REF_PROTECTED" = "true"
+          test "$CONFIRMATION" = "RUN-FIRECRACKER-KVM"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          jq -e \
+            --arg original "$ORIGINAL_ACTOR" \
+            --arg triggering "$TRIGGERING_ACTOR" \
+            'type == "array" and length > 0 and
+             all(.[]; type == "string" and test("^[A-Za-z0-9-]+$")) and
+             index($original) != null and index($triggering) != null' \
+            <<< "$ALLOWED_ACTORS_JSON" >/dev/null
+          current_main_sha="$(gh api \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+            --jq '.object.sha')"
+          test "$GITHUB_SHA" = "$current_main_sha"
+
+  provision:
+    name: Provision one-job KVM runner
+    needs: authorize
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    environment: kvm-runner-provision
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      instance-id: ${{ steps.provision.outputs.instance-id }}
+      ownership-nonce: ${{ steps.provision.outputs.ownership-nonce }}
+      runner-label: ${{ steps.provision.outputs.runner-label }}
+      runner-name: ${{ steps.provision.outputs.runner-name }}
+    steps:
+      - name: Check out trusted main without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Provision disposable runner
+        id: provision
+        uses: ./.github/actions/provision-ephemeral-kvm-runner
+        with:
+          aws-role-arn: ${{ vars.ECOSYSTEM_KVM_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.ECOSYSTEM_KVM_REGION }}
+          broker-function-name: ${{ vars.ECOSYSTEM_KVM_BROKER_FUNCTION_NAME }}
+          runner-app-id: ${{ vars.ECOSYSTEM_KVM_RUNNER_APP_ID }}
+          runner-app-private-key: ${{ secrets.ECOSYSTEM_KVM_RUNNER_APP_PRIVATE_KEY }}
+          runner-group-id: ${{ vars.ECOSYSTEM_KVM_RUNNER_GROUP_ID }}
+          repository-read-token: ${{ github.token }}
+
+  guest:
+    name: Run strict Firecracker guest validation
+    needs: provision
+    timeout-minutes: 15
+    permissions: {}
+    runs-on:
+      group: ${{ vars.ECOSYSTEM_KVM_RUNNER_GROUP_NAME }}
+      labels: ${{ needs.provision.outputs.runner-label }}
+    env:
+      BASELINE_SHA256: e351ebe4f7a16b5873bbd51005d2e6767103cff4d5ebc829df2d3f95a93e2256
+      BASELINE_TAG: v1.17.0
+      EXPECTED_RUNNER_NAME: ${{ needs.provision.outputs.runner-name }}
+    steps:
+      - name: Verify isolated native KVM target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "ArmDeveloperEcosystem/ecosystem-dashboard-for-arm"
+          test "$GITHUB_REF" = "refs/heads/main"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$RUNNER_NAME" = "$EXPECTED_RUNNER_NAME"
+          test "$RUNNER_ARCH" = "ARM64"
+          test "$(uname -s)" = "Linux"
+          test "$(uname -m)" = "aarch64"
+          test -c /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
+          for name in \
+            AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+            ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL \
+            ECOSYSTEM_KVM_RUNNER_APP_PRIVATE_KEY GH_TOKEN GITHUB_TOKEN; do
+            test -z "${!name:-}"
+          done
+
+      - name: Fetch exact public repository source archive
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          source_archive="$RUNNER_TEMP/dashboard-${GITHUB_SHA}.tar.gz"
+          source_dir="$RUNNER_TEMP/dashboard-source"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --retry 3 --connect-timeout 15 --max-time 180 \
+            "https://codeload.github.com/ArmDeveloperEcosystem/ecosystem-dashboard-for-arm/tar.gz/${GITHUB_SHA}" \
+            --output "$source_archive"
+          mkdir "$source_dir"
+          tar --extract --gzip --file "$source_archive" \
+            --directory "$source_dir" --strip-components=1
+          test -f "$source_dir/.github/scripts/tests/firecracker_guest_smoke.sh"
+          test -f "$source_dir/.github/scripts/tests/firecracker_api_smoke.sh"
+          test -f "$source_dir/.github/scripts/tests/firecracker_version.sh"
+          printf 'source_dir=%s\n' "$source_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Install checksum-verified Firecracker bundle
+        id: install
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get -qq update
+          sudo apt-get -qq install --no-install-recommends -y cpio file jq
+          work_dir="$(mktemp -d "$RUNNER_TEMP/firecracker-install.XXXXXXXX")"
+          archive="$work_dir/firecracker-$BASELINE_TAG-aarch64.tgz"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --retry 3 --connect-timeout 15 --max-time 180 \
+            "https://github.com/firecracker-microvm/firecracker/releases/download/$BASELINE_TAG/firecracker-$BASELINE_TAG-aarch64.tgz" \
+            --output "$archive"
+          printf '%s  %s\n' "$BASELINE_SHA256" "$archive" | sha256sum --check --strict
+          tar --extract --gzip --file "$archive" --directory "$work_dir"
+          binary="$work_dir/release-$BASELINE_TAG-aarch64/firecracker-$BASELINE_TAG-aarch64"
+          test -x "$binary"
+          file "$binary" | grep -Eqi 'aarch64|arm64'
+          printf 'archive=%s\nbinary=%s\n' "$archive" "$binary" >> "$GITHUB_OUTPUT"
+
+      - name: Boot real microVM and require guest behavior
+        env:
+          BINARY: ${{ steps.install.outputs.binary }}
+          SOURCE_DIR: ${{ steps.source.outputs.source_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --kill-after=10s 420s \
+            bash "$SOURCE_DIR/.github/scripts/tests/firecracker_guest_smoke.sh" \
+            "$BINARY" "$BASELINE_TAG"
+
+      - name: Publish exact-run summary
+        env:
+          ARCHIVE: ${{ steps.install.outputs.archive }}
+          BINARY: ${{ steps.install.outputs.binary }}
+          SOURCE_DIR: ${{ steps.source.outputs.source_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow_sha="$(sha256sum "$SOURCE_DIR/.github/workflows/supplemental-kvm-firecracker.yml" | awk '{print $1}')"
+          helper_sha="$(sha256sum "$SOURCE_DIR/.github/scripts/tests/firecracker_guest_smoke.sh" | awk '{print $1}')"
+          archive_sha="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
+          version="$(bash "$SOURCE_DIR/.github/scripts/tests/firecracker_version.sh" "$BINARY" Firecracker "$BASELINE_TAG")"
+          test "$archive_sha" = "$BASELINE_SHA256"
+          test "$version" = "$BASELINE_TAG"
+          {
+            echo "## Firecracker supplemental Arm64 KVM guest validation"
+            echo "- Commit: $GITHUB_SHA"
+            echo "- Version: $version"
+            echo "- Runner: $RUNNER_NAME (group-restricted, one-job random label)"
+            echo "- Workflow SHA-256: $workflow_sha"
+            echo "- Guest helper SHA-256: $helper_sha"
+            echo "- Release archive SHA-256: $archive_sha"
+            echo "- Result: KVM API 12, real Arm64 guest boot, file I/O, child exit 37, reboot marker, and clean VMM shutdown passed."
+            echo "- Boundary: jailer isolation was not tested or claimed."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cleanup:
+    name: Terminate and verify runner cleanup
+    if: ${{ always() && needs.provision.result != 'skipped' }}
+    needs:
+      - provision
+      - guest
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    environment: kvm-runner-cleanup
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out trusted main without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Terminate target and remove stale registration
+        uses: ./.github/actions/cleanup-ephemeral-kvm-runner
+        with:
+          aws-role-arn: ${{ vars.ECOSYSTEM_KVM_AWS_CLEANUP_ROLE_ARN }}
+          aws-region: ${{ vars.ECOSYSTEM_KVM_REGION }}
+          cleanup-function-name: ${{ vars.ECOSYSTEM_KVM_CLEANUP_FUNCTION_NAME }}
+          instance-id: ${{ needs.provision.outputs.instance-id }}
+          ownership-nonce: ${{ needs.provision.outputs.ownership-nonce }}
+          source-run-id: ${{ github.run_id }}
+          source-run-attempt: ${{ github.run_attempt }}
+          runner-name: ${{ needs.provision.outputs.runner-name }}
+          runner-app-id: ${{ vars.ECOSYSTEM_KVM_RUNNER_APP_ID }}
+          runner-app-private-key: ${{ secrets.ECOSYSTEM_KVM_RUNNER_APP_PRIVATE_KEY }}
