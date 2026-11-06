@@ -24,10 +24,12 @@ optional_hidden_info:
   release_notes__supported_minimum: "https://github.com/libkrun/libkrun/releases/tag/v0.1.3"
   release_notes__recommended_minimum: null
   support_context: >-
-    Version 0.1.3 is the first numbered upstream tag containing commit
-    66d16b58f3300de84900751a5a8a704a981e7291, which fixes functional Linux
-    KVM/AArch64 support. This is an evidence-backed inference about the first
-    functional tagged release, not a claim about the first inherited Arm code.
+    Version 0.1.3 is the first numbered upstream release containing the merged
+    KVM/AArch64 repair set. Versions 0.1.1 and 0.1.2 predate those Arm64
+    compilation, linking, memory-layout, and boot corrections. Upstream did not
+    publish retained Arm64 guest-execution evidence for 0.1.3, so this historical
+    minimum uses the maintainer's corrective boundary rather than an independently
+    reproduced historical guest run.
   other_info: >-
     The runtime requires hardware virtualization, usable /dev/kvm access,
     compatible libkrun firmware, and a guest root filesystem. The smoke baseline
