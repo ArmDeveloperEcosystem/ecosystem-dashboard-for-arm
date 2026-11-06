@@ -70,7 +70,7 @@ class AdditiveWorkflowTransitionTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.added = ".github/workflows/test-xen-hypervisor.yml"
+        self.added = supply_chain.REVIEWED_ADDED_WORKFLOWS[0]
         self.existing = ".github/workflows/test-alpha.yml"
         self.base_commit = "f" * 40
         self.source = {self.existing: b"reviewed existing workflow\n"}
@@ -154,7 +154,7 @@ class AdditiveWorkflowTransitionTests(unittest.TestCase):
         ):
             with self.subTest(additions=additions):
                 self.lock["hardened_workflow_transition"]["added_workflows"] = additions
-                with self.assertRaisesRegex(supply_chain.ContractError, "reviewed Xen addition"):
+                with self.assertRaisesRegex(supply_chain.ContractError, "reviewed package addition"):
                     self.validate()
         self.git_lookup.assert_not_called()
         self.snapshot_read.assert_not_called()
@@ -1178,8 +1178,8 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
 
     def test_registration_is_exact(self) -> None:
         relative = [path.relative_to(self.root).as_posix() for path in self.workflows]
-        self.assertEqual(961, len(relative))
-        self.assertEqual(961, len(set(relative)))
+        self.assertEqual(964, len(relative))
+        self.assertEqual(964, len(set(relative)))
         self.assertIn(".github/workflows/test-xen-hypervisor.yml", relative)
         self.assertTrue(all(path.is_file() for path in self.workflows))
         self.assertFalse(
@@ -1190,7 +1190,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         lock = supply_chain.load_lock(self.root)
         self.assertEqual([], lock["unresolved_references"])
         self.assertEqual(supply_chain.SOURCE_COMMIT, lock["source_commit"])
-        self.assertEqual(1131, lock["external_uses"])
+        self.assertEqual(1134, lock["external_uses"])
         self.assertEqual(10, lock["container_uses"])
         self.assertEqual(15, len(lock["actions"]))
         self.assertRegex(
@@ -1199,7 +1199,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         transition = lock["hardened_workflow_transition"]
         self.assertEqual(
-            "9fef79bbddd3ed275c968d99a55b54880609657034b98607ed9644ba7f27143c",
+            "b65e63b469e06341c40960d666f142ce33aa89f975d57914746ccbd8956b72a5",
             transition["from_sha256"],
         )
         self.assertNotIn("added_workflows", transition)
@@ -1265,7 +1265,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "f04ce26092eff02308c8da32a92a2cf8e8fc1535decec1e0c19b3de38a2c8f19",
+            "48eb96747ad80f8898cd3c539509366cbde3212fd41186bc0fbafa53295822ae",
             result["workflow_sha256"],
         )
 
@@ -1341,7 +1341,12 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         ), mock.patch.object(
             supply_chain.subprocess, "run",
             return_value=subprocess.CompletedProcess(
-                [], 0, stdout=b".github/workflows/test-xen-hypervisor.yml\0"
+                [],
+                0,
+                stdout=(
+                    supply_chain.REVIEWED_ADDED_WORKFLOWS[0].encode("utf-8")
+                    + b"\0"
+                ),
             ),
         ):
             with self.assertRaisesRegex(
@@ -1433,7 +1438,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                     continue
                 _, _, _, ref = supply_chain.split_github_action(spec)
                 self.assertRegex(ref, r"^[0-9a-f]{40}$")
-        self.assertEqual(1131, external)
+        self.assertEqual(1134, external)
 
     def test_every_checkout_disables_persisted_credentials(self) -> None:
         checkouts = 0
@@ -1456,7 +1461,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                     ),
                     path.relative_to(self.root).as_posix(),
                 )
-        self.assertEqual(983, checkouts)
+        self.assertEqual(986, checkouts)
 
     def test_permissions_are_read_only(self) -> None:
         exceptions = supply_chain.permission_exceptions(
@@ -1512,15 +1517,15 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
     def test_complete_offline_contract(self) -> None:
         self.assertEqual(
             {
-                "registered_workflows": 961,
+                "registered_workflows": 964,
                 "batch_workflows": 22,
-                "external_uses": 1131,
+                "external_uses": 1134,
                 "container_uses": 10,
                 "unique_original_refs": 15,
-                "checkout_uses": 983,
+                "checkout_uses": 986,
                 "permission_exceptions": 4,
-                "topology_sha256": "bac13e39284e93da9df3ea67922d6ed1c3d04434dfcd5a79cdf5577acd1a85ce",
-                "workflow_sha256": "f04ce26092eff02308c8da32a92a2cf8e8fc1535decec1e0c19b3de38a2c8f19",
+                "topology_sha256": "f8941f8a65ff345d0145577f203560b7c3b18feee614fae8b97d5cc394c974e9",
+                "workflow_sha256": "48eb96747ad80f8898cd3c539509366cbde3212fd41186bc0fbafa53295822ae",
             },
             supply_chain.validate_hardening(
                 self.root,

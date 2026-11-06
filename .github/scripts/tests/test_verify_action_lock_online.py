@@ -175,12 +175,12 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
             (SCRIPT.parent / online.supply_chain.LOCK_NAME).read_text()
         )
         entry = action_entry("branch")
-        entry["occurrences"] = 1131
+        entry["occurrences"] = self.candidate["external_uses"]
         self.candidate["actions"] = [entry]
         self.base = copy.deepcopy(self.candidate)
-        self.base["registered_workflows"] = 960
-        self.base["external_uses"] = 1130
-        self.base["actions"][0]["occurrences"] = 1130
+        self.base["registered_workflows"] -= 1
+        self.base["external_uses"] -= 1
+        self.base["actions"][0]["occurrences"] = self.base["external_uses"]
         self.base_commit = "a" * 40
         self.base_type = "commit\n"
         self.base_raw = None
@@ -268,6 +268,34 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
             self.containers.call_args_list,
         )
 
+    def test_authenticated_base_accepts_its_canonical_historical_addition(self) -> None:
+        self.base["hardened_workflow_transition"]["added_workflows"] = [
+            ".github/workflows/test-prior-package.yml"
+        ]
+        self.assertEqual((1, 10), self.verify(expected_base_commit=self.base_commit))
+
+    def test_authenticated_base_rejects_malformed_historical_additions(self) -> None:
+        malformed = (
+            [],
+            [".github/workflows/test-prior-package.yml"] * 2,
+            ["../test-prior-package.yml"],
+            [".github/workflows/./test-prior-package.yml"],
+            [".github/workflows/test-prior-package.yml "],
+            [True],
+        )
+        for additions in malformed:
+            with self.subTest(additions=additions):
+                self.commands.clear()
+                self.base["hardened_workflow_transition"]["added_workflows"] = additions
+                with self.assertRaisesRegex(
+                    online.OnlineEvidenceError,
+                    "authenticated base action lock: hardened workflow additions are malformed",
+                ):
+                    self.verify(expected_base_commit=self.base_commit)
+                self.assertFalse(
+                    any(command[:2] == ["gh", "api"] for command in self.commands)
+                )
+
     def test_new_container_live_verification_failure_cannot_be_inherited_from_base(self) -> None:
         self.base["containers"].pop()
         self.base["container_uses"] = len(self.base["containers"])
@@ -306,7 +334,7 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
 
     def test_new_pin_requires_live_ref_confirmation(self) -> None:
         entry = action_entry()
-        entry["occurrences"] = 1131
+        entry["occurrences"] = self.candidate["external_uses"]
         self.candidate["actions"] = [entry]
         with self.assertRaisesRegex(online.OnlineEvidenceError, "live ref object contradicts"):
             self.verify(expected_base_commit=self.base_commit)
@@ -336,7 +364,7 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
 
     def test_reviewed_annotated_tag_does_not_requery_mutable_resolution(self) -> None:
         entry = action_entry("annotated_tag")
-        entry["occurrences"] = 1131
+        entry["occurrences"] = self.candidate["external_uses"]
         self.candidate["actions"] = [entry]
         self.base = copy.deepcopy(self.candidate)
         self.assertEqual((1, 10), self.verify(expected_base_commit=self.base_commit))
@@ -345,7 +373,7 @@ class AuthenticatedBaseLockTests(unittest.TestCase):
 
     def test_new_annotated_tag_still_requires_tag_object_evidence(self) -> None:
         entry = action_entry("annotated_tag")
-        entry["occurrences"] = 1131
+        entry["occurrences"] = self.candidate["external_uses"]
         self.candidate["actions"] = [entry]
         self.drift = False
         self.assertEqual((1, 10), self.verify(expected_base_commit=self.base_commit))

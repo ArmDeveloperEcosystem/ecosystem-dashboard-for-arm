@@ -1,0 +1,385 @@
+name: Provision ephemeral Arm64 KVM runner
+description: Launch one tagged c7g.metal instance and register one JIT GitHub runner.
+
+inputs:
+  aws-role-arn:
+    description: OIDC role created by ecosystem-kvm-runner.yaml.
+    required: true
+  aws-region:
+    description: AWS region containing the reviewed subnet and AMI.
+    required: true
+  broker-function-name:
+    description: Fixed AWS Lambda that serializes and validates EC2 lifecycle calls.
+    required: true
+  runner-app-id:
+    description: App ID for the repository-scoped JIT runner GitHub App.
+    required: true
+  runner-app-private-key:
+    description: Private key for the repository-scoped JIT runner GitHub App.
+    required: true
+  runner-group-id:
+    description: Dedicated organization runner group ID; the default group is forbidden.
+    required: true
+  ttl-seconds:
+    description: Hard lifetime for the instance, including bootstrap time.
+    required: false
+    default: "2700"
+  repository-read-token:
+    description: Current-job token used only to bind execution to main HEAD.
+    required: true
+
+outputs:
+  instance-id:
+    description: Tagged EC2 instance to pass to the always-running cleanup job.
+    value: ${{ steps.provision.outputs.instance_id }}
+  runner-label:
+    description: Unique label that binds the next job to this runner.
+    value: ${{ steps.provision.outputs.runner_label }}
+  runner-name:
+    description: Unique JIT runner registration name.
+    value: ${{ steps.provision.outputs.runner_name }}
+  ownership-nonce:
+    description: Random tag value required by the cleanup action.
+    value: ${{ steps.provision.outputs.ownership_nonce }}
+
+runs:
+  using: composite
+  steps:
+    - name: Bind privileged execution to the current protected main commit
+      env:
+        GH_TOKEN: ${{ inputs.repository-read-token }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        readonly expected_repository="ArmDeveloperEcosystem/ecosystem-dashboard-for-arm"
+        test "$GITHUB_REPOSITORY" = "$expected_repository"
+        test "$GITHUB_REF" = "refs/heads/main"
+        [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+        test -n "$GH_TOKEN"
+
+        current_main_sha="$(gh api \
+          --header 'X-GitHub-Api-Version: 2026-03-10' \
+          "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+          --jq '.object.sha')"
+        test "$GITHUB_SHA" = "$current_main_sha"
+
+    - name: Mint repository-scoped JIT runner token
+      id: runner-app-token
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      with:
+        app-id: ${{ inputs.runner-app-id }}
+        private-key: ${{ inputs.runner-app-private-key }}
+        owner: ${{ github.repository_owner }}
+        repositories: ${{ github.event.repository.name }}
+        permission-administration: write
+
+    - name: Assume KVM provisioning role with GitHub OIDC
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      with:
+        aws-region: ${{ inputs.aws-region }}
+        role-to-assume: ${{ inputs.aws-role-arn }}
+        role-session-name: ecosystem-kvm-${{ github.run_id }}
+        role-duration-seconds: 1800
+        mask-aws-account-id: true
+        unset-current-credentials: true
+
+    - name: Create one-job runner and launch reviewed metal target
+      id: provision
+      env:
+        AWS_ROLE_ARN_INPUT: ${{ inputs.aws-role-arn }}
+        AWS_REGION_INPUT: ${{ inputs.aws-region }}
+        BROKER_FUNCTION_NAME: ${{ inputs.broker-function-name }}
+        RUNNER_APP_TOKEN: ${{ steps.runner-app-token.outputs.token }}
+        RUNNER_GROUP_ID: ${{ inputs.runner-group-id }}
+        RUNNER_TTL_SECONDS: ${{ inputs.ttl-seconds }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        umask 077
+
+        readonly expected_repository="ArmDeveloperEcosystem/ecosystem-dashboard-for-arm"
+        [[ "$GITHUB_REPOSITORY" == "$expected_repository" ]]
+        [[ "$GITHUB_REF" == "refs/heads/main" ]]
+        [[ "$AWS_ROLE_ARN_INPUT" =~ ^arn:[a-z0-9-]+:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$ ]]
+        [[ "$AWS_REGION_INPUT" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]
+        [[ "$BROKER_FUNCTION_NAME" =~ ^[A-Za-z0-9_-]{1,64}$ ]]
+        [[ "$RUNNER_GROUP_ID" =~ ^[1-9][0-9]*$ ]]
+        (( RUNNER_GROUP_ID > 1 ))
+        [[ "$RUNNER_TTL_SECONDS" =~ ^[0-9]+$ ]]
+        (( RUNNER_TTL_SECONDS >= 1200 && RUNNER_TTL_SECONDS <= 3600 ))
+        test -n "$RUNNER_APP_TOKEN"
+
+        temporary_directory="$(mktemp -d "$RUNNER_TEMP/ecosystem-kvm.XXXXXXXX")"
+        instance_id=""
+        ownership_nonce="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+        runner_name="ecosystem-kvm-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        runner_label="ecosystem-kvm-${ownership_nonce}"
+
+        find_runner_id() {
+          local page response_code page_count
+          local matches="$temporary_directory/runner-matches"
+          : > "$matches"
+          for page in $(seq 1 20); do
+            response_code="$(curl --silent --show-error \
+              --output "$temporary_directory/runners.json" \
+              --write-out '%{http_code}' \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer $RUNNER_APP_TOKEN" \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runners?per_page=100&page=$page")"
+            [[ "$response_code" == "200" ]] || return 1
+            jq -r --arg name "$runner_name" \
+              '.runners[]? | select(.name == $name) | .id' \
+              "$temporary_directory/runners.json" >> "$matches"
+            page_count="$(jq '.runners | length' "$temporary_directory/runners.json")"
+            (( page_count < 100 )) && break
+          done
+          mapfile -t runner_ids < "$matches"
+          (( ${#runner_ids[@]} <= 1 )) || return 1
+          printf '%s' "${runner_ids[0]:-}"
+        }
+
+        remove_runner_registration() {
+          local runner_id response_code
+          runner_id="$(find_runner_id)" || return 1
+          [[ -n "$runner_id" ]] || return 0
+          [[ "$runner_id" =~ ^[0-9]+$ ]] || return 1
+          response_code="$(curl --silent --show-error \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            --request DELETE \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $RUNNER_APP_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runners/$runner_id")"
+          [[ "$response_code" == "204" ]]
+        }
+
+        invoke_broker_cleanup() {
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg run "$GITHUB_RUN_ID" \
+            --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg instance "$instance_id" \
+            --arg nonce "$ownership_nonce" \
+            '{operation: "cleanup", repository: $repository,
+              run_id: $run, run_attempt: $attempt,
+              instance_id: $instance, ownership_nonce: $nonce}' \
+            > "$temporary_directory/broker-cleanup.json"
+          aws lambda invoke \
+            --region "$AWS_REGION_INPUT" \
+            --function-name "$BROKER_FUNCTION_NAME" \
+            --cli-binary-format raw-in-base64-out \
+            --payload "file://$temporary_directory/broker-cleanup.json" \
+            "$temporary_directory/broker-cleanup-response.json" \
+            > "$temporary_directory/broker-cleanup-metadata.json"
+          jq -e 'has("FunctionError") | not' \
+            "$temporary_directory/broker-cleanup-metadata.json" >/dev/null
+        }
+
+        cleanup_on_failure() {
+          status=$?
+          if [[ "$status" -ne 0 ]]; then
+            set +e
+            remove_runner_registration
+            invoke_broker_cleanup
+          fi
+          rm -rf "$temporary_directory"
+          exit "$status"
+        }
+        trap cleanup_on_failure EXIT
+
+        jq -n \
+          --arg name "$runner_name" \
+          --arg label "$runner_label" \
+          --argjson group "$RUNNER_GROUP_ID" \
+          '{name: $name, runner_group_id: $group,
+            labels: [$label],
+            work_folder: "_work"}' > "$temporary_directory/jit-request.json"
+
+        response_code="$(curl --silent --show-error \
+          --output "$temporary_directory/jit-response.json" \
+          --write-out '%{http_code}' \
+          --request POST \
+          --header 'Accept: application/vnd.github+json' \
+          --header "Authorization: Bearer $RUNNER_APP_TOKEN" \
+          --header 'X-GitHub-Api-Version: 2026-03-10' \
+          --data-binary @"$temporary_directory/jit-request.json" \
+          "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runners/generate-jitconfig")"
+        if [[ "$response_code" != "201" ]]; then
+          echo "GitHub rejected the JIT runner request with HTTP $response_code." >&2
+          exit 1
+        fi
+        jit_config="$(jq -er '.encoded_jit_config | strings' "$temporary_directory/jit-response.json")"
+        [[ "$jit_config" =~ ^[A-Za-z0-9+/=]+$ ]]
+        (( ${#jit_config} >= 100 ))
+        echo "::add-mask::$jit_config"
+        printf '%s' "$jit_config" > "$temporary_directory/jit-config"
+        python3 - \
+          "$temporary_directory/jit-config" \
+          "$runner_name" <<'PY'
+        import base64
+        import binascii
+        import json
+        from pathlib import Path
+        import sys
+
+        encoded_path = Path(sys.argv[1])
+        expected_name = sys.argv[2]
+        try:
+            file_map = json.loads(base64.b64decode(
+                encoded_path.read_text(), validate=True
+            ))
+            runner_blob = file_map[".runner"]
+            settings = json.loads(base64.b64decode(runner_blob, validate=True))
+            if not isinstance(file_map, dict) or not isinstance(settings, dict):
+                raise TypeError("JIT settings are not mappings")
+        except (binascii.Error, KeyError, TypeError, ValueError) as error:
+            raise SystemExit("GitHub returned malformed JIT runner settings") from error
+        if (
+            settings.get("AgentName") != expected_name
+            or settings.get("WorkFolder") != "_work"
+            or settings.get("Ephemeral") is not True
+            or settings.get("DisableUpdate") is not True
+        ):
+            raise SystemExit("GitHub JIT settings violate the one-job pinned-runner policy")
+        PY
+
+        cat > "$temporary_directory/user-data.sh" <<'BOOTSTRAP'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        umask 077
+
+        readonly runner_version="2.338.2"
+        readonly runner_sha256="670adb2f268fe21dcbb58b3db0e0aa9d5b3bddfe2c651481336e561ff86de945"
+        readonly ttl_seconds="__TTL_SECONDS__"
+        jit_config="__JIT_CONFIG__"
+        readonly runner_home="/opt/actions-runner"
+
+        systemd-run --unit=ecosystem-kvm-expiry \
+          --on-active="${ttl_seconds}s" /usr/sbin/shutdown -h now >/dev/null
+        trap '/usr/sbin/shutdown -h now || true' EXIT
+
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -qq update
+        apt-get -qq install --no-install-recommends -y \
+          ca-certificates curl gzip sudo tar
+
+        test "$(uname -m)" = "aarch64"
+        test -c /dev/kvm
+        getent group kvm >/dev/null || groupadd --system kvm
+        id actions-runner >/dev/null 2>&1 || useradd --create-home --shell /bin/bash actions-runner
+        usermod --append --groups kvm actions-runner
+        printf '%s\n' 'actions-runner ALL=(ALL) NOPASSWD: ALL' \
+          > /etc/sudoers.d/actions-runner
+        chmod 0440 /etc/sudoers.d/actions-runner
+        visudo --check --file=/etc/sudoers.d/actions-runner
+        chgrp kvm /dev/kvm
+        chmod 0660 /dev/kvm
+
+        install -d -o actions-runner -g actions-runner -m 0750 "$runner_home"
+        archive="$(mktemp /tmp/actions-runner.XXXXXXXX.tar.gz)"
+        curl --fail --location --proto '=https' --tlsv1.2 \
+          --output "$archive" \
+          "https://github.com/actions/runner/releases/download/v${runner_version}/actions-runner-linux-arm64-${runner_version}.tar.gz"
+        printf '%s  %s\n' "$runner_sha256" "$archive" | sha256sum --check --strict
+        tar --extract --gzip --file "$archive" --directory "$runner_home"
+        rm -f "$archive"
+        "$runner_home/bin/installdependencies.sh"
+        chown -R actions-runner:actions-runner "$runner_home"
+
+        find /var/lib/cloud/instances -type f -name user-data.txt -delete
+        runuser -u actions-runner -- env \
+          ACTIONS_RUNNER_INPUT_JITCONFIG="$jit_config" \
+          "$runner_home/run.sh"
+        jit_config=""
+        BOOTSTRAP
+
+        python3 - \
+          "$temporary_directory/user-data.sh" \
+          "$temporary_directory/jit-config" \
+          "$RUNNER_TTL_SECONDS" <<'PY'
+        from pathlib import Path
+        import sys
+
+        script_path = Path(sys.argv[1])
+        config = Path(sys.argv[2]).read_text()
+        ttl = sys.argv[3]
+        script = script_path.read_text()
+        if script.count("__JIT_CONFIG__") != 1 or script.count("__TTL_SECONDS__") != 1:
+            raise SystemExit("bootstrap placeholders are not exact")
+        if "\n" in config or "'" in config or not ttl.isdecimal():
+            raise SystemExit("bootstrap inputs are malformed")
+        script_path.write_text(
+            script.replace("__JIT_CONFIG__", config).replace("__TTL_SECONDS__", ttl)
+        )
+        PY
+        chmod 0600 "$temporary_directory/user-data.sh"
+
+        expires_at="$(date -u -d "+${RUNNER_TTL_SECONDS} seconds" +%Y-%m-%dT%H:%M:%SZ)"
+        jq -n \
+          --arg repository "$GITHUB_REPOSITORY" \
+          --arg run "$GITHUB_RUN_ID" \
+          --arg attempt "$GITHUB_RUN_ATTEMPT" \
+          --arg head_sha "$GITHUB_SHA" \
+          --arg expires "$expires_at" \
+          --arg nonce "$ownership_nonce" \
+          --rawfile user_data "$temporary_directory/user-data.sh" \
+          '{operation: "launch", repository: $repository,
+            run_id: $run, run_attempt: $attempt, head_sha: $head_sha,
+            ownership_nonce: $nonce, expires_at: $expires,
+            user_data: $user_data}' \
+          > "$temporary_directory/broker-launch.json"
+        aws lambda invoke \
+          --region "$AWS_REGION_INPUT" \
+          --function-name "$BROKER_FUNCTION_NAME" \
+          --cli-binary-format raw-in-base64-out \
+          --payload "file://$temporary_directory/broker-launch.json" \
+          "$temporary_directory/broker-launch-response.json" \
+          > "$temporary_directory/broker-launch-metadata.json"
+        jq -e 'has("FunctionError") | not' \
+          "$temporary_directory/broker-launch-metadata.json" >/dev/null
+        instance_id="$(jq -er '.instance_id' \
+          "$temporary_directory/broker-launch-response.json")"
+        [[ "$instance_id" =~ ^i-[0-9a-f]{8,17}$ ]]
+
+        aws ec2 wait instance-running \
+          --region "$AWS_REGION_INPUT" \
+          --instance-ids "$instance_id"
+
+        runner_online=false
+        for _ in $(seq 1 72); do
+          for page in $(seq 1 20); do
+            response_code="$(curl --silent --show-error \
+              --output "$temporary_directory/runners.json" \
+              --write-out '%{http_code}' \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer $RUNNER_APP_TOKEN" \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runners?per_page=100&page=$page")"
+            [[ "$response_code" == "200" ]] || break
+            if jq -e \
+              --arg name "$runner_name" \
+              --arg label "$runner_label" \
+              '.runners[]? | select(
+                .name == $name and .status == "online" and
+                ([.labels[].name] | contains([$label]))
+              )' "$temporary_directory/runners.json" >/dev/null; then
+              runner_online=true
+              break 2
+            fi
+            page_count="$(jq '.runners | length' "$temporary_directory/runners.json")"
+            (( page_count < 100 )) && break
+          done
+          sleep 10
+        done
+        [[ "$runner_online" == true ]]
+
+        {
+          printf 'instance_id=%s\n' "$instance_id"
+          printf 'runner_label=%s\n' "$runner_label"
+          printf 'runner_name=%s\n' "$runner_name"
+          printf 'ownership_nonce=%s\n' "$ownership_nonce"
+        } >> "$GITHUB_OUTPUT"
+        rm -rf "$temporary_directory"
+        trap - EXIT
