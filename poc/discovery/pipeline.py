@@ -389,7 +389,7 @@ def validate_config(config):
     if not isinstance(ai.get("enabled", False), bool):
         raise ValueError("ai_review.enabled must be true or false")
     for key, default in (
-        ("max_calls", 4),
+        ("max_calls", 8),
         ("max_seconds", 120),
         ("timeout_seconds", 30),
         ("max_output_tokens", 1500),
@@ -413,6 +413,10 @@ def review_evidence(result, reviewer):
         {
             "scope": result["scope"],
             "deterministic_status": result["status"],
+            "classification_reason": result.get("reason", ""),
+            "coverage_questions": result.get("assessment_coverage", {}).get(
+                "review_reasons", []
+            ),
             "evidence": result["evidence"],
         }
     )
@@ -420,12 +424,15 @@ def review_evidence(result, reviewer):
         not isinstance(review, dict)
         or not isinstance(review.get("citations"), list)
         or not review["citations"]
+        or len(review["citations"]) > 8
     ):
         raise ValueError("AI review requires citations with exact evidence quotes")
     for citation in review["citations"]:
         if (
             not isinstance(citation, dict)
-            or not citation.get("quote")
+            or not isinstance(citation.get("quote"), str)
+            or not citation["quote"].strip()
+            or not isinstance(citation.get("url"), str)
             or not any(
                 citation.get("url") == e["url"] and citation["quote"] in e["excerpt"]
                 for e in result["evidence"]
@@ -434,14 +441,36 @@ def review_evidence(result, reviewer):
             raise ValueError(
                 "AI review cited a URL or quotation absent from collected evidence"
             )
-    note = review.get("note")
-    if not isinstance(note, str) or not note.strip() or len(note) > 2000:
+    for field, limit in (
+        ("note", 2000), ("next_action", 1000), ("priority_reason", 1000)
+    ):
+        value = review.get(field)
+        if not isinstance(value, str) or not value.strip() or len(value) > limit:
+            raise ValueError(
+                f"AI review {field} must be a nonempty string of at most {limit} characters"
+            )
+    if review.get("priority") not in ("high", "normal", "low"):
+        raise ValueError("AI review priority must be high, normal or low")
+    questions = review.get("questions")
+    if (
+        not isinstance(questions, list)
+        or len(questions) > 5
+        or any(
+            not isinstance(question, str)
+            or not question.strip()
+            or len(question) > 500
+            for question in questions
+        )
+    ):
         raise ValueError(
-            "AI review note must be a nonempty string of at most 2000 characters"
+            "AI review questions must contain up to five nonempty strings of at most 500 characters"
         )
     return {
         "status": "completed",
-        "note": note,
+        **{
+            field: review[field]
+            for field in ("note", "next_action", "priority", "priority_reason", "questions")
+        },
         "citations": review["citations"],
         "authority": "Advisory interpretation; classification remains deterministic and human review is required.",
     }
@@ -459,7 +488,7 @@ def run_pipeline(
 ):
     """Collect one bounded run and return its JSON-serializable summary and paths.
 
-    Injectable HTTP and reviewer objects support offline tests and optional AI.
+    Injectable HTTP and reviewer objects support offline tests and explicit demo mode.
     The public catalog is read only. State and outputs are internal local files.
     """
     config_path, output_dir = Path(config_path).resolve(), Path(output_dir).resolve()
@@ -519,6 +548,7 @@ def run_pipeline(
                 db,
                 http or BoundedHTTP(limits),
                 reviewer,
+                require_ai,
             )
         except Exception as exc:
             db.rollback()
@@ -557,6 +587,7 @@ def _run(
     db,
     http,
     reviewer,
+    require_ai,
 ):
     started = time.monotonic()
     failures, skipped = [], []
@@ -718,7 +749,7 @@ def _run(
             result["recommended_action"] += (
                 " The project is already cataloged; assess the distribution-specific finding independently."
             )
-        # Save deterministic observations before invoking the optional model. A crash
+        # Save deterministic observations before invoking the model. A crash
         # leaves a truthful pending marker instead of losing the collected evidence.
         result["ai_review"] = {
             "status": "pending"
@@ -1039,10 +1070,24 @@ def _run(
         "docx": str((run_dir / "opportunities.docx").resolve()),
         "csv": str((run_dir / "opportunities.csv").resolve()),
     }
+    ai_requested = (
+        bool(config.get("ai_review", {}).get("enabled")) or reviewer is not None
+    )
+    ai_completed = sum(f["ai_review"]["status"] == "completed" for f in findings)
+    ai_eligible = sum(bool(f["evidence"]) for f in findings)
+    assessment_status = (
+        "incomplete" if current_errors
+        else "no_work" if not findings
+        else "metadata_only" if not ai_requested
+        else "ai_complete" if ai_eligible and ai_completed == ai_eligible
+        else "incomplete"
+    )
     summary = {
         "schema_version": 1,
         "status": "completed",
         "outcome": "degraded" if current_errors else "completed",
+        "assessment_status": assessment_status,
+        "ai_required": require_ai,
         "current_errors": current_errors,
         "scheduling": scheduling,
         "run_id": run_id,
@@ -1066,16 +1111,15 @@ def _run(
         "catalog_comparison": {"status": catalog_state, "identity_count": len(tracked)},
         "ai_review": {
             "status": "configured" if reviewer else "not_configured",
-            "completed": sum(f["ai_review"]["status"] == "completed" for f in findings),
-            "eligible": sum(bool(f["evidence"]) for f in findings),
+            "completed": ai_completed,
+            "eligible": ai_eligible,
             "failed": sum(
                 f["ai_review"]["status"] == "failed_validation" for f in findings
             ),
-            "requested": bool(config.get("ai_review", {}).get("enabled"))
-            or reviewer is not None,
+            "requested": ai_requested,
             "disclosure": "AI review is advisory and quote-validated; deterministic metadata rules determine status."
             if reviewer
-            else "No AI reviewer is configured. This run uses deterministic metadata verification only; AI-assisted interpretation remains an optional integration.",
+            else "Metadata demo only: no AI reviewer is configured. Required AI assessment remains pending for the completed AI-assisted PoC.",
         },
         "scope": "Selected GitHub releases and exact Docker Hub tags; metadata inspection only; no downloaded code is executed.",
         "limitations": [

@@ -41,4 +41,4 @@ COPY content/linux/ /app/content/linux/
 
 USER 10001:10001
 ENTRYPOINT ["python", "-m", "poc.discovery.deploy.run"]
-CMD ["--config", "/config/config.yaml", "--output-dir", "/state", "--catalog", "/app/content/linux", "--fail-on-errors"]
+CMD ["--config", "/config/config.yaml", "--output-dir", "/state", "--catalog", "/app/content/linux", "--fail-on-errors", "--require-ai"]

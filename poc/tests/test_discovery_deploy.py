@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -91,9 +92,12 @@ def test_service_cleanup_is_idempotent_and_reports_real_failures(
         text=True,
         timeout=10,
     )
-    assert result.returncode == expected_code
+    assert result.returncode == expected_code, result.stderr
+    assert result.stderr == (
+        "Could not stop service container\n" if scenario == "remove_failed" else ""
+    ), result.stderr
     calls = json.loads(log.read_text())
-    assert len(calls) == expected_calls
+    assert len(calls) == expected_calls, {"calls": calls, "stderr": result.stderr}
     assert all(CID in " ".join(call) for call in calls)
 
 
@@ -108,3 +112,44 @@ def test_service_cleanup_never_executes_malformed_container_id(tmp_path, value):
         timeout=10,
     )
     assert result.returncode == (0 if not value else 1)
+
+
+@pytest.mark.parametrize("service_exit", [0, 1])
+def test_private_manual_workflow_runs_only_host_owned_service(tmp_path, service_exit):
+    workflow = yaml.load(
+        (DEPLOY / "private-manual-workflow.yml.example").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    assert set(workflow["on"]) == {"workflow_dispatch"}
+    assert workflow["permissions"] == {}
+    assert workflow["concurrency"]["cancel-in-progress"] == "false"
+    job = workflow["jobs"]["investigate"]
+    assert "github.event.repository.private == true" in job["if"]
+    assert "github.event.repository.default_branch" in job["if"]
+    assert job["environment"] == "arm64-opportunities"
+    assert "arm64-opportunities-private" in job["runs-on"]
+    assert len(job["steps"]) == 1
+    step = job["steps"][0]
+    assert "uses" not in step
+    sudo = tmp_path / "sudo"
+    call_log = tmp_path / "call.json"
+    sudo.write_text(
+        f"#!{sys.executable}\n"
+        "import json,os,pathlib,sys\n"
+        "pathlib.Path(os.environ['CALL_LOG']).write_text(json.dumps(sys.argv[1:]))\n"
+        "sys.exit(int(os.environ['SERVICE_EXIT']))\n"
+    )
+    sudo.chmod(0o700)
+    summary = tmp_path / "summary"
+    result = subprocess.run(
+        ["/bin/bash", "-c", step["run"]],
+        env={**os.environ, "PATH": str(tmp_path) + ":" + os.environ["PATH"],
+             "CALL_LOG": str(call_log), "SERVICE_EXIT": str(service_exit),
+             "GITHUB_STEP_SUMMARY": str(summary)},
+        capture_output=True, text=True, timeout=10,
+    )
+    assert json.loads(call_log.read_text()) == [
+        "-n", "/usr/bin/systemctl", "start", "arm64-opportunity-report.service"
+    ]
+    assert result.returncode == service_exit
+    assert summary.exists() is (service_exit == 0)

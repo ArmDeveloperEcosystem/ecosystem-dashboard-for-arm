@@ -1,11 +1,40 @@
 # Image security validation
 
-The implementation is ready for code review. **Production security acceptance
-remains open:** the measured hardened image retains eight distinct HIGH advisory IDs that
-need an operational security owner's disposition or further remediation. No
-findings were suppressed and no risk waiver was granted.
+**Production security acceptance remains open.** The last measured hardened
+image retained eight distinct HIGH advisory IDs that require the security
+owner's disposition or remediation. Those October measurements are historical,
+not a current scan of the November changes. No findings were suppressed and no
+risk waiver was granted.
 
-## Current validation: October 7, 2026
+## November 6, 2026 validation status
+
+The Docker default now requires AI assessment; the offline image smoke explicitly
+checks its missing-configuration failure before testing metadata persistence.
+Local image rebuild was blocked by Docker Desktop's enforced organization sign-in.
+The existing alternative Colima profile failed to start because its disk was
+already marked in use. Neither policy nor disk locking was bypassed.
+Native image build/smoke can run in the public synthetic CI job. A fresh scan of
+the exact final image and security disposition still remain release gates; the
+historical scan below must not be presented as satisfying them.
+
+A separate check of the nine exact runtime pins against official PyPI version
+metadata found [certifi 2026.7.22](https://pypi.org/pypi/certifi/2026.7.22/json)
+affected by GHSA-6q48-6c7w-9gw2 / PYSEC-2026-4320 (aliases for the same CA trust
+issue). The runtime and development locks now use
+[certifi 2026.10.19](https://pypi.org/pypi/certifi/2026.10.19/json). Its universal
+wheel was downloaded and SHA-256 verified against official release metadata:
+`42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b`.
+The test lock includes the same runtime lock. No other dependency was changed.
+PyPI reported no advisories for the nine updated pins at the check time; this
+does not assess OS packages, embedded libraries or the final image.
+
+The attempted fresh Trivy database extraction failed because local disk space
+was insufficient; its incomplete cache was removed without changing prior
+evidence. The verified scanner archive, failed build/database logs, before/after
+PyPI records and wheel verification are retained locally under ignored
+`.poc/readiness-20261106/delivery/` (scanner archive under `.poc/tools/trivy/`).
+
+## Historical validation: October 7, 2026
 
 The runtime base is now the official
 [Python 3.12.15 security release](https://www.python.org/downloads/release/python-31215/),

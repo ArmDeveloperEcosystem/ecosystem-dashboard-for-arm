@@ -27,10 +27,29 @@ function renderFindings(summary) {
     const details = node('details'); details.append(node('summary', `Evidence and interpretation (${(f.evidence || []).length} sources)`)); const sources = node('ul', undefined, 'evidence');
     for (const e of f.evidence || []) { const li = node('li'); if (safeLink(e.url)) { const a = node('a', e.kind.replaceAll('_',' ')); a.href = e.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; li.append(a); } else li.append(node('span', `${e.kind} · source link unavailable`)); li.append(node('small', e.excerpt)); sources.append(li); }
     details.append(sources);
-    const ai = f.ai_review || {}; details.append(node('p', ai.status === 'completed' ? `AI advisory: ${ai.note}` : `AI interpretation: ${(ai.status || 'not configured').replaceAll('_',' ')}${ai.reason ? '. '+ai.reason : ''}`, 'selection'));
+    renderAIReview(details, f.ai_review || {});
     for (const error of f.failures || []) details.append(node('p', `Collection issue: ${error}`, 'selection'));
     card.append(details); parent.append(card);
   }
+}
+function renderAIReview(parent, ai) {
+  if (ai.status !== 'completed') {
+    parent.append(node('p', `AI interpretation: ${(ai.status || 'not configured').replaceAll('_',' ')}${ai.reason ? '. '+ai.reason : ''}`, 'selection'));
+    return;
+  }
+  parent.append(node('h4', 'AI assessment · human review required'), node('p', ai.note, 'selection'));
+  if (ai.next_action) parent.append(node('p', `Proposed next action: ${ai.next_action}`, 'action'));
+  if (ai.priority && ai.priority_reason) parent.append(node('p', `Proposed review priority: ${ai.priority}. ${ai.priority_reason}`, 'selection'));
+  for (const question of ai.questions || []) parent.append(node('p', `Open question: ${question}`, 'selection'));
+  const citations = node('ul', undefined, 'evidence ai-citations');
+  for (const citation of ai.citations || []) {
+    const li = node('li');
+    if (safeLink(citation.url)) {
+      const a = node('a', 'Evidence-matched quotation'); a.href = citation.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; li.append(a);
+    } else li.append(node('span', 'Evidence quotation · source link unavailable'));
+    li.append(node('small', citation.quote)); citations.append(li);
+  }
+  parent.append(citations, node('p', 'Quotations match saved evidence. A person must assess the interpretation; the recorded support verdict is unchanged.', 'selection'));
 }
 function renderCoverage(card, finding) {
   const coverage = finding.assessment_coverage;
@@ -78,14 +97,20 @@ function renderRetired(summary) {
 function activityText(summary) {
   if (summary?.scheduling?.status === 'no_progress') return 'Run needs attention: due investigations could not start within the resource budget. Saved work is retained.';
   if (summary?.outcome === 'degraded') return 'Run finished with issues. Review incomplete evidence and run diagnostics.';
-  return 'Run complete. Findings await human review.';
+  return {
+    metadata_only: 'Metadata demo complete; required AI review pending.',
+    ai_complete: 'AI-assisted report complete. Findings await human review.',
+    incomplete: 'Assessment incomplete. Saved evidence remains available for follow-up.',
+    no_work: 'No new scopes assessed. Earlier findings retain their original dates.'
+  }[summary?.assessment_status] || 'Saved report. AI completion was not recorded under the current assessment contract.';
 }
 function render(summary) {
   if (!summary) return;
   for (const key of ['investigated','supported','gap','unknown']) byId(key).textContent = summary.counts[key] ?? 0;
   byId('run-meta').textContent = `Report ${summary.run_id} · ${date(summary.generated_at)} · ${summary.counts.newly_investigated} new / ${summary.counts.refreshed} refreshed`;
   byId('budget').textContent = `This run: ${summary.counts.requests} metadata requests. Limits: ${summary.limits.max_candidates} investigations, ${summary.limits.max_requests} requests, ${summary.limits.max_seconds}s collection budget.`;
-  byId('ai-state').textContent = summary.ai_review.disclosure;
+  const ai = summary.ai_review || {};
+  byId('ai-state').textContent = `AI reviews completed: ${ai.completed ?? 0} of ${ai.eligible ?? 0} eligible scopes. ${ai.disclosure || 'AI review details were not recorded for this saved run.'}`;
   const selection = summary.selection || {};
   byId('source-counts').textContent = selection.source_records_fetched == null ? 'Detailed collection counts were not recorded for this saved run.' : `Discovery: ${selection.source_records_fetched} source records collected; ${selection.source_records_examined ?? 0} examined; ${selection.source_candidates_selected ?? 0} candidates selected.`;
   const scheduling = summary.scheduling;

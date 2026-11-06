@@ -42,6 +42,7 @@ def test_failed_current_source_has_degraded_outcome_and_published_reports(tmp_pa
     config.write_text("seeds:\n  - source: github\n    name: example/project\n")
     summary = run_pipeline(config, tmp_path / "out", http=FailedSource())
     assert summary["outcome"] == "degraded"
+    assert summary["assessment_status"] == "incomplete"
     assert summary["current_errors"][0]["source"] == "github"
     assert summary["findings"][0]["status"] == "unknown"
     assert all(Path(path).is_file() for path in summary["report_paths"].values())
@@ -74,6 +75,7 @@ def test_recovered_historical_failure_does_not_degrade_healthy_no_work_run(tmp_p
         now=datetime(2026, 1, 3, tzinfo=timezone.utc),
     )
     assert summary["outcome"] == "completed"
+    assert summary["assessment_status"] == "no_work"
     assert summary["current_errors"] == []
     assert any(error["source"] == "previous_run" for error in summary["failures"])
 
@@ -86,6 +88,7 @@ def test_recovered_historical_failure_does_not_degrade_healthy_no_work_run(tmp_p
         (["--fail-on-errors"], [], 0, 0, 0),
         (["--require-ai"], [], 2, 1, 2),
         (["--require-ai"], [], 2, 2, 0),
+        (["--require-ai"], [{"source": "github"}], 2, 2, 2),
         (["--require-ai"], [], 0, 0, 0),
     ],
 )
@@ -98,6 +101,8 @@ def test_cli_exit_after_reporting_matches_current_health(
             "run_id": "synthetic",
             "generated_at": "2026-09-24",
             "outcome": "degraded" if errors else "completed",
+            "assessment_status": "incomplete" if errors or completed < eligible else "ai_complete" if eligible else "no_work",
+            "ai_required": "--require-ai" in flags,
             "current_errors": errors,
             "counts": {},
             "report_paths": {},

@@ -1,6 +1,7 @@
 # PoC2 production acceptance
 
-The release target is the private scheduled batch and its internal reports.
+The release target is one private manual batch and its internal reports; weekly
+scheduling follows owner acceptance.
 The loopback review page is a separate demo tool and is not packaged or exposed
 by the batch image. An authenticated report portal is outside this release.
 
@@ -11,7 +12,7 @@ assigned in this repository.
 
 | Decision or check | Evidence required | Owner / current status |
 | --- | --- | --- |
-| Code and packaging | Native Arm64 tests, image default-command smoke, report consistency and recovery drill on the submitted revision | Engineering: automated checks available |
+| Code and packaging | Native Arm64 tests, mandatory-AI default and explicit metadata smoke, report consistency and recovery drill on the submitted revision | Engineering: automated checks available |
 | Source and opportunity scope | Agreed repository topics, image tags, budgets and a reviewed sample showing useful scoped findings; unknown is not unsupported and zero gaps is valid | Ecosystem product/engineering owner: acceptance pending |
 | AI-assisted mode | Approved provider/model, dedicated access and data policy; actual provider run with sufficient fresh findings and complete advisory coverage; human review of every pilot note | Model/service owner and ecosystem reviewer: pending |
 | Security | Dated scan of the exact image plus remediation or an explicit dated disposition of residual advisories | Security owner: pending; see SECURITY.md |
@@ -24,8 +25,8 @@ separate initial release; that product decision has not been made here.
 
 ## Run evidence verification
 
-The existing batch flags `--fail-on-errors --require-ai` reject configuration,
-collection and advisory failures. A healthy no-work batch can still exit zero;
+The production image passes `--fail-on-errors --require-ai` by default to reject
+configuration, collection and advisory failures. A healthy no-work batch can still exit zero;
 it does not demonstrate acceptance of fresh findings or an actual model call.
 
 From the checkout with the development requirements installed, verify the
@@ -39,8 +40,10 @@ python -m poc.discovery.deploy.verify_acceptance \
 
 This command is read-only and makes no source or model requests. It requires a
 nonempty, recent, healthy run; consistent current status counts and observation
-dates; and completed, cited advisories for every evidence-bearing current
-finding in AI mode. History and retired records do not satisfy the threshold.
+dates; `assessment_status: ai_complete` and `ai_required: true`; and completed,
+cited, structured advisories for every evidence-bearing current finding in AI mode.
+Legacy notes without an action and reasoned priority do not satisfy this contract.
+History and retired records do not satisfy the threshold.
 The default mode is `ai`; `--mode metadata` explicitly checks metadata-only
 evidence. Select the minimum finding count with the team; eight matches the
 example collection allowance and is not a demand to find eight support gaps.
@@ -54,8 +57,9 @@ can test the verifier but cannot prove live AI quality.
 
 For a reviewed eight-finding AI pilot, use a copied acceptance state or fresh
 approved scopes, enable the approved provider, and set `ai_review.max_calls`
-to at least eight with an approved time/output allowance. The current example
-allows only four calls and has AI disabled. A different approved service, such
+to at least eight with an approved time/output allowance. The example permits
+eight calls but has AI disabled for the metadata demo; review the total AI time
+allowance against measured provider latency as well. A different approved service, such
 as an internal model gateway, needs its own validated adapter; generic IDE
 credentials or unrelated onboarding permission are not sufficient evidence.
 
@@ -87,6 +91,6 @@ On the designated private host, record the following against the exact release:
    owner accepts these results.
 
 Do not alter old reports to simulate fresh work or enable a public endpoint to
-complete this checklist. Browser interaction is a separate demo acceptance
-item: local automation is currently blocked by `ERR_BLOCKED_BY_CLIENT`, while
-HTTP and renderer checks pass. This does not test or approve the private host.
+complete this checklist. Browser interaction is a separate demo acceptance item.
+Local desktop/mobile checks do not test or approve the private host or the
+approved model service.

@@ -155,10 +155,15 @@ def test_ai_quote_validation_rejects_invented_url_or_quote():
             {"url": "https://example.com", "excerpt": "linux/amd64", "kind": "platform"}
         ],
     }
-    valid = lambda value: {
-        "note": "Review the exact tag.",
-        "citations": [{"url": "https://example.com", "quote": "linux/amd64"}],
-    }
+    def valid(value):
+        return {
+            "note": "Review the exact tag.",
+            "next_action": "Check whether a separate Linux Arm64 tag is documented.",
+            "priority": "normal",
+            "priority_reason": "The inspected tag lists Linux amd64 only.",
+            "questions": ["Does a separate Linux Arm64 tag exist?"],
+            "citations": [{"url": "https://example.com", "quote": "linux/amd64"}],
+        }
     assert review_evidence(result, valid)["status"] == "completed"
     for quote, url in [
         ("linux/arm64", "https://example.com"),
@@ -172,6 +177,76 @@ def test_ai_quote_validation_rejects_invented_url_or_quote():
                     "citations": [{"url": url, "quote": quote}],
                 },
             )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("note", " "),
+        ("next_action", None),
+        ("next_action", "x" * 1001),
+        ("priority", "urgent"),
+        ("priority_reason", ""),
+        ("questions", "Question"),
+        ("questions", [""]),
+        ("questions", ["x" * 501]),
+        ("questions", ["Question"] * 6),
+        ("citations", [{"url": "https://example.com", "quote": 7}]),
+        ("citations", [{"url": "https://example.com", "quote": " "}]),
+        ("citations", [{"url": "https://example.com", "quote": "linux/arm64"}] * 9),
+    ],
+)
+def test_ai_assessment_rejects_missing_actions_and_malformed_fields(field, value):
+    result = {
+        "scope": "Selected image tag",
+        "status": "supported",
+        "reason": "The platform inventory advertises Linux Arm64.",
+        "assessment_coverage": {"review_reasons": ["Check optional plugin artifacts."]},
+        "evidence": [
+            {"url": "https://example.com", "excerpt": "linux/arm64", "kind": "platform"}
+        ],
+    }
+    review = {
+        "note": "The selected tag advertises Linux Arm64.",
+        "next_action": "Inspect the separately distributed plugin artifacts.",
+        "priority": "normal",
+        "priority_reason": "Plugin distribution is unresolved in this evidence.",
+        "questions": ["Are the plugins available for Arm64?"],
+        "citations": [{"url": "https://example.com", "quote": "linux/arm64"}],
+        field: value,
+    }
+    with pytest.raises(ValueError, match="AI review"):
+        review_evidence(result, lambda _: review)
+
+
+def test_ai_receives_public_classification_and_coverage_without_private_context():
+    result = {
+        "scope": "Selected image tag",
+        "status": "unknown",
+        "reason": "Platform metadata is ambiguous.",
+        "assessment_coverage": {"review_reasons": ["Confirm the operating system."]},
+        "selection_reason": "INTERNAL_OWNER_NOT_FOR_MODEL",
+        "catalog_tracked": True,
+        "evidence": [{"url": "https://example.com", "kind": "platform", "excerpt": "arm64"}],
+    }
+    received = []
+
+    def reviewer(value):
+        received.append(value)
+        return {
+            "note": "The operating system is not established.",
+            "next_action": "Check authoritative operating-system metadata for this tag.",
+            "priority": "normal",
+            "priority_reason": "Arm64 alone does not establish Linux support.",
+            "questions": ["Is this tag a Linux image?"],
+            "citations": [{"url": "https://example.com", "quote": "arm64"}],
+        }
+
+    assert review_evidence(result, reviewer)["status"] == "completed"
+    assert received[0]["classification_reason"] == result["reason"]
+    assert received[0]["coverage_questions"] == ["Confirm the operating system."]
+    assert "selection_reason" not in received[0]
+    assert "catalog_tracked" not in received[0]
 
 
 def test_collector_uses_latest_release_and_pages_assets_instead_of_embedded_assets():

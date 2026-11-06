@@ -225,6 +225,87 @@ def test_repeat_run_reports_no_new_findings_without_losing_history(report_summar
     assert all(row["record_type"] == "historical_not_rechecked" for row in rows)
 
 
+def test_decision_brief_names_current_actions_and_preserves_full_review(report_summary):
+    report_summary["assessment_status"] = "metadata_only"
+    report_summary["findings"][0].update(
+        investigated_before=True, previous_status="unknown", evidence_changed=True,
+    )
+    report_summary["counts"].update(newly_investigated=2, refreshed=1)
+    write_reports(report_summary)
+    doc = Document(report_summary["report_paths"]["docx"])
+    text = "\n".join(p.text for p in doc.paragraphs)
+    brief = text.split("Decision brief", 1)[1].split("Run details", 1)[0]
+    assert "Metadata demo complete; required AI review pending" in brief
+    assert "example/gap" in brief and "example/unclear" in brief
+    assert "example/old-gap" not in brief
+    assert "Owner: to assign" in brief
+    assert "1 with changed evidence or status" in brief
+    assert "1 retained without rechecking" in brief
+    assert "Saved findings: not rechecked this run" in text
+
+
+@pytest.mark.parametrize("status, expected", [
+    ("ai_complete", "AI-assisted report complete"),
+    ("incomplete", "Assessment incomplete"),
+    ("no_work", "No new scopes assessed"),
+    (None, "AI completion was not recorded"),
+])
+def test_word_never_confuses_metadata_or_history_with_completed_ai(report_summary, status, expected):
+    report_summary["assessment_status"] = status
+    write_reports(report_summary)
+    assert expected in report_text(report_summary["report_paths"]["docx"])
+
+
+def test_ai_action_priority_questions_and_selected_quotes_are_reviewable(report_summary):
+    finding = report_summary["findings"][0]
+    finding["ai_review"] = {
+        "status": "completed", "note": "This is a distribution question.",
+        "next_action": "Confirm the intended Linux build target.",
+        "priority": "normal", "priority_reason": "The checked artifact is ambiguous.",
+        "questions": ["Does the source archive build on Linux Arm64?"],
+        "citations": [{"url": finding["evidence"][0]["url"], "quote": "Linux distribution inventory checked."}],
+    }
+    write_reports(report_summary)
+    text = report_text(report_summary["report_paths"]["docx"])
+    assert "AI proposed next action: Confirm the intended Linux build target." in text
+    assert "AI proposed review priority: normal. The checked artifact is ambiguous." in text
+    assert "Open question: Does the source archive build on Linux Arm64?" in text
+    assert "Linux distribution inventory checked." in text
+    assert finding["status"] == "gap"
+
+
+def test_brief_bounds_long_advice_without_dropping_complete_details(report_summary):
+    full_action = "Investigate the exact release inventory. " * 30
+    report_summary["findings"][0]["ai_review"] = {
+        "status": "completed", "note": "Review scope.",
+        "next_action": full_action, "citations": [],
+    }
+    write_reports(report_summary)
+    text = report_text(report_summary["report_paths"]["docx"])
+    brief = text.split("Decision brief", 1)[1].split("Run details", 1)[0]
+    assert full_action not in brief
+    assert "… Owner: to assign" in brief
+    assert full_action in text
+    assert "Complete scopes, explanations and actions follow" in brief
+
+
+def test_brief_distinguishes_two_tags_of_the_same_project(report_summary):
+    for finding, tag in zip(
+        (report_summary["findings"][0], report_summary["findings"][2]),
+        ("stable", "minimal"),
+    ):
+        finding.update(name="example/tool", source="dockerhub")
+        finding["metadata"]["tag"] = tag
+        finding["scope"] = f"example/tool:{tag}; exact image tag only"
+    write_reports(report_summary)
+    text = report_text(report_summary["report_paths"]["docx"])
+    brief = text.split("Decision brief", 1)[1].split("Run details", 1)[0]
+    assert "example/tool (stable)" in brief
+    assert "example/tool (minimal)" in brief
+    assert "example/tool:stable; exact image tag only" in text
+    assert "example/tool:minimal; exact image tag only" in text
+
+
 @pytest.mark.parametrize(
     "source",
     ["=HYPERLINK(1)", "+SUM(1)", "-1+2", "@SUM(1)", "  =1", "\t=1", "\r=1", "\n=1"],

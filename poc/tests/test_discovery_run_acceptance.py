@@ -19,6 +19,8 @@ def acceptance_report():
         "run_id": "controlled-acceptance-fixture",
         "status": "completed",
         "outcome": "completed",
+        "assessment_status": "ai_complete",
+        "ai_required": True,
         "current_errors": [],
         "generated_at": at,
         "counts": {"investigated": 1, "supported": 1, "gap": 0, "unknown": 0},
@@ -39,6 +41,10 @@ def acceptance_report():
                     "status": "completed",
                     "note": "Advertised platform only; runtime remains untested.",
                     "citations": [{"url": url, "quote": "linux/arm64"}],
+                    "next_action": "Retain this tag evidence and refresh when its digest changes.",
+                    "priority": "low",
+                    "priority_reason": "The checked image advertises Linux Arm64.",
+                    "questions": [],
                 },
             }
         ],
@@ -73,6 +79,7 @@ def test_history_and_retirement_do_not_substitute_for_fresh_work(acceptance_repo
 
 
 def test_metadata_only_requires_explicit_mode_and_does_not_prove_ai(acceptance_report):
+    acceptance_report.update(assessment_status="metadata_only", ai_required=False)
     acceptance_report["findings"][0]["ai_review"] = {"status": "not_configured"}
     acceptance_report["ai_review"] = {
         "status": "not_configured",
@@ -99,6 +106,10 @@ def test_old_or_future_observation_cannot_pass_acceptance(acceptance_report, del
         ("current_errors", None),
         ("run_id", None),
         ("counts", {}),
+        ("assessment_status", "metadata_only"),
+        ("assessment_status", "no_work"),
+        ("assessment_status", None),
+        ("ai_required", False),
         ("findings", None),
         ("generated_at", "2026-09-25T00:00:00"),
     ],
@@ -124,6 +135,8 @@ def test_unhealthy_or_malformed_run_rejected(acceptance_report, field, value):
         "bool_count",
         "too_few",
         "phantom_ai",
+        "legacy_review",
+        "invalid_priority",
     ],
 )
 def test_false_acceptance_evidence_rejected(acceptance_report, mutation):
@@ -159,6 +172,10 @@ def test_false_acceptance_evidence_rejected(acceptance_report, mutation):
         finding["evidence"] = []
         report["counts"].update(unknown=1, supported=0)
         report["ai_review"]["eligible"] = 0
+    elif mutation == "legacy_review":
+        del finding["ai_review"]["next_action"]
+    elif mutation == "invalid_priority":
+        finding["ai_review"]["priority"] = "critical"
     assert assess(report, now=NOW)
 
 

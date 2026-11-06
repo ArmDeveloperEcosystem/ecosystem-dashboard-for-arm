@@ -1,6 +1,61 @@
 # PoC2 validation
 
-## Current validation — 7 October 2026
+## Current validation — 6 November 2026
+
+The completed AI-assisted PoC now requires AI assessments in the production
+command. The explicitly permitted metadata demo remains available while approved
+model access is pending. This is ready for technical review, not a production
+release approval.
+
+- Mandatory completion is separate from execution health: reports distinguish
+  metadata-only, completed AI assessment, incomplete assessment and no-work.
+  Production fails before collection when AI is unavailable. Saved evidence
+  survives model failures; partial or legacy notes cannot establish acceptance.
+- Structured assessments include an evidence-backed note, proposed next action,
+  review priority with rationale and unresolved questions. Quotes and URLs must
+  match saved evidence. These checks prove traceability, not semantic accuracy.
+- Word opens with a concise decision brief showing exact checked scopes and
+  changes from saved history. Full evidence, inventories and history remain.
+  Browser assessments now show their selected quotations beside the note.
+- An inactive private-workflow template runs the reviewed host-owned batch
+  manually without checking out public PR code or publishing internal reports.
+  No private worker, schedule or live-model deployment has been activated.
+- Fresh public-source run `20261106T204900Z-f52a1b50`: eight scopes, seven supported,
+  zero confirmed gaps, one unclear; 27 requests and no collection errors. The
+  report explicitly says `metadata_only`, with zero of eight AI reviews complete.
+  Redis repository artifacts remain distinct from its supported container image.
+- An isolated saved-state repeat made zero source requests, retained eight dated
+  findings and kept eight observations. It was labelled `no_work`; original
+  saved report and database bytes were unchanged during the verified repeat.
+- Full local validation: **381 Python tests and 12 frontend tests passed**.
+  Repository regression checks passed **113 tests plus 78 subtests**. Three
+  builders cross-reviewed the AI, report and delivery boundaries; the brief's
+  release/tag labels and follow-up wording were corrected during review.
+  One later local cleanup-mock invocation failed without diagnostic stderr;
+  30 exact-fixture replays and the final full suite passed. Assertions now retain
+  stderr/calls if it recurs. The cause is unconfirmed; production cleanup code
+  is unchanged, and native CI supplies an independent platform check.
+- Real Chrome at desktop and mobile widths passed metadata and explicitly
+  synthetic AI presentation, filtering, safe citations, overflow and all report
+  downloads. All 14 metadata-report pages and 17 synthetic-AI-report pages were
+  rendered and visually checked. Synthetic AI output does not prove live quality.
+- A fresh dependency check found a certifi CA-trust advisory. The pin was updated
+  from `2026.7.22` to `2026.10.19`, with the official wheel hash verified. Updated
+  runtime pins had no advisories reported by PyPI at the check time; this is not
+  an exact-image scan. See [current security evidence](deploy/SECURITY.md).
+
+Native image build/smoke is checked by the public offline CI. Local execution is
+blocked by Docker's company sign-in policy and the existing Colima disk lock;
+neither was bypassed. Fresh Trivy database extraction also exceeded available
+local disk capacity. The dated October image scan below is historical and is not
+an assessment of this revision.
+
+Production acceptance still needs approved dedicated model access and a useful
+live pilot reviewed by the ecosystem owner, exact-image security disposition,
+and acceptance of the private host, backup/restore, report access and operations.
+No supported/unknown status is a runtime certification or whole-project verdict.
+
+## Historical validation — 7 October 2026
 
 The existing internal workflow was revalidated against current public metadata.
 It remains ready for technical review, with live AI, interactive demo, staging

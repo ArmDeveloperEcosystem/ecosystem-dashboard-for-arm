@@ -100,11 +100,33 @@ test('invalid Unicode is visibly escaped while valid supplementary Unicode remai
 });
 
 
-test('run activity distinguishes stalled and degraded results from healthy completion',()=>{
+test('run activity distinguishes metadata, AI completion, incomplete and no-work reports',()=>{
   const {api}=setup();
   assert.match(api.activityText({scheduling:{status:'no_progress'}}),/due investigations could not start/);
   assert.match(api.activityText({outcome:'degraded',scheduling:{status:'progress'}}),/finished with issues/);
-  assert.equal(api.activityText({outcome:'completed',scheduling:{status:'no_work'}}),'Run complete. Findings await human review.');
+  assert.match(api.activityText({assessment_status:'metadata_only'}),/Metadata demo complete; required AI review pending/);
+  assert.match(api.activityText({assessment_status:'ai_complete'}),/AI-assisted report complete/);
+  assert.match(api.activityText({assessment_status:'incomplete'}),/Assessment incomplete/);
+  assert.match(api.activityText({assessment_status:'no_work'}),/No new scopes assessed/);
+  assert.match(api.activityText({outcome:'completed',scheduling:{status:'no_work'}}),/AI completion was not recorded/);
+});
+
+test('AI interpretation displays chosen quotes, action and priority without creating unsafe links',()=>{
+  const {api,elements} = setup();
+  const quote='<img src=x onerror=alert(1)>';
+  const item=finding({ai_review:{status:'completed',note:'Check the release scope.',next_action:'Confirm the Linux build instructions.',priority:'normal',priority_reason:'Distribution remains unclear.',questions:['Is the source archive intended for Linux Arm64?'],citations:[{url:'https://github.com/example/tool/releases/1',quote},{url:'javascript:alert(1)',quote:'Untrusted link'}]}});
+  api.renderFindings({findings:[item]});
+  const nodes=flatten(elements.get('findings'));
+  assert.ok(nodes.some(n=>n.textContent===quote));
+  assert.ok(nodes.some(n=>n.textContent==='Proposed next action: Confirm the Linux build instructions.'));
+  assert.ok(nodes.some(n=>n.textContent==='Proposed review priority: normal. Distribution remains unclear.'));
+  assert.ok(nodes.some(n=>n.textContent==='Open question: Is the source archive intended for Linux Arm64?'));
+  const links=nodes.filter(n=>n.tagName==='a');
+  assert.equal(links.length,1);
+  assert.equal(links[0].href,'https://github.com/example/tool/releases/1');
+  assert.equal(links[0].rel,'noopener noreferrer');
+  assert.equal(nodes.some(n=>n.tagName==='img'),false);
+  assert.equal(item.status,'supported');
 });
 
 

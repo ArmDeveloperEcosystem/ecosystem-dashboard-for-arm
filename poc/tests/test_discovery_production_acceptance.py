@@ -392,6 +392,10 @@ def test_source_collection_finishes_before_ai_and_saved_reviews_match_report(tmp
         evidence = value["evidence"][0]
         return {
             "note": "Review the selected tag.",
+            "next_action": "Confirm whether this tag requires runtime testing.",
+            "priority": "low",
+            "priority_reason": "The selected tag already advertises Linux Arm64.",
+            "questions": [],
             "citations": [{"url": evidence["url"], "quote": evidence["excerpt"]}],
         }
 
@@ -407,6 +411,7 @@ def test_source_collection_finishes_before_ai_and_saved_reviews_match_report(tmp
         "Model latency must not displace the second candidate's source investigation"
     )
     assert summary["ai_review"]["completed"] == 2
+    assert summary["assessment_status"] == "ai_complete"
     with sqlite3.connect(output / "discovery.sqlite3") as db:
         stored = [
             json.loads(row[0])
@@ -519,6 +524,10 @@ def test_custom_configuration_scope_cannot_reach_public_evidence_reviewer(tmp_pa
         evidence = value["evidence"][0]
         return {
             "note": "Evidence is incomplete.",
+            "next_action": "Inspect the release asset inventory once metadata is available.",
+            "priority": "normal",
+            "priority_reason": "The release metadata does not establish availability.",
+            "questions": ["Which Linux Arm64 artifacts are published for this release?"],
             "citations": [{"url": evidence["url"], "quote": evidence["excerpt"]}],
         }
 

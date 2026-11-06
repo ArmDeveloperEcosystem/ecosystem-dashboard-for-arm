@@ -27,6 +27,112 @@ def clean(value):
     return display_text(value)
 
 
+def assessment_label(summary):
+    return {
+        "metadata_only": "Metadata demo complete; required AI review pending.",
+        "ai_complete": "AI-assisted report complete; findings await human review.",
+        "incomplete": "Assessment incomplete; saved evidence remains available for follow-up.",
+        "no_work": "No new scopes assessed; earlier findings retain their original dates.",
+    }.get(
+        summary.get("assessment_status"),
+        "Saved report; AI completion was not recorded under the current assessment contract.",
+    )
+
+
+def add_decision_brief(doc, summary):
+    """Lead with decisions; the following sections preserve every scoped record."""
+
+    def excerpt(value, limit=240):
+        text = clean(value)
+        return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
+
+    c = summary["counts"]
+    doc.add_heading("Decision brief", level=1)
+    doc.add_paragraph(assessment_label(summary), "Metadata")
+    doc.add_paragraph(
+        f"{c['investigated']} scopes checked: {c['gap']} identified support gaps, "
+        f"{c['unknown']} unclear and {c['supported']} with advertised Linux Arm64 support. "
+        "Assign follow-up on the scoped questions below; an unclear finding is not an unsupported project."
+    )
+    findings = summary["findings"]
+    attention = [
+        f
+        for f in findings
+        if f["status"] != "supported"
+        or f.get("assessment_coverage", {}).get("review_required")
+    ]
+    attention.sort(
+        key=lambda f: ({"gap": 0, "unknown": 1, "supported": 2}[f["status"]], f["name"])
+    )
+    for f in attention[:3]:
+        review = f.get("ai_review", {})
+        ai = review if review.get("status") == "completed" else {}
+        coverage = f.get("assessment_coverage", {})
+        why = (
+            " ".join(coverage.get("review_reasons", []))
+            if f["status"] == "supported"
+            else f["reason"]
+        )
+        metadata = f.get("metadata", {})
+        tag = metadata.get("release_tag") or metadata.get("tag")
+        identity = f"{f['name']} ({tag})" if tag else f["scope"]
+        p = doc.add_paragraph()
+        p.add_run(excerpt(identity, 140) + " — ").bold = True
+        p.add_run(STATUS[f["status"]] + ". " + excerpt(why))
+        p.paragraph_format.keep_with_next = True
+        p = doc.add_paragraph(style="Metadata")
+        p.add_run("Next action: ").bold = True
+        action = ai.get("next_action") or (
+            "Review the remaining inventory and determine whether its ambiguous assets matter "
+            "for Linux Arm64 distribution. Keep the supported artifact verdict unchanged."
+            if f["status"] == "supported"
+            else f["recommended_action"]
+        )
+        p.add_run(excerpt(action) + " Owner: to assign.")
+    if not attention:
+        doc.add_paragraph(
+            (
+                "No scopes were checked this run. "
+                if not findings
+                else "No current gap or coverage question was identified in this bounded sample. "
+            )
+            + "Review saved history and deferred work before choosing the next research scope."
+        )
+    elif len(attention) > 3:
+        doc.add_paragraph(
+            f"{len(attention) - 3} further findings need follow-up.", "Metadata",
+        )
+    if attention:
+        doc.add_paragraph(
+            "This brief shows up to three questions. Complete scopes, explanations and actions follow in the detailed findings.",
+            "Metadata",
+        )
+    changed = sum(
+        bool(f.get("investigated_before"))
+        and (
+            f.get("evidence_changed") is True
+            or (
+                f.get("previous_status") is not None
+                and f["previous_status"] != f["status"]
+            )
+        )
+        for f in findings
+    )
+    doc.add_paragraph(
+        f"Since saved history: {c['newly_investigated']} first checks; {c['refreshed']} refreshed "
+        f"({changed} with changed evidence or status); {len(summary.get('retained_findings', []))} "
+        f"retained without rechecking; {summary.get('scheduling', {}).get('deferred_due', 0)} due scopes deferred.",
+        "Metadata",
+    )
+    ai = summary.get("ai_review", {})
+    doc.add_paragraph(
+        f"AI reviews completed: {ai.get('completed', 0)} of {ai.get('eligible', 0)} eligible scopes. "
+        "AI advice requires human review. These are distribution metadata findings, not runtime certification.",
+        "Metadata",
+    )
+    doc.add_page_break()
+
+
 def hyperlink(paragraph, label, url):
     """Write evidence as a link only when its destination is unambiguous HTTPS."""
     url = str(url)
@@ -496,6 +602,15 @@ def add_ai_review(doc, f):
         doc.add_paragraph(
             "AI advisory note (requires human review): " + clean(review["note"])
         )
+        if review.get("next_action"):
+            doc.add_paragraph("AI proposed next action: " + clean(review["next_action"]))
+        if review.get("priority") and review.get("priority_reason"):
+            doc.add_paragraph(
+                "AI proposed review priority: " + clean(review["priority"]) + ". "
+                + clean(review["priority_reason"]), "Metadata",
+            )
+        for question in review.get("questions", []):
+            doc.add_paragraph("Open question: " + clean(question), "Metadata")
         for citation in review.get("citations", []):
             p = doc.add_paragraph(style="Evidence")
             hyperlink(p, "Evidence-matched quotation", citation["url"])
@@ -667,7 +782,8 @@ def write_reports(summary):
         ),
         "Metadata",
     )
-    doc.add_heading("Decision summary", level=1)
+    add_decision_brief(doc, summary)
+    doc.add_heading("Run details", level=1)
     doc.add_paragraph(
         "The default sample examines GitHub-designated latest full releases and current configured container tags. "
         "Versions and artifact identities document the evidence; a gap in one artifact does not establish "

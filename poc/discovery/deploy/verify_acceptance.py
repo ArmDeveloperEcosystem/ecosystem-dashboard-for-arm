@@ -109,6 +109,11 @@ def assess(summary, *, mode="ai", minimum_findings=1, max_age_hours=24, now=None
         if type(counts.get(key)) is not int or counts[key] != value:
             errors.append("Current finding count mismatch: " + key)
     if mode == "ai":
+        if (
+            summary.get("assessment_status") != "ai_complete"
+            or summary.get("ai_required") is not True
+        ):
+            errors.append("Run did not complete the mandatory AI assessment contract")
         ai = summary.get("ai_review")
         ai = ai if isinstance(ai, dict) else {}
         if ai.get("status") != "configured" or ai.get("requested") is not True:

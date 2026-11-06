@@ -1,4 +1,4 @@
-"""Offline acceptance of the production image's default batch command.
+"""Offline acceptance of mandatory AI and explicit metadata-demo image commands.
 
 Uses isolated disposable Docker volumes and synthetic empty input. No real source
 or model requests are possible, and no generated report contents are printed.
@@ -42,7 +42,8 @@ assert latest['counts']['requests']==0
 assert latest['catalog_comparison']['identity_count']==0
 assert latest['ai_review']['completed']==0
 print(json.dumps({'uid':os.getuid(),'architecture':platform.machine(),
- 'persistent_runs':runs,'private_output_files':len(files),'default_command':True,
+ 'persistent_runs':runs,'private_output_files':len(files),'metadata_demo_override':True,
+ 'default_requires_ai':True,
  'readonly_root':True,'tmpfs_writable':True,'capabilities_dropped':True,
  'no_new_privileges':True,'network':'none','source_requests':0,'model_calls':0,
  'packaged_web_server':False,'packaged_test_dependencies':False,
@@ -60,14 +61,16 @@ def main():
     volume = "arm64-opportunity-smoke-" + suffix
     names = []
 
-    def run(command):
+    def run(command, expected_code=0, expected_error=None):
         result = subprocess.run(
             docker + command, capture_output=True, text=True, timeout=90
         )
-        if result.returncode:
+        if result.returncode != expected_code:
             raise RuntimeError(
                 f"Offline image check failed ({result.returncode}): {result.stderr}"
             )
+        if expected_error and expected_error not in result.stderr:
+            raise RuntimeError("Offline image check failed for an unexpected reason")
         return result.stdout
 
     try:
@@ -95,11 +98,22 @@ def main():
                 "--mount", f"type=bind,source={config},target=/config/config.yaml,readonly",
                 "--mount", f"type=bind,source={catalog},target=/app/content,readonly",
             ]
+            name = volume + "-require-ai"
+            names.append(name)
+            # The production default must fail before creating state when the
+            # reviewed model configuration is absent, even with empty input.
+            run(base + ["--name", name, args.image], expected_code=1,
+                expected_error="AI review is required but disabled")
+            name = volume + "-preflight-state"
+            names.append(name)
+            run(base + ["--name", name, "--entrypoint", "python", args.image,
+                        "-c", "from pathlib import Path; assert not list(Path('/state').iterdir())"])
+            metadata_args = ["--config", "/config/config.yaml", "--output-dir", "/state",
+                             "--catalog", "/app/content/linux", "--fail-on-errors"]
             for index in range(2):
                 name = f"{volume}-run-{index}"
                 names.append(name)
-                # No CLI override: exercise the packaged operational defaults.
-                result = json.loads(run(base + ["--name", name, args.image]))
+                result = json.loads(run(base + ["--name", name, args.image] + metadata_args))
                 assert result["counts"]["investigated"] == 0
                 assert result["counts"]["requests"] == 0
             name = volume + "-inspect"

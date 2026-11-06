@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import sqlite3
 
 import yaml
 
@@ -59,6 +60,8 @@ def test_memory_refresh_and_catalog_are_orthogonal(tmp_path):
     assert f["status"] == "gap" and f["catalog_tracked"] is True
     assert f["investigated_before"] is False
     assert first["ai_review"]["status"] == "not_configured"
+    assert first["assessment_status"] == "metadata_only"
+    assert first["ai_required"] is False
     assert all(Path(p).exists() for p in first["report_paths"].values())
     second_http = FakeHTTP()
     second = run_pipeline(
@@ -70,6 +73,7 @@ def test_memory_refresh_and_catalog_are_orthogonal(tmp_path):
     )
     assert second_http.requests_used == 0
     assert second["counts"]["investigated"] == 0
+    assert second["assessment_status"] == "no_work"
     assert second["counts"]["saved_observations"] == 1
     assert second["saved_history"][0]["status"] == "gap"
     assert second["retained_findings"][0]["historical"] is True
@@ -205,6 +209,10 @@ def test_ai_note_cannot_override_classification(tmp_path):
         ev = value["evidence"][0]
         return {
             "note": "Review this distribution.",
+            "next_action": "Review the selected tag with its maintainer.",
+            "priority": "normal",
+            "priority_reason": "The inspected tag advertises another Linux architecture.",
+            "questions": ["Is a Linux Arm64 image published under a separate tag?"],
             "status": "supported",
             "citations": [{"url": ev["url"], "quote": "linux/amd64"}],
         }
@@ -214,6 +222,7 @@ def test_ai_note_cannot_override_classification(tmp_path):
     )
     assert result["findings"][0]["status"] == "gap"
     assert result["findings"][0]["ai_review"]["status"] == "completed"
+    assert result["assessment_status"] == "ai_complete"
 
 
 def test_catalog_uses_repository_urls_not_names(tmp_path):
@@ -244,3 +253,70 @@ def test_requested_ai_without_credentials_is_explicit(tmp_path, monkeypatch):
     )
     assert result["ai_review"]["status"] == "not_configured"
     assert any(f["source"] == "ai_review" for f in result["failures"])
+    assert result["assessment_status"] == "incomplete"
+
+
+def test_required_ai_budget_failure_retains_every_observation_and_partial_review(tmp_path):
+    output = tmp_path / "out"
+    calls = []
+
+    def reviewer(value):
+        with sqlite3.connect(output / "discovery.sqlite3") as db:
+            assert db.execute("SELECT COUNT(*) FROM observations").fetchone()[0] == 2
+        calls.append(value)
+        if len(calls) == 2:
+            raise ValueError("Configured AI review budget exhausted")
+        evidence = value["evidence"][0]
+        return {
+            "note": "The exact tag does not advertise a Linux Arm64 image.",
+            "next_action": "Verify whether a separate tag provides Linux Arm64.",
+            "priority": "normal",
+            "priority_reason": "A scoped distribution gap warrants investigation.",
+            "questions": ["Is there a separately published Linux Arm64 tag?"],
+            "citations": [{"url": evidence["url"], "quote": evidence["excerpt"]}],
+        }
+
+    path = config(tmp_path, seeds=[
+        {"source": "dockerhub", "name": "sample/tool", "tag": tag}
+        for tag in ("v1", "v2")
+    ])
+    result = run_pipeline(path, output, http=FakeHTTP(), reviewer=reviewer, require_ai=True)
+    assert result["assessment_status"] == "incomplete"
+    assert result["ai_required"] is True
+    assert result["ai_review"]["eligible"] == 2
+    assert result["ai_review"]["completed"] == 1
+    assert result["ai_review"]["failed"] == 1
+    assert result["counts"]["gap"] == 2
+    with sqlite3.connect(output / "discovery.sqlite3") as db:
+        saved = [json.loads(row[0]) for row in db.execute("SELECT result FROM observations ORDER BY id")]
+    assert saved == result["findings"]
+    assert all(Path(path).is_file() for path in result["report_paths"].values())
+
+
+def test_required_ai_no_evidence_is_not_a_completed_assessment(tmp_path, monkeypatch):
+    from poc.discovery.sources import unknown
+
+    monkeypatch.setattr(
+        "poc.discovery.pipeline.dockerhub_collect",
+        lambda _, candidate, __: unknown(candidate, "No authoritative distribution evidence available."),
+    )
+    calls = []
+    result = run_pipeline(
+        config(tmp_path), tmp_path / "out", http=FakeHTTP(),
+        reviewer=lambda value: calls.append(value), require_ai=True,
+    )
+    assert not calls
+    assert result["counts"]["unknown"] == 1
+    assert result["current_errors"] == []
+    assert result["assessment_status"] == "incomplete"
+    assert result["ai_review"]["eligible"] == 0
+
+
+def test_required_ai_no_work_is_distinct_from_completed_ai(tmp_path):
+    result = run_pipeline(
+        config(tmp_path, seeds=[]), tmp_path / "out", http=FakeHTTP(),
+        reviewer=lambda _: None, require_ai=True,
+    )
+    assert result["assessment_status"] == "no_work"
+    assert result["ai_required"] is True
+    assert result["counts"]["investigated"] == 0

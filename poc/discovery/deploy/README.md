@@ -21,13 +21,12 @@ and approved host/network access before enabling a recurring job. Keep the first
 deployment manual. Obtain stakeholder acceptance of evidence quality on
 representative repositories and image tags.
 
-AI is disabled in the example configuration. Enabling it additionally requires
-an approved provider/model, credential, data policy and live acceptance run.
+AI is mandatory for a completed production assessment. The example configuration
+keeps it disabled for the explicitly permitted metadata demo. Production requires
+an approved provider/model, dedicated credential, data policy and live acceptance run.
 The existing OpenAI adapter is not proof of Azure or Arm-Debug authorization.
-For an AI-required acceptance run, override the image arguments with
-`--config /config/config.yaml --output-dir /state --catalog /app/content/linux
---fail-on-errors --require-ai`. Preflight fails if AI is disabled or approved
-credentials are missing. The run also fails if an eligible fresh finding lacks a
+The image defaults to `--fail-on-errors --require-ai`. Preflight fails if AI is
+disabled or approved credentials are missing. The run also fails if an eligible fresh finding lacks a
 completed, validated advisory review, including a failure or exhausted AI budget.
 Reports from any completed investigation remain available for diagnosis. A run
 with no eligible fresh findings does not prove live AI behavior; use reviewed
@@ -104,7 +103,7 @@ omitted so SQLite and report files share `/state`. If overriding it, keep it und
 the baked catalog through `--catalog`, which takes precedence over configuration.
 To use a different catalog snapshot, mount it read-only and override the image
 arguments with `--config /config/config.yaml --output-dir /state --catalog
-/mounted/catalog --fail-on-errors`. Record the replacement snapshot with the run.
+/mounted/catalog --fail-on-errors --require-ai`. Record the replacement snapshot with the run.
 
 Use a **local persistent filesystem on a single host**, not NFS/SMB/shared storage
 or an ephemeral CI cache. SQLite and the process lock coordinate runs on that
@@ -112,8 +111,8 @@ host. A bind mount replaces the image's `/state` permissions, so host ownership
 must be prepared first. The process uses umask `0077`; state and reports should
 not be world-readable. Check existing files when migrating older state.
 
-`secrets.env` may remain empty for unauthenticated public-source checks. If
-approved, populate only the dedicated `GITHUB_TOKEN`,
+`secrets.env` may remain empty only for the explicit metadata demo using public
+sources. For approved production use, populate only the dedicated `GITHUB_TOKEN`,
 `ARM_DISCOVERY_OPENAI_API_KEY` and `ARM_DISCOVERY_MODEL` values needed by this job.
 Never commit the file or copy it into an image. Docker reads this root-owned file
 on the host and supplies values to the process. Host Docker administrators can
@@ -123,8 +122,9 @@ normal organizational process.
 
 Outbound collection requires HTTPS/DNS to approved source endpoints:
 `api.github.com`, `hub.docker.com`, `auth.docker.io` and
-`registry-1.docker.io`. The optional current AI adapter additionally calls
-`api.openai.com`. Do not add unrestricted inbound access; this job has no listener.
+`registry-1.docker.io`. The current AI adapter additionally calls `api.openai.com`
+when enabled with approved access. Do not add unrestricted inbound access; this
+job has no listener.
 
 ## Manual acceptance run
 
@@ -143,7 +143,7 @@ sudo docker run --rm --pull=never --init \
   sha256:REVIEWED_LOCAL_IMAGE_ID
 ```
 
-The image defaults to `--fail-on-errors`. A failed current collection/AI operation
+The image defaults to `--fail-on-errors --require-ai`. A failed current collection/AI operation
 returns nonzero, retaining any completed report; a legitimate evidence-unknown
 finding alone is not an infrastructure failure. Due work that cannot start because
 the source allowance is exhausted is an explicit scheduler error; ordinary
@@ -157,6 +157,62 @@ same state to verify refresh/memory behavior. No fresh work is a valid result:
 historical findings stay dated and must not be counted as newly investigated.
 Check a failed-source case and alert path before scheduling. Do not delete state
 to make repeat runs appear productive.
+
+## Explicit metadata demonstration
+
+Before approved model access is available, use the same container restrictions
+shown above but append these arguments after the immutable image reference:
+
+```sh
+--config /config/config.yaml --output-dir /state --catalog /app/content/linux --fail-on-errors
+```
+
+This deliberately overrides the image's AI-required default. The report records
+`ai_required: false` and distinguishes metadata findings from a completed AI
+assessment. It is not the production service command. Empty healthy runs are
+labelled `no_work` and do not establish either live research or AI acceptance.
+The offline image smoke exercises the failing production preflight first, then
+two explicitly selected metadata runs on isolated persistent state with networking
+disabled. It cannot validate a real provider.
+
+## Private manual GitHub Actions trigger
+
+[private-manual-workflow.yml.example](private-manual-workflow.yml.example) is an
+installable template, not an active workflow in this public repository. After
+host acceptance, the operations owner copies it to `.github/workflows/` in an
+approved **private** operations repository. Install the service described below,
+keep its timer disabled, and configure the environment `arm64-opportunities`
+to allow only the protected default branch and authorized operators.
+
+Use a dedicated runner labelled `arm64-opportunities-private` on that one host.
+Its runner group must allow only the private operations repository; it must not
+run public dashboard PR jobs. Keep workflow editing restricted to trusted
+maintainers. The runner account does not need Docker-group access, model
+credentials, report read access or checkout of application code. Grant only the
+exact host command through the organization's reviewed sudo policy:
+
+```text
+<runner-account> ALL=(root) NOPASSWD: /usr/bin/systemctl start arm64-opportunity-report.service
+```
+
+The service, unit directory, helper, image reference, configuration and credentials
+remain root-owned and not writable by that runner. This is a privileged host
+integration: install it only with the host owner's approval. The worker uses
+the reviewed immutable image already present locally; `--pull=never` prevents
+implicit updates. Changing source scope or budget requires a reviewed host
+configuration update, not arbitrary workflow inputs.
+
+The operator chooses **Run workflow** on the protected default branch. No checkout,
+user-supplied shell command or model secret enters the workflow. One concurrency
+group serializes requests; systemd and the SQLite lock protect the host state.
+The ten-minute service deadline completes before the twelve-minute workflow
+limit. Service failure fails the workflow. A successful batch may have no due
+work, so the operator checks the report's dated assessment status before sharing.
+Only a generic completion message appears in Actions; reports stay in
+`/var/lib/arm64-opportunities` and are shared through the separately approved
+private location. There is no artifact upload, public publication or automatic
+BU notification. This repository does not provision the private runner,
+repository, report portal or permissions.
 
 ## Optional weekly scheduling
 

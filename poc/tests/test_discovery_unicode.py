@@ -217,6 +217,10 @@ def test_model_advisory_surrogates_persist_without_changing_verdict(tmp_path):
         item = next(e for e in evidence["evidence"] if e["kind"] == "release_artifact")
         return {
             "note": note,
+            "next_action": "Review this exact release artifact.",
+            "priority": "low",
+            "priority_reason": "An Arm64 artifact is advertised; execution is untested.",
+            "questions": [],
             "citations": [{"url": item["url"], "quote": item["excerpt"]}],
         }
 

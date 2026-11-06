@@ -51,8 +51,10 @@ recheck existing observations, set `force_refresh: true` in a copied configurati
    platforms and repository statistics; OCI manifests/config metadata when Hub
    evidence is insufficient. No source code, image layers or binary assets run.
 3. **Classify conservatively.** Deterministic rules decide supported, identified
-   gap or unknown for the selected artifact/tag. Optional AI provides a cited
-   advisory interpretation; it cannot replace the evidence verdict.
+   gap or unknown for the selected artifact/tag. AI assessment is required for
+   the final AI-assisted report; it explains the evidence and proposes a next
+   action without replacing the factual verdict. The local metadata demo remains
+   available while approved model access is pending.
 4. **Remember investigations.** SQLite stores candidates, observations and due
    dates. Dashboard URL matching and earlier local investigations provide
    context; already-cataloged projects are not excluded from evidence collection.
@@ -65,8 +67,8 @@ flowchart LR
     A[Configured scopes and bounded GitHub search] --> B[Public evidence collectors]
     B --> C[Scoped deterministic classification]
     C --> F[Persist evidence with pending AI status]
-    F --> D[Optional approved AI interpretation]
-    D --> E[Validate citations and save advisory note]
+    F --> D[Required approved AI assessment]
+    D --> E[Validate citations and assessment completion]
     E --> F
     G[Read-only Linux catalog] --> F
     F --> H[Internal page and Word / CSV / JSON]
@@ -206,8 +208,9 @@ connector in this PoC; recommended actions explicitly ask people to check it.
 Each run writes `OUTPUT/RUN_ID/opportunities.docx`, `.csv` and `.json`, then
 atomically replaces `OUTPUT/latest.json` after the report set succeeds.
 
-- **Word:** business review, grouped gaps/unknowns/supported scopes, popularity,
-  evidence links, dates, recommended actions, historical findings and coverage.
+- **Word:** an opening decision brief with named questions, next actions and
+  changes since earlier checks, followed by the full scoped findings, popularity,
+  evidence links, dates, historical findings and coverage.
 - **CSV:** spreadsheet filtering. `record_type=checked_this_run` and
   `historical_not_rechecked` prevent old results being counted as new.
   `retired_not_rechecked` rows preserve archived findings outside active opportunities.
@@ -265,10 +268,12 @@ evidence, and downloads only reports beneath the configured output directory.
 Run requests require the same local origin and a session token. No public
 production routes, catalog content, workflow-generated tests or PoC1 files change.
 
-## Optional AI: integration dependency remains explicit
+## Required AI assessment and the metadata demo
 
-The included adapter is implemented and validated with controlled provider
-responses. **The live pilot currently runs with AI disabled.** An approved model
+AI assessment is mandatory for a completed AI-assisted report. **The example
+configuration runs a clearly labelled metadata demo until model access is
+approved.** The adapter is tested with controlled provider responses; those tests
+do not establish live model quality. An approved model
 endpoint, entitlement and data policy must be confirmed before enabling it;
 existing onboarding/Arm-Debug authorization is not assumed to transfer.
 
@@ -280,24 +285,36 @@ Azure/Arm-Debug adapter or a claim those services are authorized. A different
 approved provider can implement `run_pipeline(..., reviewer=callable)` with the
 same review contract.
 
-Only bounded public evidence excerpts, publicly derived scope and status are
-submitted, with `store: false`. Scope is limited to 2,000 characters, excerpts to
+Only bounded public evidence excerpts, publicly derived scope, status,
+classification reasons and coverage questions are submitted, with `store: false`. Scope is limited to 2,000 characters, excerpts to
 8 × 1,600 characters and serialized input to 48 KB; oversize URLs are omitted
 rather than shortened, and truncation is disclosed. AI's separate time budget
 counts active request time, not source collection or idle time between calls.
 Explicit authentication prevents unrelated local `.netrc` credentials from
 being sent to sources or replacing the dedicated model credential; configured
-proxy/CA environment support is retained. The reviewer returns `note` and `citations: [{url, quote}]`.
-Every quote and URL must match collected evidence or the review is rejected.
+proxy/CA environment support is retained. The reviewer returns a short `note`,
+`next_action`, a proposed `priority` with `priority_reason`, unresolved `questions`,
+and `citations: [{url, quote}]`. Priority guides human triage; it is not a
+probability or an Arm support score. Every quote and URL must match collected
+evidence or the review is rejected. The browser and Word show the selected
+quotes alongside the assessment.
 Citation matching establishes traceability, **not semantic correctness** of all
 model prose; human review remains necessary. Source text is treated as untrusted
 data, not instructions. Refusals, malformed output, unavailable credentials,
 invalid quotes and exhausted call/time/output budgets are disclosed. AI cannot
-change deterministic classification or trigger follow-up actions. The example permits
-four AI calls for up to eight investigations; review the call/time allowances when
-enabling it. For complete advisory coverage of eight eligible findings, configure
-at least eight calls and an approved time allowance, then use `--require-ai` to
-reject incomplete coverage rather than silently claiming AI completion.
+change deterministic classification or trigger follow-up actions. The example allows
+up to eight AI calls for eight investigations; time and output budgets still
+apply. The production command requires AI and fails before collection when the
+approved reviewer is unavailable. After collection, incomplete AI coverage is
+reported as incomplete, with the evidence retained.
+
+`assessment_status` distinguishes `metadata_only`, `ai_complete`, `incomplete`
+and `no_work`. These describe assessment coverage, separately from the existing
+execution status and collection health. A successful empty run, retained history,
+or a metadata demo does not prove AI acceptance. A valid unknown finding is a
+research outcome; it is not by itself an operational failure. Only healthy,
+nonempty runs with complete validated assessments qualify as `ai_complete`;
+live semantic quality and product acceptance still require human review.
 
 ## Validation and delivery boundaries
 
@@ -311,15 +328,18 @@ Production and CI use the separate hash-locked dependency files in `deploy/`;
 see the deployment runbook for platform-specific installation and updates.
 
 The dedicated CI workflow runs synthetic tests, builds the production batch
-image on a GitHub-hosted Linux Arm64 runner and exercises its default command
-with persistent private state and no network. It uses no source/model secrets
+image on a GitHub-hosted Linux Arm64 runner. Offline checks verify that its
+production default rejects missing AI configuration and that an explicitly
+selected metadata demo preserves private state across runs. It uses no source/model secrets
 and uploads no live report. The crawler has **no enabled schedule**.
 
 ## Internal batch deployment
 
 The [deployment runbook](deploy/README.md) includes an immutable-base, nonroot
 container, runtime-only hash-locked dependencies, private persistent state,
-manual acceptance commands and disabled systemd service/timer examples. The
+manual acceptance commands, a private-repository workflow template and disabled
+systemd service/timer examples. The workflow template is installed only in the
+approved private operations repository; it is not an active public workflow. The
 production image exposes no web server. The loopback UI is a separate local demo.
 A single private host and durable local filesystem own the queue and history;
 ephemeral CI caches must not be used as the sole investigation memory.
@@ -346,7 +366,7 @@ are excluded from the production image. See [RESULTS.md](RESULTS.md) for what wa
 actually validated and what still requires deployment acceptance.
 
 Tests cover classification, malformed data, pagination, request limits, private
-source rejection, optional AI request/citation handling, queue/refresh behavior,
+source rejection, AI request/citation and completion handling, queue/refresh behavior,
 report failure recovery, CSV safety, Word structure and local HTTP boundaries.
 See [RESULTS.md](RESULTS.md) for actual validation and remaining live checks.
 

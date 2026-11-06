@@ -47,6 +47,8 @@ def main():
                 for key in (
                     "run_id",
                     "outcome",
+                    "assessment_status",
+                    "ai_required",
                     "current_errors",
                     "generated_at",
                     "counts",
@@ -61,10 +63,7 @@ def main():
     )
     if args.fail_on_errors and summary["current_errors"]:
         return 2
-    if (
-        args.require_ai
-        and summary["ai_review"]["completed"] < summary["ai_review"]["eligible"]
-    ):
+    if args.require_ai and summary["assessment_status"] == "incomplete":
         return 2
     return 0
 
