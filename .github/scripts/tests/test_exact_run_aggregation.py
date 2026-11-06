@@ -501,7 +501,19 @@ class ExactRunAggregationTests(unittest.TestCase):
             contract.topology_payload(topology)["mutable_external_actions"], []
         )
         packages = [package for batch in topology for package in batch.packages]
-        self.assertEqual(len(packages), 960)
+        self.assertEqual(len(packages), 963)
+        self.assertEqual(
+            [(22, "test-bubblewrap", ".github/workflows/test-bubblewrap.yml")],
+            [(batch.batch, package.job, package.workflow_path)
+             for batch in topology for package in batch.packages
+             if package.package_slug == "bubblewrap"],
+        )
+        self.assertEqual(
+            [(22, "test-openshell", ".github/workflows/test-openshell.yml")],
+            [(batch.batch, package.job, package.workflow_path)
+             for batch in topology for package in batch.packages
+             if package.package_slug == "openshell"],
+        )
         workflow_root = repository_root / ".github" / "workflows"
         package_files = {
             f".github/workflows/{path.name}"
@@ -512,7 +524,11 @@ class ExactRunAggregationTests(unittest.TestCase):
         payload = contract.topology_payload(topology)
         self.assertEqual(payload["over_capacity_batches"], [])
         self.assertEqual(payload["target_packages_per_batch"], 45)
-        self.assertEqual(len(payload["external_actions"]), 23)
+        self.assertEqual(len(payload["external_actions"]), 24)
+        self.assertIn(
+            "docker://nvcr.io/nvidia/driver@sha256:21b0c912d4c71f1166c68d4c7e26d28981f0e9d1de5ed00c332e00fdbde41b15",
+            payload["external_actions"],
+        )
         self.assertIn(
             "docker://python@sha256:d8fac68ebdc45b8d66d53f1ed6c1532da81109a8f5532a6ca0c951ed31107d70",
             payload["external_actions"],

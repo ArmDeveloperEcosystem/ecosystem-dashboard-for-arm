@@ -21,27 +21,27 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
 
     def test_inventory_matches_the_registered_repository(self) -> None:
         self.assertEqual(
-            {
-                "batches": 22,
-                "packages": 960,
-                "custom_summary_workflows": 924,
-                "emitter_workflows": 36,
-                "shared_smoke_workflows": 13,
-                "package_manager_workflows": 428,
-            },
+            {'batches': 22,
+             'packages': 963,
+             'custom_summary_workflows': 927,
+             'emitter_workflows': 36,
+             'shared_smoke_workflows': 13,
+             'package_manager_workflows': 428},
             self.report["totals"],
         )
         self.assertEqual(
-            {"not_applicable_package_manager": 8, "not_configured": 952},
+            {'baseline_failed': 3,
+             'next_install_failed': 1,
+             'next_regression_failed': 5,
+             'not_applicable_package_manager': 8,
+             'not_configured': 946},
             self.report["fallback_counts"],
         )
         self.assertEqual(
-            {
-                "shared_smoke": 13,
-                "emitter_only": 23,
-                "generic_source": 91,
-                "fully_custom": 833,
-            },
+            {'shared_smoke': 13,
+             'emitter_only': 23,
+             'generic_source': 90,
+             'fully_custom': 837},
             {
                 key: len(value)
                 for key, value in self.report["migration_cohorts"].items()
@@ -52,13 +52,31 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             for cohort in self.report["migration_cohorts"].values()
             for slug in cohort
         ]
-        self.assertEqual(960, len(cohort_members))
-        self.assertEqual(960, len(set(cohort_members)))
+        self.assertEqual(963, len(cohort_members))
+        self.assertEqual(963, len(set(cohort_members)))
 
     def test_structural_observation_inputs_are_present(self) -> None:
         remediation = self.report["remediation"]
         self.assertEqual({}, remediation["missing_test_steps"])
-        self.assertEqual({}, remediation["missing_test_status"])
+        # The advisory scan cannot follow EXIT traps. Executable workflow tests
+        # verify Chef's sourced finalizer, Xen's outputs and Garden Linux's
+        # Test 5 finalizer separately. NVIDIA's trap and BenchmarkSQL's Python
+        # outputs and cuDNN's helper are covered by executable tests, not this literal scan.
+        self.assertEqual(
+            {'test1': ['bubblewrap', 'chef-infra', 'gVisor', 'openshell', 'xen-hypervisor'],
+             'test2': ['bubblewrap', 'chef-infra', 'gVisor', 'openshell', 'xen-hypervisor'],
+             'test3': ['bubblewrap', 'chef-infra', 'gVisor', 'openshell', 'xen-hypervisor'],
+             'test4': ['bubblewrap', 'chef-infra', 'gVisor', 'openshell', 'xen-hypervisor'],
+             'test5': ['bubblewrap',
+                       'chef-infra',
+                       'gVisor',
+                       'garden-linux',
+                       'nvidia-gpu-driver-container',
+                       'openshell',
+                       'xen-hypervisor'],
+             'test6': ['benchmarksql', 'chef-infra', 'cudnn-fe', 'gVisor', 'openshell']},
+            remediation["missing_test_status"],
+        )
         self.assertEqual({}, remediation["invalid_test_names"])
         self.assertEqual([], remediation["missing_summary_step"])
         self.assertEqual([], remediation["unapproved_decision_tokens"])
@@ -74,14 +92,27 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         remediation = self.report["remediation"]
         self.assertEqual(17, len(remediation["emitter_missing_slug"]))
         self.assertEqual(
-            {"test4": 4, "test5": 42, "test6": 6},
+            {'test1': 5, 'test2': 5, 'test3': 5, 'test4': 8, 'test5': 49, 'test6': 12},
             {
                 key: len(value)
                 for key, value in remediation["missing_test_duration"].items()
             },
         )
+        # Duration writes share the same EXIT-trap reachability limitation.
+        for number in range(1, 7):
+            self.assertIn(
+                "chef-infra", remediation["missing_test_duration"][f"test{number}"]
+            )
+        for number in range(1, 6):
+            self.assertIn(
+                "xen-hypervisor", remediation["missing_test_duration"][f"test{number}"]
+            )
+        self.assertNotIn("backstage", remediation["missing_test_duration"]["test4"])
+        self.assertIn("garden-linux", remediation["missing_test_duration"]["test5"])
+        # Chef, Garden Linux and BenchmarkSQL bind through step env, outside this
+        # advisory scan's literal run-script reference analysis.
         self.assertEqual(
-            {"test3": 1, "test4": 1, "test5": 2, "test6": 320},
+            {"test1": 6, "test2": 6, "test3": 7, "test4": 7, "test5": 8, "test6": 325},
             {
                 key: len(value)
                 for key, value in remediation[
@@ -90,7 +121,13 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            {"core_failed": 375, "duration": 3, "skipped": 697},
+            {'overall_status': 4,
+             'badge_status': 4,
+             'core_failed': 379,
+             'passed': 4,
+             'failed': 4,
+             'skipped': 698,
+             'duration': 7},
             {
                 key: len(value)
                 for key, value in remediation["missing_summary_outputs"].items()
@@ -101,15 +138,27 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             len(remediation["package_manager_missing_explicit_skip_counter"]),
         )
         self.assertEqual(76, len(remediation["package_manager_non_skipped_status"]))
-        self.assertEqual(281, len(remediation["literal_pair_contradictions"]))
-        self.assertEqual(23, len(remediation["no_literal_decision"]))
+        self.assertEqual(280, len(remediation["literal_pair_contradictions"]))
+        self.assertNotIn(
+            "repeatmasker",
+            [item["package_slug"] for item in remediation["literal_pair_contradictions"]],
+        )
+        # Xen writes a runtime-selected $DECISION; the advisory scan does not
+        # infer its baseline-failure branches from literal output records.
+        self.assertEqual(28, len(remediation["no_literal_decision"]))
+        self.assertIn("xen-hypervisor", remediation["no_literal_decision"])
         self.assertEqual(
             304, len(remediation["package_manager_summary_omits_test6"])
         )
-        self.assertEqual(8, len(remediation["unsafe_fallback_workflows"]))
+        # The audit flags every default except not_configured, including Chef's
+        # Garden's, Chiaki's and these repairs' failure defaults; runtime tests prove they stay red.
+        self.assertEqual(17, len(remediation["unsafe_fallback_workflows"]))
+        self.assertIn("chef-infra", remediation["unsafe_fallback_workflows"])
+        self.assertIn("chiaki-ng", remediation["unsafe_fallback_workflows"])
+        self.assertIn("garden-linux", remediation["unsafe_fallback_workflows"])
         self.assertEqual(["freecad"], remediation["package_manager_missing_decision"])
         self.assertEqual(
-            {"test1": 25, "test2": 32, "test3": 33, "test4": 26, "test5": 29},
+            {'test1': 25, 'test2': 32, 'test3': 33, 'test4': 26, 'test5': 29},
             {
                 key: len(value)
                 for key, value in remediation["baseline_literal_skip"].items()
@@ -126,38 +175,42 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             13, len(remediation["shared_smoke_baseline_skip_callers"])
         )
         self.assertEqual(
-            91, len(remediation["generic_source_missing_baseline_facts"])
+            90, len(remediation["generic_source_missing_baseline_facts"])
         )
         self.assertEqual(
             406, len(remediation["package_manager_missing_baseline_guard"])
         )
         self.assertEqual(
-            960, len(remediation["missing_package_observation_output"])
+            963, len(remediation["missing_package_observation_output"])
         )
         self.assertEqual(
-            960, len(remediation["missing_package_observation_step"])
+            963, len(remediation["missing_package_observation_step"])
         )
         self.assertEqual([], remediation["invalid_package_observation_contract"])
         self.assertEqual(
             [], remediation["invalid_package_observation_input_bindings"]
         )
         self.assertEqual(
-            960,
+            963,
             len(remediation["missing_workflow_call_observation_output"]),
         )
         self.assertEqual(
             [], remediation["invalid_workflow_call_observation_output"]
         )
         self.assertEqual(
-            370,
+            372,
             len(remediation["non_package_manager_missing_baseline_guard"]),
         )
-        self.assertEqual(320, len(remediation["summary_omits_test6_status"]))
+        self.assertIn(
+            "xen-hypervisor", remediation["non_package_manager_missing_baseline_guard"]
+        )
+        self.assertEqual(326, len(remediation["summary_omits_test6_status"]))
+        self.assertIn("garden-linux", remediation["summary_omits_test6_status"])
         self.assertEqual(
-            952, len(remediation["unsafe_package_version_fallback"])
+            953, len(remediation["unsafe_package_version_fallback"])
         )
         self.assertEqual(
-            960, len(remediation["unsafe_regression_narrative_fallback"])
+            959, len(remediation["unsafe_regression_narrative_fallback"])
         )
         self.assertEqual(
             22, len(remediation["legacy_batch_collector_workflows"])
@@ -167,12 +220,10 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         )
         self.assertEqual([], remediation["invalid_strict_batch_collector"])
         self.assertEqual(
-            [
-                "all_registered_workflows_emit_strict_observations",
-                "strict_collector_shadow_validation",
-                "native_arm64_shadow_validation",
-                "supply_chain_lock_reseal_after_workflow_bytes_stabilize",
-            ],
+            ['all_registered_workflows_emit_strict_observations',
+             'strict_collector_shadow_validation',
+             'native_arm64_shadow_validation',
+             'supply_chain_lock_reseal_after_workflow_bytes_stabilize'],
             self.report["required_activation_gates"],
         )
         self.assertEqual(12, len(self.report["audited_source_digests"]))
@@ -197,9 +248,103 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            "67587c8cb54841dce5213974008c3c6e29d8cdd9ade53f116e2cc06733d4538d",
+            'aac0ca170484cef53fb60f290d7fbff9d555f554d59d13d210571902625883fb',
             digest,
         )
+
+    def test_bubblewrap_advisory_classifications_are_exact(self) -> None:
+        expected = {'missing_package_observation_output',
+         'missing_package_observation_step',
+         'missing_summary_outputs.badge_status',
+         'missing_summary_outputs.core_failed',
+         'missing_summary_outputs.duration',
+         'missing_summary_outputs.failed',
+         'missing_summary_outputs.overall_status',
+         'missing_summary_outputs.passed',
+         'missing_summary_outputs.skipped',
+         'missing_test_duration.test1',
+         'missing_test_duration.test2',
+         'missing_test_duration.test3',
+         'missing_test_duration.test4',
+         'missing_test_duration.test5',
+         'missing_test_status.test1',
+         'missing_test_status.test2',
+         'missing_test_status.test3',
+         'missing_test_status.test4',
+         'missing_test_status.test5',
+         'missing_workflow_call_observation_output',
+         'summary_missing_duration_reference.test1',
+         'summary_missing_duration_reference.test2',
+         'summary_missing_duration_reference.test3',
+         'summary_missing_duration_reference.test4',
+         'summary_missing_duration_reference.test5',
+         'summary_missing_duration_reference.test6',
+         'summary_omits_test6_status',
+         'unsafe_fallback_workflows'}
+        actual = set()
+        for key, entries in self.report["remediation"].items():
+            if isinstance(entries, dict):
+                actual.update(
+                    f"{key}.{field}"
+                    for field, members in entries.items()
+                    if "bubblewrap" in members
+                )
+            elif "bubblewrap" in entries or any(
+                isinstance(entry, dict)
+                and entry.get("package_slug") == "bubblewrap"
+                for entry in entries
+            ):
+                actual.add(key)
+        self.assertEqual(expected, actual)
+
+    def test_openshell_advisory_classifications_are_exact(self) -> None:
+        expected = {'missing_package_observation_output',
+         'missing_package_observation_step',
+         'missing_summary_outputs.badge_status',
+         'missing_summary_outputs.core_failed',
+         'missing_summary_outputs.duration',
+         'missing_summary_outputs.failed',
+         'missing_summary_outputs.overall_status',
+         'missing_summary_outputs.passed',
+         'missing_summary_outputs.skipped',
+         'missing_test_duration.test1',
+         'missing_test_duration.test2',
+         'missing_test_duration.test3',
+         'missing_test_duration.test4',
+         'missing_test_duration.test5',
+         'missing_test_duration.test6',
+         'missing_test_status.test1',
+         'missing_test_status.test2',
+         'missing_test_status.test3',
+         'missing_test_status.test4',
+         'missing_test_status.test5',
+         'missing_test_status.test6',
+         'missing_workflow_call_observation_output',
+         'no_literal_decision',
+         'non_package_manager_missing_baseline_guard',
+         'summary_missing_duration_reference.test1',
+         'summary_missing_duration_reference.test2',
+         'summary_missing_duration_reference.test3',
+         'summary_missing_duration_reference.test4',
+         'summary_missing_duration_reference.test5',
+         'summary_missing_duration_reference.test6',
+         'summary_omits_test6_status',
+         'unsafe_fallback_workflows'}
+        actual = set()
+        for key, entries in self.report["remediation"].items():
+            if isinstance(entries, dict):
+                actual.update(
+                    f"{key}.{field}"
+                    for field, members in entries.items()
+                    if "openshell" in members
+                )
+            elif "openshell" in entries or any(
+                isinstance(entry, dict)
+                and entry.get("package_slug") == "openshell"
+                for entry in entries
+            ):
+                actual.add(key)
+        self.assertEqual(expected, actual)
 
     def test_shell_output_detection_requires_a_real_github_output_write(self) -> None:
         step = {

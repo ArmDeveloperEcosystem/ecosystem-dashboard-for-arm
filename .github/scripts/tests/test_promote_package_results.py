@@ -685,7 +685,7 @@ class PromotePackageResultsTests(unittest.TestCase):
         paths = sorted(
             (REPOSITORY_ROOT / "data/test-results").glob("*.json")
         )
-        self.assertEqual(960, len(paths))
+        self.assertEqual(961, len(paths))
         for path in paths:
             with self.subTest(path=path.name):
                 payload = json.loads(path.read_text(encoding="utf-8"))

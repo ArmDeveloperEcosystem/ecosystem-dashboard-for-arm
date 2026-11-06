@@ -1,0 +1,243 @@
+name: Cleanup ephemeral Arm64 KVM runner
+description: Terminate the owned EC2 runner set and remove its JIT registration.
+
+inputs:
+  aws-role-arn:
+    description: Cleanup-only OIDC role created by ecosystem-kvm-runner.yaml.
+    required: true
+  aws-region:
+    description: AWS region containing the disposable runner.
+    required: true
+  cleanup-function-name:
+    description: Fixed AWS Lambda that validates and terminates owned runner resources.
+    required: true
+  instance-id:
+    description: Instance ID returned by the provision action.
+    required: false
+    default: ""
+  ownership-nonce:
+    description: Random ownership tag returned by the provision action.
+    required: false
+    default: ""
+  source-run-id:
+    description: GitHub run ID that launched the instance.
+    required: true
+  source-run-attempt:
+    description: GitHub run attempt that launched the instance.
+    required: true
+  runner-name:
+    description: JIT registration name returned by the provision action.
+    required: false
+    default: ""
+  runner-app-id:
+    description: App ID for the repository-scoped JIT runner GitHub App.
+    required: true
+  runner-app-private-key:
+    description: Private key for the repository-scoped JIT runner GitHub App.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Assume cleanup role with GitHub OIDC
+      id: aws-credentials
+      continue-on-error: true
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      with:
+        aws-region: ${{ inputs.aws-region }}
+        role-to-assume: ${{ inputs.aws-role-arn }}
+        role-session-name: ecosystem-kvm-cleanup-${{ github.run_id }}
+        role-duration-seconds: 900
+        mask-aws-account-id: true
+        unset-current-credentials: true
+
+    - name: Ask the fixed cleanup broker to terminate the owned runner
+      id: ec2-cleanup
+      if: ${{ always() && steps.aws-credentials.outcome == 'success' }}
+      continue-on-error: true
+      env:
+        AWS_REGION_INPUT: ${{ inputs.aws-region }}
+        CLEANUP_FUNCTION_NAME: ${{ inputs.cleanup-function-name }}
+        INSTANCE_ID_INPUT: ${{ inputs.instance-id }}
+        OWNERSHIP_NONCE: ${{ inputs.ownership-nonce }}
+        SOURCE_RUN_ID: ${{ inputs.source-run-id }}
+        SOURCE_RUN_ATTEMPT: ${{ inputs.source-run-attempt }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        readonly expected_repository="ArmDeveloperEcosystem/ecosystem-dashboard-for-arm"
+        [[ "$GITHUB_REPOSITORY" == "$expected_repository" ]]
+        [[ "$GITHUB_REF" == "refs/heads/main" ]]
+        [[ "$AWS_REGION_INPUT" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]
+        [[ "$CLEANUP_FUNCTION_NAME" =~ ^[A-Za-z0-9_-]{1,64}$ ]]
+        [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+        [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+        [[ -z "$INSTANCE_ID_INPUT" || "$INSTANCE_ID_INPUT" =~ ^i-[0-9a-f]{8,17}$ ]]
+        [[ -z "$OWNERSHIP_NONCE" || "$OWNERSHIP_NONCE" =~ ^[0-9a-f]{32}$ ]]
+
+        temporary_directory="$(mktemp -d "$RUNNER_TEMP/ecosystem-kvm-cleanup.XXXXXXXX")"
+        trap 'rm -rf "$temporary_directory"' EXIT
+        jq -n \
+          --arg repository "$expected_repository" \
+          --arg run "$SOURCE_RUN_ID" \
+          --arg attempt "$SOURCE_RUN_ATTEMPT" \
+          --arg instance "$INSTANCE_ID_INPUT" \
+          --arg nonce "$OWNERSHIP_NONCE" \
+          '{repository: $repository, run_id: $run, run_attempt: $attempt,
+            instance_id: $instance, ownership_nonce: $nonce}' \
+          > "$temporary_directory/request.json"
+        aws lambda invoke \
+          --region "$AWS_REGION_INPUT" \
+          --function-name "$CLEANUP_FUNCTION_NAME" \
+          --cli-binary-format raw-in-base64-out \
+          --payload "file://$temporary_directory/request.json" \
+          "$temporary_directory/response.json" \
+          > "$temporary_directory/metadata.json"
+        jq -e 'has("FunctionError") | not' \
+          "$temporary_directory/metadata.json" >/dev/null
+        jq -e '
+          (.instance_ids | type == "array") and
+          all(.instance_ids[]; type == "string" and test("^i-[0-9a-f]{8,17}$")) and
+          (.ownership_nonces | type == "array") and
+          all(.ownership_nonces[]; type == "string" and test("^[0-9a-f]{32}$")) and
+          (.duplicate_runner | type == "boolean") and
+          (.identity_mismatch | type == "boolean")' \
+          "$temporary_directory/response.json" >/dev/null
+        mapfile -t instance_ids < <(
+          jq -r '.instance_ids[]' "$temporary_directory/response.json"
+        )
+        mapfile -t ownership_nonces < <(
+          jq -r '.ownership_nonces[]' "$temporary_directory/response.json"
+        )
+        (( ${#ownership_nonces[@]} == ${#instance_ids[@]} ))
+        duplicate_runner="$(jq -r '.duplicate_runner' \
+          "$temporary_directory/response.json")"
+        identity_mismatch="$(jq -r '.identity_mismatch' \
+          "$temporary_directory/response.json")"
+        if (( ${#instance_ids[@]} == 0 )); then
+          [[ "$duplicate_runner" == false ]]
+          [[ "$identity_mismatch" == false ]]
+          exit 0
+        fi
+
+        aws ec2 wait instance-terminated \
+          --region "$AWS_REGION_INPUT" \
+          --instance-ids "${instance_ids[@]}"
+
+        for _ in $(seq 1 30); do
+          volume_count=0
+          interface_count=0
+          for nonce in "${ownership_nonces[@]}"; do
+            current_volume_count="$(aws ec2 describe-volumes \
+              --region "$AWS_REGION_INPUT" \
+              --filters \
+                "Name=tag:Project,Values=ecosystem-dashboard-kvm" \
+                "Name=tag:OwnershipNonce,Values=$nonce" \
+              --query 'length(Volumes)' --output text)"
+            current_interface_count="$(aws ec2 describe-network-interfaces \
+              --region "$AWS_REGION_INPUT" \
+              --filters \
+                "Name=tag:Project,Values=ecosystem-dashboard-kvm" \
+                "Name=tag:OwnershipNonce,Values=$nonce" \
+              --query 'length(NetworkInterfaces)' --output text)"
+            [[ "$current_volume_count" =~ ^[0-9]+$ ]]
+            [[ "$current_interface_count" =~ ^[0-9]+$ ]]
+            volume_count=$(( volume_count + current_volume_count ))
+            interface_count=$(( interface_count + current_interface_count ))
+          done
+          if [[ "$volume_count" == "0" && "$interface_count" == "0" ]]; then
+            [[ "$duplicate_runner" == false ]]
+            [[ "$identity_mismatch" == false ]]
+            exit
+          fi
+          sleep 10
+        done
+        echo "Runner storage or networking still exists after brokered termination." >&2
+        exit 1
+
+    - name: Mint token for stale JIT registration cleanup
+      if: ${{ always() }}
+      id: runner-app-token
+      continue-on-error: true
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      with:
+        app-id: ${{ inputs.runner-app-id }}
+        private-key: ${{ inputs.runner-app-private-key }}
+        owner: ${{ github.repository_owner }}
+        repositories: ${{ github.event.repository.name }}
+        permission-administration: write
+
+    - name: Remove stale JIT runner registration
+      id: registration-cleanup
+      if: ${{ always() && steps.runner-app-token.outcome == 'success' }}
+      continue-on-error: true
+      env:
+        RUNNER_APP_TOKEN: ${{ steps.runner-app-token.outputs.token }}
+        RUNNER_NAME_INPUT: ${{ inputs.runner-name }}
+        SOURCE_RUN_ATTEMPT: ${{ inputs.source-run-attempt }}
+        SOURCE_RUN_ID: ${{ inputs.source-run-id }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+        [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+        runner_name="${RUNNER_NAME_INPUT:-ecosystem-kvm-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}}"
+        [[ "$runner_name" == "ecosystem-kvm-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}" ]]
+        temporary_directory="$(mktemp -d "$RUNNER_TEMP/ecosystem-kvm-registration.XXXXXXXX")"
+        trap 'rm -rf "$temporary_directory"' EXIT
+        matches="$temporary_directory/matches"
+        : > "$matches"
+        for page in $(seq 1 20); do
+          status="$(curl --silent --show-error \
+            --output "$temporary_directory/runners.json" \
+            --write-out '%{http_code}' \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $RUNNER_APP_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runners?per_page=100&page=$page")"
+          [[ "$status" == "200" ]]
+          jq -r --arg name "$runner_name" \
+            '.runners[]? | select(.name == $name) | .id' \
+            "$temporary_directory/runners.json" >> "$matches"
+          page_count="$(jq '.runners | length' "$temporary_directory/runners.json")"
+          (( page_count < 100 )) && break
+        done
+        mapfile -t runner_ids < "$matches"
+        (( ${#runner_ids[@]} <= 1 ))
+        runner_id="${runner_ids[0]:-}"
+        if [[ -z "$runner_id" ]]; then
+          exit 0
+        fi
+        [[ "$runner_id" =~ ^[0-9]+$ ]]
+        status="$(curl --silent --show-error \
+          --output /dev/null \
+          --write-out '%{http_code}' \
+          --request DELETE \
+          --header 'Accept: application/vnd.github+json' \
+          --header "Authorization: Bearer $RUNNER_APP_TOKEN" \
+          --header 'X-GitHub-Api-Version: 2026-03-10' \
+          "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runners/$runner_id")"
+        [[ "$status" == "204" ]]
+
+    - name: Require both cleanup phases to succeed
+      if: ${{ always() }}
+      env:
+        AWS_CREDENTIAL_OUTCOME: ${{ steps.aws-credentials.outcome }}
+        EC2_CLEANUP_OUTCOME: ${{ steps.ec2-cleanup.outcome }}
+        REGISTRATION_CLEANUP_OUTCOME: ${{ steps.registration-cleanup.outcome }}
+        TOKEN_OUTCOME: ${{ steps.runner-app-token.outcome }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        failed=false
+        if [[ "$AWS_CREDENTIAL_OUTCOME" != "success" ]] ||
+           [[ "$EC2_CLEANUP_OUTCOME" != "success" ]]; then
+          echo "Brokered EC2 cleanup did not complete successfully." >&2
+          failed=true
+        fi
+        if [[ "$TOKEN_OUTCOME" != "success" ]] ||
+           [[ "$REGISTRATION_CLEANUP_OUTCOME" != "success" ]]; then
+          echo "JIT runner registration cleanup did not complete successfully." >&2
+          failed=true
+        fi
+        [[ "$failed" == false ]]
