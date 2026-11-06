@@ -16,13 +16,15 @@ local validation process. Live integration success is not production acceptance.
 ## Request flow
 
 ```text
-User describes software → same-origin POST /api/search
-  → KB /search: unchanged query + dashboard/Linux scope before top-k
-  → exact join: URL package slug + platform + edition
-  → deduplicate while preserving KB rank
-  → apply category / recorded-test refinement to retrieved candidates
-  → existing dashboard rows, descriptions, details and resource links
+Dashboard browser → Search API → Arm KB (on a cache miss)
+Dashboard browser ← matching current packages ← Search API
 ```
+
+The KB owns semantic retrieval, scope filtering, ranking and URL/edition
+deduplication. The single Python API checks the response contract, matches hits
+to current catalog records, caches candidates and applies category/recorded-test
+filters. The browser displays those selected IDs; local browser filtering remains
+for ordinary browsing and the labelled package-name fallback.
 
 Only current catalog records can become results. KB titles and snippets never
 create package records or override catalog descriptions. The catalog is generated
@@ -58,13 +60,22 @@ A successful response has `results: [...]`. Every hit must contain:
 }
 ```
 
-The canonical legacy `https://www.arm.com/developer-hub/ecosystem-dashboard/`
-package URL is also accepted. The URL must identify one package, use an approved
-HTTPS origin/path and contain no fragment, credentials or ambiguous encoding.
+The adapter uses current `https://developer.arm.com/ecosystem-dashboard/linux`
+package links, with an optional trailing slash. Legacy `arm.com/developer-hub`
+KB links are no longer accepted. The URL must identify one package and contain
+no fragment, credentials or ambiguous encoding.
 The metadata is required even for unknown/stale packages. A wrong platform,
 wrong document type, missing edition or malformed URL invalidates the entire
 response; known slugs with conflicting editions are also rejected. Unknown
-catalog identities are omitted with a notice. Duplicates retain their first rank.
+catalog identities are omitted with a notice. The adapter preserves provider
+order and relies on the KB to return unique canonical package URL/edition pairs;
+it does not repeat provider deduplication.
+
+This contract was checked against deployed retrieval package `0.5.3`, source
+[`0241f0e`](https://github.com/arm/mcp/blob/0241f0e28145684c015579d9f3a78c2b63f2cebc/arm_kb_search/search.py#L984).
+Its [dashboard ingestion](https://github.com/arm/mcp/blob/0241f0e28145684c015579d9f3a78c2b63f2cebc/embedding-generation/ecosystem_dashboard.py#L282)
+generates a fixed URL from platform and package slug. This canonical ingestion
+and provider deduplication must remain part of the scoped integration contract.
 
 The provider must apply scope and edition **before** selecting its top results.
 The advertised deployed source revision confirms this ordering; live samples
@@ -132,7 +143,7 @@ node --test poc/tests/ui_search.test.cjs
 ```
 
 `test_scoped_e2e.py` runs actual loopback HTTP between FastAPI and the fixture KB,
-through the production KB client. It covers unchanged queries, rank/deduplication,
+through the production KB client. It covers unchanged queries, provider rank,
 edition isolation, absent metadata, unknown records, provider errors, deadlines,
 cache separation, default-off behavior and catalog/DOM identity consistency.
 Existing HTTP-boundary and client tests retain body, host/origin, concurrency,

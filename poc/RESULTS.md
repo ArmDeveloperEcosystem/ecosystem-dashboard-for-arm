@@ -1,5 +1,34 @@
 # Scoped KB search — validation status
 
+## KB contract simplification — 5 November 2026
+
+The deployed KB reports API `1.2.0`, retrieval package `0.5.3` and source
+`0241f0e28145684c015579d9f3a78c2b63f2cebc`. Its ingestion generates current
+dashboard package URLs; retrieval deduplicates canonical URL/edition pairs.
+The adapter now relies on that behavior, removing its local deduplication and
+old `arm.com/developer-hub` KB URL compatibility. Exact catalog mapping, scope
+validation, edition isolation and unknown-package notices remain.
+
+Removed the response filter echo and its UI synchronization. Successful search
+renders API-selected IDs; local browser filtering remains for browse and fallback.
+Removed redundant admission state, a metrics wrapper, a service alias and the
+private retrieval helper's second scope check. Development dependencies include
+the runtime pins instead of copying them. No new service or dependency was added.
+
+Replayed 106 saved production hits: ordered matches and notices were unchanged
+apart from the removed filter echo. Local validation passed **208 Python tests,
+22 UI tests and three Hugo builds**, using a clean environment with all 21 exact
+development pins. Independent implementation reviews found no blocker.
+Real Chrome checks passed for provider order, edition/category/test refinements,
+clear with filters retained, labelled provider failure and recovery, plus live
+KB search and cache reuse. No uncaught page errors were observed.
+
+A fresh live run passed seven of eight draft representative cases. All eight
+returned valid, uniquely mapped catalog results; “Databases for storing embeddings”
+still omitted Milvus and Qdrant. This is an unresolved provider relevance case,
+not a failed integration check. Product relevance and staging acceptance remain
+pending. Evidence is under `.poc/simplification-20261105/`.
+
 ## Minimality review — 2 November 2026
 
 Removed unused search-response fields, duplicate KB-client/configuration setup,

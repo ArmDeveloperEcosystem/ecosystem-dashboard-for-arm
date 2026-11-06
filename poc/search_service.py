@@ -33,9 +33,7 @@ class SearchService:
         self.cache = OrderedDict()
         self.lock = threading.Lock()
 
-    def retrieve(self, query, edition):
-        if not self.scope_confirmed:
-            raise ScopedContractError("Scoped provider contract is not confirmed")
+    def _retrieve(self, query, edition):
         params = {"q": query, "k": KB_LIMIT, "doc_type": DOC_TYPE, "platform": PLATFORM}
         if edition is not None:
             params["edition"] = edition
@@ -53,20 +51,15 @@ class SearchService:
         hits = response["results"]
         if len(hits) > KB_LIMIT:
             raise ScopedContractError("Provider exceeded the requested result limit")
-        # Validate every hit before admitting or caching any result, including
-        # duplicates and hits a later local filter would otherwise remove.
+        # KB owns ranking and URL/edition deduplication. Validate every hit before
+        # caching, including hits a later local filter would otherwise remove.
         mapped = []
         omitted = 0
-        seen = set()
         for hit in hits:
-            packages = self.catalog.resolve_hit(hit, edition=edition)
-            if not packages:
+            package = self.catalog.resolve_hit(hit, edition=edition)
+            if package is None:
                 omitted += 1
                 continue
-            package = packages[0]
-            if package["id"] in seen:
-                continue
-            seen.add(package["id"])
             mapped.append(package)
         validated = (mapped, omitted)
         with self.lock:
@@ -91,7 +84,6 @@ class SearchService:
         base = {
             "query": query,
             "results": [],
-            "constraints": constraints,
             "notices": [],
             "mode": "kb_scoped",
             "status": "no_matches",
@@ -112,7 +104,7 @@ class SearchService:
             base["notices"].append("Enter a description to search the knowledge base.")
             return base
         try:
-            mapped, omitted = self.retrieve(query, edition)
+            mapped, omitted = self._retrieve(query, edition)
         except ScopedContractError:
             return unavailable(
                 "Knowledge-base search is unavailable: the provider response did not "

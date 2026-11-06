@@ -7,7 +7,7 @@ import json
 import logging
 import math
 import time
-from collections import Counter, OrderedDict
+from collections import OrderedDict
 
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
@@ -176,7 +176,3 @@ class SearchBoundary:
             self.metrics[f"search_status_{status}"] += 1
             self.metrics["search_duration_ms"] += elapsed
             LOGGER.info("search_request status=%s duration_ms=%s", status, elapsed)
-
-
-def new_metrics():
-    return Counter()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -15,7 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .catalog import Catalog
-from .http_guard import SearchBoundary, new_metrics
+from .http_guard import SearchBoundary
 from .kb_client import KBClient
 from .runtime import RuntimeConfig
 from .search_service import SearchService
@@ -57,8 +58,7 @@ def create_app(catalog_path=None, service=None, config: RuntimeConfig | None = N
             headers=headers,
             scope_confirmed=config.kb_scope_confirmed,
         )
-    search = service
-    metrics = new_metrics()
+    metrics = Counter()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -93,7 +93,7 @@ def create_app(catalog_path=None, service=None, config: RuntimeConfig | None = N
         return {
             "status": "ok",
             "catalog_count": len(catalog.packages),
-            "kb_configured": bool(search.endpoint),
+            "kb_configured": bool(service.endpoint),
             "scope_configured": config.kb_scope_confirmed,
             "rollout_status": "provider_validation_required"
             if config.kb_scope_confirmed
@@ -119,7 +119,7 @@ def create_app(catalog_path=None, service=None, config: RuntimeConfig | None = N
     async def search_packages(body: SearchRequest):
         try:
             result = await run_in_threadpool(
-                search.search,
+                service.search,
                 body.query,
                 body.filters.model_dump(),
             )

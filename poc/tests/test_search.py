@@ -98,7 +98,6 @@ def test_query_and_explicit_scope_are_sent_without_rewriting(catalog, filters, e
         expected["edition"] = edition
     assert calls[0][1] == expected
     assert response["query"] == query
-    assert response["constraints"]["license"] == filters.get("license", "all")
 
 
 def test_catalog_descriptions_and_titles_do_not_discover_independent_candidates(
@@ -118,7 +117,7 @@ def test_catalog_descriptions_and_titles_do_not_discover_independent_candidates(
         assert response["query"] == query
 
 
-def test_kb_rank_dedup_and_separate_editions_use_current_catalog_details(catalog):
+def test_kb_rank_and_separate_editions_use_current_catalog_details(catalog):
     search = service_with(
         catalog,
         [
@@ -129,7 +128,6 @@ def test_kb_rank_dedup_and_separate_editions_use_current_catalog_details(catalog
                 snippet="Invented claim",
             ),
             hit("nginx"),
-            hit("weaviate", edition="commercial"),
             hit("weaviate"),
         ],
     )

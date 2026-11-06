@@ -65,7 +65,7 @@ class Element {
     closest() { return this.parent || this; }
 }
 
-function fixture(fetcher, packageIDs = ['postgresql', 'nginx']) {
+function fixture(fetcher, packageIDs = ['postgresql', 'nginx'], filterCard = () => false) {
     const ids = ['nl-search-input', 'nl-search-form', 'nl-search-tested', 'nl-search-clear',
         'nl-search-feedback', 'nl-search-status', 'nl-search-interpretation', 'nl-search-constraints',
         'nl-search-notice', 'nl-search-refinements', 'currently-shown-number', 'if-none-contribute-div',
@@ -127,7 +127,7 @@ function fixture(fetcher, packageIDs = ['postgresql', 'nginx']) {
         window, document, AbortController, console,
         fetch: async (url, options) => { calls.push(JSON.parse(options.body)); signals.push(options.signal); return fetcher(url, options); },
         sanitizeInput: value => value.replace(/[^a-zA-Z0-9 .\-/]+/g, '').replace(/\s+/g, ' '),
-        filter_card: () => false,
+        filter_card: filterCard,
         hideElements,
         updateClearFilterOption: () => {}
     });
@@ -139,7 +139,7 @@ function fixture(fetcher, packageIDs = ['postgresql', 'nginx']) {
 
 function response(results, extra = {}) {
     return { ok: true, json: async () => ({ status: 'ok', mode: 'kb_scoped',
-        query: 'databases', constraints: { license: 'all', category: null, tested_only: false },
+        query: 'databases',
         results: results.map(item => ({ ...item, id: item.id.includes('/') ? item.id : 'linux/opensource_packages/' + item.id + '.md' })), notices: [], ...extra }) };
 }
 
@@ -184,8 +184,7 @@ test('Shared visibility updates scale linearly and close hidden details and care
 });
 
 test('Refinement buttons change structured controls and preserve the exact submitted query', async () => {
-    const f = fixture(async (_url, options) => response([{ id: 'postgresql', reason: 'Database' }], {
-        constraints: JSON.parse(options.body).filters,
+    const f = fixture(async () => response([{ id: 'postgresql', reason: 'Database' }], {
         query: 'This response must not rewrite the query'
     }));
     const query = '  Databases for vector search?  ';
@@ -203,6 +202,31 @@ test('Refinement buttons change structured controls and preserve the exact submi
     assert.equal(f.nodes['nl-search-tested'].checked, true);
     assert.match(f.nodes['filter-facet-display-name-group-license'].textContent, /Open source/);
     assert.equal(f.nodes['nl-search-interpretation'].textContent, 'Search: “' + query + '”');
+});
+
+test('Refinements preserve category feedback and responses do not rewrite selected controls', async () => {
+    const f = fixture(async () => response([{ id: 'postgresql', reason: 'Database' }], {
+        constraints: { license: 'all', category: null, tested_only: false }
+    }));
+    f.radios.category.forEach((radio, index) => { radio.checked = index === 1; });
+    f.nodes['filter-facet-display-name-group-category'].textContent = 'Category: Databases';
+    f.nodes['category-description'].textContent = 'Database software';
+    await f.app.search('databases');
+    f.buttons[0].listeners.click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    f.buttons[1].listeners.click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(f.calls[2].filters, {
+        license: 'opensource', category: 'Databases', tested_only: true
+    });
+    assert.equal(f.radios.license[1].checked, true);
+    assert.equal(f.radios.category[1].checked, true);
+    assert.equal(f.nodes['nl-search-tested'].checked, true);
+    assert.equal(f.nodes['filter-facet-display-name-group-category'].textContent, 'Category: Databases');
+    assert.equal(f.nodes['category-description'].textContent, 'Database software');
+    assert.deepEqual(f.nodes['nl-search-constraints'].children.map(chip => chip.textContent), [
+        'Linux on Arm', 'Open source', 'Databases', 'Recorded Arm64 tests'
+    ]);
 });
 
 test('An unavailable service falls back to clearly identified package-name matching', async () => {
@@ -256,6 +280,23 @@ test('Offline name matching still excludes records without verified Arm64 test m
     assert.match(f.nodes['nl-search-status'].textContent, /Name search only: 0 matches/);
 });
 
+test('Scoped results use API-selected IDs while browsing and offline search apply local filters', async () => {
+    let filterChecks = 0;
+    const rejectByLocalFilter = () => { filterChecks += 1; return true; };
+    const f = fixture(async () => response([{ id: 'nginx', reason: 'Web server' }]), undefined, rejectByLocalFilter);
+    f.nodes['nl-search-tested'].checked = true;
+    await f.app.search('web servers');
+    assert.deepEqual(f.rows.map(row => row.hidden), [true, false]);
+    assert.equal(filterChecks, 0, 'The API already applied the selected structured filters');
+    await f.app.search('');
+    assert.deepEqual(f.rows.map(row => row.hidden), [true, true]);
+    assert.equal(filterChecks, 2, 'Browsing must still apply sidebar filters');
+    const offline = fixture(async () => { throw new Error('Offline'); }, undefined, rejectByLocalFilter);
+    await offline.app.search('Nginx');
+    assert.deepEqual(offline.rows.map(row => row.hidden), [true, true]);
+    assert.equal(filterChecks, 4, 'Name fallback must still apply sidebar filters');
+});
+
 test('Late responses cannot replace results from a newer search', async () => {
     const pending = [];
     const f = fixture(() => new Promise(resolve => pending.push(resolve)));
@@ -268,6 +309,28 @@ test('Late responses cannot replace results from a newer search', async () => {
     assert.deepEqual(f.rows.map(row => row.hidden), [true, false]);
     assert.equal(f.nodes['nl-search-interpretation'].textContent, 'Search: “web servers”');
     assert.equal(f.signals[0].aborted, true);
+});
+
+test('Rapid filter changes coalesce and stale responses cannot replace the filtered results', async () => {
+    const pending = [];
+    const f = fixture(() => new Promise(resolve => pending.push(resolve)));
+    const oldRequest = f.app.search('databases');
+    f.radios.category.forEach((radio, index) => { radio.checked = index === 1; });
+    f.app.filtersChanged();
+    f.radios.license.forEach((radio, index) => { radio.checked = index === 2; });
+    f.app.filtersChanged();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(f.calls.length, 2);
+    assert.equal(f.signals[0].aborted, true);
+    assert.deepEqual(f.calls[1].filters, { license: 'commercial', category: 'Databases', tested_only: false });
+    pending[1](response([{ id: 'nginx', reason: 'Current filtered result' }]));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    pending[0](response([{ id: 'postgresql', reason: 'Stale result' }]));
+    await oldRequest;
+    assert.deepEqual(f.rows.map(row => row.hidden), [true, false]);
+    assert.equal(f.rows[1].title.children[0].textContent, 'Current filtered result');
+    assert.equal(f.radios.license[2].checked, true);
+    assert.equal(f.radios.category[1].checked, true);
 });
 
 test('Clearing a query restores the catalog, preserves selected test filter, and removes reasons', async () => {
@@ -284,9 +347,7 @@ test('Clearing a query restores the catalog, preserves selected test filter, and
 });
 
 test('Sidebar changes send selected structured filters with the current query', async () => {
-    const f = fixture(async (_url, options) => response([{ id: 'postgresql', reason: 'Database' }], {
-        constraints: JSON.parse(options.body).filters
-    }));
+    const f = fixture(async () => response([{ id: 'postgresql', reason: 'Database' }]));
     await f.app.search('open-source databases');
     f.radios.license.forEach((radio, index) => { radio.checked = index === 2; });
     f.radios.category.forEach((radio, index) => { radio.checked = index === 1; });
@@ -301,12 +362,10 @@ test('Sidebar changes send selected structured filters with the current query', 
 test('Backend rank moves existing main/detail pairs together and clear restores browse order', async () => {
     const f = fixture(async () => response([
         { id: 'nginx', reason: 'Web server' },
-        { id: 'postgresql', reason: 'Database' },
-        { id: 'nginx', reason: 'Duplicate chunk must not replace the first description' }
+        { id: 'postgresql', reason: 'Database' }
     ]));
     await f.app.search('software');
     assert.deepEqual(f.table.children.map(row => row.id), ['row-1', 'details-1', 'row-0', 'details-0']);
-    assert.equal(f.rows[1].title.children[0].textContent, 'Web server');
     // Existing details and their state remain attached to the matching row.
     f.rows[1].details.hidden = false;
     await f.app.search('software');

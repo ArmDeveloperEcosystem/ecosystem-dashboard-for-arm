@@ -52,23 +52,24 @@ def test_same_slug_and_title_keep_edition_identity_objects(tmp_path):
     )
     for edition in ("open-source", "commercial"):
         result = catalog.resolve_hit(hit("weaviate", edition=edition))
-        assert len(result) == 1
-        assert result[0]["edition"] == edition
-        assert result[0] is catalog.by_id[result[0]["id"]]
+        assert result["edition"] == edition
+        assert result is catalog.by_id[result["id"]]
 
 
 def test_canonical_identity_ignores_provider_title_heading_and_description(tmp_path):
     catalog = make_catalog(tmp_path, [package("redis"), package("go")])
     assert catalog.resolve_hit(
         hit("go", title="Redis", heading="Redis", snippet="Redis")
-    ) == [catalog.packages[1]]
-    assert catalog.resolve_hit(hit("deleted", title="Redis")) == []
+    ) is catalog.packages[1]
+    assert catalog.resolve_hit(hit("deleted", title="Redis")) is None
 
 
 @pytest.mark.parametrize(
     "url",
     [
         "https://learn.arm.com/learning-paths/redis/",
+        "https://arm.com/developer-hub/ecosystem-dashboard/?package=redis",
+        "https://www.arm.com/developer-hub/ecosystem-dashboard/?package=redis",
         "https://developer.arm.com/ecosystem-dashboard/windows/?package=redis",
         "https://developer.arm.com/article?package=redis",
         "https://developer.arm.com/ecosystem-dashboard/linux;not-a-dashboard-path?package=redis",
@@ -88,20 +89,19 @@ def test_article_wrong_platform_missing_or_ambiguous_urls_never_guess(tmp_path, 
         catalog.resolve_hit(hit("redis", url=url, title="Redis"))
 
 
-@pytest.mark.parametrize(
-    "origin,path",
-    [
-        ("https://developer.arm.com", "/ecosystem-dashboard/linux"),
-        ("https://arm.com", "/developer-hub/ecosystem-dashboard"),
-        ("https://www.arm.com", "/developer-hub/ecosystem-dashboard"),
-    ],
-)
 @pytest.mark.parametrize("slash", ["", "/"])
-def test_current_and_legacy_canonical_dashboard_paths(tmp_path, origin, path, slash):
+def test_current_canonical_dashboard_path(tmp_path, slash):
     catalog = make_catalog(tmp_path, [package("redis")])
     assert (
-        catalog.resolve_hit(hit("redis", url=origin + path + slash + "?package=redis"))
-        == catalog.packages
+        catalog.resolve_hit(
+            hit(
+                "redis",
+                url="https://developer.arm.com/ecosystem-dashboard/linux"
+                + slash
+                + "?package=redis",
+            )
+        )
+        is catalog.packages[0]
     )
 
 

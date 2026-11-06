@@ -94,7 +94,7 @@ def test_parser_disagreement_hit_fails_entire_scoped_response(catalog):
     assert result["mode"] == "kb_unavailable"
 
 
-def test_legacy_hit_resolves_to_current_catalog_record(catalog):
+def test_legacy_dashboard_hit_fails_current_scoped_contract(catalog):
     hit = redis_hit("https://arm.com/developer-hub/ecosystem-dashboard/?package=redis")
     service = SearchService(
         catalog,
@@ -103,6 +103,5 @@ def test_legacy_hit_resolves_to_current_catalog_record(catalog):
         scope_confirmed=True,
     )
     result = service.search("Redis")
-    redis = result["results"][0]
-    assert redis["id"] == "linux/opensource_packages/redis.md"
-    assert redis["reason"] == catalog.by_id[redis["id"]]["description"]
+    assert result["results"] == []
+    assert result["mode"] == "kb_unavailable"

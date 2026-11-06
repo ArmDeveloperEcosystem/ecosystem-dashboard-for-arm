@@ -29,7 +29,7 @@ MILVUS = "linux/opensource_packages/milvus.md"
 QDRANT = "linux/opensource_packages/qdrant.md"
 WEAVIATE_COMMERCIAL = "linux/commercial_packages/weaviate.md"
 WEAVIATE_OPEN_SOURCE = "linux/opensource_packages/weaviate.md"
-RANKED_IDS = (MILVUS, WEAVIATE_COMMERCIAL, QDRANT, WEAVIATE_OPEN_SOURCE, MILVUS)
+RANKED_IDS = (MILVUS, WEAVIATE_COMMERCIAL, QDRANT, WEAVIATE_OPEN_SOURCE)
 
 # Explicit fixtures, not synonyms or relevance rules used by the application.
 DEMO_QUERIES = {

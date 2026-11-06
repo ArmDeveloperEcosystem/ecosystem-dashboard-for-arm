@@ -47,9 +47,10 @@
         function rowsToHide(rows) {
             const words = sanitizeInput(state.query).toLowerCase().split(/\s+/).filter(Boolean);
             return Array.from(rows).filter(row => {
-                if (isPlaceholder(row) || filter_card(row)) return true;
-                if (tested.checked && row.getAttribute('data-has-arm64-tests') !== 'true') return true;
+                if (isPlaceholder(row)) return true;
                 if (state.matches !== null) return !state.matches.has(row.getAttribute('data-catalog-id'));
+                if (filter_card(row)) return true;
+                if (tested.checked && row.getAttribute('data-has-arm64-tests') !== 'true') return true;
                 if (state.fallback) {
                     const title = (row.getAttribute('data-title') || '').toLowerCase();
                     return !words.every(word => title.includes(word));
@@ -152,27 +153,18 @@
 
         function syncFilters(next) {
             if (!next || typeof next !== 'object') return;
-            const desired = {
-                license: next.license === 'opensource' ? 'open-source' : next.license,
-                category: next.category || 'All'
-            };
-            for (const group of ['license', 'category']) {
-                const options = Array.from(document.querySelectorAll('input.group-' + group));
-                const value = String(desired[group] || '').toLowerCase();
-                const selected = options.find(option =>
-                    option.getAttribute('data-urlized-name').toLowerCase() === value ||
-                    option.getAttribute('data-display-name').toLowerCase() === value
-                );
-                if (!selected) continue;
+            const options = Array.from(document.querySelectorAll('input.group-license'));
+            const value = String(next.license === 'opensource' ? 'open-source' : next.license || '').toLowerCase();
+            const selected = options.find(option =>
+                option.getAttribute('data-urlized-name').toLowerCase() === value ||
+                option.getAttribute('data-display-name').toLowerCase() === value
+            );
+            if (selected) {
                 options.forEach(option => { option.checked = option === selected; });
                 const label = selected.getAttribute('data-display-name');
-                const facet = document.getElementById('filter-facet-display-name-group-' + group);
-                facet.textContent = (group === 'license' ? 'License: ' : 'Category: ') + label;
+                const facet = document.getElementById('filter-facet-display-name-group-license');
+                facet.textContent = 'License: ' + label;
                 facet.closest('ads-tag').classList.toggle('not-all', label.toLowerCase() !== 'all');
-                if (group === 'category' && typeof nameToDescriptionMap !== 'undefined') {
-                    const description = document.getElementById('category-description');
-                    description.textContent = nameToDescriptionMap[selected.getAttribute('data-urlized-name')] || '';
-                }
             }
             if (typeof next.tested_only === 'boolean') tested.checked = next.tested_only;
             updateClearFilterOption();
@@ -279,10 +271,9 @@
                 let omitted = false;
                 for (const result of data.results) {
                     if (result && typeof result.id === 'string' && localIDs.has(result.id)) {
-                        if (!state.matches.has(result.id)) state.matches.set(result.id, result);
+                        state.matches.set(result.id, result);
                     } else omitted = true;
                 }
-                syncFilters(data.constraints);
                 busy(false);
                 renderReasons();
                 const count = renderRows();

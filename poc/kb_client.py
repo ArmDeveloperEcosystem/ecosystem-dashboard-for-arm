@@ -52,7 +52,6 @@ class KBClient:
         # add_done_callback can run immediately if a very fast request finished
         # before registration, so its completion handler needs a reentrant lock.
         self._lifecycle_lock = threading.RLock()
-        self._slots = threading.BoundedSemaphore(max_inflight)
         self._http: httpx.Client | None = None
         self._http_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
@@ -64,7 +63,7 @@ class KBClient:
         with self._lifecycle_lock:
             if self._closed:
                 raise httpx.ConnectError("Knowledge-base client is closed")
-            if not self._slots.acquire(blocking=False):
+            if self._inflight >= self._max_inflight:
                 raise httpx.TimeoutException("Knowledge-base search is at capacity")
             self._inflight += 1
             try:
@@ -73,7 +72,6 @@ class KBClient:
                 )
             except BaseException:
                 self._inflight -= 1
-                self._slots.release()
                 raise
             # Register before shutdown can observe this work. A caller timeout
             # must not release a slot while its network request is still running.
@@ -92,7 +90,6 @@ class KBClient:
     def _request_done(self, _future) -> None:
         with self._lifecycle_lock:
             self._inflight -= 1
-            self._slots.release()
             if self._closed and self._inflight == 0 and self._http is not None:
                 self._http.close()
 

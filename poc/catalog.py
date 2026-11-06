@@ -102,7 +102,7 @@ class Catalog:
                 and bool((record.get("tests") or {}).get("details"))
             )
 
-    def resolve_hit(self, hit: dict, *, edition: str | None = None) -> list[dict]:
+    def resolve_hit(self, hit: dict, *, edition: str | None = None) -> dict | None:
         """Resolve only canonical URL + platform + edition; never guess from text.
 
         Unknown URL identities can be omitted. Scope, trust, or ambiguity errors
@@ -123,18 +123,16 @@ class Catalog:
             raise ScopedContractError("Untrusted dashboard URL")
         url = urlparse(value)
         path = url.path.removesuffix("/")
-        current = (
-            url.hostname == "developer.arm.com" and path == "/ecosystem-dashboard/linux"
-        )
-        legacy = (
-            url.hostname in ("arm.com", "www.arm.com")
-            and path == "/developer-hub/ecosystem-dashboard"
-        )
-        if not (current or legacy) or url.params or url.fragment:
+        if (
+            url.hostname != "developer.arm.com"
+            or path != "/ecosystem-dashboard/linux"
+            or url.params
+            or url.fragment
+        ):
             raise ScopedContractError("URL is not a canonical Linux dashboard package")
         url_id = package_parameter(value)
         key = (url_id, hit["platform"], hit["edition"])
         package = self.by_identity.get(key)
         if package is None and url_id in self.url_ids:
             raise ScopedContractError("KB edition disagrees with the current catalog")
-        return [package] if package else []
+        return package
