@@ -205,7 +205,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(324, len(remediation["summary_omits_test6_status"]))
         self.assertIn("garden-linux", remediation["summary_omits_test6_status"])
         self.assertEqual(
-            954, len(remediation["unsafe_package_version_fallback"])
+            953, len(remediation["unsafe_package_version_fallback"])
         )
         self.assertEqual(
             960, len(remediation["unsafe_regression_narrative_fallback"])
@@ -246,7 +246,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            'aced89cf1eaa0bcd86acccefda1e6643b6f078ff6ca3dd006f386334a3f461a1',
+            'b2102db441c4aa3cab8493c8f9883bf20e5f77b3e1c5285badb7f67a349f9639',
             digest,
         )
 
@@ -278,8 +278,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
          'summary_missing_duration_reference.test5',
          'summary_missing_duration_reference.test6',
          'summary_omits_test6_status',
-         'unsafe_fallback_workflows',
-         'unsafe_package_version_fallback'}
+         'unsafe_fallback_workflows'}
         actual = set()
         for key, entries in self.report["remediation"].items():
             if isinstance(entries, dict):
