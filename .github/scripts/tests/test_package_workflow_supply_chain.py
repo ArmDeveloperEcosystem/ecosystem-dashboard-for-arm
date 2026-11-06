@@ -1178,8 +1178,8 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
 
     def test_registration_is_exact(self) -> None:
         relative = [path.relative_to(self.root).as_posix() for path in self.workflows]
-        self.assertEqual(962, len(relative))
-        self.assertEqual(962, len(set(relative)))
+        self.assertEqual(964, len(relative))
+        self.assertEqual(964, len(set(relative)))
         self.assertIn(".github/workflows/test-xen-hypervisor.yml", relative)
         self.assertTrue(all(path.is_file() for path in self.workflows))
         self.assertFalse(
@@ -1190,7 +1190,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         lock = supply_chain.load_lock(self.root)
         self.assertEqual([], lock["unresolved_references"])
         self.assertEqual(supply_chain.SOURCE_COMMIT, lock["source_commit"])
-        self.assertEqual(1132, lock["external_uses"])
+        self.assertEqual(1134, lock["external_uses"])
         self.assertEqual(10, lock["container_uses"])
         self.assertEqual(15, len(lock["actions"]))
         self.assertRegex(
@@ -1199,10 +1199,13 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         transition = lock["hardened_workflow_transition"]
         self.assertEqual(
-            "9fef79bbddd3ed275c968d99a55b54880609657034b98607ed9644ba7f27143c",
+            "0dcb5a1dc4cfaff9e4c73b043a16d4b8dcb6676f1080881993228b3ef57080b1",
             transition["from_sha256"],
         )
-        self.assertEqual(list(supply_chain.REVIEWED_ADDED_WORKFLOWS), transition["added_workflows"])
+        self.assertEqual(
+            list(supply_chain.REVIEWED_ADDED_WORKFLOWS),
+            transition["added_workflows"],
+        )
         self.assertEqual(
             lock["hardened_workflow_sha256"],
             transition["to_sha256"],
@@ -1265,7 +1268,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "45c11511cb3859e8e8db4e96388805b525527a67fddf741c1e3beba49b7a7272",
+            "b65e63b469e06341c40960d666f142ce33aa89f975d57914746ccbd8956b72a5",
             result["workflow_sha256"],
         )
 
@@ -1438,7 +1441,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                     continue
                 _, _, _, ref = supply_chain.split_github_action(spec)
                 self.assertRegex(ref, r"^[0-9a-f]{40}$")
-        self.assertEqual(1132, external)
+        self.assertEqual(1134, external)
 
     def test_every_checkout_disables_persisted_credentials(self) -> None:
         checkouts = 0
@@ -1461,7 +1464,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                     ),
                     path.relative_to(self.root).as_posix(),
                 )
-        self.assertEqual(984, checkouts)
+        self.assertEqual(986, checkouts)
 
     def test_permissions_are_read_only(self) -> None:
         exceptions = supply_chain.permission_exceptions(
@@ -1517,15 +1520,15 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
     def test_complete_offline_contract(self) -> None:
         self.assertEqual(
             {
-                "registered_workflows": 962,
+                "registered_workflows": 964,
                 "batch_workflows": 22,
-                "external_uses": 1132,
+                "external_uses": 1134,
                 "container_uses": 10,
                 "unique_original_refs": 15,
-                "checkout_uses": 984,
+                "checkout_uses": 986,
                 "permission_exceptions": 4,
-                "topology_sha256": "1c6384aea3f797b7fd0f0166a36bfc8aabd67ae82b7314357e86ad4383970794",
-                "workflow_sha256": "45c11511cb3859e8e8db4e96388805b525527a67fddf741c1e3beba49b7a7272",
+                "topology_sha256": "f8941f8a65ff345d0145577f203560b7c3b18feee614fae8b97d5cc394c974e9",
+                "workflow_sha256": "b65e63b469e06341c40960d666f142ce33aa89f975d57914746ccbd8956b72a5",
             },
             supply_chain.validate_hardening(
                 self.root,
