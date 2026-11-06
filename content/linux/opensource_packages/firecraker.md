@@ -31,9 +31,10 @@ optional_hidden_info:
     Arm64 workflow validates the v1.17.0 publisher bundle, exact Firecracker and
     jailer versions, Arm64 ELF identity, and real pre-boot API state mutation and
     rejection behavior without claiming a guest boot. The protected supplemental
-    KVM workflow uses a disposable credential-free target to require writable
-    /dev/kvm, KVM API 12, a real Arm64 microVM boot, guest file I/O, child exit 37,
-    the reboot marker, and clean VMM shutdown. The reviewed helper uses pinned
+    KVM workflow uses a disposable target with no privileged repository token or
+    coordinator credential to require writable /dev/kvm, KVM API 12, a real Arm64
+    microVM boot, guest file I/O, child exit 37, the reboot marker, and clean VMM
+    shutdown. The reviewed helper uses pinned
     upstream guest-kernel and initramfs objects and verifies their measured
     hashes. Durable exact-byte guest evidence is published at
     https://github.com/ranimandepudi/ecosystem-dashboard-for-arm/releases/tag/ecosystem-arm64-validation-20261106 .
