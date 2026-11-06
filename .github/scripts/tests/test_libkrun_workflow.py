@@ -132,6 +132,7 @@ class PackageWorkflowTests(unittest.TestCase):
         self.assertIn("nm -D --defined-only", test4)
         self.assertIn("ldd \"$LIBKRUN_PATH\"", test4)
         test5 = self.steps["test5"]["run"]
+        self.assertIn("#include <sys/types.h>", test5)
         self.assertIn("krun_get_default_init", test5)
         self.assertIn("machine == 183", test5)
         self.assertIn("freed context remained usable", test5)
@@ -273,8 +274,8 @@ class PackageWorkflowTests(unittest.TestCase):
         self.assertIn("Apache-2.0", page["optional_hidden_info"]["other_info"])
         self.assertIn("release_notes__supported_minimum", page["optional_hidden_info"])
         if SLUG == "libkrun":
-            self.assertIn("first numbered upstream tag", page["optional_hidden_info"]["support_context"])
-            self.assertIn("inference", page["optional_hidden_info"]["support_context"])
+            self.assertIn("first numbered upstream release", page["optional_hidden_info"]["support_context"])
+            self.assertIn("corrective boundary", page["optional_hidden_info"]["support_context"])
             for tag in ("v0.1.1", "v0.1.2", "v0.1.3"):
                 self.assertIn(
                     "https://api.github.com/repos/libkrun/libkrun/compare/"
