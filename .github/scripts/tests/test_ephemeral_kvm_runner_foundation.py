@@ -108,6 +108,14 @@ class EphemeralKvmRunnerFoundationTests(unittest.TestCase):
         self.assertIn('instance["LaunchTime"] + datetime.timedelta(minutes=60)', self.template_text)
         self.assertIn("KvmRunnerMultiplicityAlarm", self.template["Resources"])
         self.assertIn("KvmRunnerJanitorErrorAlarm", self.template["Resources"])
+        self.assertIn("KvmRunnerJanitorHeartbeatAlarm", self.template["Resources"])
+        for name in (
+            "KvmRunnerMultiplicityAlarm",
+            "KvmRunnerJanitorErrorAlarm",
+            "KvmRunnerJanitorHeartbeatAlarm",
+        ):
+            alarm = self.template["Resources"][name]["Properties"]
+            self.assertEqual(["AlarmTopicArn"], alarm["AlarmActions"])
         janitor = self.template["Resources"]["KvmRunnerExpiryFunction"]["Properties"]["Code"]["ZipFile"]
         compile(janitor, "ecosystem-kvm-expiry.py", "exec")
 
@@ -149,6 +157,7 @@ class EphemeralKvmRunnerFoundationTests(unittest.TestCase):
         self.assertEqual(1, function["ReservedConcurrentExecutions"])
         self.assertIn("workflow run is not current protected main", self.template_text)
         self.assertNotIn("iam:PassRole", self.template_text)
+        self.assertIn("ec2:MetadataHttpPutResponseHopLimit: 1", self.template_text)
 
     def test_ami_storage_and_cleanup_roles_are_fail_closed(self):
         resources = self.template["Resources"]

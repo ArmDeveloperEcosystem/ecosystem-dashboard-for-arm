@@ -114,6 +114,11 @@ security control. Copy these stack outputs to repository variables:
 - `ECOSYSTEM_KVM_CLEANUP_FUNCTION_NAME`
 - `ECOSYSTEM_KVM_REGION`
 
+The stack also requires `AlarmTopicArn`, an owner-approved SNS topic with a
+tested on-call or incident-management subscription. Multiplicity, janitor
+errors, and two missed janitor heartbeats notify this topic. Do not substitute
+an unmonitored topic merely to satisfy deployment validation.
+
 The target has a public address only for outbound GitHub and package downloads.
 It has no inbound security-group rule, key pair, instance profile, or metadata
 endpoint. HTTP is permitted only because Ubuntu mirrors may redirect to HTTPS;
@@ -171,8 +176,9 @@ in the supplemental lane remains a failure, never a skip-to-pass.
 - Cleanup discovers resources by exact run and attempt tags even when the
   coordinator dies before publishing outputs. Registration cleanup derives the
   deterministic JIT runner name from the same run identity.
-- Treat the multiplicity or janitor-error CloudWatch alarm as an incident and
-  disable the provisioning role until the account is reconciled.
+- Treat the multiplicity, janitor-error, or missing-heartbeat CloudWatch alarm
+  as an incident and disable the provisioning role until the account is
+  reconciled.
 - Review App installation changes, OIDC role usage, Lambda expiry events, and
   EC2 cost after each initial package validation before enabling a schedule.
 
