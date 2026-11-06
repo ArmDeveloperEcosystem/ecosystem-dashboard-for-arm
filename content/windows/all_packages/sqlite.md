@@ -12,15 +12,15 @@ optional_info:
     homepage_url: https://www.sqlite.org/
     support_caveats:
     alternative_options:
-arm_recommended_minimum_version:
-  version_number:
-  release_date:
-  reference_content:
-  rationale:
-getting_started_resources:
-  official_docs: https://github.com/sqlite/sqlite?tab=readme-ov-file#compiling-for-windows-using-msvc
-  arm_content:
-  partner_content:
+    arm_recommended_minimum_version:
+      version_number:
+      release_date:
+      reference_content:
+      rationale:
+    getting_started_resources:
+      official_docs: https://github.com/sqlite/sqlite?tab=readme-ov-file#compiling-for-windows-using-msvc
+      arm_content:
+      partner_content:
 optional_hidden_info:
     release_notes__supported_minimum:
     release_notes__recommended_minimum:
