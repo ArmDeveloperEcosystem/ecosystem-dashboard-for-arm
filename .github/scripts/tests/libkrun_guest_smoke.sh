@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exact local guest probe used by test-libkrun.yml. Run only on a disposable native Arm64 host.
+# Exact guest probe used by supplemental-kvm-libkrun.yml on a disposable Arm64 KVM host.
 set -euo pipefail
 
 preflight() {

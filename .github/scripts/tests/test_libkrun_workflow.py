@@ -13,6 +13,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 SLUG = "libkrun"
 WORKFLOW = ROOT / f".github/workflows/test-{SLUG}.yml"
+SUPPLEMENTAL = ROOT / f".github/workflows/supplemental-kvm-{SLUG}.yml"
 HELPER = ROOT / f".github/scripts/tests/{SLUG}_guest_smoke.sh"
 PAGE = ROOT / f"content/linux/opensource_packages/{SLUG}.md"
 CHECKOUT = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
@@ -91,6 +92,7 @@ class PackageWorkflowTests(unittest.TestCase):
         self.assertLessEqual(set(self.job["outputs"]) - reference_keys, {"regression_policy"})
         self.assertEqual(set(self.doc["on"]["workflow_call"]["outputs"]), OUTPUTS)
         self.assertIn("workflow_dispatch", self.doc["on"])
+        self.assertEqual(list(self.doc["jobs"]), ["test-libkrun"])
         self.assertEqual(self.doc["permissions"], {"contents": "read"})
         self.assertEqual(self.job["runs-on"], "ubuntu-24.04-arm")
         self.assertEqual(self.job["steps"][0]["uses"], CHECKOUT)
@@ -115,6 +117,25 @@ class PackageWorkflowTests(unittest.TestCase):
         subprocess.run(["/bin/bash", "-n", str(HELPER)], check=True)
         for source in re.findall(r"<<'PY'\n(.*?)\nPY", HELPER.read_text(), re.S):
             compile(source, str(HELPER), "exec")
+
+    def test_registered_workflow_never_requires_kvm_or_claims_guest_execution(self):
+        source = WORKFLOW.read_text()
+        self.assertNotIn("/dev/kvm", source)
+        self.assertNotIn("libkrun_guest_smoke.sh", source)
+        self.assertNotIn("krun_start_enter", source)
+        self.assertIn(
+            'echo "dashboard_link=/linux/opensource_packages/libkrun"',
+            source,
+        )
+        test4 = self.steps["test4"]["run"]
+        self.assertIn("cmp \"$LIBKRUN_SOURCE/include/libkrun.h\"", test4)
+        self.assertIn("nm -D --defined-only", test4)
+        self.assertIn("ldd \"$LIBKRUN_PATH\"", test4)
+        test5 = self.steps["test5"]["run"]
+        self.assertIn("krun_get_default_init", test5)
+        self.assertIn("machine == 183", test5)
+        self.assertIn("freed context remained usable", test5)
+        self.assertIn("LIBKRUN_NATIVE_C_API_OK", test5)
 
     def test_baseline_and_declared_deferral(self):
         process, outputs = self.summary()
@@ -221,7 +242,6 @@ class PackageWorkflowTests(unittest.TestCase):
             self.assertIn("krun_start_enter", source)
             self.assertIn("krun_set_exec", source)
             self.assertIn("grep -Fx LIBKRUN_GUEST_OK", source)
-            self.assertIn("libkrun_guest_smoke.sh guest", self.steps["test5"]["run"])
             install = self.steps["install"]["run"]
             self.assertIn("cargo +", install)
             self.assertIn("--locked -p libkrun", install)
@@ -477,6 +497,13 @@ else:
         hidden = page["optional_hidden_info"]["other_info"]
         self.assertIn("/dev/kvm", hidden)
         self.assertIn("GitHub-hosted", hidden)
+        self.assertIn("supplemental", hidden)
+        self.assertIn("ecosystem-arm64-validation-20261106", hidden)
+        self.assertIn("evidence.tar.gz SHA-256", hidden)
+        self.assertIn(
+            "001708410d197c66dbf8991eccc8b824828a038b25a780f068d91e7fc187cd41",
+            hidden,
+        )
 
     def test_guest_c_consumer_defines_uid_gid_types_before_libkrun_header(self):
         clt = Path("/Library/Developer/CommandLineTools/usr/bin/clang")
@@ -562,6 +589,124 @@ int32_t krun_start_enter(uint32_t);
                 self.assertIn("refusing removal without verified ownership", result.stderr)
                 self.assertFalse(any(c[:2] == ["docker", "rm"] for c in calls))
                 self.assertFalse(any(c[:2] == ["docker", "export"] for c in calls))
+
+
+class SupplementalKvmWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.doc = yaml.load(SUPPLEMENTAL.read_text(), Loader=yaml.BaseLoader)
+        self.jobs = self.doc["jobs"]
+        self.guest = self.jobs["guest"]
+        self.guest_steps = {step["name"]: step for step in self.guest["steps"]}
+
+    def test_manual_protected_main_authorization_is_fail_closed(self):
+        self.assertEqual(set(self.doc["on"]), {"workflow_dispatch"})
+        dispatch = self.doc["on"]["workflow_dispatch"]
+        self.assertEqual(dispatch["inputs"]["confirmation"]["required"], "true")
+        authorize = self.jobs["authorize"]
+        self.assertEqual(authorize["runs-on"], "ubuntu-24.04-arm")
+        source = authorize["steps"][0]["run"]
+        self.assertIn('test "$GITHUB_REF" = "refs/heads/main"', source)
+        self.assertIn('test "$REF_PROTECTED" = "true"', source)
+        self.assertEqual(
+            authorize["steps"][0]["env"]["REF_PROTECTED"],
+            "${{ github.ref_protected }}",
+        )
+        self.assertIn('test "$CONFIRMATION" = "RUN-LIBKRUN-KVM"', source)
+        self.assertIn("ECOSYSTEM_KVM_ALLOWED_ACTORS_JSON", authorize["steps"][0]["env"]["ALLOWED_ACTORS_JSON"])
+        self.assertIn("git/ref/heads/main", source)
+        self.assertIn('test "$GITHUB_SHA" = "$current_main_sha"', source)
+
+    def test_provision_uses_protected_foundation_and_random_target_label(self):
+        provision = self.jobs["provision"]
+        self.assertEqual(provision["environment"], "kvm-runner-provision")
+        self.assertEqual(provision["permissions"], {"contents": "read", "id-token": "write"})
+        action = next(step for step in provision["steps"] if step.get("id") == "provision")
+        self.assertEqual(action["uses"], "./.github/actions/provision-ephemeral-kvm-runner")
+        self.assertEqual(action["with"]["ttl-seconds"], "3600")
+        self.assertIn("ECOSYSTEM_KVM_BROKER_FUNCTION_NAME", action["with"]["broker-function-name"])
+        self.assertIn("ECOSYSTEM_KVM_RUNNER_GROUP_ID", action["with"]["runner-group-id"])
+        self.assertEqual(
+            self.guest["runs-on"],
+            {
+                "group": "${{ vars.ECOSYSTEM_KVM_RUNNER_GROUP_NAME }}",
+                "labels": "${{ needs.provision.outputs.runner-label }}",
+            },
+        )
+
+    def test_target_has_no_repository_app_aws_or_oidc_credential(self):
+        self.assertEqual(self.guest["permissions"], {})
+        serialized = yaml.safe_dump(self.guest)
+        self.assertNotIn("actions/checkout", serialized)
+        self.assertNotIn("secrets.", serialized)
+        self.assertNotIn("ECOSYSTEM_KVM_RUNNER_APP_PRIVATE_KEY: ${{", serialized)
+        self.assertNotIn("id-token", serialized)
+        isolation = self.guest_steps["Verify isolated native KVM target and credential absence"]["run"]
+        for name in (
+            "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
+            "ECOSYSTEM_KVM_RUNNER_APP_PRIVATE_KEY", "GH_TOKEN", "GITHUB_TOKEN",
+        ):
+            self.assertIn(name, isolation)
+        self.assertIn("169.254.169.254", isolation)
+
+    def test_target_fetches_exact_public_source_archive_and_verified_helper(self):
+        step = self.guest_steps[
+            "Fetch the exact public main source archive without a repository token"
+        ]
+        source = step["run"]
+        self.assertIn(
+            'https://codeload.github.com/$GITHUB_REPOSITORY/tar.gz/$GITHUB_SHA',
+            source,
+        )
+        self.assertNotIn("Authorization:", source)
+        self.assertIn("member.name.endswith(suffix)", source)
+        self.assertIn("len(matches) != 1", source)
+        self.assertIn("sha256sum --check --strict", source)
+        import hashlib
+        helper_digest = hashlib.sha256(HELPER.read_bytes()).hexdigest()
+        self.assertEqual(self.guest["env"]["HELPER_SHA256"], helper_digest)
+
+    def test_real_guest_probe_is_strict_and_cannot_skip_to_pass(self):
+        for step in self.guest["steps"]:
+            self.assertNotIn("continue-on-error", step)
+        isolation = self.guest_steps["Verify isolated native KVM target and credential absence"]["run"]
+        self.assertIn("test -c /dev/kvm", isolation)
+        self.assertIn("fcntl.ioctl(device, 0xAE01, 0)", isolation)
+        build = self.guest_steps["Build the pinned native libkrun runtime bundle"]["run"]
+        self.assertIn("sha256sum --check --strict", build)
+        self.assertIn("--locked -p libkrun", build)
+        probe = self.guest_steps[
+            "Boot guest and require Arm64 I/O and exit propagation"
+        ]["run"]
+        self.assertIn('/bin/bash "$LIBKRUN_GUEST_HELPER" guest', probe)
+        self.assertIn("grep -Fx LIBKRUN_GUEST_OK", probe)
+        self.assertIn("grep -Fx LIBKRUN_GUEST_EXIT_STATUS_OK", probe)
+        self.assertNotIn("|| true", probe)
+
+    def test_cleanup_always_uses_unreviewed_cleanup_environment(self):
+        cleanup = self.jobs["cleanup"]
+        self.assertEqual(
+            cleanup["if"],
+            "${{ always() && needs.provision.result != 'skipped' }}",
+        )
+        self.assertEqual(cleanup["environment"], "kvm-runner-cleanup")
+        self.assertEqual(cleanup["permissions"], {"contents": "read", "id-token": "write"})
+        action = cleanup["steps"][-1]
+        self.assertEqual(action["uses"], "./.github/actions/cleanup-ephemeral-kvm-runner")
+        self.assertIn("ECOSYSTEM_KVM_CLEANUP_FUNCTION_NAME", action["with"]["cleanup-function-name"])
+
+    def test_all_supplemental_shell_and_embedded_python_parse(self):
+        for job in self.jobs.values():
+            for step in job.get("steps", []):
+                if "run" not in step:
+                    continue
+                parsed = subprocess.run(
+                    ["/bin/bash", "-n"], input=step["run"], text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(parsed.returncode, 0, parsed.stderr)
+                for source in re.findall(r"<<'PY'\n(.*?)\nPY", step["run"], re.S):
+                    compile(source, str(SUPPLEMENTAL), "exec")
 
 
 if __name__ == "__main__":
