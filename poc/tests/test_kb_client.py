@@ -407,6 +407,47 @@ def test_declared_oversized_body_is_rejected_before_reading():
         client.close()
 
 
+def test_compressed_response_is_rejected_before_reading_and_capacity_recovers():
+    class UnreadBody(httpx.SyncByteStream):
+        closed = False
+
+        def __iter__(self):
+            pytest.fail(
+                "Compressed response must be rejected before reading or decoding"
+            )
+            yield b""
+
+        def close(self):
+            self.closed = True
+
+    body = UnreadBody()
+    responses = iter(
+        [
+            httpx.Response(200, headers={"Content-Encoding": "gzip"}, stream=body),
+            httpx.Response(
+                200, headers={"Content-Encoding": "identity"}, json={"results": []}
+            ),
+        ]
+    )
+
+    def handle(request):
+        assert request.headers["Accept-Encoding"] == "identity"
+        return next(responses)
+
+    client = KBClient(max_inflight=1, transport=httpx.MockTransport(handle))
+    headers = {"accept-encoding": "gzip"}
+    try:
+        with pytest.raises(ValueError, match="Compressed KB responses"):
+            client.fetch(ENDPOINT, request_params("query"), headers)
+        assert body.closed
+        assert headers == {"accept-encoding": "gzip"}
+        assert client.fetch(
+            ENDPOINT, request_params("after compressed response"), {}
+        ) == {"results": []}
+    finally:
+        client.close()
+
+
 def test_success_preserves_query_headers_limit_and_disallows_redirects():
     requests = []
 

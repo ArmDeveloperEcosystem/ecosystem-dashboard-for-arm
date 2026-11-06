@@ -8,7 +8,6 @@ import uvicorn
 from .runtime import RuntimeConfig
 from .server import create_app
 
-
 LOG_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,

@@ -117,10 +117,19 @@ class KBClient:
     def _request(self, endpoint: str, params: dict, headers: dict[str, str]) -> dict:
         worker_started = time.monotonic()
         # Headers remain request-local; never mutate defaults on the shared client.
+        request_headers = httpx.Headers(headers)
+        request_headers["Accept-Encoding"] = "identity"
         with self._http_client().stream(
-            "GET", endpoint, params=params, headers=headers
+            "GET", endpoint, params=params, headers=request_headers
         ) as response:
             response.raise_for_status()
+            # HTTPX decompresses before yielding bytes, which could exceed the
+            # memory limit before the streaming size check can reject a chunk.
+            if (
+                response.headers.get("content-encoding", "identity").strip().lower()
+                != "identity"
+            ):
+                raise ValueError("Compressed KB responses are not supported")
             try:
                 content_length = int(response.headers.get("content-length", "0"))
             except ValueError:
