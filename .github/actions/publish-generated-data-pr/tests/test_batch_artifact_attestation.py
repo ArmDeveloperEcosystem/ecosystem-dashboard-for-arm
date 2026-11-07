@@ -229,7 +229,7 @@ jobs:
 
 
 class RepositoryBatchAttestationContractTests(unittest.TestCase):
-    def test_helper_parses_all_964_exact_wrapper_registrations(self) -> None:
+    def test_helper_parses_all_965_exact_wrapper_registrations(self) -> None:
         workflow_root = SCRIPT_ROOT.parents[1] / ".github/workflows"
         registrations = []
         counts = []
@@ -250,8 +250,9 @@ class RepositoryBatchAttestationContractTests(unittest.TestCase):
                     ),
                     current,
                 )
-        self.assertEqual(len(registrations), 964)
-        self.assertEqual(len({workflow for _, workflow in registrations}), 964)
+                self.assertIn(("test-libkrun", "test-libkrun.yml"), current)
+        self.assertEqual(len(registrations), 965)
+        self.assertEqual(len({workflow for _, workflow in registrations}), 965)
         self.assertLessEqual(max(counts), 45)
 
 

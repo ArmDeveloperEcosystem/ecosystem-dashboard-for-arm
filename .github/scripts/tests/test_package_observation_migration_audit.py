@@ -22,15 +22,15 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
     def test_inventory_matches_the_registered_repository(self) -> None:
         self.assertEqual(
             {'batches': 22,
-             'packages': 964,
-             'custom_summary_workflows': 928,
+             'packages': 965,
+             'custom_summary_workflows': 929,
              'emitter_workflows': 36,
              'shared_smoke_workflows': 13,
              'package_manager_workflows': 428},
             self.report["totals"],
         )
         self.assertEqual(
-            {'baseline_failed': 5,
+            {'baseline_failed': 6,
              'next_install_failed': 1,
              'next_regression_failed': 5,
              'not_applicable_package_manager': 8,
@@ -41,7 +41,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             {'shared_smoke': 13,
              'emitter_only': 23,
              'generic_source': 90,
-             'fully_custom': 838},
+             'fully_custom': 839},
             {
                 key: len(value)
                 for key, value in self.report["migration_cohorts"].items()
@@ -52,8 +52,8 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             for cohort in self.report["migration_cohorts"].values()
             for slug in cohort
         ]
-        self.assertEqual(964, len(cohort_members))
-        self.assertEqual(964, len(set(cohort_members)))
+        self.assertEqual(965, len(cohort_members))
+        self.assertEqual(965, len(set(cohort_members)))
 
     def test_structural_observation_inputs_are_present(self) -> None:
         remediation = self.report["remediation"]
@@ -63,16 +63,17 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         # Test 5 finalizer separately. NVIDIA's trap and BenchmarkSQL's Python
         # outputs and cuDNN's helper are covered by executable tests, not this literal scan.
         self.assertEqual(
-            {'test1': ['anthropic-sandbox-runtime', 'bubblewrap', 'chef-infra', 'firecraker', 'gVisor', 'openshell', 'xen-hypervisor'],
-             'test2': ['anthropic-sandbox-runtime', 'bubblewrap', 'chef-infra', 'firecraker', 'gVisor', 'openshell', 'xen-hypervisor'],
-             'test3': ['anthropic-sandbox-runtime', 'bubblewrap', 'chef-infra', 'firecraker', 'gVisor', 'openshell', 'xen-hypervisor'],
-             'test4': ['anthropic-sandbox-runtime', 'bubblewrap', 'chef-infra', 'firecraker', 'gVisor', 'openshell', 'xen-hypervisor'],
+            {'test1': ['anthropic-sandbox-runtime', 'bubblewrap', 'chef-infra', 'firecraker', 'gVisor', 'libkrun', 'openshell', 'xen-hypervisor'],
+             'test2': ['anthropic-sandbox-runtime', 'bubblewrap', 'chef-infra', 'firecraker', 'gVisor', 'libkrun', 'openshell', 'xen-hypervisor'],
+             'test3': ['anthropic-sandbox-runtime', 'bubblewrap', 'chef-infra', 'firecraker', 'gVisor', 'libkrun', 'openshell', 'xen-hypervisor'],
+             'test4': ['anthropic-sandbox-runtime', 'bubblewrap', 'chef-infra', 'firecraker', 'gVisor', 'libkrun', 'openshell', 'xen-hypervisor'],
              'test5': ['anthropic-sandbox-runtime',
                        'bubblewrap',
                        'chef-infra',
                        'firecraker',
                        'gVisor',
                        'garden-linux',
+                       'libkrun',
                        'nvidia-gpu-driver-container',
                        'openshell',
                        'xen-hypervisor'],
@@ -99,7 +100,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         remediation = self.report["remediation"]
         self.assertEqual(17, len(remediation["emitter_missing_slug"]))
         self.assertEqual(
-            {'test1': 7, 'test2': 7, 'test3': 7, 'test4': 10, 'test5': 51, 'test6': 13},
+            {'test1': 8, 'test2': 8, 'test3': 8, 'test4': 11, 'test5': 52, 'test6': 13},
             {
                 key: len(value)
                 for key, value in remediation["missing_test_duration"].items()
@@ -152,14 +153,14 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         )
         # Xen writes a runtime-selected $DECISION; the advisory scan does not
         # infer its baseline-failure branches from literal output records.
-        self.assertEqual(29, len(remediation["no_literal_decision"]))
+        self.assertEqual(30, len(remediation["no_literal_decision"]))
         self.assertIn("xen-hypervisor", remediation["no_literal_decision"])
         self.assertEqual(
             304, len(remediation["package_manager_summary_omits_test6"])
         )
         # The audit flags every default except not_configured, including Chef's
         # Garden's, Chiaki's and these repairs' failure defaults; runtime tests prove they stay red.
-        self.assertEqual(19, len(remediation["unsafe_fallback_workflows"]))
+        self.assertEqual(20, len(remediation["unsafe_fallback_workflows"]))
         self.assertIn("chef-infra", remediation["unsafe_fallback_workflows"])
         self.assertIn("chiaki-ng", remediation["unsafe_fallback_workflows"])
         self.assertIn("garden-linux", remediation["unsafe_fallback_workflows"])
@@ -188,24 +189,24 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             406, len(remediation["package_manager_missing_baseline_guard"])
         )
         self.assertEqual(
-            964, len(remediation["missing_package_observation_output"])
+            965, len(remediation["missing_package_observation_output"])
         )
         self.assertEqual(
-            964, len(remediation["missing_package_observation_step"])
+            965, len(remediation["missing_package_observation_step"])
         )
         self.assertEqual([], remediation["invalid_package_observation_contract"])
         self.assertEqual(
             [], remediation["invalid_package_observation_input_bindings"]
         )
         self.assertEqual(
-            964,
+            965,
             len(remediation["missing_workflow_call_observation_output"]),
         )
         self.assertEqual(
             [], remediation["invalid_workflow_call_observation_output"]
         )
         self.assertEqual(
-            372,
+            373,
             len(remediation["non_package_manager_missing_baseline_guard"]),
         )
         self.assertIn(
@@ -255,7 +256,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            '8d94238912e7ab7d8dbafbe514221ac9d4418ab44603b70264eb8233ec7bd1f2',
+            '6c82d08e70d32f6b97fced6b9d083b32554beb6a7e0e16c1741544adb9f2f3dd',
             digest,
         )
 
@@ -444,6 +445,39 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             elif "firecraker" in entries or any(
                 isinstance(entry, dict)
                 and entry.get("package_slug") == "firecraker"
+                for entry in entries
+            ):
+                actual.add(key)
+        self.assertEqual(expected, actual)
+
+    def test_libkrun_advisory_classifications_are_exact(self) -> None:
+        expected = {'missing_package_observation_output',
+         'missing_package_observation_step',
+         'missing_test_duration.test1',
+         'missing_test_duration.test2',
+         'missing_test_duration.test3',
+         'missing_test_duration.test4',
+         'missing_test_duration.test5',
+         'missing_test_status.test1',
+         'missing_test_status.test2',
+         'missing_test_status.test3',
+         'missing_test_status.test4',
+         'missing_test_status.test5',
+         'missing_workflow_call_observation_output',
+         'no_literal_decision',
+         'non_package_manager_missing_baseline_guard',
+         'unsafe_fallback_workflows'}
+        actual = set()
+        for key, entries in self.report["remediation"].items():
+            if isinstance(entries, dict):
+                actual.update(
+                    f"{key}.{field}"
+                    for field, members in entries.items()
+                    if "libkrun" in members
+                )
+            elif "libkrun" in entries or any(
+                isinstance(entry, dict)
+                and entry.get("package_slug") == "libkrun"
                 for entry in entries
             ):
                 actual.add(key)
