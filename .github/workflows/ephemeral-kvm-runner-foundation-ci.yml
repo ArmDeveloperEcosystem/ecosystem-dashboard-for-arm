@@ -1,0 +1,183 @@
+name: Ephemeral KVM runner foundation CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/CODEOWNERS"
+      - ".github/EPHEMERAL_KVM_RUNNER.md"
+      - ".github/actions/cleanup-ephemeral-kvm-runner/**"
+      - ".github/actions/provision-ephemeral-kvm-runner/**"
+      - ".github/infrastructure/ecosystem-kvm-runner.yaml"
+      - ".github/scripts/tests/test_ephemeral_kvm_runner_foundation.py"
+      - ".github/scripts/requirements-cfn-lint.txt"
+      - ".github/workflows/ephemeral-kvm-runner-foundation-ci.yml"
+      - ".github/workflows/validate-ephemeral-kvm-runner.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ephemeral-kvm-foundation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-foundation:
+    name: Validate ephemeral KVM foundation
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out candidate without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install checksum-pinned YAML parser
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/kvm-foundation-venv"
+          "$RUNNER_TEMP/kvm-foundation-venv/bin/python" -m pip install \
+            --disable-pip-version-check \
+            --no-deps \
+            --only-binary=:all: \
+            --require-hashes \
+            --requirement .github/scripts/requirements-exact-run.txt
+          printf '%s\n' "$RUNNER_TEMP/kvm-foundation-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Verify privileged action pins against GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_action() {
+            local repository="$1" repository_id="$2" tag="$3"
+            local expected="$4" action_file="$5"
+            local remote resolved api_sha file_type live_id live_name verification
+            live_id="$(gh api "repos/${repository}" --jq '.id')"
+            live_name="$(gh api "repos/${repository}" --jq '.full_name')"
+            [[ "$live_id" == "$repository_id" ]]
+            [[ "$live_name" == "$repository" ]]
+            remote="$(git ls-remote --exit-code \
+              "https://github.com/${repository}.git" \
+              "refs/tags/${tag}" "refs/tags/${tag}^{}")"
+            resolved="$(awk '$2 ~ /\^\{\}$/ {print $1}' <<< "$remote")"
+            if [[ -z "$resolved" ]]; then
+              resolved="$(awk -v ref="refs/tags/${tag}" '$2 == ref {print $1}' <<< "$remote")"
+            fi
+            [[ "$resolved" == "$expected" ]]
+            api_sha="$(gh api "repos/${repository}/commits/${expected}" --jq '.sha')"
+            [[ "$api_sha" == "$expected" ]]
+            verification="$(gh api "repos/${repository}/commits/${expected}" \
+              --jq '[.commit.verification.verified, .commit.verification.reason] | @tsv')"
+            [[ "$verification" == $'true\tvalid' ]]
+            file_type="$(gh api "repos/${repository}/contents/${action_file}?ref=${expected}" --jq '.type')"
+            [[ "$file_type" == "file" ]]
+          }
+
+          verify_action actions/checkout 197814629 v6.1.0 \
+            d23441a48e516b6c34aea4fa41551a30e30af803 action.yml
+          verify_action actions/create-github-app-token 642580244 v3.3.0 \
+            64ab729a6294000f5aa4a4bc0b73d1f32bc45510 action.yml
+          verify_action aws-actions/configure-aws-credentials 220391287 v6.3.0 \
+            e1253824e5c10ff9df46874f81ed3ec929e19cfd action.yml
+          verify_action actions/upload-artifact 192625955 v4.6.2 \
+            ea165f8d65b6e75b540449e92b4886f43607fa02 action.yml
+
+      - name: Run adversarial foundation tests
+        run: >-
+          python3 -m unittest discover
+          -s .github/scripts/tests
+          -p 'test_ephemeral_kvm_runner_foundation.py'
+          -v
+
+      - name: Validate action and workflow YAML
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby -e '
+            require "yaml"
+            ARGV.each do |path|
+              document = YAML.safe_load(File.read(path), aliases: false)
+              abort "#{path} must be a mapping" unless document.is_a?(Hash)
+            end
+          ' \
+            .github/actions/cleanup-ephemeral-kvm-runner/action.yml \
+            .github/actions/provision-ephemeral-kvm-runner/action.yml \
+            .github/workflows/ephemeral-kvm-runner-foundation-ci.yml \
+            .github/workflows/validate-ephemeral-kvm-runner.yml
+
+      - name: Validate the CloudFormation resource schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/cfn-lint-venv"
+          "$RUNNER_TEMP/cfn-lint-venv/bin/python" -m pip install \
+            --disable-pip-version-check \
+            --only-binary=:all: \
+            --require-hashes \
+            --requirement .github/scripts/requirements-cfn-lint.txt
+          "$RUNNER_TEMP/cfn-lint-venv/bin/cfn-lint" \
+            .github/infrastructure/ecosystem-kvm-runner.yaml
+
+      - name: Shellcheck every foundation shell block
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v shellcheck >/dev/null
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          import yaml
+
+
+          paths = [
+              Path(".github/actions/cleanup-ephemeral-kvm-runner/action.yml"),
+              Path(".github/actions/provision-ephemeral-kvm-runner/action.yml"),
+              Path(".github/workflows/ephemeral-kvm-runner-foundation-ci.yml"),
+              Path(".github/workflows/validate-ephemeral-kvm-runner.yml"),
+          ]
+
+
+          def visit(node, path):
+              if isinstance(node, dict):
+                  run = node.get("run")
+                  if isinstance(run, str):
+                      subprocess.run(
+                          ["shellcheck", "--shell", "bash", "-"],
+                          input=run,
+                          text=True,
+                          check=True,
+                      )
+                  for value in node.values():
+                      visit(value, path)
+              elif isinstance(node, list):
+                  for value in node:
+                      visit(value, path)
+
+
+          for path in paths:
+              visit(yaml.safe_load(path.read_text()), path)
+          PY
+
+      - name: Lint foundation workflows
+        env:
+          ACTIONLINT_SHA256: 325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6
+          ACTIONLINT_VERSION: 1.7.12
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          binary="$RUNNER_TEMP/actionlint"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_arm64.tar.gz"
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" "$archive" | sha256sum --check --strict
+          tar --extract --gzip --file "$archive" --directory "$RUNNER_TEMP" actionlint
+          chmod 0755 "$binary"
+          "$binary" -shellcheck=shellcheck \
+            .github/workflows/ephemeral-kvm-runner-foundation-ci.yml \
+            .github/workflows/validate-ephemeral-kvm-runner.yml

@@ -1848,7 +1848,7 @@ class WorkflowExactRunBindingTests(unittest.TestCase):
                     called_job,
                 )
 
-    def test_all_962_package_workflows_are_registered_exactly_once(self) -> None:
+    def test_all_966_package_workflows_are_registered_exactly_once(self) -> None:
         registrations: list[str] = []
         for wrapper in self.workflow_root.glob("test-all-packages-batch*.yml"):
             registrations.extend(
@@ -1857,8 +1857,12 @@ class WorkflowExactRunBindingTests(unittest.TestCase):
                     wrapper.read_text(encoding="utf-8"),
                 )
             )
-        self.assertEqual(len(registrations), 962)
-        self.assertEqual(len(set(registrations)), 962)
+        self.assertEqual(len(registrations), 966)
+        self.assertEqual(len(set(registrations)), 966)
+        self.assertIn("test-bubblewrap.yml", registrations)
+        self.assertIn("test-openshell.yml", registrations)
+        self.assertIn("test-anthropic-sandbox-runtime.yml", registrations)
+        self.assertIn("test-libkrun.yml", registrations)
         self.assertIn("test-microsandbox.yml", registrations)
         package_workflow_inventory = {
             path.name

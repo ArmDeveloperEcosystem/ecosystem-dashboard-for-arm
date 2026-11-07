@@ -229,7 +229,7 @@ jobs:
 
 
 class RepositoryBatchAttestationContractTests(unittest.TestCase):
-    def test_helper_parses_all_962_exact_wrapper_registrations(self) -> None:
+    def test_helper_parses_all_966_exact_wrapper_registrations(self) -> None:
         workflow_root = SCRIPT_ROOT.parents[1] / ".github/workflows"
         registrations = []
         counts = []
@@ -241,9 +241,19 @@ class RepositoryBatchAttestationContractTests(unittest.TestCase):
             counts.append(len(current))
             registrations.extend(current)
             if batch == 22:
+                self.assertIn(("test-bubblewrap", "test-bubblewrap.yml"), current)
+                self.assertIn(("test-openshell", "test-openshell.yml"), current)
+                self.assertIn(
+                    (
+                        "test-anthropic-sandbox-runtime",
+                        "test-anthropic-sandbox-runtime.yml",
+                    ),
+                    current,
+                )
+                self.assertIn(("test-libkrun", "test-libkrun.yml"), current)
                 self.assertIn(("test-microsandbox", "test-microsandbox.yml"), current)
-        self.assertEqual(len(registrations), 962)
-        self.assertEqual(len({workflow for _, workflow in registrations}), 962)
+        self.assertEqual(len(registrations), 966)
+        self.assertEqual(len({workflow for _, workflow in registrations}), 966)
         self.assertLessEqual(max(counts), 45)
 
 

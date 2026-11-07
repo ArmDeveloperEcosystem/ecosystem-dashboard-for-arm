@@ -1,0 +1,303 @@
+name: Supplemental libkrun real guest validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type RUN-LIBKRUN-KVM to launch one disposable Arm64 KVM runner.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supplemental-kvm-libkrun
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize protected main run
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce immutable dispatch boundary
+        env:
+          ALLOWED_ACTORS_JSON: ${{ vars.ECOSYSTEM_KVM_ALLOWED_ACTORS_JSON }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          GH_TOKEN: ${{ github.token }}
+          ORIGINAL_ACTOR: ${{ github.actor }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "ArmDeveloperEcosystem/ecosystem-dashboard-for-arm"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$REF_PROTECTED" = "true"
+          test "$CONFIRMATION" = "RUN-LIBKRUN-KVM"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          jq -e \
+            --arg original "$ORIGINAL_ACTOR" \
+            --arg triggering "$TRIGGERING_ACTOR" \
+            'type == "array" and length > 0 and
+             all(.[]; type == "string" and test("^[A-Za-z0-9-]+$")) and
+             index($original) != null and index($triggering) != null' \
+            <<< "$ALLOWED_ACTORS_JSON" >/dev/null
+          current_main_sha="$(gh api \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+            --jq '.object.sha')"
+          test "$GITHUB_SHA" = "$current_main_sha"
+
+  provision:
+    name: Provision one-job KVM runner
+    needs: authorize
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    environment: kvm-runner-provision
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      instance-id: ${{ steps.provision.outputs.instance-id }}
+      ownership-nonce: ${{ steps.provision.outputs.ownership-nonce }}
+      runner-label: ${{ steps.provision.outputs.runner-label }}
+      runner-name: ${{ steps.provision.outputs.runner-name }}
+    steps:
+      - name: Check out trusted main without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Provision disposable runner
+        id: provision
+        uses: ./.github/actions/provision-ephemeral-kvm-runner
+        with:
+          aws-role-arn: ${{ vars.ECOSYSTEM_KVM_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.ECOSYSTEM_KVM_REGION }}
+          broker-function-name: ${{ vars.ECOSYSTEM_KVM_BROKER_FUNCTION_NAME }}
+          runner-app-id: ${{ vars.ECOSYSTEM_KVM_RUNNER_APP_ID }}
+          runner-app-private-key: ${{ secrets.ECOSYSTEM_KVM_RUNNER_APP_PRIVATE_KEY }}
+          runner-group-id: ${{ vars.ECOSYSTEM_KVM_RUNNER_GROUP_ID }}
+          repository-read-token: ${{ github.token }}
+          ttl-seconds: "3600"
+
+  guest:
+    name: Boot a real libkrun Arm64 guest
+    needs: provision
+    timeout-minutes: 45
+    permissions: {}
+    runs-on:
+      group: ${{ vars.ECOSYSTEM_KVM_RUNNER_GROUP_NAME }}
+      labels: ${{ needs.provision.outputs.runner-label }}
+    env:
+      BASELINE_VERSION: "1.19.7"
+      SOURCE_COMMIT: "43b2f5aadeebb90f42053c9df2ec8b16583e554f"
+      SOURCE_SHA256: "7c31a3c62e696efbf13268ee6f37eb4740d82ea599dcd724525fe8f8f72729b0"
+      FIRMWARE_SHA256: "dea7905a167eee17d482200ea2fe15871aceb293b0674ac825ed7ae69759399f"
+      HELPER_SHA256: "55e51ca03d549cda4e0ee71548876b8f6d1945f310a781dc02d772a87921702d"
+      RUSTUP_INIT_SHA256: "e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c"
+      RUST_TOOLCHAIN: "1.94.0"
+      EXPECTED_RUNNER_NAME: ${{ needs.provision.outputs.runner-name }}
+    steps:
+      - name: Verify isolated native KVM target and credential absence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_NAME" = "$EXPECTED_RUNNER_NAME"
+          test "$RUNNER_ARCH" = "ARM64"
+          test "$(uname -s)" = "Linux"
+          test "$(uname -m)" = "aarch64"
+          test -c /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
+          for name in \
+            AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+            ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL \
+            ECOSYSTEM_KVM_RUNNER_APP_PRIVATE_KEY GH_TOKEN GITHUB_TOKEN; do
+            test -z "${!name:-}"
+          done
+          if curl --silent --show-error --max-time 2 \
+            http://169.254.169.254/latest/meta-data/ >/dev/null 2>&1; then
+            echo "Instance metadata unexpectedly responded." >&2
+            exit 1
+          fi
+          timeout 30s python3 - <<'PY'
+          import fcntl
+          import os
+
+          device = os.open("/dev/kvm", os.O_RDWR | os.O_CLOEXEC)
+          try:
+              version = fcntl.ioctl(device, 0xAE00, 0)
+              if version != 12:
+                  raise SystemExit(f"unexpected KVM API version: {version}")
+              vm = fcntl.ioctl(device, 0xAE01, 0)
+              os.close(vm)
+          finally:
+              os.close(device)
+          PY
+
+      - name: Fetch the exact public main source archive without a repository token
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          ARCHIVE="$RUNNER_TEMP/dashboard-$GITHUB_SHA.tar.gz"
+          HELPER="$RUNNER_TEMP/libkrun_guest_smoke.sh"
+          curl --fail --location --retry 3 --connect-timeout 20 --max-time 180 \
+            --output "$ARCHIVE" \
+            "https://codeload.github.com/$GITHUB_REPOSITORY/tar.gz/$GITHUB_SHA"
+          python3 - "$ARCHIVE" "$HELPER" <<'PY'
+          from pathlib import Path
+          import sys
+          import tarfile
+
+          archive = Path(sys.argv[1])
+          destination = Path(sys.argv[2])
+          suffix = "/.github/scripts/tests/libkrun_guest_smoke.sh"
+          with tarfile.open(archive, mode="r:gz") as bundle:
+              matches = [member for member in bundle.getmembers()
+                         if member.name.endswith(suffix)]
+              if len(matches) != 1 or not matches[0].isfile():
+                  raise SystemExit("trusted helper is missing or ambiguous")
+              source = bundle.extractfile(matches[0])
+              if source is None:
+                  raise SystemExit("trusted helper could not be read")
+              payload = source.read()
+          if not payload.startswith(b"#!/usr/bin/env bash\n"):
+              raise SystemExit("trusted helper has an unexpected format")
+          destination.write_bytes(payload)
+          destination.chmod(0o700)
+          PY
+          printf '%s  %s\n' "$HELPER_SHA256" "$HELPER" | sha256sum --check --strict
+          {
+            echo "LIBKRUN_GUEST_HELPER=$HELPER"
+            echo "DASHBOARD_SOURCE_ARCHIVE=$ARCHIVE"
+          } >> "$GITHUB_ENV"
+
+      - name: Build the pinned native libkrun runtime bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          timeout --kill-after=30s 600s sudo apt-get -qq update
+          timeout --kill-after=30s 600s sudo apt-get -qq install \
+            --no-install-recommends -y \
+            build-essential pkg-config patchelf python3 curl ca-certificates \
+            binutils libc6-dev docker.io
+          sudo systemctl start docker
+          timeout 30s sudo docker info >/dev/null
+
+          CARGO_HOME="$RUNNER_TEMP/cargo"
+          RUSTUP_HOME="$RUNNER_TEMP/rustup"
+          export CARGO_HOME RUSTUP_HOME
+          curl --fail --location --retry 3 --connect-timeout 20 --max-time 180 \
+            --output "$RUNNER_TEMP/rustup-init" \
+            "https://static.rust-lang.org/rustup/archive/1.28.2/aarch64-unknown-linux-gnu/rustup-init"
+          printf '%s  %s\n' "$RUSTUP_INIT_SHA256" "$RUNNER_TEMP/rustup-init" \
+            | sha256sum --check --strict
+          chmod 0700 "$RUNNER_TEMP/rustup-init"
+          "$RUNNER_TEMP/rustup-init" -y --profile minimal \
+            --default-toolchain none --no-modify-path
+          timeout --kill-after=30s 600s "$CARGO_HOME/bin/rustup" \
+            toolchain install "$RUST_TOOLCHAIN" --profile minimal
+
+          BUILD="$RUNNER_TEMP/libkrun-source"
+          PREFIX="$RUNNER_TEMP/libkrun-install"
+          FIRMWARE_ROOT="$RUNNER_TEMP/libkrun-firmware"
+          mkdir -p "$BUILD" "$PREFIX" "$FIRMWARE_ROOT"
+          curl --fail --location --retry 3 --connect-timeout 20 --max-time 180 \
+            --output "$RUNNER_TEMP/libkrun.tar.gz" \
+            "https://codeload.github.com/libkrun/libkrun/tar.gz/$SOURCE_COMMIT"
+          printf '%s  %s\n' "$SOURCE_SHA256" "$RUNNER_TEMP/libkrun.tar.gz" \
+            | sha256sum --check --strict
+          timeout 60s tar -xzf "$RUNNER_TEMP/libkrun.tar.gz" \
+            --strip-components=1 -C "$BUILD"
+          curl --fail --location --retry 3 --connect-timeout 20 --max-time 180 \
+            --output "$RUNNER_TEMP/libkrunfw.tgz" \
+            "https://github.com/libkrun/libkrunfw/releases/download/v5.6.2/libkrunfw-aarch64.tgz"
+          printf '%s  %s\n' "$FIRMWARE_SHA256" "$RUNNER_TEMP/libkrunfw.tgz" \
+            | sha256sum --check --strict
+          timeout 60s tar -xzf "$RUNNER_TEMP/libkrunfw.tgz" -C "$FIRMWARE_ROOT"
+          FIRMWARE_DIR="$FIRMWARE_ROOT/lib/aarch64-linux-gnu"
+          test -f "$FIRMWARE_DIR/libkrunfw.so.5.6.2"
+
+          cd "$BUILD"
+          timeout --kill-after=30s 1200s "$CARGO_HOME/bin/cargo" \
+            +"$RUST_TOOLCHAIN" build --release --locked -p libkrun
+          cp target/release/libkrun.so "target/release/libkrun.so.$BASELINE_VERSION"
+          timeout --kill-after=30s 300s make PREFIX="$PREFIX" install
+          export PKG_CONFIG_PATH="$PREFIX/lib64/pkgconfig"
+          test "$(pkg-config --modversion libkrun)" = "$BASELINE_VERSION"
+          readelf -h "$PREFIX/lib64/libkrun.so.$BASELINE_VERSION" \
+            | grep -Eq 'Machine: +AArch64'
+          readelf -h "$FIRMWARE_DIR/libkrunfw.so.5.6.2" \
+            | grep -Eq 'Machine: +AArch64'
+          {
+            echo "LIBKRUN_PREFIX=$PREFIX"
+            echo "LIBKRUNFW_DIR=$FIRMWARE_DIR"
+          } >> "$GITHUB_ENV"
+
+      - name: Boot guest and require Arm64 I/O and exit propagation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x "$LIBKRUN_GUEST_HELPER"
+          sudo env -i \
+            HOME=/root \
+            LC_ALL=C \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            RUNNER_TEMP="$RUNNER_TEMP" \
+            LIBKRUN_PREFIX="$LIBKRUN_PREFIX" \
+            LIBKRUNFW_DIR="$LIBKRUNFW_DIR" \
+            /bin/bash "$LIBKRUN_GUEST_HELPER" guest \
+            | tee "$RUNNER_TEMP/libkrun-guest-evidence.log"
+          grep -Fx LIBKRUN_GUEST_OK "$RUNNER_TEMP/libkrun-guest-evidence.log"
+          grep -Fx LIBKRUN_GUEST_EXIT_STATUS_OK "$RUNNER_TEMP/libkrun-guest-evidence.log"
+          test -z "$(sudo docker ps -a \
+            --filter label=io.arm-dashboard.libkrun-smoke-owner \
+            --format '{{.ID}}')"
+          {
+            echo "## libkrun supplemental real guest evidence"
+            echo "- Dashboard commit: $GITHUB_SHA"
+            echo "- libkrun version: $BASELINE_VERSION"
+            echo "- Native target: $(uname -m) with usable KVM API version 12"
+            echo "- Guest evidence: Arm64 identity, filesystem write/read and exit status 23 all observed"
+            echo "- Credential boundary: no repository, App, AWS or OIDC credential was exposed to this job"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cleanup:
+    name: Terminate and verify runner cleanup
+    if: ${{ always() && needs.provision.result != 'skipped' }}
+    needs:
+      - provision
+      - guest
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    environment: kvm-runner-cleanup
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out trusted main without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Terminate target and remove stale registration
+        uses: ./.github/actions/cleanup-ephemeral-kvm-runner
+        with:
+          aws-role-arn: ${{ vars.ECOSYSTEM_KVM_AWS_CLEANUP_ROLE_ARN }}
+          aws-region: ${{ vars.ECOSYSTEM_KVM_REGION }}
+          cleanup-function-name: ${{ vars.ECOSYSTEM_KVM_CLEANUP_FUNCTION_NAME }}
+          instance-id: ${{ needs.provision.outputs.instance-id }}
+          ownership-nonce: ${{ needs.provision.outputs.ownership-nonce }}
+          source-run-id: ${{ github.run_id }}
+          source-run-attempt: ${{ github.run_attempt }}
+          runner-name: ${{ needs.provision.outputs.runner-name }}
+          runner-app-id: ${{ vars.ECOSYSTEM_KVM_RUNNER_APP_ID }}
+          runner-app-private-key: ${{ secrets.ECOSYSTEM_KVM_RUNNER_APP_PRIVATE_KEY }}

@@ -36,10 +36,15 @@ EXACT_RUN_SPEC.loader.exec_module(exact_run)
 
 
 EXPECTED_BATCHES = 22
-EXPECTED_WORKFLOWS = 962
-EXPECTED_EXTERNAL_USES = 1132
+EXPECTED_WORKFLOWS = 966
+EXPECTED_EXTERNAL_USES = 1136
 EXPECTED_CONTAINER_USES = 10
-REVIEWED_ADDED_WORKFLOWS = (".github/workflows/test-microsandbox.yml",)
+REVIEWED_ADDED_WORKFLOWS = (
+    ".github/workflows/test-microsandbox.yml",
+)
+ADDED_WORKFLOW_RE = re.compile(
+    r"\.github/workflows/test-[A-Za-z0-9._-]+\.yml"
+)
 SINGLE_MANIFEST_MEDIA_TYPES = frozenset({
     "application/vnd.oci.image.manifest.v1+json",
     "application/vnd.docker.distribution.manifest.v2+json",
@@ -267,6 +272,8 @@ def validate_container_lock_entry(entry: object) -> str:
 
 def validate_hardened_workflow_transition(
     lock: dict[str, object],
+    *,
+    enforce_reviewed_additions: bool = True,
 ) -> dict[str, object] | None:
     transition = lock.get("hardened_workflow_transition")
     if transition is None:
@@ -274,7 +281,27 @@ def validate_hardened_workflow_transition(
     expected_keys = {"from_sha256", "to_sha256", "reason"}
     if isinstance(transition, dict) and "added_workflows" in transition:
         expected_keys.add("added_workflows")
-        if transition["added_workflows"] != list(REVIEWED_ADDED_WORKFLOWS):
+        additions = transition["added_workflows"]
+        additions_are_canonical = (
+            isinstance(additions, list)
+            and bool(additions)
+            and all(
+                isinstance(path, str) and ADDED_WORKFLOW_RE.fullmatch(path)
+                for path in additions
+            )
+            and len(additions) == len(set(additions))
+        )
+        if not additions_are_canonical:
+            message = (
+                "hardened workflow additions do not match the reviewed package addition"
+                if enforce_reviewed_additions
+                else "hardened workflow additions are malformed"
+            )
+            raise ContractError(message)
+        if (
+            enforce_reviewed_additions
+            and additions != list(REVIEWED_ADDED_WORKFLOWS)
+        ):
             raise ContractError(
                 "hardened workflow additions do not match the reviewed package addition"
             )
