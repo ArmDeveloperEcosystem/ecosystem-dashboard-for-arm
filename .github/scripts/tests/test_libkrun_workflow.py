@@ -97,6 +97,7 @@ class PackageWorkflowTests(unittest.TestCase):
         self.assertEqual(self.job["runs-on"], "ubuntu-24.04-arm")
         self.assertEqual(self.job["steps"][0]["uses"], CHECKOUT)
         self.assertEqual(self.job["steps"][0]["with"]["persist-credentials"], "false")
+        self.assertTrue(self.steps["test6"]["name"].startswith("Test 6 -"))
         self.assertNotIn("||", self.steps["version"]["run"])
         self.assertEqual("libkrun", self.job["outputs"]["package_name"])
         structured_outputs = "\n".join(self.job["outputs"].values())
