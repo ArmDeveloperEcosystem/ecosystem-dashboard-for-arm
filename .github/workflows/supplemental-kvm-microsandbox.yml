@@ -1,0 +1,294 @@
+name: Supplemental Microsandbox real guest validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type RUN-MICROSANDBOX-KVM to launch one disposable Arm64 KVM runner.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supplemental-kvm-microsandbox
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize protected main run
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce immutable dispatch boundary
+        env:
+          ALLOWED_ACTORS_JSON: ${{ vars.ECOSYSTEM_KVM_ALLOWED_ACTORS_JSON }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          GH_TOKEN: ${{ github.token }}
+          ORIGINAL_ACTOR: ${{ github.actor }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "ArmDeveloperEcosystem/ecosystem-dashboard-for-arm"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$REF_PROTECTED" = "true"
+          test "$CONFIRMATION" = "RUN-MICROSANDBOX-KVM"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          jq -e \
+            --arg original "$ORIGINAL_ACTOR" \
+            --arg triggering "$TRIGGERING_ACTOR" \
+            'type == "array" and length > 0 and
+             all(.[]; type == "string" and test("^[A-Za-z0-9-]+$")) and
+             index($original) != null and index($triggering) != null' \
+            <<< "$ALLOWED_ACTORS_JSON" >/dev/null
+          CURRENT_MAIN_SHA=$(gh api \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+            --jq '.object.sha')
+          test "$GITHUB_SHA" = "$CURRENT_MAIN_SHA"
+
+  provision:
+    name: Provision one-job KVM runner
+    needs: authorize
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    environment: kvm-runner-provision
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      instance-id: ${{ steps.provision.outputs.instance-id }}
+      ownership-nonce: ${{ steps.provision.outputs.ownership-nonce }}
+      runner-label: ${{ steps.provision.outputs.runner-label }}
+      runner-name: ${{ steps.provision.outputs.runner-name }}
+    steps:
+      - name: Check out trusted main without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Provision disposable runner
+        id: provision
+        uses: ./.github/actions/provision-ephemeral-kvm-runner
+        with:
+          aws-role-arn: ${{ vars.ECOSYSTEM_KVM_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.ECOSYSTEM_KVM_REGION }}
+          broker-function-name: ${{ vars.ECOSYSTEM_KVM_BROKER_FUNCTION_NAME }}
+          runner-app-id: ${{ vars.ECOSYSTEM_KVM_RUNNER_APP_ID }}
+          runner-app-private-key: ${{ secrets.ECOSYSTEM_KVM_RUNNER_APP_PRIVATE_KEY }}
+          runner-group-id: ${{ vars.ECOSYSTEM_KVM_RUNNER_GROUP_ID }}
+          repository-read-token: ${{ github.token }}
+
+  guest:
+    name: Execute strict Microsandbox guest probes
+    needs: provision
+    timeout-minutes: 25
+    permissions: {}
+    runs-on:
+      group: ${{ vars.ECOSYSTEM_KVM_RUNNER_GROUP_NAME }}
+      labels: ${{ needs.provision.outputs.runner-label }}
+    env:
+      BASELINE_VERSION: "0.7.11"
+      BUNDLE_SHA256: "ab1c371e85ff101581b7cf092dbaad6f5b720736ca042aa0d6d4b950f57d6709"
+      EXPECTED_HELPER_SHA256: "098712adb228341dca437f574b5532ac448fb37cd18b4f6a2cfaec5b25704895"
+      EXPECTED_RUNNER_NAME: ${{ needs.provision.outputs.runner-name }}
+    steps:
+      - name: Verify runner identity, KVM and credential isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_NAME" = "$EXPECTED_RUNNER_NAME"
+          test "$RUNNER_ARCH" = "ARM64"
+          test "$(uname -s)" = "Linux"
+          test "$(uname -m)" = "aarch64"
+          test -c /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
+          for name in \
+            AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+            ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL \
+            ECOSYSTEM_KVM_RUNNER_APP_PRIVATE_KEY GH_TOKEN GITHUB_TOKEN; do
+            test -z "${!name:-}"
+          done
+          if curl --silent --show-error --max-time 2 \
+            http://169.254.169.254/latest/meta-data/ >/dev/null 2>&1; then
+            echo "Instance metadata unexpectedly responded." >&2
+            exit 1
+          fi
+          timeout 30s python3 - <<'PY'
+          import fcntl
+          import os
+
+          device = os.open("/dev/kvm", os.O_RDWR | os.O_CLOEXEC)
+          try:
+              if fcntl.ioctl(device, 0xAE00, 0) != 12:
+                  raise SystemExit("unexpected KVM API version")
+              vm = fcntl.ioctl(device, 0xAE01, 0)
+              os.close(vm)
+          finally:
+              os.close(device)
+          PY
+
+      - name: Fetch exact public source helper and pinned runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get -qq update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq install \
+            --no-install-recommends -y binutils ca-certificates curl python3
+          WORK=$(mktemp -d "$RUNNER_TEMP/microsandbox-kvm.XXXXXXXX")
+          SOURCE_ARCHIVE="$WORK/source.tar.gz"
+          HELPER="$WORK/microsandbox_guest_smoke.sh"
+          BUNDLE="$WORK/runtime"
+          mkdir -p "$BUNDLE"
+
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+            --output "$SOURCE_ARCHIVE" \
+            "https://github.com/$GITHUB_REPOSITORY/archive/$GITHUB_SHA.tar.gz"
+          python3 - "$SOURCE_ARCHIVE" "$HELPER" <<'PY'
+          from pathlib import Path, PurePosixPath
+          import sys
+          import tarfile
+
+          archive = Path(sys.argv[1])
+          target = Path(sys.argv[2])
+          suffix = "/.github/scripts/tests/microsandbox_guest_smoke.sh"
+          with tarfile.open(archive, "r:gz") as source:
+              matches = [member for member in source.getmembers() if member.name.endswith(suffix)]
+              if len(matches) != 1 or not matches[0].isfile():
+                  raise SystemExit("exact guest helper is missing from the source archive")
+              parts = PurePosixPath(matches[0].name).parts
+              if ".." in parts or len(parts) < 5:
+                  raise SystemExit("guest helper archive path is unsafe")
+              stream = source.extractfile(matches[0])
+              if stream is None:
+                  raise SystemExit("guest helper archive member is unreadable")
+              target.write_bytes(stream.read())
+          target.chmod(0o700)
+          PY
+          echo "$EXPECTED_HELPER_SHA256  $HELPER" | sha256sum --check --strict
+
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+            --output "$WORK/microsandbox.tar.gz" \
+            "https://github.com/superradcompany/microsandbox/releases/download/v$BASELINE_VERSION/microsandbox-linux-aarch64.tar.gz"
+          echo "$BUNDLE_SHA256  $WORK/microsandbox.tar.gz" | sha256sum --check --strict
+          tar -xzf "$WORK/microsandbox.tar.gz" -C "$BUNDLE"
+          test -x "$BUNDLE/msb"
+          test -f "$BUNDLE/libkrunfw.so.5.6.1"
+          readelf -h "$BUNDLE/msb" | grep -Eq 'Machine: +AArch64'
+          readelf -h "$BUNDLE/libkrunfw.so.5.6.1" | grep -Eq 'Machine: +AArch64'
+          test "$(timeout 15s "$BUNDLE/msb" --version)" = "msb $BASELINE_VERSION"
+          {
+            echo "MICROSANDBOX_GUEST_HELPER=$HELPER"
+            echo "MSB_HOME=$WORK/home"
+            echo "MSB_PATH=$BUNDLE/msb"
+            echo "MSB_LIBKRUNFW_PATH=$BUNDLE/libkrunfw.so.5.6.1"
+          } >> "$GITHUB_ENV"
+
+      - name: Require healthy KVM and Microsandbox runtime prerequisites
+        shell: bash
+        run: bash "$MICROSANDBOX_GUEST_HELPER" preflight
+
+      - name: Boot Arm64 guest and verify guest filesystem I/O
+        shell: bash
+        run: bash "$MICROSANDBOX_GUEST_HELPER" guest
+
+      - name: Verify exact guest exit-status propagation
+        shell: bash
+        run: bash "$MICROSANDBOX_GUEST_HELPER" exit-status
+
+      - name: Verify named guest lifecycle and subsequent exec
+        shell: bash
+        run: bash "$MICROSANDBOX_GUEST_HELPER" lifecycle
+
+      - name: Write sanitized supplemental evidence
+        env:
+          EVIDENCE_PATH: ${{ runner.temp }}/microsandbox-kvm-evidence.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import platform
+
+          evidence = {
+              "schema_version": 1,
+              "scope": "supplemental_real_guest",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "commit": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "runner_name": os.environ["EXPECTED_RUNNER_NAME"],
+              "runner_arch": os.environ["RUNNER_ARCH"],
+              "machine": platform.machine(),
+              "package_version": os.environ["BASELINE_VERSION"],
+              "bundle_sha256": os.environ["BUNDLE_SHA256"],
+              "helper_sha256": os.environ["EXPECTED_HELPER_SHA256"],
+              "kvm_api_version": 12,
+              "guest_modes_passed": ["preflight", "guest", "exit-status", "lifecycle"],
+              "credential_absence_check": "passed",
+              "metadata_endpoint_check": "unreachable",
+          }
+          Path(os.environ["EVIDENCE_PATH"]).write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+          chmod 0600 "$EVIDENCE_PATH"
+
+      - name: Preserve sanitized supplemental evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: microsandbox-kvm-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/microsandbox-kvm-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Summarize supplemental validation
+        shell: bash
+        run: |
+          {
+            echo "## Microsandbox supplemental real guest validation"
+            echo "- Version: $BASELINE_VERSION"
+            echo "- Source: protected main commit \`$GITHUB_SHA\` fetched from the public archive without a repository token"
+            echo "- Result: KVM API, Arm64 guest boot, guest I/O, exit propagation, lifecycle and cleanup all passed"
+            echo "- Publication scope: supplemental evidence only; the recurring dashboard badge remains sourced from the hosted workflow"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cleanup:
+    name: Terminate and verify runner cleanup
+    if: ${{ always() && needs.provision.result != 'skipped' }}
+    needs:
+      - provision
+      - guest
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    environment: kvm-runner-cleanup
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out trusted main without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Terminate target and remove stale registration
+        uses: ./.github/actions/cleanup-ephemeral-kvm-runner
+        with:
+          aws-role-arn: ${{ vars.ECOSYSTEM_KVM_AWS_CLEANUP_ROLE_ARN }}
+          aws-region: ${{ vars.ECOSYSTEM_KVM_REGION }}
+          cleanup-function-name: ${{ vars.ECOSYSTEM_KVM_CLEANUP_FUNCTION_NAME }}
+          instance-id: ${{ needs.provision.outputs.instance-id }}
+          ownership-nonce: ${{ needs.provision.outputs.ownership-nonce }}
+          source-run-id: ${{ github.run_id }}
+          source-run-attempt: ${{ github.run_attempt }}
+          runner-name: ${{ needs.provision.outputs.runner-name }}
+          runner-app-id: ${{ vars.ECOSYSTEM_KVM_RUNNER_APP_ID }}
+          runner-app-private-key: ${{ secrets.ECOSYSTEM_KVM_RUNNER_APP_PRIVATE_KEY }}

@@ -501,7 +501,7 @@ class ExactRunAggregationTests(unittest.TestCase):
             contract.topology_payload(topology)["mutable_external_actions"], []
         )
         packages = [package for batch in topology for package in batch.packages]
-        self.assertEqual(len(packages), 965)
+        self.assertEqual(len(packages), 966)
         self.assertEqual(
             [(22, "test-bubblewrap", ".github/workflows/test-bubblewrap.yml")],
             [(batch.batch, package.job, package.workflow_path)
@@ -531,6 +531,12 @@ class ExactRunAggregationTests(unittest.TestCase):
             [(batch.batch, package.job, package.workflow_path)
              for batch in topology for package in batch.packages
              if package.package_slug == "libkrun"],
+        )
+        self.assertEqual(
+            [(22, "test-microsandbox", ".github/workflows/test-microsandbox.yml")],
+            [(batch.batch, package.job, package.workflow_path)
+             for batch in topology for package in batch.packages
+             if package.package_slug == "microsandbox"],
         )
         workflow_root = repository_root / ".github" / "workflows"
         package_files = {

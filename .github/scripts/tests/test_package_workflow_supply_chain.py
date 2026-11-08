@@ -1178,10 +1178,11 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
 
     def test_registration_is_exact(self) -> None:
         relative = [path.relative_to(self.root).as_posix() for path in self.workflows]
-        self.assertEqual(965, len(relative))
-        self.assertEqual(965, len(set(relative)))
+        self.assertEqual(966, len(relative))
+        self.assertEqual(966, len(set(relative)))
         self.assertIn(".github/workflows/test-xen-hypervisor.yml", relative)
         self.assertIn(".github/workflows/test-libkrun.yml", relative)
+        self.assertIn(".github/workflows/test-microsandbox.yml", relative)
         self.assertTrue(all(path.is_file() for path in self.workflows))
         self.assertFalse(
             any("test-all-packages-" in Path(path).name for path in relative)
@@ -1191,7 +1192,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         lock = supply_chain.load_lock(self.root)
         self.assertEqual([], lock["unresolved_references"])
         self.assertEqual(supply_chain.SOURCE_COMMIT, lock["source_commit"])
-        self.assertEqual(1135, lock["external_uses"])
+        self.assertEqual(1136, lock["external_uses"])
         self.assertEqual(10, lock["container_uses"])
         self.assertEqual(15, len(lock["actions"]))
         self.assertRegex(
@@ -1200,7 +1201,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
         )
         transition = lock["hardened_workflow_transition"]
         self.assertEqual(
-            "48eb96747ad80f8898cd3c539509366cbde3212fd41186bc0fbafa53295822ae",
+            "b22f71e4c08b6daa4d80058d388bf024735d9c903a9a07d3ae7f04f0cd504e3c",
             transition["from_sha256"],
         )
         self.assertEqual(
@@ -1269,7 +1270,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
             self.root, expected_base_commit=head
         )
         self.assertEqual(
-            "b22f71e4c08b6daa4d80058d388bf024735d9c903a9a07d3ae7f04f0cd504e3c",
+            "6edf7ceff17b91b6ef6edda157de8b32e576cb17c71716e6edd055cf1cc121d2",
             result["workflow_sha256"],
         )
 
@@ -1442,7 +1443,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                     continue
                 _, _, _, ref = supply_chain.split_github_action(spec)
                 self.assertRegex(ref, r"^[0-9a-f]{40}$")
-        self.assertEqual(1135, external)
+        self.assertEqual(1136, external)
 
     def test_every_checkout_disables_persisted_credentials(self) -> None:
         checkouts = 0
@@ -1465,7 +1466,7 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
                     ),
                     path.relative_to(self.root).as_posix(),
                 )
-        self.assertEqual(987, checkouts)
+        self.assertEqual(988, checkouts)
 
     def test_permissions_are_read_only(self) -> None:
         exceptions = supply_chain.permission_exceptions(
@@ -1521,15 +1522,15 @@ class PackageWorkflowSupplyChainTests(unittest.TestCase):
     def test_complete_offline_contract(self) -> None:
         self.assertEqual(
             {
-                "registered_workflows": 965,
+                "registered_workflows": 966,
                 "batch_workflows": 22,
-                "external_uses": 1135,
+                "external_uses": 1136,
                 "container_uses": 10,
                 "unique_original_refs": 15,
-                "checkout_uses": 987,
+                "checkout_uses": 988,
                 "permission_exceptions": 4,
-                "topology_sha256": "61983e98ed97e36a06e049e3d4a39df24ed13f9827c553631bbbb782b9e0486f",
-                "workflow_sha256": "b22f71e4c08b6daa4d80058d388bf024735d9c903a9a07d3ae7f04f0cd504e3c",
+                "topology_sha256": "cda1d4dbf749a30f19fab45c2c445e007a8375e13c20fefb7151607ceaf714c7",
+                "workflow_sha256": "6edf7ceff17b91b6ef6edda157de8b32e576cb17c71716e6edd055cf1cc121d2",
             },
             supply_chain.validate_hardening(
                 self.root,

@@ -36,11 +36,11 @@ EXACT_RUN_SPEC.loader.exec_module(exact_run)
 
 
 EXPECTED_BATCHES = 22
-EXPECTED_WORKFLOWS = 965
-EXPECTED_EXTERNAL_USES = 1135
+EXPECTED_WORKFLOWS = 966
+EXPECTED_EXTERNAL_USES = 1136
 EXPECTED_CONTAINER_USES = 10
 REVIEWED_ADDED_WORKFLOWS = (
-    ".github/workflows/test-libkrun.yml",
+    ".github/workflows/test-microsandbox.yml",
 )
 ADDED_WORKFLOW_RE = re.compile(
     r"\.github/workflows/test-[A-Za-z0-9._-]+\.yml"
