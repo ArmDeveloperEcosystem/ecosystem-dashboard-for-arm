@@ -131,6 +131,80 @@ class RagflowWorkflowTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertNotEqual("passed", outputs.get("status"))
 
+    def run_regression_probe(self, fixture, version="1.0.0"):
+        next_source = self.root / "next-src"
+        next_source.mkdir()
+        fixture(next_source)
+        self.stub(
+            "docker",
+            "test \"$1\" = compose\n"
+            "test \"$2\" = -f\n"
+            "test -f \"$3\"\n"
+            "test \"$4\" = config\n"
+            "printf 'services:\\n  ragflow:\\n    image: infiniflow/ragflow:test\\n'\n",
+        )
+        script = self.steps["test6"]["with"]["limited_cpu_probe"]
+        return subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", script],
+            cwd=self.root,
+            env=dict(self.env, LATEST_VERSION=version),
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+
+    @staticmethod
+    def compose_fixture(source):
+        docker = source / "docker"
+        docker.mkdir()
+        (docker / "docker-compose.yml").write_text("services: {}\n")
+
+    def test_next_probe_accepts_v1_go_and_python_sdk_layout(self):
+        def fixture(source):
+            self.compose_fixture(source)
+            (source / "internal").mkdir()
+            package = source / "sdk/python/ragflow_sdk"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("VERSION = '1.0.0'\n")
+            (source / "go.mod").write_text("module ragflow\n\ngo 1.27\n")
+            (source / "pyproject.toml").write_text(
+                '[project]\nname = "ragflow"\nversion = "1.0.0"\n'
+            )
+
+        result = self.run_regression_probe(fixture)
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_next_probe_retains_legacy_python_layout(self):
+        def fixture(source):
+            self.compose_fixture(source)
+            api = source / "api"
+            api.mkdir()
+            (api / "server.py").write_text("PACKAGE = 'ragflow'\n")
+
+        result = self.run_regression_probe(fixture)
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_next_probe_rejects_unknown_layout(self):
+        def fixture(source):
+            self.compose_fixture(source)
+            (source / "README.md").write_text("# RAGFlow\n")
+
+        result = self.run_regression_probe(fixture)
+        self.assertNotEqual(0, result.returncode)
+
+    def test_next_probe_rejects_mismatched_project_version(self):
+        def fixture(source):
+            self.compose_fixture(source)
+            (source / "internal").mkdir()
+            (source / "sdk/python").mkdir(parents=True)
+            (source / "go.mod").write_text("module ragflow\n")
+            (source / "pyproject.toml").write_text(
+                '[project]\nname = "ragflow"\nversion = "2.0.0"\n'
+            )
+
+        result = self.run_regression_probe(fixture)
+        self.assertNotEqual(0, result.returncode)
+
 
 if __name__ == "__main__":
     unittest.main()
