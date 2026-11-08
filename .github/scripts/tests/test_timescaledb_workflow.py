@@ -47,7 +47,7 @@ class TimescaleDbWorkflowTests(unittest.TestCase):
         self,
         *,
         failures_before_success: int,
-        actual_fingerprint: str | None = None,
+        actual_fingerprints: tuple[str, ...] | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], int]:
         counter = self.root / "curl-count"
         destination = self.root / "repository-key.asc"
@@ -66,7 +66,13 @@ class TimescaleDbWorkflowTests(unittest.TestCase):
         )
         self.stub(
             "gpg",
-            'printf "fpr:::::::::%s:\\n" "$ACTUAL_FINGERPRINT"\n',
+            'IFS="," read -r -a fingerprints <<< "$ACTUAL_FINGERPRINTS"\n'
+            'for fingerprint in "${fingerprints[@]}"; do\n'
+            '  printf "pub:-:4096:1:0000000000000000:0:0:::::::\\n"\n'
+            '  printf "fpr:::::::::%s:\\n" "$fingerprint"\n'
+            '  printf "sub:-:4096:1:1111111111111111:0:0:::::::\\n"\n'
+            '  printf "fpr:::::::::%s:\\n" "$(printf "%040d" 1)"\n'
+            'done\n',
         )
         self.stub("sleep", "exit 0\n")
         expected = self.environment["TIMESCALEDB_APT_KEY_FINGERPRINT"]
@@ -74,7 +80,7 @@ class TimescaleDbWorkflowTests(unittest.TestCase):
             self.environment,
             CURL_COUNT=str(counter),
             CURL_FAILURES=str(failures_before_success),
-            ACTUAL_FINGERPRINT=actual_fingerprint or expected,
+            ACTUAL_FINGERPRINTS=",".join(actual_fingerprints or (expected,)),
         )
         script = (
             f"{self.function}\n"
@@ -105,11 +111,21 @@ class TimescaleDbWorkflowTests(unittest.TestCase):
     def test_unexpected_key_fingerprint_fails_closed(self) -> None:
         result, attempts = self.run_download(
             failures_before_success=0,
-            actual_fingerprint="0" * 40,
+            actual_fingerprints=("0" * 40,),
         )
         self.assertNotEqual(0, result.returncode)
         self.assertEqual(1, attempts)
-        self.assertIn("fingerprint mismatch", result.stderr)
+        self.assertIn("fingerprint set is not approved", result.stderr)
+
+    def test_additional_primary_key_fails_closed(self) -> None:
+        expected = self.environment["TIMESCALEDB_APT_KEY_FINGERPRINT"]
+        result, attempts = self.run_download(
+            failures_before_success=0,
+            actual_fingerprints=(expected, "0" * 40),
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(1, attempts)
+        self.assertIn("fingerprint set is not approved", result.stderr)
 
     def test_workflow_uses_audited_keys_without_streaming_into_gpg(self) -> None:
         self.assertEqual(
