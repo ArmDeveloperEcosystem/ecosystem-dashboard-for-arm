@@ -87,6 +87,8 @@ jobs:
       TIMESCALEDB_VERSION: "2.26.4"
       TIMESCALEDB_PACKAGE: "timescaledb-2-postgresql-17"
       TIMESCALEDB_LOADER_PACKAGE: "timescaledb-2-loader-postgresql-17"
+      POSTGRESQL_APT_KEY_FINGERPRINT: "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+      TIMESCALEDB_APT_KEY_FINGERPRINT: "1005FB68604CE9B8F6879CF759F18EDF47F24417"
 
     outputs:
       contract_version: "2.0"
@@ -129,22 +131,74 @@ jobs:
       - name: Install TimescaleDB
         id: install
         run: |
+          set -euo pipefail
           echo "Installing TimescaleDB..."
           export DEBIAN_FRONTEND=noninteractive
+
+          download_repository_key() {
+            local url="$1"
+            local destination="$2"
+            local expected_fingerprint="$3"
+            local attempt primary_fingerprints
+
+            for attempt in 1 2 3 4 5; do
+              if curl --proto '=https' --tlsv1.2 --fail --location \
+                --silent --show-error --connect-timeout 20 --max-time 120 \
+                --output "$destination" "$url"; then
+                primary_fingerprints="$(
+                  gpg --batch --show-keys --with-colons "$destination" |
+                    awk -F: '
+                      $1 == "pub" { want_fingerprint = 1; next }
+                      want_fingerprint && $1 == "fpr" {
+                        print $10
+                        want_fingerprint = 0
+                      }
+                    '
+                )"
+                if [ "$primary_fingerprints" != "$expected_fingerprint" ]; then
+                  echo "Repository key primary fingerprint set is not approved for $url." >&2
+                  return 1
+                fi
+                return 0
+              fi
+              if [ "$attempt" -lt 5 ]; then
+                echo "Repository key download attempt $attempt failed; retrying." >&2
+                sleep "$((attempt * 2))"
+              fi
+            done
+            echo "Repository key download failed after 5 attempts: $url" >&2
+            return 1
+          }
 
           sudo rm -f /etc/apt/sources.list.d/pgdg.list /etc/apt/sources.list.d/timescaledb.list
           sudo rm -f /usr/share/keyrings/postgresql.gpg /usr/share/keyrings/timescaledb.gpg
 
-          sudo apt-get update
-          sudo apt-get install -y curl gnupg ca-certificates lsb-release postgresql-common
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y curl gnupg ca-certificates lsb-release postgresql-common
 
-          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql.gpg
+          KEY_DIRECTORY="${RUNNER_TEMP}/timescaledb-repository-keys"
+          mkdir -p "$KEY_DIRECTORY"
+          POSTGRESQL_KEY="${KEY_DIRECTORY}/postgresql.asc"
+          TIMESCALEDB_KEY="${KEY_DIRECTORY}/timescaledb.asc"
+
+          download_repository_key \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            "$POSTGRESQL_KEY" \
+            "$POSTGRESQL_APT_KEY_FINGERPRINT"
+          sudo gpg --batch --yes --dearmor \
+            --output /usr/share/keyrings/postgresql.gpg "$POSTGRESQL_KEY"
+
           echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
 
-          curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/timescaledb.gpg
+          download_repository_key \
+            https://packagecloud.io/timescale/timescaledb/gpgkey \
+            "$TIMESCALEDB_KEY" \
+            "$TIMESCALEDB_APT_KEY_FINGERPRINT"
+          sudo gpg --batch --yes --dearmor \
+            --output /usr/share/keyrings/timescaledb.gpg "$TIMESCALEDB_KEY"
           echo "deb [signed-by=/usr/share/keyrings/timescaledb.gpg] https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/timescaledb.list >/dev/null
 
-          sudo apt-get update
+          sudo apt-get -o Acquire::Retries=5 update
 
           BASELINE_PACKAGE=$(apt-cache madison "${TIMESCALEDB_PACKAGE}" | awk -v want="${TIMESCALEDB_VERSION}" '$3 ~ "^"want { print $3; exit }')
           BASELINE_LOADER_PACKAGE=$(apt-cache madison "${TIMESCALEDB_LOADER_PACKAGE}" | awk -v want="${TIMESCALEDB_VERSION}" '$3 ~ "^"want { print $3; exit }')
@@ -158,7 +212,7 @@ jobs:
             exit 1
           fi
 
-          sudo apt-get install -y "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" "${TIMESCALEDB_LOADER_PACKAGE}=${BASELINE_LOADER_PACKAGE}" "${TIMESCALEDB_PACKAGE}=${BASELINE_PACKAGE}"
+          sudo apt-get -o Acquire::Retries=5 install -y "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" "${TIMESCALEDB_LOADER_PACKAGE}=${BASELINE_LOADER_PACKAGE}" "${TIMESCALEDB_PACKAGE}=${BASELINE_PACKAGE}"
 
           if [ -f "/usr/share/postgresql/${PG_MAJOR}/extension/timescaledb.control" ] && [ -f "/usr/lib/postgresql/${PG_MAJOR}/lib/timescaledb.so" ]; then
             echo "baseline_package=${BASELINE_PACKAGE}" >> "$GITHUB_OUTPUT"
