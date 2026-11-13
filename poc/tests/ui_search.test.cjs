@@ -66,7 +66,7 @@ class Element {
     closest() { return this.parent || this; }
 }
 
-function fixture(fetcher, packageIDs = ['postgresql', 'nginx'], filterCard = () => false) {
+function fixture(fetcher, packageIDs = ['postgresql', 'nginx'], filterCard = () => false, options = {}) {
     const ids = ['nl-search-input', 'nl-search-form', 'nl-search-tested', 'nl-search-clear',
         'nl-search-feedback', 'nl-search-status', 'nl-search-details', 'nl-search-details-copy',
         'nl-search-notice', 'nl-search-refinements', 'nl-search-examples', 'currently-shown-number', 'results-status-bar', 'if-none-contribute-div',
@@ -76,7 +76,8 @@ function fixture(fetcher, packageIDs = ['postgresql', 'nginx'], filterCard = () 
     const submit = new Element();
     nodes['nl-search-form'].querySelector = () => submit;
     const root = new Element();
-    root.dataset.endpoint = '/api/search';
+    root.dataset.endpoint = options.endpoint || (options.transport === 'browser' ? 'https://knowledge.armdevtechapi.com/search' : '/api/search');
+    root.dataset.transport = options.transport || 'api';
     root.querySelector = selector => nodes[selector.slice(1)];
     const buttons = ['opensource'].map(value => {
         const button = new Element();
@@ -94,6 +95,9 @@ function fixture(fetcher, packageIDs = ['postgresql', 'nginx'], filterCard = () 
         row.setAttribute('data-title-urlized', id);
         row.setAttribute('data-catalog-id', 'linux/opensource_packages/' + id + '.md');
         row.setAttribute('data-title', id === 'postgresql' ? 'PostgreSQL' : 'Nginx');
+        row.setAttribute('data-woa', 'true');
+        row.setAttribute('data-kb-edition', 'open-source');
+        row.setAttribute('data-kb-description', 'Catalog description for ' + id);
         row.setAttribute('data-has-arm64-tests', String(index === 0));
         row.title = new Element();
         row.caret = new Element();
@@ -124,17 +128,22 @@ function fixture(fetcher, packageIDs = ['postgresql', 'nginx'], filterCard = () 
             return radios[selector.includes('license') ? 'license' : 'category'];
         }
     };
-    const window = { setTimeout, clearTimeout };
+    const window = { setTimeout: options.setTimeout || setTimeout, clearTimeout };
     const calls = [];
     const signals = [];
+    if (options.configureRows) options.configureRows(rows, table);
     const context = vm.createContext({
-        window, document, AbortController, console,
-        fetch: async (url, options) => { calls.push(JSON.parse(options.body)); signals.push(options.signal); return fetcher(url, options); },
+        window, document, AbortController, URL, URLSearchParams, console,
+        Date: options.Date || Date,
+        fetch: async (url, options) => { calls.push(options.body ? JSON.parse(options.body) : { url: String(url), options }); signals.push(options.signal); return fetcher(url, options); },
         sanitizeInput: value => value.replace(/[^a-zA-Z0-9 .\-/]+/g, '').replace(/\s+/g, ' '),
         filter_card: filterCard,
         hideElements,
         updateClearFilterOption: () => {}
     });
+    if (options.transport === 'browser') {
+        vm.runInContext(readFileSync(resolve(__dirname, '../../themes/arm-design-system-hugo-theme/static/js/eco-dashboard/browser-kb-search.js'), 'utf8'), context);
+    }
     vm.runInContext(readFileSync(resolve(__dirname, '../../themes/arm-design-system-hugo-theme/static/js/eco-dashboard/conversational-search.js'), 'utf8'), context);
     vm.runInContext(readFileSync(resolve(__dirname, '../../themes/arm-design-system-hugo-theme/static/js/eco-dashboard/table_functionality.js'), 'utf8'), context);
     const app = window.createDashboardSearch(root);
@@ -683,4 +692,301 @@ test('Editing or clearing during a request cancels it and ignores its eventual r
         assert.equal(f.rows[0].title.children.length, 0);
         assert.equal(f.nodes['nl-search-input'].value, nextValue);
     }
+});
+
+function kbHit(slug, extra = {}) {
+    return {
+        doc_type: 'Ecosystem Dashboard', platform: 'linux', edition: 'open-source',
+        url: 'https://developer.arm.com/ecosystem-dashboard/linux/?package=' + encodeURIComponent(slug),
+        ...extra
+    };
+}
+
+function kbResponse(results) {
+    return { ok: true, json: async () => ({ results }) };
+}
+
+function browserFixture(fetcher, options = {}) {
+    return fixture(fetcher, options.packageIDs, options.filterCard, { ...options, transport: 'browser' });
+}
+
+test('Browser transport sends the unchanged query and scope directly to KB without credentials', async () => {
+    const f = browserFixture(async () => kbResponse([kbHit('postgresql')]));
+    const query = '  C++ & 日本語 databases? "exact" + café  ';
+    await f.app.search(query);
+    const { url, options } = f.calls[0];
+    const target = new URL(url);
+    assert.equal(target.origin + target.pathname, 'https://knowledge.armdevtechapi.com/search');
+    assert.deepEqual(Object.fromEntries(target.searchParams), {
+        q: query, k: '50', doc_type: 'Ecosystem Dashboard', platform: 'linux'
+    });
+    assert.equal(options.method || 'GET', 'GET');
+    assert.equal(options.credentials, 'omit');
+    assert.equal(options.mode, 'cors');
+    assert.equal(options.redirect, 'error');
+    assert.equal(options.body, undefined);
+    assert.ok(!Object.keys(options.headers || {}).some(key => /authorization|api.key/i.test(key)));
+    assert.equal(f.nodes['nl-search-input'].value, query);
+    assert.deepEqual(f.rows.map(row => row.hidden), [false, true]);
+});
+
+test('Browser transport displays local descriptions and retains KB rank without inventing records', async () => {
+    const f = browserFixture(async () => kbResponse([
+        kbHit('nginx', { snippet: '<img src=x onerror=alert(1)>', title: 'Invented title' }),
+        kbHit('not-in-catalog'), kbHit('postgresql')
+    ]));
+    await f.app.search('software');
+    assert.deepEqual(f.table.children.map(row => row.id), ['row-1', 'details-1', 'row-0', 'details-0']);
+    assert.equal(f.rows[1].title.children[0].textContent, 'Catalog description for nginx');
+    assert.equal(f.rows[1].title.children[0].children.length, 0);
+    assert.equal(f.nodes['nl-search-status'].textContent, '2 results');
+    assert.match(f.nodes['nl-search-notice'].textContent, /unavailable.*not shown/i);
+});
+
+test('Browser identity distinguishes same-slug editions and sends edition before retrieval', async () => {
+    const commercialID = 'linux/commercial_packages/postgresql.md';
+    const f = browserFixture(async url => {
+        const edition = new URL(url).searchParams.get('edition');
+        return kbResponse(edition ? [kbHit('postgresql', { edition })] : [
+            kbHit('postgresql', { edition: 'commercial' }), kbHit('postgresql')
+        ]);
+    }, { configureRows(rows) {
+        rows[1].setAttribute('data-title-urlized', 'postgresql');
+        rows[1].setAttribute('data-catalog-id', commercialID);
+        rows[1].setAttribute('data-kb-edition', 'commercial');
+    } });
+    await f.app.search('PostgreSQL');
+    assert.equal(f.table.children[0], f.rows[1]);
+    assert.deepEqual(f.rows.map(row => row.hidden), [false, false]);
+    for (const [index, edition] of [[1, 'open-source'], [2, 'commercial']]) {
+        f.radios.license.forEach((radio, i) => { radio.checked = i === index; });
+        await f.app.search('PostgreSQL', { force: true });
+        assert.equal(new URL(f.calls.at(-1).url).searchParams.get('edition'), edition);
+        assert.deepEqual(f.rows.map(row => row.hidden), index === 1 ? [false, true] : [true, false]);
+    }
+});
+
+test('Browser category and recorded-test refinements narrow cached candidates without another KB call', async () => {
+    let rejectNginx = false;
+    const f = browserFixture(async () => kbResponse([kbHit('nginx'), kbHit('postgresql')]), {
+        filterCard: row => rejectNginx && row.getAttribute('data-title-urlized') === 'nginx'
+    });
+    await f.app.search('software');
+    assert.deepEqual(f.rows.map(row => row.hidden), [false, false]);
+    rejectNginx = true;
+    f.radios.category.forEach((radio, i) => { radio.checked = i === 1; });
+    await f.app.search('software', { force: true });
+    assert.deepEqual(f.rows.map(row => row.hidden), [false, true]);
+    rejectNginx = false;
+    f.nodes['nl-search-tested'].checked = true;
+    await f.app.search('software', { force: true });
+    assert.deepEqual(f.rows.map(row => row.hidden), [false, true]);
+    f.nodes['nl-search-tested'].checked = false;
+    await f.app.search('software', { force: true });
+    assert.deepEqual(f.rows.map(row => row.hidden), [false, false]);
+    assert.equal(f.calls.length, 1);
+});
+
+test('Browser results exclude catalog rows that are not supported on Arm', async () => {
+    const f = browserFixture(async () => kbResponse([kbHit('nginx'), kbHit('postgresql')]), {
+        configureRows(rows) { rows[1].setAttribute('data-woa', 'false'); }
+    });
+    await f.app.search('software');
+    assert.deepEqual(f.rows.map(row => row.hidden), [false, true]);
+    assert.equal(f.nodes['nl-search-status'].textContent, '1 result');
+});
+
+test('Browser scope and URL errors invalidate the whole response instead of showing partial matches', async () => {
+    const invalidHits = [
+        null, {}, kbHit('nginx', { doc_type: 'Learning Path' }),
+        kbHit('nginx', { platform: 'windows' }), kbHit('nginx', { edition: undefined }),
+        kbHit('nginx', { edition: 'commercial' }),
+        ...[
+            'http://developer.arm.com/ecosystem-dashboard/linux/?package=nginx',
+            'https://developer.arm.com.evil.test/ecosystem-dashboard/linux/?package=nginx',
+            'https://user@developer.arm.com/ecosystem-dashboard/linux/?package=nginx',
+            'https://developer.arm.com:8443/ecosystem-dashboard/linux/?package=nginx',
+            'https://developer.arm.com/ecosystem-dashboard/windows/?package=nginx',
+            'https://developer.arm.com/ecosystem-dashboard/linux/?package=nginx#section',
+            'https://developer.arm.com/ecosystem-dashboard/linux/?package=nginx&package=postgresql',
+            'https://developer.arm.com/ecosystem-dashboard/linux/?package=',
+            'https://developer.arm.com/ecosystem-dashboard/linux/?package=bad%2Fslug',
+            'https://developer.arm.com/ecosystem-dashboard/linux/?package=bad%00slug',
+            'https://developer.arm.com/ecosystem-dashboard/linux/?package=nginx\\',
+            'https://developer.arm.com/ecosystem-dashboard/linux/../linux/?package=nginx'
+        ].map(url => kbHit('nginx', { url }))
+    ];
+    for (const invalid of invalidHits) {
+        const f = browserFixture(async () => kbResponse([kbHit('nginx'), invalid]));
+        await f.app.search('PostgreSQL');
+        assert.match(f.nodes['nl-search-status'].textContent, /Name search only: 1 match/, JSON.stringify(invalid));
+        assert.deepEqual(f.rows.map(row => row.hidden), [false, true]);
+    }
+});
+
+test('Browser edition-filter violations cannot be hidden by later local filtering', async () => {
+    const f = browserFixture(async () => kbResponse([kbHit('nginx', { edition: 'commercial' })]), {
+        configureRows(rows) {
+            rows[1].setAttribute('data-kb-edition', 'commercial');
+            rows[1].setAttribute('data-catalog-id', 'linux/commercial_packages/nginx.md');
+        }
+    });
+    f.radios.license.forEach((radio, i) => { radio.checked = i === 1; });
+    await f.app.search('PostgreSQL');
+    assert.match(f.nodes['nl-search-status'].textContent, /Name search only/);
+});
+
+test('Browser transport treats empty results honestly and malformed or failed responses as unavailable', async () => {
+    const empty = browserFixture(async () => kbResponse([]));
+    await empty.app.search('PostgreSQL');
+    assert.equal(empty.nodes['nl-search-status'].textContent, 'No matches found.');
+    assert.deepEqual(empty.rows.map(row => row.hidden), [true, true]);
+    for (const fetcher of [
+        async () => ({ ok: false, status: 429 }),
+        async () => ({ ok: true, json: async () => { throw new SyntaxError('Invalid JSON'); } }),
+        async () => kbResponse(null),
+        async () => kbResponse(Array.from({ length: 51 }, () => kbHit('nginx'))),
+        async () => { throw new TypeError('Failed to fetch'); },
+        async () => { throw new DOMException('Timed out', 'AbortError'); }
+    ]) {
+        const f = browserFixture(fetcher);
+        await f.app.search('PostgreSQL');
+        assert.match(f.nodes['nl-search-status'].textContent, /Name search only: 1 match/);
+        assert.equal(f.root.getAttribute('aria-busy'), 'false');
+    }
+});
+
+test('Browser cache is scoped by exact query and edition, expires and does not remember failed requests', async () => {
+    let now = 0;
+    let fail = true;
+    const f = browserFixture(async () => {
+        if (fail) throw new TypeError('Failed to fetch');
+        return kbResponse([kbHit('postgresql')]);
+    }, { Date: { now: () => now } });
+    await f.app.search('databases');
+    fail = false;
+    await f.app.search('databases', { force: true });
+    await f.app.search('databases', { force: true });
+    assert.equal(f.calls.length, 2);
+    now = 300000;
+    await f.app.search('databases', { force: true });
+    assert.equal(f.calls.length, 3);
+    await f.app.search('databases ', { force: true });
+    assert.equal(f.calls.length, 4);
+    f.radios.license.forEach((radio, i) => { radio.checked = i === 1; });
+    await f.app.search('databases ', { force: true });
+    assert.equal(f.calls.length, 5);
+});
+
+test('Browser cache is bounded rather than retaining every search in a long-lived tab', async () => {
+    const f = browserFixture(async () => kbResponse([]));
+    for (let i = 0; i <= 128; i++) await f.app.search('query-' + i);
+    await f.app.search('query-0');
+    assert.equal(f.calls.length, 130, 'The oldest of 129 entries must have been evicted');
+    await f.app.search('query-128');
+    assert.equal(f.calls.length, 130, 'Recent entries remain usable');
+});
+
+test('Browser cancellation keeps late results from overriding a newer query or filter', async () => {
+    const pending = [];
+    const f = browserFixture(() => new Promise(resolve => pending.push(resolve)));
+    const first = f.app.search('databases');
+    const second = f.app.search('web servers');
+    assert.equal(f.signals[0].aborted, true);
+    pending[1](kbResponse([kbHit('nginx')]));
+    await second;
+    pending[0](kbResponse([kbHit('postgresql')]));
+    await first;
+    assert.deepEqual(f.rows.map(row => row.hidden), [true, false]);
+    assert.equal(f.nodes['nl-search-input'].value, 'web servers');
+});
+
+test('Browser query bound also covers URL-driven or programmatic searches', async () => {
+    const f = browserFixture(async () => kbResponse([]));
+    await f.app.search('x'.repeat(500));
+    assert.equal(f.calls.length, 1);
+    await f.app.search('x'.repeat(501));
+    assert.equal(f.calls.length, 1, 'An oversized query must not reach KB');
+    assert.match(f.nodes['nl-search-status'].textContent, /Name search only/);
+});
+
+test('Browser catalog rejects ambiguous identities but excludes pinned placeholders from that check', async () => {
+    const ambiguous = browserFixture(async () => kbResponse([kbHit('postgresql')]), {
+        configureRows(rows) { rows[1].setAttribute('data-title-urlized', 'postgresql'); }
+    });
+    await ambiguous.app.search('PostgreSQL');
+    assert.equal(ambiguous.calls.length, 0);
+    assert.match(ambiguous.nodes['nl-search-status'].textContent, /Name search only/);
+    const pinned = browserFixture(async () => kbResponse([kbHit('nginx'), kbHit('postgresql')]), {
+        configureRows(rows, table) {
+            rows[0].classList.add('js-pinned');
+            const placeholder = new Element();
+            placeholder.id = 'row-0-placeholder';
+            placeholder.attributes = { ...rows[0].attributes };
+            placeholder.classList.add('search-div');
+            placeholder.title = new Element();
+            placeholder.querySelector = () => placeholder.title;
+            table.appendChild(placeholder);
+            const details = new Element();
+            details.id = 'details-0-placeholder';
+            table.appendChild(details);
+        }
+    });
+    await pinned.app.search('software');
+    assert.equal(pinned.nodes['nl-search-status'].textContent, '2 results');
+    assert.equal(pinned.table.children[0], pinned.rows[0]);
+    const placeholder = pinned.table.children.find(row => row.id === 'row-0-placeholder');
+    assert.equal(placeholder.hidden, true);
+    // The dashboard's unpin operation replaces the original row with its clone.
+    pinned.rows[0].remove();
+    pinned.rows[0].details.remove();
+    placeholder.id = 'row-0';
+    await pinned.app.search('software', { force: true });
+    assert.equal(pinned.table.children[0], pinned.rows[1]);
+    assert.equal(placeholder.hidden, false);
+    assert.equal(placeholder.title.children[0].textContent, 'Catalog description for postgresql');
+    pinned.nodes['nl-search-tested'].checked = true;
+    await pinned.app.search('software', { force: true });
+    assert.equal(pinned.rows[1].hidden, true);
+    assert.equal(placeholder.hidden, false);
+    assert.equal(pinned.calls.length, 1, 'Unpinning and filtering reuse validated candidates');
+});
+
+test('Browser repeated KB hits display one package at its first-ranked position', async () => {
+    const f = browserFixture(async () => kbResponse([kbHit('nginx'), kbHit('postgresql'), kbHit('nginx')]));
+    await f.app.search('software');
+    assert.equal(f.nodes['nl-search-status'].textContent, '2 results');
+    assert.deepEqual(f.table.children.map(row => row.id), ['row-1', 'details-1', 'row-0', 'details-0']);
+});
+
+test('Browser endpoint configuration cannot leak credentials or use insecure remote HTTP', async () => {
+    for (const endpoint of [
+        'https://user:secret@knowledge.armdevtechapi.com/search',
+        'http://knowledge.armdevtechapi.com/search',
+        'https://knowledge.armdevtechapi.com/search#secret',
+        'javascript:alert(1)'
+    ]) {
+        const f = browserFixture(async () => kbResponse([]), { endpoint });
+        await f.app.search('PostgreSQL');
+        assert.equal(f.calls.length, 0, endpoint);
+        assert.match(f.nodes['nl-search-status'].textContent, /Name search only/);
+    }
+});
+
+test('Browser request deadline aborts the in-flight fetch and releases the loading state', async () => {
+    let fireDeadline;
+    const f = browserFixture((_url, options) => new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+    }), { setTimeout(callback, milliseconds) {
+        assert.equal(milliseconds, 15000);
+        fireDeadline = callback;
+        return undefined;
+    } });
+    const request = f.app.search('PostgreSQL');
+    assert.equal(f.root.getAttribute('aria-busy'), 'true');
+    fireDeadline();
+    await request;
+    assert.equal(f.signals[0].aborted, true);
+    assert.equal(f.root.getAttribute('aria-busy'), 'false');
+    assert.match(f.nodes['nl-search-status'].textContent, /Name search only: 1 match/);
 });

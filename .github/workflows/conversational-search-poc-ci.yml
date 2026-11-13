@@ -12,6 +12,7 @@ on:
       - 'data/**'
       - 'config.toml'
       - '.github/workflows/conversational-search-poc-ci.yml'
+      - '.github/workflows/search-staging-preflight.yml'
 
 permissions:
   contents: read
@@ -88,6 +89,12 @@ jobs:
       - name: Build dashboard and exact catalog
         run: hugo --config config.toml,poc/config.local.toml --destination .poc/public
 
+      - name: Install nginx for staging routing checks
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y nginx
+          nginx -v
+
       - name: Test scoped identity, HTTP integration and API boundaries
         run: python -m pytest poc/tests -q --junitxml=.poc/ci-results/python-tests.xml
 
@@ -97,6 +104,48 @@ jobs:
           set -euo pipefail
           node --test --test-reporter=tap poc/tests/ui_search.test.cjs \
             | tee .poc/ci-results/javascript-tests.tap
+
+      - name: Validate staging systemd service on the ephemeral runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e /opt/arm-dashboard-search
+          trap 'sudo systemctl stop arm-dashboard-search.service || true' EXIT
+          sudo install -d /opt/arm-dashboard-search/current/poc /opt/arm-dashboard-search/current/site /etc/arm-dashboard-search
+          sudo cp -a "$RUNNER_TEMP/search-poc-venv" /opt/arm-dashboard-search/current/.venv
+          sudo cp poc/*.py /opt/arm-dashboard-search/current/poc/
+          sudo cp .poc/public/poc-catalog.json /opt/arm-dashboard-search/current/site/
+          sudo install -m 0600 poc/deploy/staging.env.example /etc/arm-dashboard-search/staging.env
+          sudo install -m 0644 poc/deploy/arm-dashboard-search.service /etc/systemd/system/
+          sudo systemd-analyze verify /etc/systemd/system/arm-dashboard-search.service
+          sudo systemctl daemon-reload
+          sudo systemctl start arm-dashboard-search.service
+          python - <<'PY'
+          import json, time, urllib.error, urllib.request
+          origin = "https://d1jmgdpytvgwdc.cloudfront.net"
+          headers = {"Host": origin.split("//", 1)[1]}
+          ready = urllib.request.Request("http://127.0.0.1:8080/api/ready", headers=headers)
+          for attempt in range(30):
+              try:
+                  with urllib.request.urlopen(ready, timeout=1) as response:
+                      body = json.load(response)
+                  assert body["catalog_count"] > 0 and body["scope_configured"] is False
+                  break
+              except urllib.error.URLError:
+                  time.sleep(0.2)
+          else:
+              raise SystemExit("Staging systemd service did not become ready")
+          request = urllib.request.Request("http://127.0.0.1:8080/api/search",
+              data=b'{"query":"fixture"}', headers={**headers, "Origin": origin,
+                  "Content-Type": "application/json"})
+          try:
+              urllib.request.urlopen(request, timeout=3)
+          except urllib.error.HTTPError as response:
+              assert response.code == 503 and json.load(response)["mode"] == "kb_unavailable"
+          else:
+              raise SystemExit("Scope-disabled service unexpectedly allowed KB retrieval")
+          print("Staging systemd startup, catalog loading and scope gate passed")
+          PY
 
       - name: Build production-path catalog and API image
         run: |
