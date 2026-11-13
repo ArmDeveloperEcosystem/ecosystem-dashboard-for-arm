@@ -141,14 +141,15 @@ Open `http://127.0.0.1:8767/linux/`. KB dev must allow that origin for live
 semantic search to work. Do not disable browser security or use `no-cors` to get
 around this requirement; an unreadable response cannot supply package results.
 
-On 13 November 2026, live GET checks using the staging and production dashboard
-origins returned HTTP 200 without `Access-Control-Allow-Origin`. These are HTTP
-header checks, not successful browser end-to-end validation. Before enabling the
-candidate on either site, agree direct public traffic and authentication with the
-KB owner, allow the exact site origins through CORS, check the website's
-`connect-src` policy, and validate real browser relevance, failures and latency.
-The shared backend cache is absent; a removed network hop does not guarantee
-faster searches or lower KB traffic.
+On 13 November 2026, Brian deployed the CORS change from
+[KB endpoint PR #56](https://github.com/arm/knowledge-base-endpoint/pull/56) to KB
+dev. Live HTTP checks confirmed the exact staging origin is allowed, responses
+vary by Origin, and production/localhost origins are not allowed. These are HTTP
+header checks, not successful browser end-to-end validation. Staging still needs
+real browser relevance, failure and latency acceptance. Production browser use
+requires a separate KB-origin/traffic agreement and website CSP check. The shared
+backend cache is absent; a removed network hop does not guarantee faster searches
+or lower KB traffic.
 
 The first live validation target is the dashboard staging origin
 `https://d1jmgdpytvgwdc.cloudfront.net` calling
@@ -156,9 +157,18 @@ The first live validation target is the dashboard staging origin
 Build that candidate with `config.toml,config.cloudfront.toml,poc/config.browser.toml`.
 The overlay deliberately targets KB dev; do not deploy it to the production
 dashboard. A production endpoint/origin configuration follows only after staging
-acceptance. This preparation provisions no service and changes no deployment
-workflow. The existing default-off feature flag and API deployment configuration
-remain unchanged.
+acceptance. No additional service is provisioned.
+
+After review and merge, the existing **build-and-deploy** workflow can select this
+overlay with the manual `browser_search_preview=true` input. It defaults to false;
+build and S3 deployment use the same selected configuration. The existing
+`PRODUCTION_DEPLOYMENT_ENABLED` activation flag, protected `production` environment,
+main-only/current-commit checks and generated-data checks all still apply. Those
+names belong to the existing workflow; its configured target is the CloudFront
+staging site above. The activation flag is currently false and must be enabled for
+an authorized bounded run, then restored to false. Another environment reviewer
+must approve a run started by its author. To turn the preview off, deploy reviewed
+main again with `browser_search_preview=false` through the same process.
 
 ### Python API integration
 
