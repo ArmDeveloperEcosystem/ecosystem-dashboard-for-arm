@@ -1,0 +1,56 @@
+# Candidate fragment for nginx's http {} context; not installed.
+# Verify proposed ports 8081 (proxy) and 8080 (loopback API) before installation.
+# Restrict inbound 8081 to the ALB security group before enabling this listener.
+# This adds no TLS virtual host and changes no KB/chatbot routes.
+# CloudFront: exact /api/search -> existing certificate-covered HTTPS origin,
+# origin path /dashboard-search. ALB: exact /dashboard-search/api/search -> 8081.
+# ALB health: HTTP /dashboard-search/api/ready on the target port directly.
+# Do not add a public listener rule or CloudFront behavior for readiness.
+limit_req_zone $binary_remote_addr zone=dashboard_search_staging_rate:1m rate=1r/s;
+limit_conn_zone $binary_remote_addr zone=dashboard_search_staging_connections:1m;
+
+server {
+    listen 8081 default_server;
+    server_name _;
+    access_log off;
+
+    # ALB health uses the target-IP Host. Rewrite it just like the HTTPS-origin
+    # Host on search requests; the API still accepts only the public site Host.
+    proxy_http_version 1.1;
+    proxy_set_header Host d1jmgdpytvgwdc.cloudfront.net;
+    proxy_set_header Connection "";
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header Forwarded "";
+    proxy_connect_timeout 2s;
+    proxy_read_timeout 15s;
+    proxy_send_timeout 10s;
+    proxy_cache off;
+    add_header Cache-Control "no-store" always;
+    add_header X-Content-Type-Options "nosniff" always;
+
+    location = /dashboard-search/api/search {
+        limit_except POST { deny all; }
+        client_max_body_size 8k;
+        client_body_timeout 5s;
+        limit_req zone=dashboard_search_staging_rate burst=10 nodelay;
+        limit_req_status 429;
+        limit_conn dashboard_search_staging_connections 8;
+        limit_conn_status 503;
+        # Stream into the API's bounded parser and total body deadline.
+        proxy_request_buffering off;
+        proxy_pass http://127.0.0.1:8080/api/search;
+    }
+
+    location = /dashboard-search/api/ready {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:8080/api/ready;
+    }
+
+    location / { return 404; }
+}
+
+# Origin is preserved. Client-IP proxy trust is intentionally not enabled in
+# the service: nginx limits group requests by ALB address and the API shares a
+# loopback rate bucket. Validate the actual forwarding chain before changing
+# trust; shared/global viewer limits belong at the edge.

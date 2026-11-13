@@ -1,0 +1,90 @@
+name: Search staging read-only preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_account:
+        description: Expected backend AWS account (12 digits; never inferred from the dashboard)
+        required: true
+        type: string
+      backend_region:
+        description: Backend AWS region; supply together with backend_stack
+        required: false
+        type: string
+      backend_stack:
+        description: Exact backend CloudFormation stack name; omit both backend inputs for static-only checks
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: search-staging-preflight
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    name: Inspect approved main without modifying AWS
+    # Existing environment requires another reviewer and permits only main.
+    # A successful preflight grants no permission to deploy or change its gate.
+    environment: production
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - name: Require manual main
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]
+          [[ "$GITHUB_REF" == "refs/heads/main" && "$DEFAULT_BRANCH" == "main" ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+      - name: Validate and mask target identifiers before later step logs
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          with open(os.environ["GITHUB_EVENT_PATH"]) as stream:
+              inputs = json.load(stream).get("inputs", {})
+          account = inputs.get("expected_account", "")
+          region = inputs.get("backend_region", "")
+          stack = inputs.get("backend_stack", "")
+          if not re.fullmatch(r"[0-9]{12}", account):
+              raise SystemExit("Expected backend account must contain exactly 12 digits.")
+          if bool(region) != bool(stack) or (region and not re.fullmatch(r"[a-z]{2}(?:-[a-z]+)+-[1-9][0-9]*", region)):
+              raise SystemExit("Supply a valid backend region and stack together.")
+          if stack and not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,127}", stack):
+              raise SystemExit("Backend stack name is invalid.")
+          print("::add-mask::" + account)
+          if stack:
+              print("::add-mask::" + stack)
+          PY
+
+      - name: Check out the approved revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Require the approved revision to remain current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse --verify 'HEAD^{commit}')" == "$GITHUB_SHA" ]]
+          current_sha="$(timeout 20s git ls-remote --exit-code origin refs/heads/main | awk 'NR == 1 {print $1}')"
+          [[ "$current_sha" == "$GITHUB_SHA" ]] || {
+            echo "Main advanced after dispatch; run preflight again for the current revision." >&2
+            exit 1
+          }
+
+      - name: Read AWS metadata and print only sanitized findings
+        env:
+          EXPECTED_BACKEND_ACCOUNT: ${{ inputs.expected_account }}
+          BACKEND_REGION: ${{ inputs.backend_region }}
+          BACKEND_STACK: ${{ inputs.backend_stack }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 poc/deploy/preflight.py

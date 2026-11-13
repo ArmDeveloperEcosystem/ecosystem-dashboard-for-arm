@@ -15,6 +15,83 @@ Browser: developer.arm.com/ecosystem-dashboard/linux/
   → exact catalog snapshot built from the same dashboard revision
 ```
 
+## Existing CloudFront staging
+
+The root-hosted staging site is `https://d1jmgdpytvgwdc.cloudfront.net/`.
+The normal website workflow remains manual and feature-disabled. The staging
+files below are candidates, not evidence that an API host or route exists.
+
+Start with **Search staging read-only preflight** in GitHub Actions after its PR
+is reviewed and merged. Dispatch current `main` and supply the expected backend
+account; optionally supply its exact CloudFormation stack and region together.
+The existing `production` environment requires an independent reviewer. Its name
+is inherited from static delivery; this workflow performs no deployment and does
+not change `PRODUCTION_DEPLOYMENT_ENABLED`.
+
+Preflight uses the existing dashboard AWS credentials only for fixed read-only
+commands. It checks static distribution/bucket metadata independently of the
+expected backend account. Backend discovery stops on an account mismatch; it
+never borrows another service's role. Output contains only sanitized status,
+counts and configuration matches, not raw accounts, instance IDs, origins, tokens
+or AWS error text. Failed checks require resolving the specific access or target
+gap; success still does not establish deployment authorization, host capacity,
+Python availability, free ports, path ownership or a working HTTPS API route.
+
+Once those facts are verified, build the root-path site and matching catalog:
+
+```sh
+hugo --minify --config config.toml,poc/deploy/config.staging.toml \
+  --destination .poc/public
+```
+
+`arm-dashboard-search.service` and `staging.env.example` describe a separate
+Python 3.12 service under `/opt/arm-dashboard-search/current`, with runtime code
+in `poc/`, its own `.venv`, and `site/poc-catalog.json` from that same build.
+Install dependencies from `poc/requirements.runtime.lock.txt`. Keep releases
+root-owned and readable but not writable by the dynamic service user. The root
+service manager reads the root-only environment file; credentials belong there
+or in the platform's secret injection, never in the public site or release.
+Validate the unit with `systemd-analyze verify` on the selected Ubuntu host before
+starting it. This change supplies no host installer or shared-service restart.
+
+The proposed route is:
+
+```text
+CloudFront POST /api/search
+  -> HTTPS certificate-covered origin, origin prefix /dashboard-search
+  -> ALB exact /dashboard-search/api/search rule
+  -> private nginx listener -> loopback API /api/search
+```
+
+Use `nginx.staging.conf.example` inside nginx's `http` context after verifying
+ports 8081 and 8080 are unused. Restrict the proxy listener to the load balancer's
+security group. Preserve the backend hostname on the TLS hop; the private proxy
+sets the application's expected staging Host while retaining the browser Origin.
+The target group's private readiness probe uses `/dashboard-search/api/ready`;
+do not create a public ALB rule or CloudFront behavior for that path. Existing
+TLS, KB and chatbot routes must remain intact.
+
+For the exact CloudFront `/api/search` behavior, disable caching and forward the
+body, `Origin`, `Content-Type` and `Sec-Fetch-Site`. CloudFront's all-seven-methods
+setting is required to include POST; the proxy enforces POST-only access. Block
+bypass of the edge controls and configure viewer rate protection there. The
+candidate deliberately does not trust forwarded client IPs: requests share the
+API's proxy rate bucket until the actual forwarding chain is verified.
+
+Keep `ARM_SEARCH_SERVE_STATIC=false` and `ARM_SEARCH_DOCS_ENABLED=false`. Set
+`ARM_KB_SCOPE_CONFIRMED=true` only for controlled scoped-provider validation;
+the supplied environment defaults to false. A ready process otherwise still
+returns an explicit unavailable search response. Validate live search through
+the external route before publishing the search-enabled static build.
+
+Record the source revision, catalog digest and API/static artifacts as one
+release and retain the previous pair for rollback. API activation and CDN
+publication are separate operations; do not describe their rollout as atomic.
+Recheck the site after invalidation and account for already-open pages during
+later releases. Roll back by restoring the last tested pair or publishing the
+normal feature-disabled build. The current workflows are not changed to perform
+these cloud mutations until the target and access are verified.
+
 ## Contract gate
 
 The scoped KB integration was verified on 14 October 2026; relevance and staging
