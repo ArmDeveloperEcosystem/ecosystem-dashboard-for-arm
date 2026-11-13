@@ -218,6 +218,27 @@ class GeneratedSiteDataReviewContractTests(unittest.TestCase):
             self.assertEqual(separator, "@")
             self.assertRegex(revision, r"^[0-9a-f]{40}$")
 
+    def test_browser_search_preview_is_opt_in_and_uses_one_build_deploy_config(self) -> None:
+        main = MAIN_WORKFLOW.read_text(encoding="utf-8")
+        trigger = main.split("permissions:", maxsplit=1)[0]
+
+        self.assertRegex(
+            trigger,
+            r"browser_search_preview:\n\s+description: '[^']*CloudFront staging[^']*KB dev[^']*'"
+            r"\n\s+type: boolean\n\s+default: false\n",
+        )
+        self.assertIn(
+            "DASHBOARD_HUGO_CONFIG: ${{ inputs.browser_search_preview && "
+            "'config.toml,config.cloudfront.toml,poc/config.browser.toml' || "
+            "'config.toml,config.cloudfront.toml' }}",
+            main,
+        )
+        hugo_commands = re.findall(r"(?m)^\s+run: (hugo .+)$", main)
+        self.assertEqual(hugo_commands, [
+            'hugo --minify --config "$DASHBOARD_HUGO_CONFIG"',
+            'hugo deploy --force --maxDeletes -1 --invalidateCDN --config "$DASHBOARD_HUGO_CONFIG"',
+        ])
+
     def test_ci_is_read_only_arm64_and_covers_all_new_files(self) -> None:
         ci = CI_WORKFLOW.read_text(encoding="utf-8")
 

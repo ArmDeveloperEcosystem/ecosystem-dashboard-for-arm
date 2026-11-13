@@ -21,6 +21,7 @@
         };
 
         const browseOrder = new Map(allRows().map((row, index) => [row.getAttribute('data-catalog-id'), index]));
+        const browserSearch = root.dataset.transport === 'browser' ? window.createBrowserKBSearch(root.dataset.endpoint, allRows()) : null;
 
         // Legacy table/filter code expects the ADS search component's async value().
         root.value = () => Promise.resolve(input.value);
@@ -245,14 +246,19 @@
             renderRows();
             const timeout = window.setTimeout(() => controller.abort(), 15000);
             try {
-                const payload = { query, filters: currentFilters() };
-                const response = await fetch(root.dataset.endpoint, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload), signal: controller.signal,
-                    credentials: 'same-origin'
-                });
-                if (!response.ok) throw new Error('Search request failed');
-                const data = await response.json();
+                let data;
+                if (browserSearch) {
+                    data = await browserSearch(query, currentFilters(), controller.signal);
+                } else {
+                    const payload = { query, filters: currentFilters() };
+                    const response = await fetch(root.dataset.endpoint, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload), signal: controller.signal,
+                        credentials: 'same-origin'
+                    });
+                    if (!response.ok) throw new Error('Search request failed');
+                    data = await response.json();
+                }
                 if (version !== state.version) return;
                 if (!data || data.mode !== 'kb_scoped' || !Array.isArray(data.results) || !['ok', 'no_matches'].includes(data.status)) {
                     throw new Error('Search response unavailable');
