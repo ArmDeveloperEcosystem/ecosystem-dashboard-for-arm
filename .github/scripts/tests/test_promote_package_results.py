@@ -755,6 +755,12 @@ class PromotePackageResultsTests(unittest.TestCase):
             )
         self.assertEqual(1, result)
         self.assertIn("package result promotion error", stderr.getvalue())
+        self.assertIn(
+            'blocked package result: {"reason": "candidate_contract_violation: '
+            'run.url is not an exact job URL for the persisted run", '
+            '"slug": "beta", "state": "blocked_no_previous"}',
+            stderr.getvalue(),
+        )
 
 
 if __name__ == "__main__":

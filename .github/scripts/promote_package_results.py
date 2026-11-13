@@ -1021,6 +1021,24 @@ def main(argv: list[str] | None = None) -> int:
             validation_policy=args.validation_policy,
             repository=args.repository,
         )
+    except PromotionBlockedError as exc:
+        print(f"package result promotion error: {exc}", file=sys.stderr)
+        for slug, decision in sorted(exc.report["decisions"].items()):
+            if not str(decision.get("state", "")).startswith("blocked_"):
+                continue
+            print(
+                "blocked package result: "
+                + json.dumps(
+                    {
+                        "slug": slug,
+                        "state": decision.get("state", "unknown"),
+                        "reason": decision.get("reason", "reason unavailable"),
+                    },
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+            )
+        return 1
     except PromotionError as exc:
         print(f"package result promotion error: {exc}", file=sys.stderr)
         return 1
