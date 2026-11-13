@@ -46,7 +46,7 @@ def test_browser_build_maps_exact_catalog_and_loads_adapter_before_controller(tm
     linux = SearchHTML(site / "linux/index.html")
     assert len(linux.search) == 1
     assert linux.search[0]["data-transport"] == "browser"
-    assert linux.search[0]["data-endpoint"] == "https://knowledge.armdevtechapi.com/search"
+    assert linux.search[0]["data-endpoint"] == "https://knowledge-dev.armdevtechapi.com/search"
     packages = json.loads((site / "poc-catalog.json").read_text())["packages"]
     assert len(packages) > 1000
     assert set(linux.rows) == {package["id"] for package in packages}

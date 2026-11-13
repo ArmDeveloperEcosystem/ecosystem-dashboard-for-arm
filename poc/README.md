@@ -137,7 +137,7 @@ hugo server --config config.toml,poc/config.local.toml,poc/config.browser.toml \
   --bind 127.0.0.1 --port 8767 --baseURL http://127.0.0.1:8767/ --disableLiveReload
 ```
 
-Open `http://127.0.0.1:8767/linux/`. The public KB must allow that origin for live
+Open `http://127.0.0.1:8767/linux/`. KB dev must allow that origin for live
 semantic search to work. Do not disable browser security or use `no-cors` to get
 around this requirement; an unreadable response cannot supply package results.
 
@@ -150,12 +150,15 @@ KB owner, allow the exact site origins through CORS, check the website's
 The shared backend cache is absent; a removed network hop does not guarantee
 faster searches or lower KB traffic.
 
-For a staging candidate build, combine
-`config.toml,config.cloudfront.toml,poc/config.browser.toml`. Production uses
-`config.toml,poc/config.browser.toml` with the existing production base URL.
-Neither combination provisions a service or changes the deployment workflow.
-The existing default-off feature flag and API deployment configuration remain
-unchanged.
+The first live validation target is the dashboard staging origin
+`https://d1jmgdpytvgwdc.cloudfront.net` calling
+`https://knowledge-dev.armdevtechapi.com/search`, as proposed by the KB owner.
+Build that candidate with `config.toml,config.cloudfront.toml,poc/config.browser.toml`.
+The overlay deliberately targets KB dev; do not deploy it to the production
+dashboard. A production endpoint/origin configuration follows only after staging
+acceptance. This preparation provisions no service and changes no deployment
+workflow. The existing default-off feature flag and API deployment configuration
+remain unchanged.
 
 ### Python API integration
 
