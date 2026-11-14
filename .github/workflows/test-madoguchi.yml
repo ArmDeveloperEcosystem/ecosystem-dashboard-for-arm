@@ -114,7 +114,7 @@ jobs:
       tests_failed: ${{ steps.summary.outputs.failed || '0' }}
       tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
       duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
+      regression_status: ${{ steps.test6.outputs.status || 'failed' }}
       regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
@@ -134,13 +134,17 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # original: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.1"
 
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          echo "package_slug=madoguchi" >> "$GITHUB_OUTPUT"
-          echo "dashboard_link=/opensource_packages/madoguchi" >> "$GITHUB_OUTPUT"
+          {
+            echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "package_slug=madoguchi"
+            echo "dashboard_link=/opensource_packages/madoguchi"
+          } >> "$GITHUB_OUTPUT"
       - name: Install baseline Madoguchi from source
         id: install
         run: |
@@ -148,7 +152,7 @@ jobs:
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "git pkg-config libssl-dev libpq-dev"
           rm -rf madoguchi
           git clone --depth 1 --branch "${BASELINE_VERSION}" https://github.com/terrapkg/madoguchi.git
-          cargo build --release --manifest-path madoguchi/Cargo.toml
+          cargo build --locked --release --manifest-path madoguchi/Cargo.toml
           sudo install -m 0755 madoguchi/target/release/madoguchi /usr/local/bin/madoguchi
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
@@ -298,26 +302,67 @@ jobs:
 
       - name: Test 6 - Regression Validation
         id: test6
+        if: always()
+        env:
+          TEST1_STATUS: ${{ steps.test1.outputs.status || 'failed' }}
+          TEST2_STATUS: ${{ steps.test2.outputs.status || 'failed' }}
+          TEST3_STATUS: ${{ steps.test3.outputs.status || 'failed' }}
+          TEST4_STATUS: ${{ steps.test4.outputs.status || 'failed' }}
+          TEST5_STATUS: ${{ steps.test5.outputs.status || 'failed' }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           CURRENT="${BASELINE_VERSION}"
           LATEST="${NEXT_VERSION}"
-          NEXT_DIR=$(mktemp -d)
-          cleanup() {
+          NEXT_DIR=""
+          PID=""
+
+          for status in "$TEST1_STATUS" "$TEST2_STATUS" "$TEST3_STATUS" "$TEST4_STATUS" "$TEST5_STATUS"; do
+            if [ "$status" != "passed" ]; then
+              {
+                echo "current_version=${CURRENT}"
+                echo "latest_version=${LATEST}"
+                echo "next_installed_version=not_installed"
+                echo "decision=baseline_failed"
+                echo "regression_result=Regression validation skipped because baseline validation failed"
+                echo "comparison=Madoguchi candidate validation was not attempted because one or more strict baseline checks failed."
+                echo "status=skipped"
+                echo "duration=0"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          finish() {
+            rc=$?
             if [ -n "${PID:-}" ]; then
               kill "$PID" >/dev/null 2>&1 || true
               wait "$PID" >/dev/null 2>&1 || true
             fi
-            rm -rf "$NEXT_DIR"
+            if [ -n "$NEXT_DIR" ]; then
+              rm -rf "$NEXT_DIR"
+            fi
+            if [ "$rc" -ne 0 ]; then
+              END_TIME=$(date +%s)
+              {
+                echo "current_version=${CURRENT}"
+                echo "latest_version=${LATEST}"
+                echo "next_installed_version=not_installed"
+                echo "decision=next_install_failed"
+                echo "regression_result=Next version install failed on Arm64"
+                echo "comparison=Madoguchi candidate ${LATEST} did not preserve the expected Arm64 build or server startup behavior."
+                echo "status=failed"
+                echo "duration=$((END_TIME - START_TIME))"
+              } >> "$GITHUB_OUTPUT"
+            fi
+            trap - EXIT
+            exit "$rc"
           }
-          trap cleanup EXIT
+          trap finish EXIT
 
-          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
-          echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
-
+          NEXT_DIR=$(mktemp -d)
           git clone --depth 1 --branch "${NEXT_VERSION}" https://github.com/terrapkg/madoguchi.git "$NEXT_DIR/repo"
-          cargo build --release --manifest-path "$NEXT_DIR/repo/Cargo.toml"
+          cargo build --locked --release --manifest-path "$NEXT_DIR/repo/Cargo.toml"
           NEXT_BIN="$NEXT_DIR/repo/target/release/madoguchi"
           EXPECTED_NEXT="${LATEST#v}"
           export ROCKET_PORT=8012
@@ -340,33 +385,26 @@ jobs:
              file "$NEXT_BIN" | grep -qiE "aarch64|arm64" && \
              [ "$STATUS_CODE" = "200" ] && \
              [ "$NEXT_HEALTH" = "$EXPECTED_NEXT" ]; then
-            echo "next_installed_version=${LATEST}" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Madoguchi baseline ${CURRENT} built from source and passed /health runtime validation on Arm64, and candidate ${LATEST} also built successfully and returned the expected /health version on Arm64." >> "$GITHUB_OUTPUT"
-            echo "status=passed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            {
+              echo "current_version=${CURRENT}"
+              echo "latest_version=${LATEST}"
+              echo "next_installed_version=${LATEST}"
+              echo "decision=next_install_validated"
+              echo "regression_result=Next version installed successfully on Arm64"
+              echo "comparison=Madoguchi baseline ${CURRENT} built from source and passed /health runtime validation on Arm64, and candidate ${LATEST} also built successfully and returned the expected /health version on Arm64."
+              echo "status=passed"
+              echo "duration=$((END_TIME - START_TIME))"
+            } >> "$GITHUB_OUTPUT"
           else
             echo "Expected next /health version: ${EXPECTED_NEXT}, observed: ${NEXT_HEALTH:-none}"
             echo "Last next health status code: ${STATUS_CODE:-none}"
             cat /tmp/madoguchi-next-http.out || true
             cat /tmp/madoguchi-next.log || true
             file "$NEXT_BIN" || true
-            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Madoguchi candidate ${LATEST} did not preserve the expected Arm64 build or server startup behavior." >> "$GITHUB_OUTPUT"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
-          END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-          last_status="$(grep '^status=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
-          if [ "$last_status" = "failed" ]; then
-            exit 1
-          fi
       - name: Calculate test summary
         if: always()
         id: summary
@@ -374,6 +412,7 @@ jobs:
           set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
 
@@ -392,9 +431,14 @@ jobs:
           check_regression() {
             local status="$1"
             local duration="$2"
+            local decision="$3"
             if [ "$status" = "passed" ]; then
               PASSED=$((PASSED + 1))
             elif [ "$status" = "failed" ]; then
+              FAILED=$((FAILED + 1))
+            elif [ "$status" = "skipped" ] && [ "$decision" = "baseline_failed" ] && [ "$CORE_FAILED" -gt 0 ]; then
+              SKIPPED=$((SKIPPED + 1))
+            else
               FAILED=$((FAILED + 1))
             fi
             TOTAL_DURATION=$((TOTAL_DURATION + duration))
@@ -405,23 +449,31 @@ jobs:
           check_core "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
           check_core "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
           check_core "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
-          check_regression "${{ steps.test6.outputs.status || 'skipped' }}" "${{ steps.test6.outputs.duration || 0 }}"
-
-          echo "passed=${PASSED}" >> "$GITHUB_OUTPUT"
-          echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
-          echo "core_failed=${CORE_FAILED}" >> "$GITHUB_OUTPUT"
-          echo "duration=${TOTAL_DURATION}" >> "$GITHUB_OUTPUT"
+          check_regression "${{ steps.test6.outputs.status || 'failed' }}" "${{ steps.test6.outputs.duration || 0 }}" "${{ steps.test6.outputs.decision || 'missing' }}"
 
           if [ "${CORE_FAILED}" -eq 0 ]; then
-            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
+            BADGE_STATUS=passing
           else
-            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
+            BADGE_STATUS=failing
           fi
 
           if [ "${FAILED}" -eq 0 ]; then
-            echo "overall_status=success" >> "$GITHUB_OUTPUT"
+            OVERALL_STATUS=success
           else
-            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
+            OVERALL_STATUS=failure
+          fi
+
+          {
+            echo "passed=${PASSED}"
+            echo "failed=${FAILED}"
+            echo "skipped=${SKIPPED}"
+            echo "core_failed=${CORE_FAILED}"
+            echo "duration=${TOTAL_DURATION}"
+            echo "badge_status=${BADGE_STATUS}"
+            echo "overall_status=${OVERALL_STATUS}"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "${OVERALL_STATUS}" = "failure" ]; then
             exit 1
           fi
 
@@ -444,7 +496,7 @@ jobs:
             echo "3. Check source tree contents: ${{ steps.test3.outputs.status || 'skipped' }}"
             echo "4. Start server briefly: ${{ steps.test4.outputs.status || 'skipped' }}"
             echo "5. Functional validation: ${{ steps.test5.outputs.status || 'skipped' }}"
-            echo "6. Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}"
+            echo "6. Regression Validation: ${{ steps.test6.outputs.status || 'failed' }}"
             echo ""
             echo "### Regression Validation (Next Version Install)"
             echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || env.BASELINE_VERSION }}"
@@ -453,3 +505,4 @@ jobs:
             echo "- **Regression install result:** ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}"
             echo "- **Details:** ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}"
           } >> "$GITHUB_STEP_SUMMARY"
+
